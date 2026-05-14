@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crypto Scanner Pro</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="loading-content">
+      <div class="loading-logo">
+        <svg class="logo-svg" width="48" height="48" viewBox="0 0 48 48" fill="none">
+          <polygon points="24,4 44,14 44,34 24,44 4,34 4,14" stroke="#00d4ff" stroke-width="2" fill="none"/>
+          <polygon points="24,12 36,18 36,30 24,36 12,30 12,18" fill="rgba(0,212,255,0.15)" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="24" cy="24" r="4" fill="#00d4ff"/>
+        </svg>
+        <span class="loading-logo-text">Crypto Scanner <span class="accent">Pro</span></span>
+      </div>
+      <div class="loading-bar-wrap">
+        <div class="loading-bar-fill" id="loading-bar"></div>
+      </div>
+      <p class="loading-text" id="loading-text">Connecting to markets...</p>
+    </div>
+  </div>
+
+  <!-- Top Navigation -->
+  <nav class="top-nav" id="top-nav">
+    <div class="nav-inner">
+      <!-- Logo -->
+      <div class="nav-logo" onclick="navigateTo('dashboard')">
+        <svg width="28" height="28" viewBox="0 0 48 48" fill="none">
+          <polygon points="24,4 44,14 44,34 24,44 4,34 4,14" stroke="#00d4ff" stroke-width="2" fill="none"/>
+          <polygon points="24,12 36,18 36,30 24,36 12,30 12,18" fill="rgba(0,212,255,0.12)" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="24" cy="24" r="4" fill="#00d4ff"/>
+        </svg>
+        <span class="nav-logo-text">Crypto Scanner <span class="accent">Pro</span></span>
+      </div>
+
+      <!-- Nav Links -->
+      <div class="nav-links" id="nav-links">
+        <a class="nav-link active" data-page="dashboard" onclick="navigateTo('dashboard')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          Dashboard
+        </a>
+        <a class="nav-link" data-page="ranking" onclick="navigateTo('ranking')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          Market Ranking
+        </a>
+        <a class="nav-link" data-page="coin" style="display:none" data-page="coin" id="nav-coin-link">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          Coin Analysis
+        </a>
+        <a class="nav-link" data-page="settings" onclick="navigateTo('settings')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          Settings
+        </a>
+      </div>
+
+      <!-- Right Controls -->
+      <div class="nav-right">
+        <div class="nav-search-wrap">
+          <svg class="search-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="nav-search-input" placeholder="Search coin..." autocomplete="off" />
+          <div class="search-dropdown" id="search-dropdown"></div>
+        </div>
+
+        <div class="tf-group" id="nav-timeframes">
+          <button class="tf-btn" data-tf="5m">5m</button>
+          <button class="tf-btn active" data-tf="15m">15m</button>
+          <button class="tf-btn" data-tf="1h">1h</button>
+          <button class="tf-btn" data-tf="4h">4h</button>
+        </div>
+
+        <div class="refresh-pill" id="refresh-pill">
+          <span class="live-dot"></span>
+          <span id="refresh-countdown">60s</span>
+        </div>
+
+        <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Mobile Menu Drawer -->
+  <div class="mobile-drawer" id="mobile-drawer">
+    <a class="mob-link" onclick="navigateTo('dashboard');toggleMobileMenu()">Dashboard</a>
+    <a class="mob-link" onclick="navigateTo('ranking');toggleMobileMenu()">Market Ranking</a>
+    <a class="mob-link" onclick="navigateTo('settings');toggleMobileMenu()">Settings</a>
+    <div class="mob-tf">
+      <span class="mob-tf-label">Timeframe</span>
+      <div class="tf-group">
+        <button class="tf-btn" data-tf="5m">5m</button>
+        <button class="tf-btn active" data-tf="15m">15m</button>
+        <button class="tf-btn" data-tf="1h">1h</button>
+        <button class="tf-btn" data-tf="4h">4h</button>
+      </div>
+    </div>
+  </div>
+  <div class="drawer-overlay" id="drawer-overlay" onclick="toggleMobileMenu()"></div>
+
+  <!-- App Container -->
+  <main class="app-container" id="app">
+
+    <!-- ═══════════════════════ DASHBOARD PAGE ═══════════════════════ -->
+    <section class="page active" id="page-dashboard">
+
+      <!-- Market Overview -->
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Market Overview</h1>
+          <p class="page-subtitle">Real-time analysis of Binance USDT pairs</p>
+        </div>
+        <div class="last-scan">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Last scan: <span id="last-updated">--</span>
+        </div>
+      </div>
+
+      <div class="overview-grid">
+        <div class="ov-card ov-total">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-total">--</div>
+            <div class="ov-label">Total Scanned</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+        <div class="ov-card ov-bull">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-bull">--</div>
+            <div class="ov-label">Bullish Coins</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+        <div class="ov-card ov-bear">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-bear">--</div>
+            <div class="ov-label">Bearish Coins</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+        <div class="ov-card ov-neutral">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-neutral">--</div>
+            <div class="ov-label">Neutral Coins</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+      </div>
+
+      <!-- Filter + Search Bar -->
+      <div class="toolbar">
+        <div class="filter-chips">
+          <button class="chip active" data-filter="all">All</button>
+          <button class="chip chip-sbull" data-filter="Strong Bullish">Strong Bullish</button>
+          <button class="chip chip-bull" data-filter="Bullish">Bullish</button>
+          <button class="chip chip-neutral" data-filter="Neutral">Neutral</button>
+          <button class="chip chip-bear" data-filter="Bearish">Bearish</button>
+          <button class="chip chip-sbear" data-filter="Strong Bearish">Strong Bearish</button>
+        </div>
+        <div class="dash-search-wrap">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="dash-search" placeholder="Search symbol..." autocomplete="off" />
+        </div>
+      </div>
+
+      <!-- Tables Row -->
+      <div class="tables-row">
+        <!-- Bullish Table -->
+        <div class="tbl-card tbl-bull">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot dot-bull"></span>
+              Strong Bullish Ranking
+            </div>
+            <span class="tbl-badge badge-bull" id="bull-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl" id="bull-tbl">
+              <thead><tr>
+                <th data-sort="rank" data-tbl="bull">#</th>
+                <th data-sort="symbol" data-tbl="bull">Coin</th>
+                <th data-sort="score" data-tbl="bull">Score</th>
+                <th data-sort="trend" data-tbl="bull">Trend</th>
+                <th data-sort="price" data-tbl="bull">Price</th>
+                <th data-sort="rsi" data-tbl="bull">RSI</th>
+                <th data-sort="adx" data-tbl="bull">ADX</th>
+                <th data-sort="volumeStrength" data-tbl="bull">Volume</th>
+              </tr></thead>
+              <tbody id="bull-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Bearish Table -->
+        <div class="tbl-card tbl-bear">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot dot-bear"></span>
+              Strong Bearish Ranking
+            </div>
+            <span class="tbl-badge badge-bear" id="bear-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl" id="bear-tbl">
+              <thead><tr>
+                <th data-sort="rank" data-tbl="bear">#</th>
+                <th data-sort="symbol" data-tbl="bear">Coin</th>
+                <th data-sort="score" data-tbl="bear">Score</th>
+                <th data-sort="trend" data-tbl="bear">Trend</th>
+                <th data-sort="price" data-tbl="bear">Price</th>
+                <th data-sort="rsi" data-tbl="bear">RSI</th>
+                <th data-sort="adx" data-tbl="bear">ADX</th>
+                <th data-sort="volumeStrength" data-tbl="bear">Volume</th>
+              </tr></thead>
+              <tbody id="bear-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Reversal Opportunities -->
+      <div class="section-row">
+        <div class="section-label">
+          <span class="pulse-dot"></span>
+          Reversal Opportunities
+        </div>
+        <span class="rev-badge" id="rev-count">0</span>
+      </div>
+      <div class="reversal-grid" id="reversal-grid">
+        <div class="rev-placeholder">Scanning for reversal signals...</div>
+      </div>
+
+    </section>
+
+    <!-- ═══════════════════════ RANKING PAGE ═══════════════════════ -->
+    <section class="page" id="page-ranking">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Market Ranking</h1>
+          <p class="page-subtitle">Top 100 coins ranked by trend score</p>
+        </div>
+        <div class="dash-search-wrap">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="ranking-search" placeholder="Search symbol..." autocomplete="off" />
+        </div>
+      </div>
+      <div class="tbl-card full-tbl">
+        <div class="tbl-scroll">
+          <table class="data-tbl ranking-tbl" id="ranking-tbl">
+            <thead><tr>
+              <th data-sort="rank" data-tbl="ranking"># Rank</th>
+              <th data-sort="symbol" data-tbl="ranking">Coin</th>
+              <th data-sort="price" data-tbl="ranking">Price</th>
+              <th data-sort="trend" data-tbl="ranking">Trend</th>
+              <th data-sort="score" data-tbl="ranking">Score</th>
+              <th data-sort="rsi" data-tbl="ranking">Momentum</th>
+              <th data-sort="volume" data-tbl="ranking">Volume</th>
+              <th data-sort="adx" data-tbl="ranking">Strength</th>
+            </tr></thead>
+            <tbody id="ranking-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ COIN DETAIL PAGE ═══════════════════════ -->
+    <section class="page" id="page-coin">
+      <div class="coin-back" onclick="navigateTo('dashboard')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        Back to Dashboard
+      </div>
+
+      <div class="coin-hero">
+        <div class="coin-hero-left">
+          <div class="coin-avatar" id="coin-avatar">BTC</div>
+          <div class="coin-hero-info">
+            <div class="coin-name" id="coin-name">BTC/USDT</div>
+            <div class="coin-badges">
+              <span class="coin-trend-chip" id="coin-trend-chip">--</span>
+            </div>
+          </div>
+        </div>
+        <div class="coin-hero-right">
+          <div class="coin-price" id="coin-price">$--</div>
+          <div class="coin-price-sub" id="coin-price-sub">USDT</div>
+        </div>
+      </div>
+
+      <!-- TradingView Chart -->
+      <div class="chart-card">
+        <div class="chart-topbar">
+          <span class="chart-title">Price Chart</span>
+          <div class="chart-tf-group" id="chart-tf-group">
+            <button class="tf-btn active" data-ctf="15">15m</button>
+            <button class="tf-btn" data-ctf="60">1H</button>
+            <button class="tf-btn" data-ctf="240">4H</button>
+            <button class="tf-btn" data-ctf="D">1D</button>
+          </div>
+        </div>
+        <div id="tv-chart-container" class="tv-chart"></div>
+      </div>
+
+      <!-- Metric Cards -->
+      <div class="metrics-row">
+        <div class="metric-card">
+          <div class="metric-lbl">Trend Score</div>
+          <div class="metric-val" id="m-score">--</div>
+          <div class="score-track"><div class="score-fill" id="score-fill"></div></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-lbl">RSI (14)</div>
+          <div class="metric-val" id="m-rsi">--</div>
+          <div class="metric-tag" id="rsi-tag">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-lbl">ADX</div>
+          <div class="metric-val" id="m-adx">--</div>
+          <div class="metric-tag" id="adx-tag">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-lbl">Volume</div>
+          <div class="metric-val" id="m-vol">--</div>
+          <div class="metric-tag" id="vol-tag">--</div>
+        </div>
+      </div>
+
+      <!-- EMA Row -->
+      <div class="ema-section">
+        <div class="section-row"><div class="section-label">Moving Averages</div></div>
+        <div class="ema-row">
+          <div class="ema-card">
+            <div class="ema-lbl">EMA 20</div>
+            <div class="ema-val" id="ema20">--</div>
+            <div class="ema-sig" id="ema20-sig">--</div>
+          </div>
+          <div class="ema-card">
+            <div class="ema-lbl">EMA 50</div>
+            <div class="ema-val" id="ema50">--</div>
+            <div class="ema-sig" id="ema50-sig">--</div>
+          </div>
+          <div class="ema-card">
+            <div class="ema-lbl">EMA 200</div>
+            <div class="ema-val" id="ema200">--</div>
+            <div class="ema-sig" id="ema200-sig">--</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Analysis Grid -->
+      <div class="analysis-grid">
+        <div class="analysis-card">
+          <div class="analysis-hdr">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>
+            Trend Analysis
+          </div>
+          <div class="analysis-body" id="a-trend">--</div>
+        </div>
+        <div class="analysis-card">
+          <div class="analysis-hdr">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            Support &amp; Resistance
+          </div>
+          <div class="analysis-body" id="a-sr">--</div>
+        </div>
+        <div class="analysis-card">
+          <div class="analysis-hdr">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Momentum Analysis
+          </div>
+          <div class="analysis-body" id="a-momentum">--</div>
+        </div>
+        <div class="analysis-card">
+          <div class="analysis-hdr">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            Market Strength
+          </div>
+          <div class="analysis-body" id="a-strength">--</div>
+        </div>
+      </div>
+
+      <!-- Risk Level -->
+      <div class="risk-section">
+        <div class="section-row"><div class="section-label">Risk Assessment</div></div>
+        <div class="risk-card" id="risk-card">
+          <div class="risk-top">
+            <span class="risk-label">Risk Level</span>
+            <span class="risk-badge" id="risk-badge">--</span>
+          </div>
+          <div class="risk-bar-track">
+            <div class="risk-bar-fill" id="risk-bar"></div>
+          </div>
+          <p class="risk-desc" id="risk-desc">--</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ SETTINGS PAGE ═══════════════════════ -->
+    <section class="page" id="page-settings">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Settings</h1>
+          <p class="page-subtitle">Configure your scanner preferences</p>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <div class="settings-card">
+          <h3 class="settings-group-ttl">General</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Default Timeframe</div>
+              <div class="setting-desc">Set the default chart timeframe</div>
+            </div>
+            <select class="setting-select" id="s-timeframe">
+              <option value="5m">5 Minutes</option>
+              <option value="15m" selected>15 Minutes</option>
+              <option value="1h">1 Hour</option>
+              <option value="4h">4 Hours</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Refresh Interval</div>
+              <div class="setting-desc">How often to auto-refresh market data</div>
+            </div>
+            <select class="setting-select" id="s-refresh">
+              <option value="30">30 seconds</option>
+              <option value="60" selected>60 seconds</option>
+              <option value="120">2 minutes</option>
+              <option value="300">5 minutes</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Dark Mode</div>
+              <div class="setting-desc">Toggle between dark and light theme</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="s-dark" checked />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-group-ttl">API Configuration</h3>
+
+          <div class="setting-row vertical">
+            <div class="setting-name">API Endpoint</div>
+            <input type="text" class="setting-input" id="s-api-url" value="http://127.0.0.1:8000/scan" />
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Connection Status</div>
+            </div>
+            <div class="api-status-pill" id="api-status-pill">
+              <span class="api-dot" id="api-dot"></span>
+              <span id="api-status-txt">Checking...</span>
+            </div>
+          </div>
+
+          <button class="btn-primary" onclick="testApiConnection()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.5 19.79 19.79 0 0 1 1.6 5 2 2 0 0 1 3.57 2.68h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 10a16 16 0 0 0 6 6l.92-.92a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 21.5 17z"/></svg>
+            Test Connection
+          </button>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-group-ttl">Display</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Reversal Alerts</div>
+              <div class="setting-desc">Highlight potential trend reversals</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="s-reversals" checked />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Score Threshold — Bullish</div>
+              <div class="setting-desc">Minimum score to classify as bullish</div>
+            </div>
+            <div class="range-group">
+              <input type="range" class="setting-range" id="s-bull-threshold" min="50" max="90" value="60" oninput="document.getElementById('bull-thr-val').textContent=this.value" />
+              <span class="range-val" id="bull-thr-val">60</span>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">Score Threshold — Bearish</div>
+              <div class="setting-desc">Maximum score to classify as bearish</div>
+            </div>
+            <div class="range-group">
+              <input type="range" class="setting-range" id="s-bear-threshold" min="10" max="50" value="40" oninput="document.getElementById('bear-thr-val').textContent=this.value" />
+              <span class="range-val" id="bear-thr-val">40</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-footer">
+        <button class="btn-primary" onclick="saveAllSettings()">Save Settings</button>
+        <button class="btn-ghost" onclick="resetAllSettings()">Reset Defaults</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Scripts -->
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
