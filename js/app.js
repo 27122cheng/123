@@ -714,6 +714,84 @@ function buildRows(rows) {
   `).join('');
 }
 
+/* ── 自定義幣種管理 ─────────────────────────────────────────── */
+async function addCustomPair() {
+  const input = document.getElementById('add-pair-input');
+  const raw   = (input?.value || '').trim().toUpperCase().replace(/\/USDT$/, '');
+  if (!raw) return;
+
+  const sym    = raw + '/USDT';
+  const binSym = raw + 'USDT';
+  const pairs  = loadPairs();
+
+  if (pairs.find(p => p.s === sym)) {
+    showToast(`${sym} 已在清單中`, 'error'); return;
+  }
+
+  showToast('正在驗證幣種...', 'info');
+  let spotPrice = 0;
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const ctrl = new AbortController();
+      const t    = setTimeout(() => ctrl.abort(), 5000);
+      const res  = await fetch(`${host}/api/v3/ticker/price?symbol=${binSym}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.status === 400) break;
+      if (res.ok) { spotPrice = parseFloat((await res.json()).price) || 0; break; }
+    } catch { continue; }
+  }
+
+  if (!spotPrice) {
+    showToast(`找不到 ${sym}，請確認幣安是否有此交易對`, 'error'); return;
+  }
+
+  pairs.push({ s: sym, p: spotPrice });
+  savePairs(pairs);
+  if (input) input.value = '';
+  renderPairsList();
+  showToast(`已新增 ${sym}`, 'success');
+  triggerRescan();
+}
+
+function removePairFromList(symbol) {
+  removePairBySymbol(symbol);
+  renderPairsList();
+  showToast(`已移除 ${symbol}`, 'info');
+  triggerRescan();
+}
+
+function resetCustomPairs() {
+  resetToDefaultPairs();
+  renderPairsList();
+  showToast('已重置為默認幣種清單', 'info');
+  triggerRescan();
+}
+
+function triggerRescan() {
+  if (state.scanning) return;
+  state.scanning = true;
+  updateScanProgress(0);
+  fetchMarketData(state.timeframe).then(({ data, source }) => {
+    state.data = data; state.dataSource = source;
+    state.scanning = false; hideScanBar();
+    applyFilters(); renderAll(); checkApiStatus();
+  });
+}
+
+function renderPairsList() {
+  const list  = document.getElementById('custom-pairs-list');
+  const count = document.getElementById('pairs-count');
+  if (!list) return;
+  const pairs = loadPairs();
+  if (count) count.textContent = `共 ${pairs.length} 個交易對`;
+  list.innerHTML = pairs.map(p => `
+    <div class="pair-chip">
+      <span>${p.s}</span>
+      <button class="pair-chip-rm" onclick="removePairFromList('${p.s}')" title="移除">×</button>
+    </div>
+  `).join('');
+}
+
 /* ── 设置页面 ───────────────────────────────────────────────── */
 function populateSettingsPage() {
   const s = loadSettings();
@@ -739,6 +817,8 @@ function populateSettingsPage() {
 
   const bear = document.getElementById('s-bear-threshold');
   if (bear) { bear.value = s.bearThreshold || 40; document.getElementById('bear-thr-val').textContent = bear.value; }
+
+  renderPairsList();
 }
 
 function saveAllSettings() {

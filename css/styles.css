@@ -839,6 +839,53 @@ a { text-decoration: none; cursor: pointer; }
   display: flex; gap: 12px; align-items: center; padding-top: 8px;
 }
 
+/* ── 自定義幣種管理 ─────────────────────────────────────────── */
+.pairs-mgr-card { grid-column: 1 / -1; }
+
+.pairs-list-wrap {
+  max-height: 240px;
+  overflow-y: auto;
+  margin-top: 12px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.pairs-list-wrap::-webkit-scrollbar { width: 4px; }
+.pairs-list-wrap::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.3); border-radius: 2px; }
+
+.pairs-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.pair-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px 4px 10px;
+  background: rgba(0,212,255,0.08);
+  border: 1px solid rgba(0,212,255,0.2);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text2);
+  transition: border-color 0.15s;
+}
+.pair-chip:hover { border-color: rgba(0,212,255,0.5); }
+
+.pair-chip-rm {
+  background: none;
+  border: none;
+  color: var(--text3);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0 0 0 2px;
+  transition: color 0.15s;
+}
+.pair-chip-rm:hover { color: var(--bear); }
+
 /* ── Toast Notifications ────────────────────────────────────── */
 .toast-container {
   position: fixed; bottom: 24px; right: 24px; z-index: 9000;

@@ -2,7 +2,7 @@
    api.js — API 集成 & 幣安實時數據引擎
    ============================================================ */
 
-const PAIRS = [
+const DEFAULT_PAIRS = [
   { s: 'BTC/USDT',   p: 65000  }, { s: 'ETH/USDT',   p: 3500   },
   { s: 'BNB/USDT',   p: 580    }, { s: 'SOL/USDT',   p: 170    },
   { s: 'XRP/USDT',   p: 0.62   }, { s: 'ADA/USDT',   p: 0.48   },
@@ -53,6 +53,32 @@ const PAIRS = [
   { s: 'BAND/USDT',  p: 1.42   }, { s: 'SXP/USDT',   p: 0.28   },
   { s: 'AEVO/USDT',  p: 0.82   }, { s: 'RDNT/USDT',  p: 0.065  },
 ];
+
+/* ═══════════════════ 自定義幣種管理 ═══════════════════════ */
+const PAIRS_KEY = 'csp_pairs';
+
+function loadPairs() {
+  try {
+    const raw = localStorage.getItem(PAIRS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length > 0) return arr;
+    }
+  } catch {}
+  return [...DEFAULT_PAIRS];
+}
+
+function savePairs(pairs) {
+  localStorage.setItem(PAIRS_KEY, JSON.stringify(pairs));
+}
+
+function removePairBySymbol(symbol) {
+  savePairs(loadPairs().filter(p => p.s !== symbol));
+}
+
+function resetToDefaultPairs() {
+  localStorage.removeItem(PAIRS_KEY);
+}
 
 /* ---------- 偽隨機數（離線備用）---------- */
 let _seed = Date.now();
@@ -124,7 +150,7 @@ async function fetchKlines(symbol, interval, limit = 220) {
 
 /* 一次性批量獲取所有現貨即時價格（作為 kline 失敗時的備用）*/
 async function fetchAllSpotPrices() {
-  const syms = JSON.stringify(PAIRS.map(p => p.s.replace('/', '')));
+  const syms = JSON.stringify(loadPairs().map(p => p.s.replace('/', '')));
   for (const host of BINANCE_HOSTS) {
     try {
       const controller = new AbortController();
@@ -148,14 +174,15 @@ async function fetchAllSpotPrices() {
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
   const batchSize = 20;
-  const results   = new Array(PAIRS.length).fill(null);
+  const pairs     = loadPairs();
+  const results   = new Array(pairs.length).fill(null);
 
   /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用 */
   if (typeof updateScanProgress === 'function') updateScanProgress(0);
   const spotPrices = await fetchAllSpotPrices();
 
-  for (let i = 0; i < PAIRS.length; i += batchSize) {
-    const batch = PAIRS.slice(i, i + batchSize);
+  for (let i = 0; i < pairs.length; i += batchSize) {
+    const batch = pairs.slice(i, i + batchSize);
 
     const batchResults = await Promise.allSettled(
       batch.map(pair => fetchKlines(pair.s.replace('/', ''), interval, 220))
@@ -163,7 +190,7 @@ async function fetchAllFromBinance(timeframe) {
 
     batchResults.forEach((r, j) => {
       const idx  = i + j;
-      const pair = PAIRS[idx];
+      const pair = pairs[idx];
       const sym  = pair.s.replace('/', '');
       const raw  = r.status === 'fulfilled' ? r.value : null;
       const analysed = raw ? analyzeKlines(pair.s, raw) : null;
@@ -191,11 +218,11 @@ async function fetchAllFromBinance(timeframe) {
     });
 
     /* 通知進度（若 app.js 已定義 updateScanProgress） */
-    const pct = Math.min(Math.round(((i + batchSize) / PAIRS.length) * 100), 100);
+    const pct = Math.min(Math.round(((i + batchSize) / pairs.length) * 100), 100);
     if (typeof updateScanProgress === 'function') updateScanProgress(pct);
 
     /* 批次間短暫停頓，避免觸發幣安限速 */
-    if (i + batchSize < PAIRS.length) await new Promise(r => setTimeout(r, 80));
+    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
   }
 
   return results;
@@ -233,7 +260,7 @@ function mapVolZh(v) {
 /* ─── 純離線備用（無網路時）──────────────────────────────── */
 function generateMockData() {
   _seed = 987654321;
-  return PAIRS.map(pair => {
+  return loadPairs().map(pair => {
     const priceVar = 0.96 + seededRand() * 0.08;
     const price    = pair.p * priceVar;
     const score    = randInt(5, 95);

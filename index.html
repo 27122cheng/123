@@ -555,9 +555,32 @@
         </div>
       </div>
 
+      <!-- 自定義幣種管理 -->
+      <div class="settings-card pairs-mgr-card">
+        <h3 class="settings-group-ttl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          自定義追蹤幣種
+        </h3>
+        <div class="setting-row vertical" style="gap:8px">
+          <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">新增幣種（輸入符號後按新增，系統會自動驗證是否在幣安上架）</div>
+          <div style="display:flex;gap:8px">
+            <input id="add-pair-input" type="text" class="setting-input" placeholder="例如：BTC、DOGE、PEPE" style="flex:1;text-transform:uppercase"
+              onkeydown="if(event.key==='Enter')addCustomPair()" />
+            <button class="btn-primary" onclick="addCustomPair()" style="white-space:nowrap;padding:0 18px">新增</button>
+          </div>
+        </div>
+        <div class="pairs-list-wrap">
+          <div id="custom-pairs-list" class="pairs-list"></div>
+        </div>
+        <div class="setting-row" style="margin-top:12px;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <button class="btn-ghost" onclick="resetCustomPairs()" style="font-size:0.82rem">重置為默認清單（100個幣種）</button>
+          <span id="pairs-count" style="color:var(--text3);font-size:0.82rem;align-self:center"></span>
+        </div>
+      </div>
+
       <div class="settings-footer">
-        <button class="btn-primary" onclick="saveAllSettings()">保存设置</button>
-        <button class="btn-ghost" onclick="resetAllSettings()">恢复默认</button>
+        <button class="btn-primary" onclick="saveAllSettings()">保存設置</button>
+        <button class="btn-ghost" onclick="resetAllSettings()">恢復默認</button>
       </div>
     </section>
 
