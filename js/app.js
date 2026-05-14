@@ -83,7 +83,8 @@ function startRefreshCycle() {
     state.dataSource = source;
     applyFilters();
     renderAll();
-    showToast(`市场数据已刷新（${source === 'mock' ? '演示模式' : '实时数据'}）`, 'info');
+    const srcLabel = source === 'api' ? '本地API实时' : source === 'binance' ? '币安实时价格' : '演示数据';
+    showToast(`市场数据已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
 }
 
@@ -243,7 +244,11 @@ function renderAll() {
   updateOverviewCards();
   renderDashboardTables();
   renderReversalCards();
-  document.getElementById('last-updated').textContent = new Date().toLocaleTimeString('zh-CN');
+  const srcTag = state.dataSource === 'api' ? '本地API'
+               : state.dataSource === 'binance' ? '币安实时'
+               : '演示数据';
+  document.getElementById('last-updated').textContent =
+    new Date().toLocaleTimeString('zh-CN') + ' · ' + srcTag;
 }
 
 /* ── 概览卡片 ───────────────────────────────────────────────── */
@@ -772,10 +777,13 @@ function checkApiStatus() {
 
   if (state.dataSource === 'api') {
     dot.className   = 'api-dot online';
-    txt.textContent = '已连接（实时数据）';
+    txt.textContent = '已连接（本地 API）';
+  } else if (state.dataSource === 'binance') {
+    dot.className   = 'api-dot online';
+    txt.textContent = '币安实时行情';
   } else {
     dot.className   = 'api-dot offline';
-    txt.textContent = '演示模式（API 离线）';
+    txt.textContent = '演示模式（网络不可用）';
   }
 }
 

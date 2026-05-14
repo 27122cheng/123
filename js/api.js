@@ -73,20 +73,24 @@ function scoreToTrend(score) {
   return '强势看跌';
 }
 
-/* ---------- 模拟数据生成器 ---------- */
-function generateMockData() {
+/* ---------- 模拟数据生成器（priceMap/volMap 有值时使用实时数据）---------- */
+function generateMockData(priceMap = null, volMap = null) {
   _seed = 987654321;
   return PAIRS.map((pair) => {
+    const sym       = pair.s.replace('/', '');
+    const realPrice = priceMap ? priceMap[sym] : null;
+    const realVol   = volMap   ? volMap[sym]   : null;
+    // 始终推进种子序列以保持信号数据一致性
     const priceVar = 0.96 + seededRand() * 0.08;
-    const price    = pair.p * priceVar;
+    const price    = (realPrice != null && realPrice > 0) ? realPrice : pair.p * priceVar;
     const score    = randInt(5, 95);
     const rsi      = parseFloat(randRange(18, 78).toFixed(1));
     const adx      = parseFloat(randRange(8, 52).toFixed(1));
     const ema20    = price * (0.978 + seededRand() * 0.044);
     const ema50    = price * (0.945 + seededRand() * 0.11);
     const ema200   = price * (0.82  + seededRand() * 0.36);
-    const volB     = randInt(1_000_000, 2_000_000_000);
-    const volS     = pick(['高', '中', '低']);
+    const volB     = (realVol != null && realVol > 0) ? realVol : randInt(1_000_000, 2_000_000_000);
+    const volS     = getVolStr(volB);
 
     return {
       symbol:         pair.s,
@@ -175,12 +179,67 @@ function buildHeaders(apiKey) {
   return headers;
 }
 
+/* ---------- 从币安公开 API 获取实时现价 ---------- */
+async function fetchBinancePrices() {
+  const symbols = PAIRS.map(p => p.s.replace('/', ''));
+  const param   = encodeURIComponent(JSON.stringify(symbols));
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res   = await fetch(
+      `https://api.binance.com/api/v3/ticker/price?symbols=${param}`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timer);
+
+    if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
+    const data = await res.json();
+
+    const map = {};
+    data.forEach(item => { map[item.symbol] = parseFloat(item.price); });
+    console.info(`[加密扫描专家] 已从币安获取 ${Object.keys(map).length} 个实时现价`);
+    return map;
+  } catch (err) {
+    console.warn('[加密扫描专家] 币安实时价格获取失败：', err.message);
+    return null;
+  }
+}
+
+/* ---------- 从币安获取24h成交量 ---------- */
+async function fetchBinanceVolumes() {
+  const symbols = PAIRS.map(p => p.s.replace('/', ''));
+  const param   = encodeURIComponent(JSON.stringify(symbols));
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res   = await fetch(
+      `https://api.binance.com/api/v3/ticker/24hr?symbols=${param}&type=MINI`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`Binance 24hr HTTP ${res.status}`);
+    const data = await res.json();
+
+    const map = {};
+    data.forEach(item => {
+      map[item.symbol] = parseFloat(item.quoteVolume || 0); // USDT 计价成交额
+    });
+    return map;
+  } catch (err) {
+    console.warn('[加密扫描专家] 币安成交量获取失败：', err.message);
+    return null;
+  }
+}
+
 /* ---------- 主数据获取函数 ---------- */
 async function fetchMarketData() {
   const settings = loadSettings();
   const url      = (settings.apiUrl || 'http://127.0.0.1:8000') + '/scan';
   const apiKey   = settings.apiKey  || '';
 
+  // 1. 优先尝试本地 API
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
@@ -195,9 +254,16 @@ async function fetchMarketData() {
     if (!Array.isArray(json) || json.length === 0) throw new Error('空响应');
     return { data: enrichData(json), source: 'api' };
   } catch (err) {
-    console.warn('[加密扫描专家] API 不可用，使用演示数据：', err.message);
-    return { data: generateMockData(), source: 'mock' };
+    console.warn('[加密扫描专家] 本地 API 不可用，切换至币安实时行情：', err.message);
   }
+
+  // 2. 并行获取币安现价 + 成交量
+  const [priceMap, volMap] = await Promise.all([fetchBinancePrices(), fetchBinanceVolumes()]);
+
+  return {
+    data:   generateMockData(priceMap, volMap),
+    source: priceMap ? 'binance' : 'mock',
+  };
 }
 
 /* ---------- 设置存储 ---------- */
