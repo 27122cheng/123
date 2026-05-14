@@ -1,26 +1,30 @@
 /* ============================================================
-   app.js — Main Application Logic
+   app.js — 主应用逻辑（中文版）
    ============================================================ */
 
-/* ── State ─────────────────────────────────────────────────── */
+/* ── 状态 ───────────────────────────────────────────────────── */
 const state = {
-  data:         [],          // full dataset
-  filtered:     [],          // after filter/search
+  data:         [],
+  filtered:     [],
   activeFilter: 'all',
   dashSearch:   '',
   currentPage:  'dashboard',
   currentCoin:  null,
   timeframe:    '15m',
   settings:     {},
-  sortState:    { bull: { key: 'score', dir: 'desc' }, bear: { key: 'score', dir: 'asc' }, ranking: { key: 'score', dir: 'desc' } },
+  sortState:    {
+    bull:    { key: 'score', dir: 'desc' },
+    bear:    { key: 'score', dir: 'asc'  },
+    ranking: { key: 'score', dir: 'desc' },
+  },
   tvWidget:     null,
-  refreshTimer: null,
-  countdownTimer: null,
+  refreshTimer:    null,
+  countdownTimer:  null,
   countdown:    60,
   dataSource:   'mock',
 };
 
-/* ── Bootstrap ──────────────────────────────────────────────── */
+/* ── 启动 ───────────────────────────────────────────────────── */
 window.addEventListener('DOMContentLoaded', init);
 
 async function init() {
@@ -40,38 +44,31 @@ async function init() {
   checkApiStatus();
 }
 
-/* ── Loading ────────────────────────────────────────────────── */
+/* ── 加载动画 ───────────────────────────────────────────────── */
 function animateLoadingBar() {
   const bar   = document.getElementById('loading-bar');
-  const texts = ['Connecting to markets...', 'Scanning 100 pairs...', 'Calculating signals...', 'Building dashboard...'];
-  let p = 0;
-  let t = 0;
-  const iv = setInterval(() => {
+  const texts = ['正在连接市场...', '正在扫描100个交易对...', '正在计算信号...', '正在构建仪表板...'];
+  let p = 0, t = 0;
+  setInterval(() => {
     p = Math.min(p + randBetween(8, 18), 95);
     bar.style.width = p + '%';
-    if (t < texts.length) {
-      document.getElementById('loading-text').textContent = texts[t++];
-    }
+    if (t < texts.length) document.getElementById('loading-text').textContent = texts[t++];
   }, 320);
-  return iv;
 }
 function randBetween(a, b) { return a + Math.random() * (b - a); }
 
 function hideLoading() {
-  const bar = document.getElementById('loading-bar');
-  bar.style.width = '100%';
-  setTimeout(() => {
-    document.getElementById('loading-overlay').classList.add('hide');
-  }, 400);
+  document.getElementById('loading-bar').style.width = '100%';
+  setTimeout(() => document.getElementById('loading-overlay').classList.add('hide'), 400);
 }
 
-/* ── Refresh Cycle ──────────────────────────────────────────── */
+/* ── 自动刷新 ───────────────────────────────────────────────── */
 function startRefreshCycle() {
   clearInterval(state.refreshTimer);
   clearInterval(state.countdownTimer);
 
-  const interval = (state.settings.refreshInterval || 60) * 1000;
-  state.countdown = state.settings.refreshInterval || 60;
+  const secs = state.settings.refreshInterval || 60;
+  state.countdown = secs;
   updateCountdown();
 
   state.countdownTimer = setInterval(() => {
@@ -80,34 +77,34 @@ function startRefreshCycle() {
   }, 1000);
 
   state.refreshTimer = setInterval(async () => {
-    state.countdown = state.settings.refreshInterval || 60;
+    state.countdown = secs;
     const { data, source } = await fetchMarketData();
     state.data       = data;
     state.dataSource = source;
     applyFilters();
     renderAll();
-    showToast(`Market data refreshed (${source === 'mock' ? 'demo mode' : 'live'})`, 'info');
-  }, interval);
+    showToast(`市场数据已刷新（${source === 'mock' ? '演示模式' : '实时数据'}）`, 'info');
+  }, secs * 1000);
 }
 
 function updateCountdown() {
   const el = document.getElementById('refresh-countdown');
-  if (el) el.textContent = state.countdown + 's';
+  if (el) el.textContent = state.countdown + '秒';
 }
 
-/* ── Bind Events ────────────────────────────────────────────── */
+/* ── 事件绑定 ───────────────────────────────────────────────── */
 function bindEvents() {
-  // Timeframe buttons (all groups)
+  // 时间周期按钮
   document.querySelectorAll('.tf-btn[data-tf]').forEach(btn => {
     btn.addEventListener('click', () => selectTimeframe(btn.dataset.tf));
   });
 
-  // Filter chips
+  // 筛选标签
   document.querySelectorAll('.chip[data-filter]').forEach(chip => {
     chip.addEventListener('click', () => setFilter(chip.dataset.filter));
   });
 
-  // Dashboard search
+  // 仪表板搜索
   const dSearch = document.getElementById('dash-search');
   if (dSearch) dSearch.addEventListener('input', () => {
     state.dashSearch = dSearch.value.trim().toUpperCase();
@@ -115,13 +112,13 @@ function bindEvents() {
     renderDashboardTables();
   });
 
-  // Ranking search
+  // 排名搜索
   const rSearch = document.getElementById('ranking-search');
   if (rSearch) rSearch.addEventListener('input', () => {
     renderRankingTable(rSearch.value.trim().toUpperCase());
   });
 
-  // Nav search
+  // 顶部搜索框
   const navInput = document.getElementById('nav-search-input');
   const dropdown = document.getElementById('search-dropdown');
   if (navInput) {
@@ -130,22 +127,16 @@ function bindEvents() {
       if (e.key === 'Escape') { dropdown.classList.remove('open'); navInput.value = ''; }
     });
     document.addEventListener('click', e => {
-      if (!navInput.closest('.nav-search-wrap').contains(e.target)) {
-        dropdown.classList.remove('open');
-      }
+      if (!navInput.closest('.nav-search-wrap').contains(e.target)) dropdown.classList.remove('open');
     });
   }
 
-  // Table sort headers
+  // 表头排序
   document.querySelectorAll('th[data-sort]').forEach(th => {
-    th.addEventListener('click', () => {
-      const tbl = th.dataset.tbl;
-      const key = th.dataset.sort;
-      sortTable(tbl, key, th);
-    });
+    th.addEventListener('click', () => sortTable(th.dataset.tbl, th.dataset.sort, th));
   });
 
-  // Chart timeframe
+  // 图表时间周期
   document.querySelectorAll('.tf-btn[data-ctf]').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tf-btn[data-ctf]').forEach(b => b.classList.remove('active'));
@@ -154,7 +145,7 @@ function bindEvents() {
     });
   });
 
-  // Settings inputs
+  // 设置联动
   document.getElementById('s-timeframe')?.addEventListener('change', e => {
     state.settings = saveSettings({ timeframe: e.target.value });
     selectTimeframe(e.target.value);
@@ -162,7 +153,7 @@ function bindEvents() {
   document.getElementById('s-refresh')?.addEventListener('change', e => {
     state.settings = saveSettings({ refreshInterval: parseInt(e.target.value) });
     startRefreshCycle();
-    showToast('Refresh interval updated', 'success');
+    showToast('刷新间隔已更新', 'success');
   });
   document.getElementById('s-dark')?.addEventListener('change', e => {
     state.settings = saveSettings({ darkMode: e.target.checked });
@@ -172,15 +163,12 @@ function bindEvents() {
   });
 }
 
-/* ── Navigation ─────────────────────────────────────────────── */
+/* ── 页面路由 ───────────────────────────────────────────────── */
 function navigateTo(page, coinSymbol) {
-  const pages = document.querySelectorAll('.page');
-  pages.forEach(p => p.classList.remove('active'));
-
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   const target = document.getElementById(`page-${page}`);
   if (target) target.classList.add('active');
 
-  // Update nav links
   document.querySelectorAll('.nav-link[data-page]').forEach(a => {
     a.classList.toggle('active', a.dataset.page === page);
   });
@@ -208,7 +196,7 @@ function toggleMobileMenu() {
   document.getElementById('drawer-overlay').classList.toggle('open');
 }
 
-/* ── Timeframe ──────────────────────────────────────────────── */
+/* ── 时间周期 ───────────────────────────────────────────────── */
 function selectTimeframe(tf) {
   state.timeframe = tf;
   state.settings  = saveSettings({ timeframe: tf });
@@ -220,7 +208,7 @@ function selectTimeframe(tf) {
   if (state.currentPage === 'coin' && state.currentCoin) {
     loadTradingViewChart(state.currentCoin, tfToTV(tf));
   }
-  showToast(`Timeframe set to ${tf}`, 'info');
+  showToast(`时间周期已设为 ${tf}`, 'info');
 }
 
 function tfToTV(tf) {
@@ -228,7 +216,7 @@ function tfToTV(tf) {
   return map[tf] || '15';
 }
 
-/* ── Filters ────────────────────────────────────────────────── */
+/* ── 筛选 ───────────────────────────────────────────────────── */
 function setFilter(filter) {
   state.activeFilter = filter;
   document.querySelectorAll('.chip[data-filter]').forEach(c => {
@@ -240,32 +228,30 @@ function setFilter(filter) {
 
 function applyFilters() {
   let result = [...state.data];
-
   if (state.activeFilter !== 'all') {
     result = result.filter(d => d.trend === state.activeFilter);
   }
   if (state.dashSearch) {
     result = result.filter(d => d.symbol.replace('/USDT','').includes(state.dashSearch));
   }
-
   state.filtered = result;
 }
 
-/* ── Render All ─────────────────────────────────────────────── */
+/* ── 全量渲染 ───────────────────────────────────────────────── */
 function renderAll() {
   applyFilters();
   updateOverviewCards();
   renderDashboardTables();
   renderReversalCards();
-  document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+  document.getElementById('last-updated').textContent = new Date().toLocaleTimeString('zh-CN');
 }
 
-/* ── Overview Cards ─────────────────────────────────────────── */
+/* ── 概览卡片 ───────────────────────────────────────────────── */
 function updateOverviewCards() {
-  const d = state.data;
-  const bullish = d.filter(x => x.trend === 'Bullish' || x.trend === 'Strong Bullish').length;
-  const bearish = d.filter(x => x.trend === 'Bearish' || x.trend === 'Strong Bearish').length;
-  const neutral = d.filter(x => x.trend === 'Neutral').length;
+  const d       = state.data;
+  const bullish = d.filter(x => x.trend === '看涨' || x.trend === '强势看涨').length;
+  const bearish = d.filter(x => x.trend === '看跌' || x.trend === '强势看跌').length;
+  const neutral = d.filter(x => x.trend === '中性').length;
 
   animateCount('ov-total',   d.length);
   animateCount('ov-bull',    bullish);
@@ -277,45 +263,39 @@ function animateCount(id, target) {
   const el = document.getElementById(id);
   if (!el) return;
   const start = parseInt(el.textContent) || 0;
-  const dur   = 600;
-  const step  = 16;
+  const dur   = 600, step = 16;
   let elapsed = 0;
   const iv = setInterval(() => {
     elapsed += step;
-    const progress = Math.min(elapsed / dur, 1);
-    const eased    = 1 - Math.pow(1 - progress, 3);
-    el.textContent = Math.round(start + (target - start) * eased);
-    if (progress >= 1) clearInterval(iv);
+    const p = Math.min(elapsed / dur, 1);
+    el.textContent = Math.round(start + (target - start) * (1 - Math.pow(1 - p, 3)));
+    if (p >= 1) clearInterval(iv);
   }, step);
 }
 
-/* ── Dashboard Tables ───────────────────────────────────────── */
+/* ── 仪表板排行表 ───────────────────────────────────────────── */
 function renderDashboardTables() {
   const source = state.filtered.length ? state.filtered : state.data;
 
-  // Apply search if filtered is from activeFilter but no search yet
-  let bullData = source.filter(d => d.trend === 'Strong Bullish' || d.trend === 'Bullish');
-  let bearData = source.filter(d => d.trend === 'Strong Bearish' || d.trend === 'Bearish');
+  let bullData = source.filter(d => d.trend === '强势看涨' || d.trend === '看涨');
+  let bearData = source.filter(d => d.trend === '强势看跌' || d.trend === '看跌');
 
-  // Sort
-  const bs = state.sortState.bull;
-  const ss = state.sortState.bear;
-  bullData = sortArr(bullData, bs.key, bs.dir);
-  bearData = sortArr(bearData, ss.key, ss.dir);
+  bullData = sortArr(bullData, state.sortState.bull.key, state.sortState.bull.dir);
+  bearData = sortArr(bearData, state.sortState.bear.key, state.sortState.bear.dir);
 
   document.getElementById('bull-count').textContent = bullData.length;
   document.getElementById('bear-count').textContent = bearData.length;
 
-  renderTableBody('bull-tbody', bullData, 'bull');
-  renderTableBody('bear-tbody', bearData, 'bear');
+  renderTableBody('bull-tbody', bullData);
+  renderTableBody('bear-tbody', bearData);
 }
 
-function renderTableBody(tbodyId, rows, type) {
+function renderTableBody(tbodyId, rows) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
 
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">No data</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">暂无数据</td></tr>`;
     return;
   }
 
@@ -338,22 +318,19 @@ function renderTableBody(tbodyId, rows, type) {
       <td class="price-cell">${fmtPrice(row.price)}</td>
       <td class="rsi-cell" style="color:${rsiColor(row.rsi)}">${row.rsi}</td>
       <td class="adx-cell">${row.adx}</td>
-      <td><span class="vol-chip vol-${row.volumeStrength.toLowerCase()}">${row.volumeStrength}</span></td>
+      <td><span class="vol-chip vol-${volClass(row.volumeStrength)}">${row.volumeStrength}</span></td>
     </tr>
   `).join('');
 }
 
-/* ── Ranking Table ──────────────────────────────────────────── */
+/* ── 市场排名表 ─────────────────────────────────────────────── */
 function renderRankingTable(search) {
   const tbody = document.getElementById('ranking-tbody');
   if (!tbody) return;
 
-  const rs = state.sortState.ranking;
-  let rows = sortArr([...state.data], rs.key, rs.dir);
-
-  if (search) {
-    rows = rows.filter(d => d.symbol.replace('/USDT','').includes(search));
-  }
+  const rs  = state.sortState.ranking;
+  let rows  = sortArr([...state.data], rs.key, rs.dir);
+  if (search) rows = rows.filter(d => d.symbol.replace('/USDT','').includes(search));
 
   tbody.innerHTML = rows.map((row, i) => `
     <tr onclick="navigateTo('coin','${row.symbol}')">
@@ -387,132 +364,129 @@ function renderRankingTable(search) {
   `).join('');
 }
 
-/* ── Reversal Cards ─────────────────────────────────────────── */
+/* ── 反转机会卡片 ───────────────────────────────────────────── */
 function renderReversalCards() {
   const grid = document.getElementById('reversal-grid');
   if (!grid) return;
 
   if (!state.settings.reversals) {
-    grid.innerHTML = '<div class="rev-placeholder">Reversal alerts disabled in Settings.</div>';
+    grid.innerHTML = '<div class="rev-placeholder">反转提醒已在设置中关闭。</div>';
     document.getElementById('rev-count').textContent = '0';
     return;
   }
 
-  // Reversals: RSI moving toward opposite trend
   const reversals = state.data.filter(d => {
-    if (d.trend === 'Strong Bullish' && d.rsi < 50) return true;
-    if (d.trend === 'Strong Bearish' && d.rsi > 50) return true;
-    if (d.trend === 'Bearish' && d.rsi > 55 && d.adx > 20) return true;
-    if (d.trend === 'Bullish' && d.rsi < 45 && d.adx > 20) return true;
+    if (d.trend === '强势看涨' && d.rsi < 50) return true;
+    if (d.trend === '强势看跌' && d.rsi > 50) return true;
+    if (d.trend === '看跌' && d.rsi > 55 && d.adx > 20) return true;
+    if (d.trend === '看涨' && d.rsi < 45 && d.adx > 20) return true;
     return false;
   }).slice(0, 20);
 
   document.getElementById('rev-count').textContent = reversals.length;
 
   if (reversals.length === 0) {
-    grid.innerHTML = '<div class="rev-placeholder">No reversal signals detected at this time.</div>';
+    grid.innerHTML = '<div class="rev-placeholder">当前未检测到反转信号。</div>';
     return;
   }
 
   grid.innerHTML = reversals.map(d => {
-    const isFlip = (d.trend.includes('Bullish') && d.rsi < 50) || (d.trend.includes('Bearish') && d.rsi > 50);
     const fromTrend = d.trend;
-    const toTrend   = d.trend.includes('Bullish') ? 'Bearish' : 'Bullish';
+    const toTrend   = d.trend.includes('看涨') ? '看跌' : '看涨';
     return `
       <div class="rev-card" onclick="navigateTo('coin','${d.symbol}')">
         <div class="rev-sym">${d.symbol.replace('/USDT','')} <span style="color:var(--text3);font-weight:400;font-size:0.8em">/USDT</span></div>
         <div class="rev-info">
           <span class="trend-badge ${trendClass(fromTrend)}" style="padding:2px 7px;font-size:0.72rem">${fromTrend}</span>
           <span class="rev-arrow">⇒</span>
-          <span style="font-size:0.8rem;font-weight:600;color:var(--neutral)">${toTrend}?</span>
+          <span style="font-size:0.8rem;font-weight:600;color:var(--neutral)">${toTrend}？</span>
         </div>
         <div class="rev-score">
           <span>RSI: <span style="color:${rsiColor(d.rsi)};font-family:'JetBrains Mono',monospace">${d.rsi}</span></span>
-          <span>Score: <span class="rev-score-val">${d.score}</span></span>
+          <span>评分: <span class="rev-score-val">${d.score}</span></span>
         </div>
       </div>
     `;
   }).join('');
 }
 
-/* ── Coin Detail ────────────────────────────────────────────── */
+/* ── 币种详情 ───────────────────────────────────────────────── */
 function renderCoinDetail(symbol) {
   const coin = state.data.find(d => d.symbol === symbol);
   if (!coin) return;
 
   const base = symbol.replace('/USDT','');
 
-  // Hero
-  document.getElementById('coin-avatar').textContent   = base.slice(0, 3);
-  document.getElementById('coin-name').textContent      = symbol;
-  document.getElementById('coin-price').textContent     = fmtPrice(coin.price);
+  document.getElementById('coin-avatar').textContent  = base.slice(0, 3);
+  document.getElementById('coin-name').textContent    = symbol;
+  document.getElementById('coin-price').textContent   = fmtPrice(coin.price);
   document.getElementById('coin-price-sub').textContent = 'USDT';
 
   const trendChip = document.getElementById('coin-trend-chip');
-  trendChip.textContent  = trendArrow(coin.trend) + ' ' + coin.trend;
-  trendChip.className    = `coin-trend-chip trend-badge ${trendClass(coin.trend)}`;
+  trendChip.textContent = trendArrow(coin.trend) + ' ' + coin.trend;
+  trendChip.className   = `coin-trend-chip trend-badge ${trendClass(coin.trend)}`;
 
-  // Metrics
+  // 评分
   const scoreEl = document.getElementById('m-score');
   scoreEl.textContent = coin.score;
   scoreEl.style.color = scoreColor(coin.score);
   const fill = document.getElementById('score-fill');
   fill.style.width      = coin.score + '%';
-  fill.style.background = `linear-gradient(90deg, ${scoreColor(coin.score)}, ${scoreColorBright(coin.score)})`;
+  fill.style.background = `linear-gradient(90deg,${scoreColor(coin.score)},${scoreColorBright(coin.score)})`;
 
-  const rsiEl = document.getElementById('m-rsi');
-  rsiEl.textContent = coin.rsi;
-  rsiEl.style.color = rsiColor(coin.rsi);
+  // RSI
+  document.getElementById('m-rsi').textContent = coin.rsi;
+  document.getElementById('m-rsi').style.color = rsiColor(coin.rsi);
   setTag('rsi-tag', rsiLabel(coin.rsi), rsiColor(coin.rsi));
 
+  // ADX
   document.getElementById('m-adx').textContent = coin.adx;
   setTag('adx-tag', adxLabel(coin.adx), adxColor(coin.adx));
 
+  // 成交量
   document.getElementById('m-vol').textContent = coin.volumeStrength;
   setTag('vol-tag', fmtVolume(coin.volume), 'var(--text3)');
 
-  // EMAs
-  const p = coin.price;
+  // EMA
+  const p    = coin.price;
   const e20  = parseFloat(coin.ema20);
   const e50  = parseFloat(coin.ema50);
   const e200 = parseFloat(coin.ema200);
 
-  document.getElementById('ema20').textContent   = fmtPrice(e20);
-  document.getElementById('ema50').textContent   = fmtPrice(e50);
-  document.getElementById('ema200').textContent  = fmtPrice(e200);
+  document.getElementById('ema20').textContent  = fmtPrice(e20);
+  document.getElementById('ema50').textContent  = fmtPrice(e50);
+  document.getElementById('ema200').textContent = fmtPrice(e200);
 
-  setSig('ema20-sig',  p > e20  ? 'Price Above EMA20' : 'Price Below EMA20',  p > e20);
-  setSig('ema50-sig',  p > e50  ? 'Price Above EMA50' : 'Price Below EMA50',  p > e50);
-  setSig('ema200-sig', p > e200 ? 'Above Long-Term MA' : 'Below Long-Term MA', p > e200);
+  setSig('ema20-sig',  p > e20  ? '价格高于EMA20' : '价格低于EMA20',  p > e20);
+  setSig('ema50-sig',  p > e50  ? '价格高于EMA50' : '价格低于EMA50',  p > e50);
+  setSig('ema200-sig', p > e200 ? '高于长期均线'   : '低于长期均线',   p > e200);
 
-  // Analysis sections
-  document.getElementById('a-trend').innerHTML     = buildTrendAnalysis(coin);
-  document.getElementById('a-sr').innerHTML        = buildSupportResistance(coin);
-  document.getElementById('a-momentum').innerHTML  = buildMomentumAnalysis(coin);
-  document.getElementById('a-strength').innerHTML  = buildStrengthAnalysis(coin);
+  // 分析
+  document.getElementById('a-trend').innerHTML    = buildTrendAnalysis(coin);
+  document.getElementById('a-sr').innerHTML       = buildSupportResistance(coin);
+  document.getElementById('a-momentum').innerHTML = buildMomentumAnalysis(coin);
+  document.getElementById('a-strength').innerHTML = buildStrengthAnalysis(coin);
 
-  // Risk
+  // 风险
   const { level, desc, pct, cls } = buildRisk(coin);
   const rbadge = document.getElementById('risk-badge');
   rbadge.textContent = level;
   rbadge.className   = `risk-badge ${cls}`;
   const rbar = document.getElementById('risk-bar');
-  rbar.style.width      = pct + '%';
+  rbar.style.width = pct + '%';
   rbar.style.background = cls === 'risk-low' ? 'var(--bull)' : cls === 'risk-medium' ? 'var(--neutral)' : cls === 'risk-high' ? '#ff6d00' : 'var(--bear)';
   document.getElementById('risk-desc').textContent = desc;
 
-  // Chart
   setTimeout(() => loadTradingViewChart(symbol, tfToTV(state.timeframe)), 50);
 }
 
 function setTag(id, text, color) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.textContent       = text;
-  el.style.color       = color;
-  el.style.background  = color.replace(')', ', 0.12)').replace('var(', 'rgba(').replace('--','');
-  // fallback inline
-  el.style.background  = hexToRgba(color, 0.12) || 'rgba(255,255,255,0.06)';
+  el.textContent = text;
+  el.style.color = color;
+  const rgba = hexToRgba(color, 0.12);
+  el.style.background = rgba || 'rgba(255,255,255,0.06)';
 }
 
 function setSig(id, text, bullish) {
@@ -530,11 +504,10 @@ function hexToRgba(color, alpha) {
   return null;
 }
 
-/* ── TradingView Chart ──────────────────────────────────────── */
+/* ── TradingView 图表 ───────────────────────────────────────── */
 function loadTradingViewChart(symbol, interval) {
   const container = document.getElementById('tv-chart-container');
   if (!container) return;
-
   container.innerHTML = '';
 
   const tvSymbol = 'BINANCE:' + symbol.replace('/','');
@@ -543,37 +516,35 @@ function loadTradingViewChart(symbol, interval) {
     try {
       state.tvWidget = new TradingView.widget({
         container_id: 'tv-chart-container',
-        width:        '100%',
-        height:       500,
-        symbol:       tvSymbol,
-        interval:     interval || '15',
-        timezone:     'Etc/UTC',
-        theme:        'dark',
-        style:        '1',
-        locale:       'en',
-        toolbar_bg:   '#0d1017',
-        enable_publishing: false,
-        allow_symbol_change: true,
-        hide_top_toolbar: false,
-        hide_side_toolbar: false,
-        withdateranges: true,
-        save_image: false,
+        width:    '100%',
+        height:   500,
+        symbol:   tvSymbol,
+        interval: interval || '15',
+        timezone: 'Asia/Shanghai',
+        theme:    'dark',
+        style:    '1',
+        locale:   'zh_CN',
+        toolbar_bg: '#0d1017',
+        enable_publishing:    false,
+        allow_symbol_change:  true,
+        hide_top_toolbar:     false,
+        hide_side_toolbar:    false,
+        withdateranges:       true,
+        save_image:           false,
         studies: ['RSI@tv-basicstudies', 'MACD@tv-basicstudies'],
         overrides: {
-          'paneProperties.background':          '#0d1017',
-          'paneProperties.backgroundType':      'solid',
-          'scalesProperties.textColor':         '#94a3b8',
-          'mainSeriesProperties.candleStyle.upColor':      '#00e676',
-          'mainSeriesProperties.candleStyle.downColor':    '#ff1744',
-          'mainSeriesProperties.candleStyle.borderUpColor':'#00e676',
-          'mainSeriesProperties.candleStyle.borderDownColor':'#ff1744',
-          'mainSeriesProperties.candleStyle.wickUpColor':  '#00e676',
-          'mainSeriesProperties.candleStyle.wickDownColor':'#ff1744',
+          'paneProperties.background':                    '#0d1017',
+          'paneProperties.backgroundType':                'solid',
+          'scalesProperties.textColor':                   '#94a3b8',
+          'mainSeriesProperties.candleStyle.upColor':     '#00e676',
+          'mainSeriesProperties.candleStyle.downColor':   '#ff1744',
+          'mainSeriesProperties.candleStyle.borderUpColor':   '#00e676',
+          'mainSeriesProperties.candleStyle.borderDownColor': '#ff1744',
+          'mainSeriesProperties.candleStyle.wickUpColor':     '#00e676',
+          'mainSeriesProperties.candleStyle.wickDownColor':   '#ff1744',
         },
       });
-    } catch(e) {
-      renderFallbackChart(container, symbol);
-    }
+    } catch(e) { renderFallbackChart(container, symbol); }
   } else {
     renderFallbackChart(container, symbol);
   }
@@ -587,35 +558,36 @@ function renderFallbackChart(container, symbol) {
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
       </svg>
       <div style="text-align:center">
-        <div style="font-size:0.95rem;font-weight:600;color:var(--text2);margin-bottom:6px">Chart Unavailable</div>
-        <div style="font-size:0.8rem">TradingView script not loaded — check network connection</div>
+        <div style="font-size:0.95rem;font-weight:600;color:var(--text2);margin-bottom:6px">图表暂不可用</div>
+        <div style="font-size:0.8rem">TradingView 脚本未加载，请检查网络连接</div>
         <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${base}USDT"
            target="_blank" rel="noopener"
            style="display:inline-block;margin-top:14px;padding:8px 18px;background:var(--blue-dim);color:var(--blue);
                   border:1px solid rgba(0,212,255,0.3);border-radius:8px;font-size:0.85rem;font-weight:600;">
-          Open on TradingView ↗
+          在 TradingView 中打开 ↗
         </a>
       </div>
     </div>
   `;
 }
 
-/* ── Analysis Builders ──────────────────────────────────────── */
+/* ── 分析内容构建 ───────────────────────────────────────────── */
 function buildTrendAnalysis(coin) {
-  const isBull = coin.score >= 60;
-  const isBear = coin.score < 40;
   const e20 = parseFloat(coin.ema20), e50 = parseFloat(coin.ema50), e200 = parseFloat(coin.ema200);
   const p   = coin.price;
+  const isBull = coin.score >= 60, isBear = coin.score < 40;
 
   const rows = [
-    ['Overall Trend', `<span style="color:${scoreColor(coin.score)}">${coin.trend}</span>`],
-    ['Trend Score',   `<span style="color:${scoreColor(coin.score)}">${coin.score}/100</span>`],
-    ['EMA Stack',     p > e20 && e20 > e50 && e50 > e200 ? '<span class="text-bull">Bullish stack ↑</span>' :
-                      p < e20 && e20 < e50 && e50 < e200 ? '<span class="text-bear">Bearish stack ↓</span>' :
-                      '<span class="text-neutral">Mixed signals</span>'],
-    ['Signal Summary', isBull ? '<span class="text-bull">Buy bias — momentum supports upside</span>' :
-                       isBear ? '<span class="text-bear">Sell bias — momentum supports downside</span>' :
-                       '<span class="text-neutral">Wait for clearer directional signal</span>'],
+    ['整体趋势',   `<span style="color:${scoreColor(coin.score)}">${coin.trend}</span>`],
+    ['趋势评分',   `<span style="color:${scoreColor(coin.score)}">${coin.score} / 100</span>`],
+    ['均线排列',   p > e20 && e20 > e50 && e50 > e200
+                     ? '<span class="text-bull">多头排列 ↑</span>'
+                     : p < e20 && e20 < e50 && e50 < e200
+                     ? '<span class="text-bear">空头排列 ↓</span>'
+                     : '<span class="text-neutral">信号混合</span>'],
+    ['信号汇总',   isBull ? '<span class="text-bull">偏多 — 动量支持上行</span>'
+                          : isBear ? '<span class="text-bear">偏空 — 动量支持下行</span>'
+                          : '<span class="text-neutral">等待更清晰的方向性信号</span>'],
   ];
   return buildRows(rows);
 }
@@ -627,38 +599,38 @@ function buildSupportResistance(coin) {
   const r1 = formatPrice(p * 1.035);
   const r2 = formatPrice(p * 1.07);
   const rows = [
-    ['Support 1',    `<span style="color:var(--bull)">${fmtPrice(s1)}</span>`],
-    ['Support 2',    `<span style="color:var(--bull)">${fmtPrice(s2)}</span>`],
-    ['Resistance 1', `<span style="color:var(--bear)">${fmtPrice(r1)}</span>`],
-    ['Resistance 2', `<span style="color:var(--bear)">${fmtPrice(r2)}</span>`],
-    ['Range Width',  `${((r1 - s1) / p * 100).toFixed(1)}%`],
+    ['支撑位 1', `<span style="color:var(--bull)">${fmtPrice(s1)}</span>`],
+    ['支撑位 2', `<span style="color:var(--bull)">${fmtPrice(s2)}</span>`],
+    ['阻力位 1', `<span style="color:var(--bear)">${fmtPrice(r1)}</span>`],
+    ['阻力位 2', `<span style="color:var(--bear)">${fmtPrice(r2)}</span>`],
+    ['区间宽度', `${((r1 - s1) / p * 100).toFixed(1)}%`],
   ];
   return buildRows(rows);
 }
 
 function buildMomentumAnalysis(coin) {
   const rows = [
-    ['RSI (14)',      `<span style="color:${rsiColor(coin.rsi)}">${coin.rsi} — ${rsiLabel(coin.rsi)}</span>`],
-    ['Momentum',     `<span style="color:${coin.momentum >= 0 ? 'var(--bull)' : 'var(--bear)'}">
-                       ${coin.momentum >= 0 ? '+' : ''}${coin.momentum}</span>`],
-    ['Signal',       coin.rsi > 70 ? '<span class="text-bear">Overbought — pullback risk</span>' :
-                     coin.rsi < 30 ? '<span class="text-bull">Oversold — bounce potential</span>' :
-                     coin.rsi > 55 ? '<span class="text-bull">Bullish momentum building</span>' :
-                     coin.rsi < 45 ? '<span class="text-bear">Bearish momentum building</span>' :
-                     '<span class="text-neutral">Neutral zone</span>'],
-    ['Divergence',   'No clear divergence detected'],
+    ['RSI (14)',  `<span style="color:${rsiColor(coin.rsi)}">${coin.rsi} — ${rsiLabel(coin.rsi)}</span>`],
+    ['动量值',    `<span style="color:${coin.momentum >= 0 ? 'var(--bull)' : 'var(--bear)'}">
+                    ${coin.momentum >= 0 ? '+' : ''}${coin.momentum}</span>`],
+    ['信号',      coin.rsi > 70 ? '<span class="text-bear">超买 — 存在回调风险</span>'
+                 : coin.rsi < 30 ? '<span class="text-bull">超卖 — 存在反弹机会</span>'
+                 : coin.rsi > 55 ? '<span class="text-bull">看涨动量积累中</span>'
+                 : coin.rsi < 45 ? '<span class="text-bear">看跌动量积累中</span>'
+                 : '<span class="text-neutral">处于中性区域</span>'],
+    ['背离',      '未检测到明显背离'],
   ];
   return buildRows(rows);
 }
 
 function buildStrengthAnalysis(coin) {
   const rows = [
-    ['ADX',          `<span style="color:${adxColor(coin.adx)}">${coin.adx} — ${adxLabel(coin.adx)}</span>`],
-    ['Volume',       `<span class="${coin.volumeStrength === 'High' ? 'text-blue' : 'text-neutral'}">${coin.volumeStrength}</span>`],
-    ['Trend Strength', coin.adx > 30 ? '<span class="text-bull">Strong trend in effect</span>' :
-                       coin.adx > 20 ? '<span class="text-neutral">Moderate trend developing</span>' :
-                       '<span class="text-bear">Weak or ranging market</span>'],
-    ['Volume 24h',   fmtVolume(coin.volume)],
+    ['ADX',      `<span style="color:${adxColor(coin.adx)}">${coin.adx} — ${adxLabel(coin.adx)}</span>`],
+    ['成交量',   `<span class="${coin.volumeStrength === '高' ? 'text-blue' : 'text-neutral'}">${coin.volumeStrength}</span>`],
+    ['趋势强度', coin.adx > 30 ? '<span class="text-bull">强势趋势进行中</span>'
+                : coin.adx > 20 ? '<span class="text-neutral">中等趋势形成中</span>'
+                : '<span class="text-bear">弱势或震荡市场</span>'],
+    ['24小时成交量', fmtVolume(coin.volume)],
   ];
   return buildRows(rows);
 }
@@ -671,17 +643,17 @@ function buildRisk(coin) {
 
   let level, desc, cls;
   if (total < 30) {
-    level = 'Low Risk'; cls = 'risk-low';
-    desc = 'Market conditions are stable with moderate volatility. Position sizing within normal parameters is appropriate.';
+    level = '低风险'; cls = 'risk-low';
+    desc  = '市场状况稳定，波动适中。在正常参数范围内配置仓位是合适的。';
   } else if (total < 55) {
-    level = 'Medium Risk'; cls = 'risk-medium';
-    desc = 'Elevated but manageable risk. Consider reducing position size and placing tighter stop-losses.';
+    level = '中等风险'; cls = 'risk-medium';
+    desc  = '风险偏高但可控。建议适当减小仓位并设置更严格的止损位置。';
   } else if (total < 75) {
-    level = 'High Risk'; cls = 'risk-high';
-    desc = 'High volatility environment. RSI or trend score at extremes suggests caution. Use strict risk management.';
+    level = '高风险'; cls = 'risk-high';
+    desc  = '高波动性环境。RSI 或趋势评分处于极端区间，建议谨慎操作，严格执行风险管理策略。';
   } else {
-    level = 'Extreme Risk'; cls = 'risk-extreme';
-    desc = 'Extreme market conditions detected. RSI severely overbought/oversold. Avoid large positions; wait for consolidation.';
+    level = '极高风险'; cls = 'risk-extreme';
+    desc  = '检测到极端市场条件。RSI 严重超买或超卖，请避免重仓操作，耐心等待市场整理后再行介入。';
   }
   return { level, desc, pct: total, cls };
 }
@@ -695,13 +667,13 @@ function buildRows(rows) {
   `).join('');
 }
 
-/* ── Settings Page ──────────────────────────────────────────── */
+/* ── 设置页面 ───────────────────────────────────────────────── */
 function populateSettingsPage() {
   const s = loadSettings();
-  const sel = v => id => { const el = document.getElementById(id); if (el) el.value = v; };
 
-  sel(s.timeframe)('s-timeframe');
-  sel(String(s.refreshInterval))('s-refresh');
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = String(v); };
+  setVal('s-timeframe', s.timeframe);
+  setVal('s-refresh',   String(s.refreshInterval));
 
   const dark = document.getElementById('s-dark');
   if (dark) dark.checked = s.darkMode !== false;
@@ -710,7 +682,7 @@ function populateSettingsPage() {
   if (rev) rev.checked = s.reversals !== false;
 
   const apiUrl = document.getElementById('s-api-url');
-  if (apiUrl) apiUrl.value = s.apiUrl || 'http://127.0.0.1:8000/scan';
+  if (apiUrl) apiUrl.value = (s.apiUrl || 'http://127.0.0.1:8000') + '/scan';
 
   const bull = document.getElementById('s-bull-threshold');
   if (bull) { bull.value = s.bullThreshold || 60; document.getElementById('bull-thr-val').textContent = bull.value; }
@@ -720,52 +692,50 @@ function populateSettingsPage() {
 }
 
 function saveAllSettings() {
-  const apiUrlInput = document.getElementById('s-api-url');
-  const patch = {
-    timeframe:       document.getElementById('s-timeframe')?.value       || '15m',
+  const apiRaw = document.getElementById('s-api-url')?.value || 'http://127.0.0.1:8000/scan';
+  const patch  = {
+    timeframe:       document.getElementById('s-timeframe')?.value        || '15m',
     refreshInterval: parseInt(document.getElementById('s-refresh')?.value) || 60,
     darkMode:        document.getElementById('s-dark')?.checked            ?? true,
     reversals:       document.getElementById('s-reversals')?.checked       ?? true,
-    apiUrl:          apiUrlInput?.value?.replace('/scan','')                || 'http://127.0.0.1:8000',
+    apiUrl:          apiRaw.replace('/scan',''),
     bullThreshold:   parseInt(document.getElementById('s-bull-threshold')?.value) || 60,
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();
-  showToast('Settings saved successfully', 'success');
+  showToast('设置已成功保存', 'success');
 }
 
 function resetAllSettings() {
   localStorage.removeItem('csp_settings');
   state.settings = loadSettings();
   populateSettingsPage();
-  showToast('Settings reset to defaults', 'info');
+  showToast('设置已重置为默认值', 'info');
 }
 
 async function testApiConnection() {
-  const dot  = document.getElementById('api-dot');
-  const txt  = document.getElementById('api-status-txt');
+  const dot = document.getElementById('api-dot');
+  const txt = document.getElementById('api-status-txt');
   if (!dot || !txt) return;
 
-  dot.className = 'api-dot checking';
-  txt.textContent = 'Testing...';
+  dot.className  = 'api-dot checking';
+  txt.textContent = '测试中...';
 
-  const url = (document.getElementById('s-api-url')?.value || 'http://127.0.0.1:8000/scan');
+  const url = document.getElementById('s-api-url')?.value || 'http://127.0.0.1:8000/scan';
   try {
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 5000);
     const res = await fetch(url, { signal: controller.signal });
     if (res.ok) {
-      dot.className  = 'api-dot online';
-      txt.textContent = 'Connected';
-      showToast('API connection successful', 'success');
-    } else {
-      throw new Error(`HTTP ${res.status}`);
-    }
+      dot.className   = 'api-dot online';
+      txt.textContent = '已连接';
+      showToast('API 连接成功', 'success');
+    } else { throw new Error(`HTTP ${res.status}`); }
   } catch(e) {
-    dot.className  = 'api-dot offline';
-    txt.textContent = 'Offline';
-    showToast(`API unavailable: ${e.message}`, 'error');
+    dot.className   = 'api-dot offline';
+    txt.textContent = '离线';
+    showToast(`API 不可用：${e.message}`, 'error');
   }
 }
 
@@ -775,11 +745,11 @@ function checkApiStatus() {
   if (!dot || !txt) return;
 
   if (state.dataSource === 'api') {
-    dot.className  = 'api-dot online';
-    txt.textContent = 'Connected (Live)';
+    dot.className   = 'api-dot online';
+    txt.textContent = '已连接（实时数据）';
   } else {
-    dot.className  = 'api-dot offline';
-    txt.textContent = 'Demo Mode (API offline)';
+    dot.className   = 'api-dot offline';
+    txt.textContent = '演示模式（API 离线）';
   }
 }
 
@@ -787,13 +757,12 @@ function applySettingsToUI() {
   const s = loadSettings();
   state.settings  = s;
   state.timeframe = s.timeframe || '15m';
-
   document.querySelectorAll('.tf-btn[data-tf]').forEach(b => {
     b.classList.toggle('active', b.dataset.tf === state.timeframe);
   });
 }
 
-/* ── Sort ───────────────────────────────────────────────────── */
+/* ── 排序 ───────────────────────────────────────────────────── */
 function sortTable(tblKey, sortKey, thEl) {
   const ss = state.sortState[tblKey];
   if (ss.key === sortKey) {
@@ -803,11 +772,8 @@ function sortTable(tblKey, sortKey, thEl) {
     ss.dir = sortKey === 'score' ? (tblKey === 'bear' ? 'asc' : 'desc') : 'asc';
   }
 
-  // Update header classes
-  const tbl = tblKey === 'bull' ? 'bull-tbl' : tblKey === 'bear' ? 'bear-tbl' : 'ranking-tbl';
-  document.querySelectorAll(`#${tbl} th[data-sort]`).forEach(th => {
-    th.classList.remove('sort-asc','sort-desc');
-  });
+  const tblId = tblKey === 'bull' ? 'bull-tbl' : tblKey === 'bear' ? 'bear-tbl' : 'ranking-tbl';
+  document.querySelectorAll(`#${tblId} th[data-sort]`).forEach(th => th.classList.remove('sort-asc','sort-desc'));
   if (thEl) thEl.classList.add(ss.dir === 'asc' ? 'sort-asc' : 'sort-desc');
 
   if (tblKey === 'ranking') {
@@ -824,16 +790,16 @@ function sortArr(arr, key, dir) {
     if (typeof va === 'string') va = va.toLowerCase();
     if (typeof vb === 'string') vb = vb.toLowerCase();
     if (va < vb) return dir === 'asc' ? -1 : 1;
-    if (va > vb) return dir === 'asc' ? 1 : -1;
+    if (va > vb) return dir === 'asc' ? 1  : -1;
     return 0;
   });
 }
 
 function trendOrder(t) {
-  return { 'Strong Bullish': 5, 'Bullish': 4, 'Neutral': 3, 'Bearish': 2, 'Strong Bearish': 1 }[t] || 3;
+  return { '强势看涨': 5, '看涨': 4, '中性': 3, '看跌': 2, '强势看跌': 1 }[t] || 3;
 }
 
-/* ── Search Dropdown ────────────────────────────────────────── */
+/* ── 搜索下拉 ───────────────────────────────────────────────── */
 function updateSearchDropdown(query) {
   const dropdown = document.getElementById('search-dropdown');
   if (!dropdown) return;
@@ -848,7 +814,9 @@ function updateSearchDropdown(query) {
   if (matches.length === 0) { dropdown.classList.remove('open'); return; }
 
   dropdown.innerHTML = matches.map(d => `
-    <div class="search-item" onclick="navigateTo('coin','${d.symbol}');document.getElementById('nav-search-input').value='';document.getElementById('search-dropdown').classList.remove('open')">
+    <div class="search-item" onclick="navigateTo('coin','${d.symbol}');
+      document.getElementById('nav-search-input').value='';
+      document.getElementById('search-dropdown').classList.remove('open')">
       <span class="search-item-sym">${d.symbol}</span>
       <span class="search-item-trend trend-badge ${trendClass(d.trend)}" style="font-size:0.72rem;padding:2px 7px">${d.trend}</span>
     </div>
@@ -856,7 +824,7 @@ function updateSearchDropdown(query) {
   dropdown.classList.add('open');
 }
 
-/* ── Toast ──────────────────────────────────────────────────── */
+/* ── 消息提示 ───────────────────────────────────────────────── */
 function showToast(message, type = 'info') {
   const container = document.getElementById('toast-container');
   if (!container) return;
@@ -869,7 +837,7 @@ function showToast(message, type = 'info') {
 
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
-  toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span class="toast-msg">${message}</span>`;
+  toast.innerHTML = `<span class="toast-icon">${icons[type]||icons.info}</span><span class="toast-msg">${message}</span>`;
   container.appendChild(toast);
 
   setTimeout(() => {
@@ -878,7 +846,7 @@ function showToast(message, type = 'info') {
   }, 3500);
 }
 
-/* ── Helpers ────────────────────────────────────────────────── */
+/* ── 辅助函数 ───────────────────────────────────────────────── */
 function scoreColor(s) {
   if (s >= 78) return 'var(--bull)';
   if (s >= 58) return '#69f0ae';
@@ -894,20 +862,20 @@ function scoreColorBright(s) {
 
 function trendClass(trend) {
   const map = {
-    'Strong Bullish': 'trend-strong-bullish',
-    'Bullish':        'trend-bullish',
-    'Neutral':        'trend-neutral',
-    'Bearish':        'trend-bearish',
-    'Strong Bearish': 'trend-strong-bearish',
+    '强势看涨': 'trend-strong-bullish',
+    '看涨':     'trend-bullish',
+    '中性':     'trend-neutral',
+    '看跌':     'trend-bearish',
+    '强势看跌': 'trend-strong-bearish',
   };
   return map[trend] || 'trend-neutral';
 }
 
 function trendArrow(trend) {
-  if (trend.includes('Strong Bullish')) return '▲▲';
-  if (trend.includes('Bullish'))        return '▲';
-  if (trend.includes('Strong Bearish')) return '▼▼';
-  if (trend.includes('Bearish'))        return '▼';
+  if (trend === '强势看涨') return '▲▲';
+  if (trend === '看涨')     return '▲';
+  if (trend === '强势看跌') return '▼▼';
+  if (trend === '看跌')     return '▼';
   return '◆';
 }
 
@@ -919,11 +887,11 @@ function rsiColor(rsi) {
   return 'var(--text2)';
 }
 function rsiLabel(rsi) {
-  if (rsi > 70) return 'Overbought';
-  if (rsi > 60) return 'Bullish';
-  if (rsi < 30) return 'Oversold';
-  if (rsi < 40) return 'Bearish';
-  return 'Neutral';
+  if (rsi > 70) return '超买';
+  if (rsi > 60) return '看涨';
+  if (rsi < 30) return '超卖';
+  if (rsi < 40) return '看跌';
+  return '中性';
 }
 
 function adxColor(adx) {
@@ -932,15 +900,21 @@ function adxColor(adx) {
   return 'var(--text3)';
 }
 function adxLabel(adx) {
-  if (adx > 40) return 'Strong Trend';
-  if (adx > 25) return 'Trending';
-  return 'Weak/Ranging';
+  if (adx > 40) return '强势趋势';
+  if (adx > 25) return '趋势中';
+  return '弱势/震荡';
+}
+
+function volClass(v) {
+  if (v === '高') return 'high';
+  if (v === '低') return 'low';
+  return 'medium';
 }
 
 function fmtPrice(p) {
   if (p === undefined || p === null) return '--';
   const n = parseFloat(p);
-  if (n >= 1000)  return '$' + n.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (n >= 1000)  return '$' + n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (n >= 1)     return '$' + n.toFixed(3);
   if (n >= 0.001) return '$' + n.toFixed(5);
   return '$' + n.toFixed(8);
@@ -948,8 +922,8 @@ function fmtPrice(p) {
 
 function fmtVolume(v) {
   if (!v) return '--';
-  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
-  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + '亿';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + '百万';
   if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
   return v.toString();
 }

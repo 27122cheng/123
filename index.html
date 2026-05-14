@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Crypto Scanner Pro</title>
+  <title>加密货币扫描专家</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -11,7 +11,7 @@
 </head>
 <body>
 
-  <!-- Loading Overlay -->
+  <!-- 加载遮罩 -->
   <div id="loading-overlay" class="loading-overlay">
     <div class="loading-content">
       <div class="loading-logo">
@@ -20,16 +20,16 @@
           <polygon points="24,12 36,18 36,30 24,36 12,30 12,18" fill="rgba(0,212,255,0.15)" stroke="#00d4ff" stroke-width="1.5"/>
           <circle cx="24" cy="24" r="4" fill="#00d4ff"/>
         </svg>
-        <span class="loading-logo-text">Crypto Scanner <span class="accent">Pro</span></span>
+        <span class="loading-logo-text">加密货币扫描 <span class="accent">专家</span></span>
       </div>
       <div class="loading-bar-wrap">
         <div class="loading-bar-fill" id="loading-bar"></div>
       </div>
-      <p class="loading-text" id="loading-text">Connecting to markets...</p>
+      <p class="loading-text" id="loading-text">正在连接市场...</p>
     </div>
   </div>
 
-  <!-- Top Navigation -->
+  <!-- 顶部导航 -->
   <nav class="top-nav" id="top-nav">
     <div class="nav-inner">
       <!-- Logo -->
@@ -39,47 +39,47 @@
           <polygon points="24,12 36,18 36,30 24,36 12,30 12,18" fill="rgba(0,212,255,0.12)" stroke="#00d4ff" stroke-width="1.5"/>
           <circle cx="24" cy="24" r="4" fill="#00d4ff"/>
         </svg>
-        <span class="nav-logo-text">Crypto Scanner <span class="accent">Pro</span></span>
+        <span class="nav-logo-text">加密扫描 <span class="accent">专家</span></span>
       </div>
 
-      <!-- Nav Links -->
+      <!-- 导航链接 -->
       <div class="nav-links" id="nav-links">
         <a class="nav-link active" data-page="dashboard" onclick="navigateTo('dashboard')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-          Dashboard
+          仪表板
         </a>
         <a class="nav-link" data-page="ranking" onclick="navigateTo('ranking')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-          Market Ranking
+          市场排名
         </a>
-        <a class="nav-link" data-page="coin" style="display:none" data-page="coin" id="nav-coin-link">
+        <a class="nav-link" data-page="coin" style="display:none" id="nav-coin-link">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
-          Coin Analysis
+          币种分析
         </a>
         <a class="nav-link" data-page="settings" onclick="navigateTo('settings')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          Settings
+          设置
         </a>
       </div>
 
-      <!-- Right Controls -->
+      <!-- 右侧控件 -->
       <div class="nav-right">
         <div class="nav-search-wrap">
           <svg class="search-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="nav-search-input" placeholder="Search coin..." autocomplete="off" />
+          <input type="text" id="nav-search-input" placeholder="搜索币种..." autocomplete="off" />
           <div class="search-dropdown" id="search-dropdown"></div>
         </div>
 
         <div class="tf-group" id="nav-timeframes">
-          <button class="tf-btn" data-tf="5m">5m</button>
-          <button class="tf-btn active" data-tf="15m">15m</button>
-          <button class="tf-btn" data-tf="1h">1h</button>
-          <button class="tf-btn" data-tf="4h">4h</button>
+          <button class="tf-btn" data-tf="5m">5分</button>
+          <button class="tf-btn active" data-tf="15m">15分</button>
+          <button class="tf-btn" data-tf="1h">1时</button>
+          <button class="tf-btn" data-tf="4h">4时</button>
         </div>
 
         <div class="refresh-pill" id="refresh-pill">
           <span class="live-dot"></span>
-          <span id="refresh-countdown">60s</span>
+          <span id="refresh-countdown">60秒</span>
         </div>
 
         <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
@@ -89,38 +89,38 @@
     </div>
   </nav>
 
-  <!-- Mobile Menu Drawer -->
+  <!-- 移动端抽屉菜单 -->
   <div class="mobile-drawer" id="mobile-drawer">
-    <a class="mob-link" onclick="navigateTo('dashboard');toggleMobileMenu()">Dashboard</a>
-    <a class="mob-link" onclick="navigateTo('ranking');toggleMobileMenu()">Market Ranking</a>
-    <a class="mob-link" onclick="navigateTo('settings');toggleMobileMenu()">Settings</a>
+    <a class="mob-link" onclick="navigateTo('dashboard');toggleMobileMenu()">仪表板</a>
+    <a class="mob-link" onclick="navigateTo('ranking');toggleMobileMenu()">市场排名</a>
+    <a class="mob-link" onclick="navigateTo('settings');toggleMobileMenu()">设置</a>
     <div class="mob-tf">
-      <span class="mob-tf-label">Timeframe</span>
+      <span class="mob-tf-label">时间周期</span>
       <div class="tf-group">
-        <button class="tf-btn" data-tf="5m">5m</button>
-        <button class="tf-btn active" data-tf="15m">15m</button>
-        <button class="tf-btn" data-tf="1h">1h</button>
-        <button class="tf-btn" data-tf="4h">4h</button>
+        <button class="tf-btn" data-tf="5m">5分</button>
+        <button class="tf-btn active" data-tf="15m">15分</button>
+        <button class="tf-btn" data-tf="1h">1时</button>
+        <button class="tf-btn" data-tf="4h">4时</button>
       </div>
     </div>
   </div>
   <div class="drawer-overlay" id="drawer-overlay" onclick="toggleMobileMenu()"></div>
 
-  <!-- App Container -->
+  <!-- 应用主体 -->
   <main class="app-container" id="app">
 
-    <!-- ═══════════════════════ DASHBOARD PAGE ═══════════════════════ -->
+    <!-- ═══════════════════════ 仪表板页面 ═══════════════════════ -->
     <section class="page active" id="page-dashboard">
 
-      <!-- Market Overview -->
+      <!-- 市场概览 -->
       <div class="page-header">
         <div>
-          <h1 class="page-title">Market Overview</h1>
-          <p class="page-subtitle">Real-time analysis of Binance USDT pairs</p>
+          <h1 class="page-title">市场概览</h1>
+          <p class="page-subtitle">实时分析币安USDT市场交易对</p>
         </div>
         <div class="last-scan">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          Last scan: <span id="last-updated">--</span>
+          最后扫描：<span id="last-updated">--</span>
         </div>
       </div>
 
@@ -131,7 +131,7 @@
           </div>
           <div class="ov-body">
             <div class="ov-value" id="ov-total">--</div>
-            <div class="ov-label">Total Scanned</div>
+            <div class="ov-label">扫描总数</div>
           </div>
           <div class="ov-glow"></div>
         </div>
@@ -141,7 +141,7 @@
           </div>
           <div class="ov-body">
             <div class="ov-value" id="ov-bull">--</div>
-            <div class="ov-label">Bullish Coins</div>
+            <div class="ov-label">看涨币种</div>
           </div>
           <div class="ov-glow"></div>
         </div>
@@ -151,7 +151,7 @@
           </div>
           <div class="ov-body">
             <div class="ov-value" id="ov-bear">--</div>
-            <div class="ov-label">Bearish Coins</div>
+            <div class="ov-label">看跌币种</div>
           </div>
           <div class="ov-glow"></div>
         </div>
@@ -161,76 +161,76 @@
           </div>
           <div class="ov-body">
             <div class="ov-value" id="ov-neutral">--</div>
-            <div class="ov-label">Neutral Coins</div>
+            <div class="ov-label">中性币种</div>
           </div>
           <div class="ov-glow"></div>
         </div>
       </div>
 
-      <!-- Filter + Search Bar -->
+      <!-- 筛选 + 搜索 -->
       <div class="toolbar">
         <div class="filter-chips">
-          <button class="chip active" data-filter="all">All</button>
-          <button class="chip chip-sbull" data-filter="Strong Bullish">Strong Bullish</button>
-          <button class="chip chip-bull" data-filter="Bullish">Bullish</button>
-          <button class="chip chip-neutral" data-filter="Neutral">Neutral</button>
-          <button class="chip chip-bear" data-filter="Bearish">Bearish</button>
-          <button class="chip chip-sbear" data-filter="Strong Bearish">Strong Bearish</button>
+          <button class="chip active" data-filter="all">全部</button>
+          <button class="chip chip-sbull" data-filter="强势看涨">强势看涨</button>
+          <button class="chip chip-bull"  data-filter="看涨">看涨</button>
+          <button class="chip chip-neutral" data-filter="中性">中性</button>
+          <button class="chip chip-bear"  data-filter="看跌">看跌</button>
+          <button class="chip chip-sbear" data-filter="强势看跌">强势看跌</button>
         </div>
         <div class="dash-search-wrap">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="dash-search" placeholder="Search symbol..." autocomplete="off" />
+          <input type="text" id="dash-search" placeholder="搜索币种代码..." autocomplete="off" />
         </div>
       </div>
 
-      <!-- Tables Row -->
+      <!-- 排行榜 -->
       <div class="tables-row">
-        <!-- Bullish Table -->
+        <!-- 看涨表格 -->
         <div class="tbl-card tbl-bull">
           <div class="tbl-head">
             <div class="tbl-title">
               <span class="dot dot-bull"></span>
-              Strong Bullish Ranking
+              强势看涨排名
             </div>
             <span class="tbl-badge badge-bull" id="bull-count">0</span>
           </div>
           <div class="tbl-scroll">
             <table class="data-tbl" id="bull-tbl">
               <thead><tr>
-                <th data-sort="rank" data-tbl="bull">#</th>
-                <th data-sort="symbol" data-tbl="bull">Coin</th>
-                <th data-sort="score" data-tbl="bull">Score</th>
-                <th data-sort="trend" data-tbl="bull">Trend</th>
-                <th data-sort="price" data-tbl="bull">Price</th>
-                <th data-sort="rsi" data-tbl="bull">RSI</th>
-                <th data-sort="adx" data-tbl="bull">ADX</th>
-                <th data-sort="volumeStrength" data-tbl="bull">Volume</th>
+                <th data-sort="rank"         data-tbl="bull">#</th>
+                <th data-sort="symbol"       data-tbl="bull">币种</th>
+                <th data-sort="score"        data-tbl="bull">评分</th>
+                <th data-sort="trend"        data-tbl="bull">趋势</th>
+                <th data-sort="price"        data-tbl="bull">价格</th>
+                <th data-sort="rsi"          data-tbl="bull">RSI</th>
+                <th data-sort="adx"          data-tbl="bull">ADX</th>
+                <th data-sort="volumeStrength" data-tbl="bull">成交量</th>
               </tr></thead>
               <tbody id="bull-tbody"></tbody>
             </table>
           </div>
         </div>
 
-        <!-- Bearish Table -->
+        <!-- 看跌表格 -->
         <div class="tbl-card tbl-bear">
           <div class="tbl-head">
             <div class="tbl-title">
               <span class="dot dot-bear"></span>
-              Strong Bearish Ranking
+              强势看跌排名
             </div>
             <span class="tbl-badge badge-bear" id="bear-count">0</span>
           </div>
           <div class="tbl-scroll">
             <table class="data-tbl" id="bear-tbl">
               <thead><tr>
-                <th data-sort="rank" data-tbl="bear">#</th>
-                <th data-sort="symbol" data-tbl="bear">Coin</th>
-                <th data-sort="score" data-tbl="bear">Score</th>
-                <th data-sort="trend" data-tbl="bear">Trend</th>
-                <th data-sort="price" data-tbl="bear">Price</th>
-                <th data-sort="rsi" data-tbl="bear">RSI</th>
-                <th data-sort="adx" data-tbl="bear">ADX</th>
-                <th data-sort="volumeStrength" data-tbl="bear">Volume</th>
+                <th data-sort="rank"         data-tbl="bear">#</th>
+                <th data-sort="symbol"       data-tbl="bear">币种</th>
+                <th data-sort="score"        data-tbl="bear">评分</th>
+                <th data-sort="trend"        data-tbl="bear">趋势</th>
+                <th data-sort="price"        data-tbl="bear">价格</th>
+                <th data-sort="rsi"          data-tbl="bear">RSI</th>
+                <th data-sort="adx"          data-tbl="bear">ADX</th>
+                <th data-sort="volumeStrength" data-tbl="bear">成交量</th>
               </tr></thead>
               <tbody id="bear-tbody"></tbody>
             </table>
@@ -238,44 +238,44 @@
         </div>
       </div>
 
-      <!-- Reversal Opportunities -->
+      <!-- 反转机会 -->
       <div class="section-row">
         <div class="section-label">
           <span class="pulse-dot"></span>
-          Reversal Opportunities
+          反转机会
         </div>
         <span class="rev-badge" id="rev-count">0</span>
       </div>
       <div class="reversal-grid" id="reversal-grid">
-        <div class="rev-placeholder">Scanning for reversal signals...</div>
+        <div class="rev-placeholder">正在扫描反转信号...</div>
       </div>
 
     </section>
 
-    <!-- ═══════════════════════ RANKING PAGE ═══════════════════════ -->
+    <!-- ═══════════════════════ 市场排名页面 ═══════════════════════ -->
     <section class="page" id="page-ranking">
       <div class="page-header">
         <div>
-          <h1 class="page-title">Market Ranking</h1>
-          <p class="page-subtitle">Top 100 coins ranked by trend score</p>
+          <h1 class="page-title">市场排名</h1>
+          <p class="page-subtitle">按趋势评分排列的前100种加密货币</p>
         </div>
         <div class="dash-search-wrap">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="ranking-search" placeholder="Search symbol..." autocomplete="off" />
+          <input type="text" id="ranking-search" placeholder="搜索币种..." autocomplete="off" />
         </div>
       </div>
       <div class="tbl-card full-tbl">
         <div class="tbl-scroll">
           <table class="data-tbl ranking-tbl" id="ranking-tbl">
             <thead><tr>
-              <th data-sort="rank" data-tbl="ranking"># Rank</th>
-              <th data-sort="symbol" data-tbl="ranking">Coin</th>
-              <th data-sort="price" data-tbl="ranking">Price</th>
-              <th data-sort="trend" data-tbl="ranking">Trend</th>
-              <th data-sort="score" data-tbl="ranking">Score</th>
-              <th data-sort="rsi" data-tbl="ranking">Momentum</th>
-              <th data-sort="volume" data-tbl="ranking">Volume</th>
-              <th data-sort="adx" data-tbl="ranking">Strength</th>
+              <th data-sort="rank"   data-tbl="ranking"># 排名</th>
+              <th data-sort="symbol" data-tbl="ranking">币种</th>
+              <th data-sort="price"  data-tbl="ranking">价格</th>
+              <th data-sort="trend"  data-tbl="ranking">趋势</th>
+              <th data-sort="score"  data-tbl="ranking">评分</th>
+              <th data-sort="rsi"    data-tbl="ranking">动量</th>
+              <th data-sort="volume" data-tbl="ranking">成交量</th>
+              <th data-sort="adx"    data-tbl="ranking">强度</th>
             </tr></thead>
             <tbody id="ranking-tbody"></tbody>
           </table>
@@ -283,11 +283,11 @@
       </div>
     </section>
 
-    <!-- ═══════════════════════ COIN DETAIL PAGE ═══════════════════════ -->
+    <!-- ═══════════════════════ 币种详情页面 ═══════════════════════ -->
     <section class="page" id="page-coin">
       <div class="coin-back" onclick="navigateTo('dashboard')">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-        Back to Dashboard
+        返回仪表板
       </div>
 
       <div class="coin-hero">
@@ -306,24 +306,24 @@
         </div>
       </div>
 
-      <!-- TradingView Chart -->
+      <!-- K线图 -->
       <div class="chart-card">
         <div class="chart-topbar">
-          <span class="chart-title">Price Chart</span>
+          <span class="chart-title">价格走势</span>
           <div class="chart-tf-group" id="chart-tf-group">
-            <button class="tf-btn active" data-ctf="15">15m</button>
-            <button class="tf-btn" data-ctf="60">1H</button>
-            <button class="tf-btn" data-ctf="240">4H</button>
-            <button class="tf-btn" data-ctf="D">1D</button>
+            <button class="tf-btn active" data-ctf="15">15分</button>
+            <button class="tf-btn" data-ctf="60">1时</button>
+            <button class="tf-btn" data-ctf="240">4时</button>
+            <button class="tf-btn" data-ctf="D">日线</button>
           </div>
         </div>
         <div id="tv-chart-container" class="tv-chart"></div>
       </div>
 
-      <!-- Metric Cards -->
+      <!-- 指标卡片 -->
       <div class="metrics-row">
         <div class="metric-card">
-          <div class="metric-lbl">Trend Score</div>
+          <div class="metric-lbl">趋势评分</div>
           <div class="metric-val" id="m-score">--</div>
           <div class="score-track"><div class="score-fill" id="score-fill"></div></div>
         </div>
@@ -338,15 +338,15 @@
           <div class="metric-tag" id="adx-tag">--</div>
         </div>
         <div class="metric-card">
-          <div class="metric-lbl">Volume</div>
+          <div class="metric-lbl">成交量</div>
           <div class="metric-val" id="m-vol">--</div>
           <div class="metric-tag" id="vol-tag">--</div>
         </div>
       </div>
 
-      <!-- EMA Row -->
+      <!-- 均线区域 -->
       <div class="ema-section">
-        <div class="section-row"><div class="section-label">Moving Averages</div></div>
+        <div class="section-row"><div class="section-label">移动均线</div></div>
         <div class="ema-row">
           <div class="ema-card">
             <div class="ema-lbl">EMA 20</div>
@@ -366,44 +366,44 @@
         </div>
       </div>
 
-      <!-- Analysis Grid -->
+      <!-- 分析区域 -->
       <div class="analysis-grid">
         <div class="analysis-card">
           <div class="analysis-hdr">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>
-            Trend Analysis
+            趋势分析
           </div>
           <div class="analysis-body" id="a-trend">--</div>
         </div>
         <div class="analysis-card">
           <div class="analysis-hdr">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-            Support &amp; Resistance
+            支撑与阻力
           </div>
           <div class="analysis-body" id="a-sr">--</div>
         </div>
         <div class="analysis-card">
           <div class="analysis-hdr">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-            Momentum Analysis
+            动量分析
           </div>
           <div class="analysis-body" id="a-momentum">--</div>
         </div>
         <div class="analysis-card">
           <div class="analysis-hdr">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-            Market Strength
+            市场强度
           </div>
           <div class="analysis-body" id="a-strength">--</div>
         </div>
       </div>
 
-      <!-- Risk Level -->
+      <!-- 风险评估 -->
       <div class="risk-section">
-        <div class="section-row"><div class="section-label">Risk Assessment</div></div>
+        <div class="section-row"><div class="section-label">风险评估</div></div>
         <div class="risk-card" id="risk-card">
           <div class="risk-top">
-            <span class="risk-label">Risk Level</span>
+            <span class="risk-label">风险等级</span>
             <span class="risk-badge" id="risk-badge">--</span>
           </div>
           <div class="risk-bar-track">
@@ -414,49 +414,49 @@
       </div>
     </section>
 
-    <!-- ═══════════════════════ SETTINGS PAGE ═══════════════════════ -->
+    <!-- ═══════════════════════ 设置页面 ═══════════════════════ -->
     <section class="page" id="page-settings">
       <div class="page-header">
         <div>
-          <h1 class="page-title">Settings</h1>
-          <p class="page-subtitle">Configure your scanner preferences</p>
+          <h1 class="page-title">系统设置</h1>
+          <p class="page-subtitle">配置您的扫描器偏好</p>
         </div>
       </div>
 
       <div class="settings-grid">
         <div class="settings-card">
-          <h3 class="settings-group-ttl">General</h3>
+          <h3 class="settings-group-ttl">常规设置</h3>
 
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Default Timeframe</div>
-              <div class="setting-desc">Set the default chart timeframe</div>
+              <div class="setting-name">默认时间周期</div>
+              <div class="setting-desc">设置默认图表时间周期</div>
             </div>
             <select class="setting-select" id="s-timeframe">
-              <option value="5m">5 Minutes</option>
-              <option value="15m" selected>15 Minutes</option>
-              <option value="1h">1 Hour</option>
-              <option value="4h">4 Hours</option>
+              <option value="5m">5 分钟</option>
+              <option value="15m" selected>15 分钟</option>
+              <option value="1h">1 小时</option>
+              <option value="4h">4 小时</option>
             </select>
           </div>
 
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Refresh Interval</div>
-              <div class="setting-desc">How often to auto-refresh market data</div>
+              <div class="setting-name">刷新间隔</div>
+              <div class="setting-desc">自动刷新市场数据的频率</div>
             </div>
             <select class="setting-select" id="s-refresh">
-              <option value="30">30 seconds</option>
-              <option value="60" selected>60 seconds</option>
-              <option value="120">2 minutes</option>
-              <option value="300">5 minutes</option>
+              <option value="30">30 秒</option>
+              <option value="60" selected>60 秒</option>
+              <option value="120">2 分钟</option>
+              <option value="300">5 分钟</option>
             </select>
           </div>
 
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Dark Mode</div>
-              <div class="setting-desc">Toggle between dark and light theme</div>
+              <div class="setting-name">深色模式</div>
+              <div class="setting-desc">切换深色和浅色主题</div>
             </div>
             <label class="toggle">
               <input type="checkbox" id="s-dark" checked />
@@ -466,36 +466,36 @@
         </div>
 
         <div class="settings-card">
-          <h3 class="settings-group-ttl">API Configuration</h3>
+          <h3 class="settings-group-ttl">API 配置</h3>
 
           <div class="setting-row vertical">
-            <div class="setting-name">API Endpoint</div>
+            <div class="setting-name">API 端点</div>
             <input type="text" class="setting-input" id="s-api-url" value="http://127.0.0.1:8000/scan" />
           </div>
 
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Connection Status</div>
+              <div class="setting-name">连接状态</div>
             </div>
             <div class="api-status-pill" id="api-status-pill">
               <span class="api-dot" id="api-dot"></span>
-              <span id="api-status-txt">Checking...</span>
+              <span id="api-status-txt">检测中...</span>
             </div>
           </div>
 
           <button class="btn-primary" onclick="testApiConnection()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.5 19.79 19.79 0 0 1 1.6 5 2 2 0 0 1 3.57 2.68h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 10a16 16 0 0 0 6 6l.92-.92a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 21.5 17z"/></svg>
-            Test Connection
+            测试连接
           </button>
         </div>
 
         <div class="settings-card">
-          <h3 class="settings-group-ttl">Display</h3>
+          <h3 class="settings-group-ttl">显示设置</h3>
 
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Reversal Alerts</div>
-              <div class="setting-desc">Highlight potential trend reversals</div>
+              <div class="setting-name">反转提醒</div>
+              <div class="setting-desc">高亮显示潜在趋势反转信号</div>
             </div>
             <label class="toggle">
               <input type="checkbox" id="s-reversals" checked />
@@ -505,8 +505,8 @@
 
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Score Threshold — Bullish</div>
-              <div class="setting-desc">Minimum score to classify as bullish</div>
+              <div class="setting-name">看涨评分阈值</div>
+              <div class="setting-desc">看涨分类的最低评分</div>
             </div>
             <div class="range-group">
               <input type="range" class="setting-range" id="s-bull-threshold" min="50" max="90" value="60" oninput="document.getElementById('bull-thr-val').textContent=this.value" />
@@ -516,8 +516,8 @@
 
           <div class="setting-row">
             <div class="setting-info">
-              <div class="setting-name">Score Threshold — Bearish</div>
-              <div class="setting-desc">Maximum score to classify as bearish</div>
+              <div class="setting-name">看跌评分阈值</div>
+              <div class="setting-desc">看跌分类的最高评分</div>
             </div>
             <div class="range-group">
               <input type="range" class="setting-range" id="s-bear-threshold" min="10" max="50" value="40" oninput="document.getElementById('bear-thr-val').textContent=this.value" />
@@ -528,17 +528,17 @@
       </div>
 
       <div class="settings-footer">
-        <button class="btn-primary" onclick="saveAllSettings()">Save Settings</button>
-        <button class="btn-ghost" onclick="resetAllSettings()">Reset Defaults</button>
+        <button class="btn-primary" onclick="saveAllSettings()">保存设置</button>
+        <button class="btn-ghost" onclick="resetAllSettings()">恢复默认</button>
       </div>
     </section>
 
   </main>
 
-  <!-- Toast Container -->
+  <!-- 消息提示容器 -->
   <div class="toast-container" id="toast-container"></div>
 
-  <!-- Scripts -->
+  <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
