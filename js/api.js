@@ -1,5 +1,5 @@
 /* ============================================================
-   api.js — API 集成 & 模拟数据生成器
+   api.js — API 集成 & 幣安實時數據引擎
    ============================================================ */
 
 const PAIRS = [
@@ -54,7 +54,7 @@ const PAIRS = [
   { s: 'AEVO/USDT',  p: 0.82   }, { s: 'RDNT/USDT',  p: 0.065  },
 ];
 
-/* ---------- 伪随机数生成器（固定种子，确保演示数据稳定）---------- */
+/* ---------- 偽隨機數（離線備用）---------- */
 let _seed = Date.now();
 function seededRand() {
   _seed = (_seed * 1664525 + 1013904223) & 0xffffffff;
@@ -64,104 +64,16 @@ function randRange(min, max) { return min + seededRand() * (max - min); }
 function randInt(min, max)   { return Math.floor(randRange(min, max + 1)); }
 function pick(arr)           { return arr[randInt(0, arr.length - 1)]; }
 
-/* ---------- 评分转趋势 ---------- */
+/* ---------- 評分→趨勢 ---------- */
 function scoreToTrend(score) {
-  if (score >= 78) return '强势看涨';
-  if (score >= 58) return '看涨';
+  if (score >= 78) return '強勢看漲';
+  if (score >= 58) return '看漲';
   if (score >= 42) return '中性';
   if (score >= 22) return '看跌';
-  return '强势看跌';
+  return '強勢看跌';
 }
 
-/* ---------- 模拟数据生成器（priceMap/volMap 有值时使用实时数据）---------- */
-function generateMockData(priceMap = null, volMap = null) {
-  _seed = 987654321;
-  return PAIRS.map((pair) => {
-    const sym       = pair.s.replace('/', '');
-    const realPrice = priceMap ? priceMap[sym] : null;
-    const realVol   = volMap   ? volMap[sym]   : null;
-    // 始终推进种子序列以保持信号数据一致性
-    const priceVar = 0.96 + seededRand() * 0.08;
-    const price    = (realPrice != null && realPrice > 0) ? realPrice : pair.p * priceVar;
-    const score    = randInt(5, 95);
-    const rsi      = parseFloat(randRange(18, 78).toFixed(1));
-    const adx      = parseFloat(randRange(8, 52).toFixed(1));
-    const ema20    = price * (0.978 + seededRand() * 0.044);
-    const ema50    = price * (0.945 + seededRand() * 0.11);
-    const ema200   = price * (0.82  + seededRand() * 0.36);
-    const volB     = (realVol != null && realVol > 0) ? realVol : randInt(1_000_000, 2_000_000_000);
-    const volS     = getVolStr(volB);
-
-    return {
-      symbol:         pair.s,
-      trend:          scoreToTrend(score),
-      score,
-      price:          formatPrice(price),
-      rsi,
-      adx,
-      volume:         volB,
-      volumeStrength: volS,
-      ema20:          formatPrice(ema20),
-      ema50:          formatPrice(ema50),
-      ema200:         formatPrice(ema200),
-      momentum:       parseFloat((rsi - 50).toFixed(1)),
-      strength:       Math.round(adx),
-    };
-  });
-}
-
-function formatPrice(p) {
-  if (p >= 1000)  return parseFloat(p.toFixed(2));
-  if (p >= 1)     return parseFloat(p.toFixed(3));
-  if (p >= 0.001) return parseFloat(p.toFixed(5));
-  return parseFloat(p.toFixed(8));
-}
-
-/* ---------- 将真实 API 数据补全 ---------- */
-function enrichData(raw) {
-  return raw.map((item) => {
-    const price = item.price || 0;
-    const score = item.score ?? 50;
-    const rsi   = item.rsi ?? 50;
-    const adx   = item.adx ?? 20;
-    const trend = item.trend ? mapTrendZh(item.trend) : scoreToTrend(score);
-
-    return {
-      symbol:         item.symbol,
-      trend,
-      score,
-      price,
-      rsi,
-      adx,
-      volume:         item.volume || randInt(1e6, 2e9),
-      volumeStrength: item.volumeStrength ? mapVolZh(item.volumeStrength) : getVolStr(item.volume),
-      ema20:          item.ema20  || formatPrice(price * 0.99),
-      ema50:          item.ema50  || formatPrice(price * 0.97),
-      ema200:         item.ema200 || formatPrice(price * 0.90),
-      momentum:       item.momentum ?? parseFloat((rsi - 50).toFixed(1)),
-      strength:       item.strength ?? Math.round(adx),
-    };
-  });
-}
-
-/* 英文趋势映射为中文 */
-function mapTrendZh(trend) {
-  const map = {
-    'Strong Bullish': '强势看涨',
-    'Bullish':        '看涨',
-    'Neutral':        '中性',
-    'Bearish':        '看跌',
-    'Strong Bearish': '强势看跌',
-  };
-  return map[trend] || trend;
-}
-
-/* 英文成交量映射为中文 */
-function mapVolZh(v) {
-  const map = { 'High': '高', 'Medium': '中', 'Low': '低' };
-  return map[v] || v;
-}
-
+/* ---------- 成交量強度 ---------- */
 function getVolStr(vol) {
   if (!vol) return '中';
   if (vol > 500_000_000) return '高';
@@ -169,104 +81,173 @@ function getVolStr(vol) {
   return '低';
 }
 
-/* ---------- 构建认证请求头 ---------- */
+/* ---------- 時間框架映射 ---------- */
+function tfToBinanceInterval(tf) {
+  return { '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' }[tf] || '15m';
+}
+
+/* ---------- 認證請求頭 ---------- */
 function buildHeaders(apiKey) {
-  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-    headers['X-API-Key']     = apiKey;
-  }
-  return headers;
+  const h = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+  if (apiKey) { h['Authorization'] = `Bearer ${apiKey}`; h['X-API-Key'] = apiKey; }
+  return h;
 }
 
-/* ---------- 从币安公开 API 获取实时现价 ---------- */
-async function fetchBinancePrices() {
-  const symbols = PAIRS.map(p => p.s.replace('/', ''));
-  const param   = encodeURIComponent(JSON.stringify(symbols));
+/* ═══════════════════ 幣安 K 線引擎 ═══════════════════════ */
 
+/* 獲取單個幣對的 K 線數據 */
+async function fetchKlines(symbol, interval, limit = 220) {
+  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res   = await fetch(
-      `https://api.binance.com/api/v3/ticker/price?symbols=${param}`,
-      { signal: controller.signal }
-    );
+    const timer = setTimeout(() => controller.abort(), 12000);
+    const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
-
-    if (!res.ok) throw new Error(`Binance HTTP ${res.status}`);
-    const data = await res.json();
-
-    const map = {};
-    data.forEach(item => { map[item.symbol] = parseFloat(item.price); });
-    console.info(`[加密扫描专家] 已从币安获取 ${Object.keys(map).length} 个实时现价`);
-    return map;
-  } catch (err) {
-    console.warn('[加密扫描专家] 币安实时价格获取失败：', err.message);
-    return null;
-  }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch { return null; }
 }
 
-/* ---------- 从币安获取24h成交量 ---------- */
-async function fetchBinanceVolumes() {
-  const symbols = PAIRS.map(p => p.s.replace('/', ''));
-  const param   = encodeURIComponent(JSON.stringify(symbols));
+/* 並行批次獲取所有交易對 K 線，並即時計算技術指標 */
+async function fetchAllFromBinance(timeframe) {
+  const interval  = tfToBinanceInterval(timeframe);
+  const batchSize = 20;
+  const results   = new Array(PAIRS.length).fill(null);
 
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res   = await fetch(
-      `https://api.binance.com/api/v3/ticker/24hr?symbols=${param}&type=MINI`,
-      { signal: controller.signal }
+  for (let i = 0; i < PAIRS.length; i += batchSize) {
+    const batch = PAIRS.slice(i, i + batchSize);
+
+    const batchResults = await Promise.allSettled(
+      batch.map(pair => fetchKlines(pair.s.replace('/', ''), interval, 220))
     );
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`Binance 24hr HTTP ${res.status}`);
-    const data = await res.json();
 
-    const map = {};
-    data.forEach(item => {
-      map[item.symbol] = parseFloat(item.quoteVolume || 0); // USDT 计价成交额
+    batchResults.forEach((r, j) => {
+      const idx  = i + j;
+      const pair = PAIRS[idx];
+      const raw  = r.status === 'fulfilled' ? r.value : null;
+      const analysed = raw ? analyzeKlines(pair.s, raw) : null;
+
+      if (analysed) {
+        results[idx] = {
+          ...analysed,
+          trend:          scoreToTrend(analysed.score),
+          volumeStrength: getVolStr(analysed.volume),
+        };
+      } else {
+        /* 個別失敗時用基準價格佔位，不影響整體 */
+        results[idx] = {
+          symbol: pair.s, trend: '中性', score: 50,
+          price: fmtPrice(pair.p), rsi: 50, adx: 20,
+          ema20: fmtPrice(pair.p * 0.99), ema50: fmtPrice(pair.p * 0.97),
+          ema200: fmtPrice(pair.p * 0.90), volume: 0, volumeStrength: '中',
+          momentum: 0, strength: 20, macdHist: 0,
+        };
+      }
     });
-    return map;
-  } catch (err) {
-    console.warn('[加密扫描专家] 币安成交量获取失败：', err.message);
-    return null;
+
+    /* 通知進度（若 app.js 已定義 updateScanProgress） */
+    const pct = Math.min(Math.round(((i + batchSize) / PAIRS.length) * 100), 100);
+    if (typeof updateScanProgress === 'function') updateScanProgress(pct);
+
+    /* 批次間短暫停頓，避免觸發幣安限速 */
+    if (i + batchSize < PAIRS.length) await new Promise(r => setTimeout(r, 80));
   }
+
+  return results;
 }
 
-/* ---------- 主数据获取函数 ---------- */
-async function fetchMarketData() {
+/* ─── 本地 API 數據補全 ─────────────────────────────────── */
+function enrichData(raw) {
+  return raw.map(item => {
+    const price = item.price || 0;
+    const score = item.score ?? 50;
+    const rsi   = item.rsi   ?? 50;
+    const adx   = item.adx   ?? 20;
+    const trend = item.trend  ? mapTrendZh(item.trend) : scoreToTrend(score);
+    return {
+      symbol: item.symbol, trend, score, price, rsi, adx,
+      volume:         item.volume         || 0,
+      volumeStrength: item.volumeStrength ? mapVolZh(item.volumeStrength) : getVolStr(item.volume),
+      ema20:  item.ema20  || fmtPrice(price * 0.99),
+      ema50:  item.ema50  || fmtPrice(price * 0.97),
+      ema200: item.ema200 || fmtPrice(price * 0.90),
+      momentum: item.momentum ?? parseFloat((rsi - 50).toFixed(1)),
+      strength: item.strength ?? Math.round(adx),
+      macdHist: item.macdHist ?? 0,
+    };
+  });
+}
+
+function mapTrendZh(t) {
+  return { 'Strong Bullish':'強勢看漲','Bullish':'看漲','Neutral':'中性','Bearish':'看跌','Strong Bearish':'強勢看跌' }[t] || t;
+}
+function mapVolZh(v) {
+  return { 'High':'高','Medium':'中','Low':'低' }[v] || v;
+}
+
+/* ─── 純離線備用（無網路時）──────────────────────────────── */
+function generateMockData() {
+  _seed = 987654321;
+  return PAIRS.map(pair => {
+    const priceVar = 0.96 + seededRand() * 0.08;
+    const price    = pair.p * priceVar;
+    const score    = randInt(5, 95);
+    const rsi      = parseFloat(randRange(18, 78).toFixed(1));
+    const adx      = parseFloat(randRange(8, 52).toFixed(1));
+    return {
+      symbol: pair.s, trend: scoreToTrend(score), score,
+      price:  fmtPrice(price), rsi, adx,
+      ema20:  fmtPrice(price * (0.978 + seededRand() * 0.044)),
+      ema50:  fmtPrice(price * (0.945 + seededRand() * 0.11)),
+      ema200: fmtPrice(price * (0.82  + seededRand() * 0.36)),
+      volume: randInt(1_000_000, 2_000_000_000),
+      volumeStrength: pick(['高','中','低']),
+      momentum: parseFloat((rsi - 50).toFixed(1)),
+      strength: Math.round(adx), macdHist: 0,
+    };
+  });
+}
+
+function fmtPrice(p) {
+  if (p >= 1000)  return parseFloat(p.toFixed(2));
+  if (p >= 1)     return parseFloat(p.toFixed(4));
+  if (p >= 0.001) return parseFloat(p.toFixed(6));
+  return parseFloat(p.toFixed(8));
+}
+
+/* ═══════════════════ 主數據獲取函數 ══════════════════════ */
+async function fetchMarketData(timeframe = '15m') {
   const settings = loadSettings();
   const url      = (settings.apiUrl || 'http://127.0.0.1:8000') + '/scan';
   const apiKey   = settings.apiKey  || '';
 
-  // 1. 优先尝试本地 API
+  /* 1. 優先嘗試本地 API */
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
-    const res   = await fetch(url, {
-      signal:  controller.signal,
-      headers: buildHeaders(apiKey),
-    });
+    const res = await fetch(url, { signal: controller.signal, headers: buildHeaders(apiKey) });
     clearTimeout(timer);
-
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
-    if (!Array.isArray(json) || json.length === 0) throw new Error('空响应');
+    if (!Array.isArray(json) || json.length === 0) throw new Error('空響應');
+    console.info('[掃描專家] 使用本地 API 數據');
     return { data: enrichData(json), source: 'api' };
   } catch (err) {
-    console.warn('[加密扫描专家] 本地 API 不可用，切换至币安实时行情：', err.message);
+    console.warn('[掃描專家] 本地 API 不可用，切換至幣安 K 線實時分析：', err.message);
   }
 
-  // 2. 并行获取币安现价 + 成交量
-  const [priceMap, volMap] = await Promise.all([fetchBinancePrices(), fetchBinanceVolumes()]);
-
-  return {
-    data:   generateMockData(priceMap, volMap),
-    source: priceMap ? 'binance' : 'mock',
-  };
+  /* 2. 幣安 K 線 + 即時技術指標計算 */
+  try {
+    const data = await fetchAllFromBinance(timeframe);
+    console.info('[掃描專家] 幣安實時 K 線分析完成');
+    return { data, source: 'binance' };
+  } catch (err) {
+    console.warn('[掃描專家] 幣安 K 線獲取失敗，使用離線演示數據：', err.message);
+    return { data: generateMockData(), source: 'mock' };
+  }
 }
 
-/* ---------- 设置存储 ---------- */
+/* ═══════════════════ 設置存儲 ═══════════════════════════ */
 const SETTINGS_KEY = 'csp_settings';
 
 const DEFAULT_SETTINGS = {
@@ -289,8 +270,7 @@ function loadSettings() {
 }
 
 function saveSettings(patch) {
-  const current = loadSettings();
-  const next    = { ...current, ...patch };
+  const next = { ...loadSettings(), ...patch };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
   return next;
 }

@@ -276,6 +276,25 @@ a { text-decoration: none; cursor: pointer; }
   margin-top: 6px;
 }
 
+/* ── Scan Progress Bar ──────────────────────────────────────── */
+.scan-bar {
+  margin-bottom: 16px;
+  background: var(--blue-dim); border: 1px solid rgba(0,212,255,0.25);
+  border-radius: var(--radius-sm); padding: 10px 16px;
+}
+.scan-bar-inner {
+  display: flex; align-items: center; gap: 10px; font-size: 0.83rem; color: var(--blue);
+}
+.scan-bar-track {
+  flex: 1; height: 4px; background: rgba(255,255,255,0.1);
+  border-radius: 2px; overflow: hidden;
+}
+.scan-bar-fill {
+  height: 100%; background: var(--blue); border-radius: 2px;
+  transition: width 0.3s ease; box-shadow: 0 0 6px var(--blue-glow);
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* ── Overview Cards ─────────────────────────────────────────── */
 .overview-grid {
   display: grid; grid-template-columns: repeat(4, 1fr);

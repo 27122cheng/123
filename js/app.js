@@ -1,8 +1,8 @@
 /* ============================================================
-   app.js — 主应用逻辑（中文版）
+   app.js — 主應用邏輯（繁體中文 + 幣安實時K線版）
    ============================================================ */
 
-/* ── 状态 ───────────────────────────────────────────────────── */
+/* ── 狀態 ───────────────────────────────────────────────────── */
 const state = {
   data:         [],
   filtered:     [],
@@ -22,6 +22,7 @@ const state = {
   countdownTimer:  null,
   countdown:    60,
   dataSource:   'mock',
+  scanning:     false,
 };
 
 /* ── 启动 ───────────────────────────────────────────────────── */
@@ -32,30 +33,46 @@ async function init() {
   applySettingsToUI();
   animateLoadingBar();
 
-  const { data, source } = await fetchMarketData();
+  const { data, source } = await fetchMarketData(state.timeframe);
   state.data       = data;
   state.dataSource = source;
   state.filtered   = [...data];
 
   hideLoading();
+  hideScanBar();
   renderAll();
   startRefreshCycle();
   bindEvents();
   checkApiStatus();
 }
 
-/* ── 加载动画 ───────────────────────────────────────────────── */
+/* ── 加載動畫 ───────────────────────────────────────────────── */
 function animateLoadingBar() {
   const bar   = document.getElementById('loading-bar');
-  const texts = ['正在连接市场...', '正在扫描100个交易对...', '正在计算信号...', '正在构建仪表板...'];
+  const texts = ['正在連接幣安行情...', '正在獲取 K 線數據...', '正在計算 RSI / ADX / EMA...', '正在分析趨勢信號...'];
   let p = 0, t = 0;
   setInterval(() => {
-    p = Math.min(p + randBetween(8, 18), 95);
+    p = Math.min(p + randBetween(4, 10), 90);
     bar.style.width = p + '%';
     if (t < texts.length) document.getElementById('loading-text').textContent = texts[t++];
-  }, 320);
+  }, 500);
 }
 function randBetween(a, b) { return a + Math.random() * (b - a); }
+
+/* ── 掃描進度條（K線批次加載時顯示）─────────────────────────── */
+function updateScanProgress(pct) {
+  const bar  = document.getElementById('scan-bar-fill');
+  const txt  = document.getElementById('scan-bar-txt');
+  const wrap = document.getElementById('scan-bar');
+  if (!bar || !wrap) return;
+  wrap.style.display = 'flex';
+  bar.style.width    = pct + '%';
+  if (txt) txt.textContent = `正在分析 ${Math.round(pct)}% 交易對...`;
+}
+function hideScanBar() {
+  const wrap = document.getElementById('scan-bar');
+  if (wrap) wrap.style.display = 'none';
+}
 
 function hideLoading() {
   document.getElementById('loading-bar').style.width = '100%';
@@ -77,14 +94,19 @@ function startRefreshCycle() {
   }, 1000);
 
   state.refreshTimer = setInterval(async () => {
+    if (state.scanning) return; // 上次掃描還沒結束，跳過
     state.countdown = secs;
-    const { data, source } = await fetchMarketData();
+    state.scanning  = true;
+    updateScanProgress(0);
+    const { data, source } = await fetchMarketData(state.timeframe);
     state.data       = data;
     state.dataSource = source;
+    state.scanning   = false;
+    hideScanBar();
     applyFilters();
     renderAll();
-    const srcLabel = source === 'api' ? '本地API实时' : source === 'binance' ? '币安实时价格' : '演示数据';
-    showToast(`市场数据已刷新（${srcLabel}）`, 'info');
+    const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
+    showToast(`市場數據已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
 }
 
@@ -209,7 +231,22 @@ function selectTimeframe(tf) {
   if (state.currentPage === 'coin' && state.currentCoin) {
     loadTradingViewChart(state.currentCoin, tfToTV(tf));
   }
-  showToast(`时间周期已设为 ${tf}`, 'info');
+
+  /* 切換時間周期時重新獲取 K 線數據並重算指標 */
+  if (!state.scanning) {
+    state.scanning = true;
+    updateScanProgress(0);
+    showToast(`正在重新掃描 ${tf} 週期 K 線數據...`, 'info');
+    fetchMarketData(tf).then(({ data, source }) => {
+      state.data       = data;
+      state.dataSource = source;
+      state.scanning   = false;
+      hideScanBar();
+      applyFilters();
+      renderAll();
+      checkApiStatus();
+    });
+  }
 }
 
 function tfToTV(tf) {
@@ -254,9 +291,9 @@ function renderAll() {
 /* ── 概览卡片 ───────────────────────────────────────────────── */
 function updateOverviewCards() {
   const d       = state.data;
-  const bullish = d.filter(x => x.trend === '看涨' || x.trend === '强势看涨').length;
-  const bearish = d.filter(x => x.trend === '看跌' || x.trend === '强势看跌').length;
-  const neutral = d.filter(x => x.trend === '中性').length;
+  const bullish = d.filter(x => x.trend === '看漲' || x.trend === '強勢看漲').length;
+  const bearish = d.filter(x => x.trend === '看跌' || x.trend === '強勢看跌').length;
+  const neutral = d.filter(x => x.trend === '中性' || x.trend === 'Neutral').length;
 
   animateCount('ov-total',   d.length);
   animateCount('ov-bull',    bullish);
@@ -282,8 +319,8 @@ function animateCount(id, target) {
 function renderDashboardTables() {
   const source = state.filtered.length ? state.filtered : state.data;
 
-  let bullData = source.filter(d => d.trend === '强势看涨' || d.trend === '看涨');
-  let bearData = source.filter(d => d.trend === '强势看跌' || d.trend === '看跌');
+  let bullData = source.filter(d => d.trend === '強勢看漲' || d.trend === '看漲');
+  let bearData = source.filter(d => d.trend === '強勢看跌' || d.trend === '看跌');
 
   bullData = sortArr(bullData, state.sortState.bull.key, state.sortState.bull.dir);
   bearData = sortArr(bearData, state.sortState.bear.key, state.sortState.bear.dir);
@@ -381,10 +418,10 @@ function renderReversalCards() {
   }
 
   const reversals = state.data.filter(d => {
-    if (d.trend === '强势看涨' && d.rsi < 50) return true;
-    if (d.trend === '强势看跌' && d.rsi > 50) return true;
+    if (d.trend === '強勢看漲' && d.rsi < 50) return true;
+    if (d.trend === '強勢看跌' && d.rsi > 50) return true;
     if (d.trend === '看跌' && d.rsi > 55 && d.adx > 20) return true;
-    if (d.trend === '看涨' && d.rsi < 45 && d.adx > 20) return true;
+    if (d.trend === '看漲' && d.rsi < 45 && d.adx > 20) return true;
     return false;
   }).slice(0, 20);
 
@@ -397,7 +434,7 @@ function renderReversalCards() {
 
   grid.innerHTML = reversals.map(d => {
     const fromTrend = d.trend;
-    const toTrend   = d.trend.includes('看涨') ? '看跌' : '看涨';
+    const toTrend   = d.trend.includes('看漲') ? '看跌' : '看漲';
     return `
       <div class="rev-card" onclick="navigateTo('coin','${d.symbol}')">
         <div class="rev-sym">${d.symbol.replace('/USDT','')} <span style="color:var(--text3);font-weight:400;font-size:0.8em">/USDT</span></div>
@@ -582,17 +619,21 @@ function buildTrendAnalysis(coin) {
   const p   = coin.price;
   const isBull = coin.score >= 60, isBear = coin.score < 40;
 
+  const macdColor = coin.macdHist > 0 ? 'var(--bull)' : coin.macdHist < 0 ? 'var(--bear)' : 'var(--text3)';
   const rows = [
-    ['整体趋势',   `<span style="color:${scoreColor(coin.score)}">${coin.trend}</span>`],
-    ['趋势评分',   `<span style="color:${scoreColor(coin.score)}">${coin.score} / 100</span>`],
-    ['均线排列',   p > e20 && e20 > e50 && e50 > e200
-                     ? '<span class="text-bull">多头排列 ↑</span>'
+    ['整體趨勢',   `<span style="color:${scoreColor(coin.score)}">${coin.trend}</span>`],
+    ['趨勢評分',   `<span style="color:${scoreColor(coin.score)}">${coin.score} / 100</span>`],
+    ['均線排列',   p > e20 && e20 > e50 && e50 > e200
+                     ? '<span class="text-bull">多頭排列 ↑</span>'
                      : p < e20 && e20 < e50 && e50 < e200
-                     ? '<span class="text-bear">空头排列 ↓</span>'
-                     : '<span class="text-neutral">信号混合</span>'],
-    ['信号汇总',   isBull ? '<span class="text-bull">偏多 — 动量支持上行</span>'
-                          : isBear ? '<span class="text-bear">偏空 — 动量支持下行</span>'
-                          : '<span class="text-neutral">等待更清晰的方向性信号</span>'],
+                     ? '<span class="text-bear">空頭排列 ↓</span>'
+                     : '<span class="text-neutral">信號混合</span>'],
+    ['MACD 柱',    coin.macdHist !== undefined
+                     ? `<span style="color:${macdColor}">${coin.macdHist > 0 ? '+' : ''}${coin.macdHist?.toFixed ? coin.macdHist.toFixed(6) : coin.macdHist}</span>`
+                     : '--'],
+    ['信號匯總',   isBull ? '<span class="text-bull">偏多 — 動量支持上行</span>'
+                          : isBear ? '<span class="text-bear">偏空 — 動量支持下行</span>'
+                          : '<span class="text-neutral">等待更清晰的方向性信號</span>'],
   ];
   return buildRows(rows);
 }
@@ -604,11 +645,11 @@ function buildSupportResistance(coin) {
   const r1 = formatPrice(p * 1.035);
   const r2 = formatPrice(p * 1.07);
   const rows = [
-    ['支撑位 1', `<span style="color:var(--bull)">${fmtPrice(s1)}</span>`],
-    ['支撑位 2', `<span style="color:var(--bull)">${fmtPrice(s2)}</span>`],
+    ['支撐位 1', `<span style="color:var(--bull)">${fmtPrice(s1)}</span>`],
+    ['支撐位 2', `<span style="color:var(--bull)">${fmtPrice(s2)}</span>`],
     ['阻力位 1', `<span style="color:var(--bear)">${fmtPrice(r1)}</span>`],
     ['阻力位 2', `<span style="color:var(--bear)">${fmtPrice(r2)}</span>`],
-    ['区间宽度', `${((r1 - s1) / p * 100).toFixed(1)}%`],
+    ['區間寬度', `${((r1 - s1) / p * 100).toFixed(1)}%`],
   ];
   return buildRows(rows);
 }
@@ -616,26 +657,26 @@ function buildSupportResistance(coin) {
 function buildMomentumAnalysis(coin) {
   const rows = [
     ['RSI (14)',  `<span style="color:${rsiColor(coin.rsi)}">${coin.rsi} — ${rsiLabel(coin.rsi)}</span>`],
-    ['动量值',    `<span style="color:${coin.momentum >= 0 ? 'var(--bull)' : 'var(--bear)'}">
+    ['動量值',    `<span style="color:${coin.momentum >= 0 ? 'var(--bull)' : 'var(--bear)'}">
                     ${coin.momentum >= 0 ? '+' : ''}${coin.momentum}</span>`],
-    ['信号',      coin.rsi > 70 ? '<span class="text-bear">超买 — 存在回调风险</span>'
-                 : coin.rsi < 30 ? '<span class="text-bull">超卖 — 存在反弹机会</span>'
-                 : coin.rsi > 55 ? '<span class="text-bull">看涨动量积累中</span>'
-                 : coin.rsi < 45 ? '<span class="text-bear">看跌动量积累中</span>'
-                 : '<span class="text-neutral">处于中性区域</span>'],
-    ['背离',      '未检测到明显背离'],
+    ['訊號',      coin.rsi > 70 ? '<span class="text-bear">超買 — 存在回調風險</span>'
+                 : coin.rsi < 30 ? '<span class="text-bull">超賣 — 存在反彈機會</span>'
+                 : coin.rsi > 55 ? '<span class="text-bull">看漲動量積累中</span>'
+                 : coin.rsi < 45 ? '<span class="text-bear">看跌動量積累中</span>'
+                 : '<span class="text-neutral">處於中性區域</span>'],
+    ['背離',      '未檢測到明顯背離'],
   ];
   return buildRows(rows);
 }
 
 function buildStrengthAnalysis(coin) {
   const rows = [
-    ['ADX',      `<span style="color:${adxColor(coin.adx)}">${coin.adx} — ${adxLabel(coin.adx)}</span>`],
-    ['成交量',   `<span class="${coin.volumeStrength === '高' ? 'text-blue' : 'text-neutral'}">${coin.volumeStrength}</span>`],
-    ['趋势强度', coin.adx > 30 ? '<span class="text-bull">强势趋势进行中</span>'
-                : coin.adx > 20 ? '<span class="text-neutral">中等趋势形成中</span>'
-                : '<span class="text-bear">弱势或震荡市场</span>'],
-    ['24小时成交量', fmtVolume(coin.volume)],
+    ['ADX',        `<span style="color:${adxColor(coin.adx)}">${coin.adx} — ${adxLabel(coin.adx)}</span>`],
+    ['成交量',     `<span class="${coin.volumeStrength === '高' ? 'text-blue' : 'text-neutral'}">${coin.volumeStrength}</span>`],
+    ['趨勢強度',   coin.adx > 30 ? '<span class="text-bull">強勢趨勢進行中</span>'
+                 : coin.adx > 20 ? '<span class="text-neutral">中等趨勢形成中</span>'
+                 : '<span class="text-bear">弱勢或震盪市場</span>'],
+    ['24小時成交量', fmtVolume(coin.volume)],
   ];
   return buildRows(rows);
 }
@@ -648,17 +689,17 @@ function buildRisk(coin) {
 
   let level, desc, cls;
   if (total < 30) {
-    level = '低风险'; cls = 'risk-low';
-    desc  = '市场状况稳定，波动适中。在正常参数范围内配置仓位是合适的。';
+    level = '低風險'; cls = 'risk-low';
+    desc  = '市場狀況穩定，波動適中。在正常參數範圍內配置倉位是合適的。';
   } else if (total < 55) {
-    level = '中等风险'; cls = 'risk-medium';
-    desc  = '风险偏高但可控。建议适当减小仓位并设置更严格的止损位置。';
+    level = '中等風險'; cls = 'risk-medium';
+    desc  = '風險偏高但可控。建議適當減小倉位並設置更嚴格的止損位置。';
   } else if (total < 75) {
-    level = '高风险'; cls = 'risk-high';
-    desc  = '高波动性环境。RSI 或趋势评分处于极端区间，建议谨慎操作，严格执行风险管理策略。';
+    level = '高風險'; cls = 'risk-high';
+    desc  = '高波動性環境。RSI 或趨勢評分處於極端區間，建議謹慎操作，嚴格執行風險管理策略。';
   } else {
-    level = '极高风险'; cls = 'risk-extreme';
-    desc  = '检测到极端市场条件。RSI 严重超买或超卖，请避免重仓操作，耐心等待市场整理后再行介入。';
+    level = '極高風險'; cls = 'risk-extreme';
+    desc  = '偵測到極端市場條件。RSI 嚴重超買或超賣，請避免重倉操作，耐心等待市場整理後再行介入。';
   }
   return { level, desc, pct: total, cls };
 }
@@ -830,7 +871,7 @@ function sortArr(arr, key, dir) {
 }
 
 function trendOrder(t) {
-  return { '强势看涨': 5, '看涨': 4, '中性': 3, '看跌': 2, '强势看跌': 1 }[t] || 3;
+  return { '強勢看漲': 5, '看漲': 4, '中性': 3, '看跌': 2, '強勢看跌': 1 }[t] || 3;
 }
 
 /* ── 搜索下拉 ───────────────────────────────────────────────── */
@@ -896,19 +937,19 @@ function scoreColorBright(s) {
 
 function trendClass(trend) {
   const map = {
-    '强势看涨': 'trend-strong-bullish',
-    '看涨':     'trend-bullish',
+    '強勢看漲': 'trend-strong-bullish',
+    '看漲':     'trend-bullish',
     '中性':     'trend-neutral',
     '看跌':     'trend-bearish',
-    '强势看跌': 'trend-strong-bearish',
+    '強勢看跌': 'trend-strong-bearish',
   };
   return map[trend] || 'trend-neutral';
 }
 
 function trendArrow(trend) {
-  if (trend === '强势看涨') return '▲▲';
-  if (trend === '看涨')     return '▲';
-  if (trend === '强势看跌') return '▼▼';
+  if (trend === '強勢看漲') return '▲▲';
+  if (trend === '看漲')     return '▲';
+  if (trend === '強勢看跌') return '▼▼';
   if (trend === '看跌')     return '▼';
   return '◆';
 }

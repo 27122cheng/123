@@ -112,6 +112,19 @@
     <!-- ═══════════════════════ 仪表板页面 ═══════════════════════ -->
     <section class="page active" id="page-dashboard">
 
+      <!-- K 線掃描進度條 -->
+      <div class="scan-bar" id="scan-bar" style="display:none">
+        <div class="scan-bar-inner">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" style="animation:spin 1s linear infinite">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+          <span id="scan-bar-txt">正在分析 K 線數據...</span>
+          <div class="scan-bar-track">
+            <div class="scan-bar-fill" id="scan-bar-fill"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- 市场概览 -->
       <div class="page-header">
         <div>
@@ -171,11 +184,11 @@
       <div class="toolbar">
         <div class="filter-chips">
           <button class="chip active" data-filter="all">全部</button>
-          <button class="chip chip-sbull" data-filter="强势看涨">强势看涨</button>
-          <button class="chip chip-bull"  data-filter="看涨">看涨</button>
+          <button class="chip chip-sbull" data-filter="強勢看漲">強勢看漲</button>
+          <button class="chip chip-bull"  data-filter="看漲">看漲</button>
           <button class="chip chip-neutral" data-filter="中性">中性</button>
           <button class="chip chip-bear"  data-filter="看跌">看跌</button>
-          <button class="chip chip-sbear" data-filter="强势看跌">强势看跌</button>
+          <button class="chip chip-sbear" data-filter="強勢看跌">強勢看跌</button>
         </div>
         <div class="dash-search-wrap">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -555,6 +568,7 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script src="js/indicators.js"></script>
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
 </body>
