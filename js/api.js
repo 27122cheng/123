@@ -1,6 +1,7 @@
 /* ==========================================
    CRYPTO SCANNER PRO - API MODULE
    Handles real API calls with mock fallback
+   Signal Engine for trading recommendations
    ========================================== */
 
 const API = (() => {
@@ -74,6 +75,162 @@ const API = (() => {
     return 'Low';
   }
 
+  // ─── SIGNAL ENGINE ─────────────────────────────────────
+  function generateSignal(coin) {
+    const { score, rsi, adx, price, ema20, ema50, ema200, volume, volumeStr } = coin;
+
+    let signal, confidence, sl, tp1, tp2;
+    let slPct, tp1Pct, tp2Pct;
+
+    // Determine signal type
+    if (score >= 72 && rsi >= 45 && rsi <= 68 && adx > 22 && price > ema20 && price > ema50) {
+      signal = 'STRONG BUY';
+      confidence = Math.min(95, Math.round(65 + (score - 72) * 0.8 + (adx - 22) * 0.3));
+      sl  = price * 0.965;
+      tp1 = price * 1.06;
+      tp2 = price * 1.13;
+      slPct  = 3.5;
+      tp1Pct = 6.0;
+      tp2Pct = 13.0;
+    } else if (score >= 57 && rsi >= 38 && rsi <= 72 && adx > 15) {
+      signal = 'BUY';
+      confidence = Math.min(80, Math.round(45 + (score - 57) * 1.2));
+      sl  = price * 0.95;
+      tp1 = price * 1.08;
+      tp2 = price * 1.16;
+      slPct  = 5.0;
+      tp1Pct = 8.0;
+      tp2Pct = 16.0;
+    } else if (score <= 28 && rsi >= 32 && rsi <= 58 && adx > 22 && price < ema20 && price < ema50) {
+      signal = 'STRONG SELL';
+      confidence = Math.min(95, Math.round(65 + (28 - score) * 0.8 + (adx - 22) * 0.3));
+      sl  = price * 1.035;
+      tp1 = price * 0.94;
+      tp2 = price * 0.87;
+      slPct  = 3.5;
+      tp1Pct = 6.0;
+      tp2Pct = 13.0;
+    } else if (score <= 43 && rsi >= 28 && rsi <= 62 && adx > 15) {
+      signal = 'SELL';
+      confidence = Math.min(80, Math.round(45 + (43 - score) * 1.2));
+      sl  = price * 1.05;
+      tp1 = price * 0.92;
+      tp2 = price * 0.84;
+      slPct  = 5.0;
+      tp1Pct = 8.0;
+      tp2Pct = 16.0;
+    } else {
+      signal = 'HOLD';
+      confidence = Math.min(70, Math.round(40 + (30 - Math.abs(score - 50)) * 0.6));
+      sl  = null;
+      tp1 = null;
+      tp2 = null;
+      slPct  = null;
+      tp1Pct = null;
+      tp2Pct = null;
+    }
+
+    // R:R calculation
+    let rr = null;
+    if (tp1Pct && slPct) {
+      rr = '1:' + (tp1Pct / slPct).toFixed(1);
+    }
+
+    // Dynamic reasoning bullets
+    const reasoning = buildReasoning(signal, coin, slPct, tp1Pct);
+
+    return {
+      signal,
+      confidence,
+      entry: price,
+      sl,
+      tp1,
+      tp2,
+      rr,
+      slPct,
+      tp1Pct,
+      tp2Pct,
+      reasoning
+    };
+  }
+
+  function buildReasoning(signal, coin, slPct, tp1Pct) {
+    const { score, rsi, adx, price, ema20, ema50, ema200, volumeStr } = coin;
+    const bullets = [];
+
+    // RSI bullet
+    if (rsi >= 45 && rsi <= 68) {
+      bullets.push(`RSI at ${rsi} – momentum healthy, not overbought`);
+    } else if (rsi < 35) {
+      bullets.push(`RSI at ${rsi} – oversold, potential bounce zone`);
+    } else if (rsi > 70) {
+      bullets.push(`RSI at ${rsi} – overbought, watch for exhaustion`);
+    } else if (rsi >= 32 && rsi <= 58) {
+      bullets.push(`RSI at ${rsi} – bearish momentum in control`);
+    } else {
+      bullets.push(`RSI at ${rsi} – momentum neutral`);
+    }
+
+    // ADX bullet
+    if (adx > 35) {
+      bullets.push(`ADX ${adx} confirms very strong directional trend`);
+    } else if (adx > 22) {
+      bullets.push(`ADX ${adx} confirms strong directional trend`);
+    } else if (adx > 15) {
+      bullets.push(`ADX ${adx} – moderate trend strength developing`);
+    } else {
+      bullets.push(`ADX ${adx} – weak trend, market ranging`);
+    }
+
+    // EMA / structure bullet
+    const above20 = price > ema20;
+    const above50 = price > ema50;
+    const above200 = price > ema200;
+    if (above20 && above50 && above200) {
+      bullets.push(`Price above EMA20, EMA50 & EMA200 – strong bullish structure`);
+    } else if (above20 && above50) {
+      bullets.push(`Price trading above EMA20 and EMA50 – bullish structure`);
+    } else if (!above20 && !above50 && !above200) {
+      bullets.push(`Price below EMA20, EMA50 & EMA200 – strong bearish structure`);
+    } else if (!above20 && !above50) {
+      bullets.push(`Price trading below EMA20 and EMA50 – bearish structure`);
+    } else {
+      bullets.push(`Mixed EMA alignment – market consolidating`);
+    }
+
+    // Score bullet
+    if (signal === 'STRONG BUY' || signal === 'BUY') {
+      bullets.push(`Score ${score}/100 – strong buy pressure confirmed`);
+    } else if (signal === 'STRONG SELL' || signal === 'SELL') {
+      bullets.push(`Score ${score}/100 – strong sell pressure confirmed`);
+    } else {
+      bullets.push(`Score ${score}/100 – market in equilibrium`);
+    }
+
+    // Return 2-3 bullets
+    return bullets.slice(0, 3);
+  }
+
+  // ─── SIGNAL HISTORY ────────────────────────────────────
+  let _signalHistory = [];
+
+  function getSignalHistory() {
+    return [..._signalHistory];
+  }
+
+  function addToHistory(signals) {
+    const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const entries = signals.map(coin => ({
+      time,
+      sym: coin.sym,
+      signal: coin.signal.signal,
+      price: coin.priceStr,
+      confidence: coin.signal.confidence
+    }));
+    _signalHistory = [...entries, ..._signalHistory].slice(0, 50);
+  }
+
+  // ─── DATA GENERATION ───────────────────────────────────
   function generateCoinData(coin, timeframe) {
     const tfFactor = { '5m': 1, '15m': 1.2, '1h': 1.5, '4h': 2 }[timeframe] || 1;
     const score = Math.min(100, Math.max(0, Math.round(rand(5, 95))));
@@ -81,18 +238,18 @@ const API = (() => {
 
     // RSI correlated with trend but with noise
     let rsiBase;
-    if (score >= 75) rsiBase = rand(58, 82);
-    else if (score >= 55) rsiBase = rand(50, 72);
-    else if (score >= 40) rsiBase = rand(38, 62);
-    else if (score >= 25) rsiBase = rand(28, 50);
-    else rsiBase = rand(15, 40);
+    if (score >= 75) rsiBase = rand(50, 78);
+    else if (score >= 55) rsiBase = rand(42, 68);
+    else if (score >= 40) rsiBase = rand(36, 62);
+    else if (score >= 25) rsiBase = rand(28, 52);
+    else rsiBase = rand(18, 44);
     const rsi = Math.round(Math.min(98, Math.max(2, rsiBase)));
 
     // ADX correlated with strength
     const adxBase = score >= 75 || score <= 25
-      ? rand(28, 62)
+      ? rand(24, 62)
       : score >= 55 || score <= 40
-        ? rand(18, 42)
+        ? rand(16, 42)
         : rand(8, 32);
     const adx = Math.round(adxBase);
 
@@ -176,6 +333,15 @@ const API = (() => {
     }
   }
 
-  return { fetchData, generateMockData, classifyTrend, formatPrice, testConnection };
+  return {
+    fetchData,
+    generateMockData,
+    classifyTrend,
+    formatPrice,
+    testConnection,
+    generateSignal,
+    getSignalHistory,
+    addToHistory
+  };
 
 })();
