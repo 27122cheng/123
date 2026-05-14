@@ -490,18 +490,18 @@ function renderCoinDetail(symbol) {
   setTag('vol-tag', fmtVolume(coin.volume), 'var(--text3)');
 
   // EMA
-  const p    = coin.price;
-  const e20  = parseFloat(coin.ema20);
-  const e50  = parseFloat(coin.ema50);
-  const e200 = parseFloat(coin.ema200);
+  const p    = parseFloat(coin.price) || 0;
+  const e20  = parseFloat(coin.ema20)  || 0;
+  const e50  = parseFloat(coin.ema50)  || 0;
+  const e200 = parseFloat(coin.ema200) || 0;
 
   document.getElementById('ema20').textContent  = fmtPrice(e20);
   document.getElementById('ema50').textContent  = fmtPrice(e50);
   document.getElementById('ema200').textContent = fmtPrice(e200);
 
-  setSig('ema20-sig',  p > e20  ? '价格高于EMA20' : '价格低于EMA20',  p > e20);
-  setSig('ema50-sig',  p > e50  ? '价格高于EMA50' : '价格低于EMA50',  p > e50);
-  setSig('ema200-sig', p > e200 ? '高于长期均线'   : '低于长期均线',   p > e200);
+  setSig('ema20-sig',  p > e20  ? '價格高於EMA20' : '價格低於EMA20',  p > e20);
+  setSig('ema50-sig',  p > e50  ? '價格高於EMA50' : '價格低於EMA50',  p > e50);
+  setSig('ema200-sig', p > e200 ? '高於長期均線'   : '低於長期均線',   p > e200);
 
   // 分析
   document.getElementById('a-trend').innerHTML    = buildTrendAnalysis(coin);
@@ -639,11 +639,12 @@ function buildTrendAnalysis(coin) {
 }
 
 function buildSupportResistance(coin) {
-  const p  = coin.price;
-  const s1 = formatPrice(p * 0.965);
-  const s2 = formatPrice(p * 0.93);
-  const r1 = formatPrice(p * 1.035);
-  const r2 = formatPrice(p * 1.07);
+  const p  = parseFloat(coin.price) || 0;
+  if (!p) return buildRows([['支撐位', '--'], ['阻力位', '--']]);
+  const s1 = p * 0.965;
+  const s2 = p * 0.93;
+  const r1 = p * 1.035;
+  const r2 = p * 1.07;
   const rows = [
     ['支撐位 1', `<span style="color:var(--bull)">${fmtPrice(s1)}</span>`],
     ['支撐位 2', `<span style="color:var(--bull)">${fmtPrice(s2)}</span>`],
@@ -989,10 +990,14 @@ function volClass(v) {
 function fmtPrice(p) {
   if (p === undefined || p === null) return '--';
   const n = parseFloat(p);
+  if (isNaN(n) || n <= 0) return '--';
+  if (n >= 10000) return '$' + n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (n >= 1000)  return '$' + n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (n >= 1)     return '$' + n.toFixed(3);
-  if (n >= 0.001) return '$' + n.toFixed(5);
-  return '$' + n.toFixed(8);
+  if (n >= 1)     return '$' + n.toFixed(4);
+  if (n >= 0.01)  return '$' + n.toFixed(5);
+  if (n >= 0.001) return '$' + n.toFixed(6);
+  if (n >= 0.0001) return '$' + n.toFixed(7);
+  return '$' + n.toFixed(10);
 }
 
 function fmtVolume(v) {

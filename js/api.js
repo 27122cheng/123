@@ -86,6 +86,14 @@ function tfToBinanceInterval(tf) {
   return { '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' }[tf] || '15m';
 }
 
+/* ---------- 幣安 API 端點（依序嘗試）---------- */
+const BINANCE_HOSTS = [
+  'https://api.binance.com',
+  'https://api1.binance.com',
+  'https://api2.binance.com',
+  'https://api3.binance.com',
+];
+
 /* ---------- 認證請求頭 ---------- */
 function buildHeaders(apiKey) {
   const h = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
@@ -95,17 +103,45 @@ function buildHeaders(apiKey) {
 
 /* ═══════════════════ 幣安 K 線引擎 ═══════════════════════ */
 
-/* 獲取單個幣對的 K 線數據 */
+/* 獲取單個幣對的 K 線數據（依序嘗試多個端點）*/
 async function fetchKlines(symbol, interval, limit = 220) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12000);
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } catch { return null; }
+  for (const host of BINANCE_HOSTS) {
+    const url = `${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.status === 400) return null; // 交易對不存在，不再重試
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      if (e.name === 'AbortError') continue; // 超時換端點重試
+    }
+  }
+  return null;
+}
+
+/* 一次性批量獲取所有現貨即時價格（作為 kline 失敗時的備用）*/
+async function fetchAllSpotPrices() {
+  const syms = JSON.stringify(PAIRS.map(p => p.s.replace('/', '')));
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(
+        `${host}/api/v3/ticker/price?symbols=${encodeURIComponent(syms)}`,
+        { signal: controller.signal }
+      );
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const list = await res.json();
+      const map = {};
+      list.forEach(t => { map[t.symbol] = parseFloat(t.price); });
+      return map;
+    } catch { continue; }
+  }
+  return {};
 }
 
 /* 並行批次獲取所有交易對 K 線，並即時計算技術指標 */
@@ -113,6 +149,10 @@ async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
   const batchSize = 20;
   const results   = new Array(PAIRS.length).fill(null);
+
+  /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用 */
+  if (typeof updateScanProgress === 'function') updateScanProgress(0);
+  const spotPrices = await fetchAllSpotPrices();
 
   for (let i = 0; i < PAIRS.length; i += batchSize) {
     const batch = PAIRS.slice(i, i + batchSize);
@@ -124,6 +164,7 @@ async function fetchAllFromBinance(timeframe) {
     batchResults.forEach((r, j) => {
       const idx  = i + j;
       const pair = PAIRS[idx];
+      const sym  = pair.s.replace('/', '');
       const raw  = r.status === 'fulfilled' ? r.value : null;
       const analysed = raw ? analyzeKlines(pair.s, raw) : null;
 
@@ -134,12 +175,16 @@ async function fetchAllFromBinance(timeframe) {
           volumeStrength: getVolStr(analysed.volume),
         };
       } else {
-        /* 個別失敗時用基準價格佔位，不影響整體 */
+        /* 優先使用幣安即時現貨價格，無法獲取才退回靜態基準 */
+        const fallbackPrice = spotPrices[sym] || pair.p;
         results[idx] = {
           symbol: pair.s, trend: '中性', score: 50,
-          price: fmtPrice(pair.p), rsi: 50, adx: 20,
-          ema20: fmtPrice(pair.p * 0.99), ema50: fmtPrice(pair.p * 0.97),
-          ema200: fmtPrice(pair.p * 0.90), volume: 0, volumeStrength: '中',
+          price:  fmtPrice(fallbackPrice),
+          rsi: 50, adx: 20,
+          ema20:  fmtPrice(fallbackPrice * 0.99),
+          ema50:  fmtPrice(fallbackPrice * 0.97),
+          ema200: fmtPrice(fallbackPrice * 0.90),
+          volume: 0, volumeStrength: '中',
           momentum: 0, strength: 20, macdHist: 0,
         };
       }
