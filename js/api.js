@@ -165,15 +165,29 @@ function getVolStr(vol) {
   return '低';
 }
 
+/* ---------- 构建认证请求头 ---------- */
+function buildHeaders(apiKey) {
+  const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+    headers['X-API-Key']     = apiKey;
+  }
+  return headers;
+}
+
 /* ---------- 主数据获取函数 ---------- */
 async function fetchMarketData() {
   const settings = loadSettings();
   const url      = (settings.apiUrl || 'http://127.0.0.1:8000') + '/scan';
+  const apiKey   = settings.apiKey  || '';
 
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
-    const res   = await fetch(url, { signal: controller.signal });
+    const res   = await fetch(url, {
+      signal:  controller.signal,
+      headers: buildHeaders(apiKey),
+    });
     clearTimeout(timer);
 
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -196,6 +210,7 @@ const DEFAULT_SETTINGS = {
   reversals:       true,
   sound:           false,
   apiUrl:          'http://127.0.0.1:8000',
+  apiKey:          '6bD4UNcdb8wfkHVa3Zd2D4hfsEmcEwtqMBxr2GZe2XFQ2jvdCjT4vtg5cSD4BWcPtV',
   bullThreshold:   60,
   bearThreshold:   40,
 };

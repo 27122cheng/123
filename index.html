@@ -473,6 +473,21 @@
             <input type="text" class="setting-input" id="s-api-url" value="http://127.0.0.1:8000/scan" />
           </div>
 
+          <div class="setting-row vertical">
+            <div class="setting-name">API 密钥</div>
+            <div class="api-key-wrap">
+              <input type="password" class="setting-input" id="s-api-key"
+                     placeholder="输入 API 密钥..."
+                     value="6bD4UNcdb8wfkHVa3Zd2D4hfsEmcEwtqMBxr2GZe2XFQ2jvdCjT4vtg5cSD4BWcPtV" />
+              <button class="key-toggle-btn" id="key-toggle-btn" onclick="toggleKeyVisibility()" title="显示/隐藏密钥">
+                <svg id="key-eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </div>
+            <div class="api-key-hint">密钥将以请求头 <code>Authorization: Bearer</code> 及 <code>X-API-Key</code> 方式发送</div>
+          </div>
+
           <div class="setting-row">
             <div class="setting-info">
               <div class="setting-name">连接状态</div>

@@ -771,6 +771,30 @@ a { text-decoration: none; cursor: pointer; }
 .api-dot.offline { background: var(--bear); box-shadow: 0 0 6px var(--bear-glow); }
 .api-dot.checking { background: var(--neutral); animation: pulse-dot 1s infinite; }
 
+/* API 密钥输入框 */
+.api-key-wrap {
+  position: relative; display: flex; align-items: center; width: 100%; margin-top: 8px;
+}
+.api-key-wrap .setting-input {
+  margin-top: 0; padding-right: 40px; flex: 1;
+  font-family: 'JetBrains Mono', monospace; letter-spacing: 0.5px;
+}
+.key-toggle-btn {
+  position: absolute; right: 0;
+  width: 36px; height: 100%; background: transparent;
+  color: var(--text3); display: flex; align-items: center; justify-content: center;
+  transition: color var(--trans); border-left: 1px solid var(--card-border);
+}
+.key-toggle-btn:hover { color: var(--blue); }
+.api-key-hint {
+  font-size: 0.75rem; color: var(--text3); margin-top: 6px; line-height: 1.5;
+}
+.api-key-hint code {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+  background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 3px;
+  color: var(--blue);
+}
+
 /* Buttons */
 .btn-primary {
   display: inline-flex; align-items: center; gap: 8px;

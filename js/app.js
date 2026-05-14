@@ -684,6 +684,9 @@ function populateSettingsPage() {
   const apiUrl = document.getElementById('s-api-url');
   if (apiUrl) apiUrl.value = (s.apiUrl || 'http://127.0.0.1:8000') + '/scan';
 
+  const apiKey = document.getElementById('s-api-key');
+  if (apiKey) apiKey.value = s.apiKey || '';
+
   const bull = document.getElementById('s-bull-threshold');
   if (bull) { bull.value = s.bullThreshold || 60; document.getElementById('bull-thr-val').textContent = bull.value; }
 
@@ -693,18 +696,33 @@ function populateSettingsPage() {
 
 function saveAllSettings() {
   const apiRaw = document.getElementById('s-api-url')?.value || 'http://127.0.0.1:8000/scan';
+  const apiKey = document.getElementById('s-api-key')?.value?.trim() || '';
   const patch  = {
     timeframe:       document.getElementById('s-timeframe')?.value        || '15m',
     refreshInterval: parseInt(document.getElementById('s-refresh')?.value) || 60,
     darkMode:        document.getElementById('s-dark')?.checked            ?? true,
     reversals:       document.getElementById('s-reversals')?.checked       ?? true,
     apiUrl:          apiRaw.replace('/scan',''),
+    apiKey,
     bullThreshold:   parseInt(document.getElementById('s-bull-threshold')?.value) || 60,
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();
   showToast('设置已成功保存', 'success');
+}
+
+function toggleKeyVisibility() {
+  const input = document.getElementById('s-api-key');
+  const icon  = document.getElementById('key-eye-icon');
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    icon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+  } else {
+    input.type = 'password';
+    icon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+  }
 }
 
 function resetAllSettings() {
@@ -719,18 +737,26 @@ async function testApiConnection() {
   const txt = document.getElementById('api-status-txt');
   if (!dot || !txt) return;
 
-  dot.className  = 'api-dot checking';
+  dot.className   = 'api-dot checking';
   txt.textContent = '测试中...';
 
-  const url = document.getElementById('s-api-url')?.value || 'http://127.0.0.1:8000/scan';
+  const url    = document.getElementById('s-api-url')?.value  || 'http://127.0.0.1:8000/scan';
+  const apiKey = document.getElementById('s-api-key')?.value  || '';
   try {
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, {
+      signal:  controller.signal,
+      headers: buildHeaders(apiKey),
+    });
     if (res.ok) {
       dot.className   = 'api-dot online';
       txt.textContent = '已连接';
-      showToast('API 连接成功', 'success');
+      showToast('API 连接成功，密钥验证通过', 'success');
+    } else if (res.status === 401 || res.status === 403) {
+      dot.className   = 'api-dot offline';
+      txt.textContent = '密钥无效';
+      showToast(`认证失败（HTTP ${res.status}），请检查 API 密钥`, 'error');
     } else { throw new Error(`HTTP ${res.status}`); }
   } catch(e) {
     dot.className   = 'api-dot offline';
