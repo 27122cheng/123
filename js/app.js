@@ -499,78 +499,103 @@ function buildTradeSetup(coin, mtfData, deriv) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
 
-  const sigs     = ['1d','4h','1h','15m'].map(tf => mtfData[tf]?.signal).filter(Boolean);
-  const bullCnt  = sigs.filter(s => s.signal.includes('bull')).length;
-  const bearCnt  = sigs.filter(s => s.signal.includes('bear')).length;
-  const bullBreaks = sigs.filter(s => s.bullBreak && s.isHighVol).length;
-  const bearBreaks = sigs.filter(s => s.bearBreak && s.isHighVol).length;
+  // 短線交易：以 15m 和 1h 為主要信號，4h 作為趨勢過濾
+  const m15  = mtfData['15m']?.signal;
+  const h1   = mtfData['1h']?.signal;
+  const h4   = mtfData['4h']?.signal;
 
-  // 衍生品訊號加權
+  let bullScore = 0, bearScore = 0;
+  const scoreOf = (sig, weight) => {
+    if (!sig) return;
+    if (sig.signal.includes('bull')) bullScore += weight;
+    if (sig.signal.includes('bear')) bearScore += weight;
+    if (sig.bullBreak && sig.isHighVol) bullScore += weight;
+    if (sig.bearBreak && sig.isHighVol) bearScore += weight;
+  };
+  scoreOf(m15, 2);  // 15m 雙倍權重
+  scoreOf(h1,  2);  // 1h 雙倍權重
+  scoreOf(h4,  1);  // 4h 趨勢過濾
+
+  // 衍生品短線加權
   let derivBullBonus = 0, derivBearBonus = 0;
   if (deriv) {
     if (deriv.fundingRate < -0.003) derivBullBonus++;
-    if (deriv.fundingRate > 0.003) derivBearBonus++;
-    if (deriv.topLongRatio > 0.57) derivBullBonus++;
-    if (deriv.topLongRatio < 0.43) derivBearBonus++;
-    if (deriv.takerBuySell > 1.1) derivBullBonus++;
-    if (deriv.takerBuySell < 0.9) derivBearBonus++;
+    if (deriv.fundingRate > 0.003)  derivBearBonus++;
+    if (deriv.takerBuySell > 1.15)  derivBullBonus++;
+    if (deriv.takerBuySell < 0.85)  derivBearBonus++;
+    if (deriv.topLongRatio > 0.57)  derivBullBonus++;
+    if (deriv.topLongRatio < 0.43)  derivBearBonus++;
   }
 
-  const totalBull = bullCnt + bullBreaks + derivBullBonus;
-  const totalBear = bearCnt + bearBreaks + derivBearBonus;
+  const totalBull = bullScore + derivBullBonus;
+  const totalBear = bearScore + derivBearBonus;
 
   let direction = 'wait';
-  if (totalBull >= 4 && totalBull > totalBear + 1) direction = 'long';
-  else if (totalBear >= 4 && totalBear > totalBull + 1) direction = 'short';
+  // 短線入場要求：主要時框（15m/1h）至少一個有方向，且總分領先
+  const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
+  const primaryBear = (m15?.signal?.includes('bear') ? 1 : 0) + (h1?.signal?.includes('bear') ? 1 : 0);
+  if (primaryBull >= 1 && totalBull >= 3 && totalBull > totalBear + 1) direction = 'long';
+  else if (primaryBear >= 1 && totalBear >= 3 && totalBear > totalBull + 1) direction = 'short';
 
-  // ATR 估算（利用 ADX 和 RSI 推估波動度）
-  const atrPct = coin.adx > 35 ? 0.028 : coin.adx > 25 ? 0.020 : 0.014;
+  // 短線 ATR：基於 1h 擺動範圍估算，更緊的止損
+  const atrPct = coin.adx > 35 ? 0.018 : coin.adx > 25 ? 0.013 : 0.009;
   const atr    = price * atrPct;
 
-  const h1  = mtfData['1h']?.signal;
-  const h4  = mtfData['4h']?.signal;
-  const swHigh = h4?.swingHigh || h1?.swingHigh || price * 1.04;
-  const swLow  = h4?.swingLow  || h1?.swingLow  || price * 0.96;
+  // 使用 1h 擺動高低點
+  const swHigh = h1?.swingHigh || h4?.swingHigh || price * 1.025;
+  const swLow  = h1?.swingLow  || h4?.swingLow  || price * 0.975;
   const ema20  = parseFloat(coin.ema20) || price;
-  const ema50  = parseFloat(coin.ema50) || price * 0.97;
 
   if (direction === 'wait') {
     const reasons = [];
-    if (bullCnt === bearCnt) reasons.push('多空週期數量相當，方向不明');
-    if (coin.adx < 18)       reasons.push(`ADX ${coin.adx} 偏低，市場震盪無趨勢`);
-    if (coin.rsi > 65)        reasons.push(`RSI ${coin.rsi} 偏高，追多風險大`);
-    if (coin.rsi < 35)        reasons.push(`RSI ${coin.rsi} 偏低，追空風險大`);
+    if (primaryBull === 0 && primaryBear === 0) reasons.push('15m/1h 尚未出現明確突破訊號');
+    if (coin.adx < 18) reasons.push(`ADX ${coin.adx} 過低，短線震盪不宜追）`);
+    if (coin.rsi > 72) reasons.push(`RSI ${coin.rsi} 超買，短線追多風險高`);
+    if (coin.rsi < 28) reasons.push(`RSI ${coin.rsi} 超賣，短線追空風險高`);
+    if (totalBull === totalBear) reasons.push('多空積分相當，等待方向選擇');
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⏳</div>
-      <div class="setup-wait-title">建議觀望，暫不入場</div>
+      <div class="setup-wait-title">建議觀望，短線方向未明</div>
       <ul class="setup-wait-reasons">
-        ${reasons.length ? reasons.map(r => `<li>${r}</li>`).join('') : '<li>多空信號分歧，等待更清晰的方向確認</li>'}
+        ${reasons.length ? reasons.map(r => `<li>${r}</li>`).join('') : '<li>短線訊號不足，耐心等待 15m/1h 有效突破</li>'}
       </ul>
       <div class="setup-wait-cond">
-        <strong>入場條件：</strong>帶量實體K棒突破 <span style="color:var(--bull)">${fmtPrice(swHigh)}</span>（做多）
-        或跌破 <span style="color:var(--bear)">${fmtPrice(swLow)}</span>（做空）+ 3個以上週期確認
+        <strong>等待條件：</strong>15m/1h 帶量實體K棒收破
+        <span style="color:var(--bull)">${fmtPrice(swHigh)}</span>（做多）
+        或 <span style="color:var(--bear)">${fmtPrice(swLow)}</span>（做空）
       </div>
     </div>`;
   }
 
-  const isLong = direction === 'long';
+  const isLong   = direction === 'long';
   const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
-  const dirLabel = isLong ? '做多（Long）' : '做空（Short）';
+  const dirLabel = isLong ? '短線做多' : '短線做空';
   const dirIcon  = isLong ? '▲' : '▼';
 
-  const entry  = isLong ? Math.min(price, ema20 * 1.003) : Math.max(price, ema20 * 0.997);
-  const sl     = isLong ? Math.max(swLow,  entry - atr * 2) : Math.min(swHigh, entry + atr * 2);
-  const risk   = Math.abs(entry - sl);
-  const tp1    = isLong ? entry + risk * 2    : entry - risk * 2;
-  const tp2    = isLong ? Math.min(swHigh, entry + risk * 3.5) : Math.max(swLow, entry - risk * 3.5);
-  const rr     = (risk > 0 ? Math.abs(tp1 - entry) / risk : 0).toFixed(1);
+  // 短線進場：貼近現價或 15m EMA20
+  const m15ema = m15?.ema20 || ema20;
+  const entry  = isLong
+    ? Math.min(price, m15ema * 1.002)
+    : Math.max(price, m15ema * 0.998);
+  // 止損：1.5×ATR，不超過擺動高低點
+  const sl   = isLong
+    ? Math.max(swLow,  entry - atr * 1.5)
+    : Math.min(swHigh, entry + atr * 1.5);
+  const risk = Math.abs(entry - sl);
+  // 止盈：短線目標 1.5:1 / 2.5:1
+  const tp1  = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
+  const tp2  = isLong
+    ? Math.min(swHigh, entry + risk * 2.5)
+    : Math.max(swLow,  entry - risk * 2.5);
+  const rr   = (risk > 0 ? Math.abs(tp1 - entry) / risk : 0).toFixed(1);
 
-  const conf   = Math.min(90, (isLong ? totalBull : totalBear) * 15);
+  const conf = Math.min(90, (isLong ? totalBull : totalBear) * 12);
 
   return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
       <span class="verdict-label">${dirLabel}</span>
+      <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">15m ~ 1h 時間框架</span>
     </div>
     <div class="verdict-conf-wrap">
       <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
@@ -581,104 +606,115 @@ function buildTradeSetup(coin, mtfData, deriv) {
   <div class="setup-levels">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
-      <div class="level-desc">${isLong ? '回撤至 EMA20 或帶量突破確認' : '反彈至 EMA20 或帶量跌破確認'}</div>
+      <div class="level-desc">${isLong ? '現價或回踩 15m EMA20 確認，帶量實體K棒收漲' : '現價或反彈 15m EMA20 確認，帶量實體K棒收跌'}</div>
       <div class="level-price-val">${fmtPrice(entry)}</div>
     </div>
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈1</div>
-      <div class="level-desc">保守目標，風險回報 1:${rr}，到達後止盈 50%</div>
+      <div class="level-desc">短線第一目標，R:R = 1:${rr}，到達後出 60%</div>
       <div class="level-price-val">${fmtPrice(tp1)}</div>
     </div>
     <div class="level-row level-tp2">
       <div class="level-tag">🚀 止盈2</div>
-      <div class="level-desc">進取目標，剩餘倉位移動止損追蹤</div>
+      <div class="level-desc">${isLong ? '1h 擺動高點' : '1h 擺動低點'}，剩餘倉位移至成本止損</div>
       <div class="level-price-val">${fmtPrice(tp2)}</div>
     </div>
     <div class="level-row level-sl">
       <div class="level-tag">🛑 止損</div>
-      <div class="level-desc">2×ATR + ${isLong ? '近期擺動低點下方' : '近期擺動高點上方'}（硬止損，不動搖）</div>
+      <div class="level-desc">1.5×ATR + ${isLong ? '1h 擺動低點下方' : '1h 擺動高點上方'}（閉市前無論盈虧必執行）</div>
       <div class="level-price-val">${fmtPrice(sl)}</div>
     </div>
   </div>
   <div class="setup-rules">
-    <div class="rules-title">🧠 頂級交易員入場守則</div>
-    <div class="rule-item">✦ 單次最大虧損控制在總資金的 <strong>1~2%</strong>，嚴格執行</div>
-    <div class="rule-item">✦ 先設止損，再設止盈，永遠不要盈虧倒掛</div>
-    <div class="rule-item">✦ 到達止盈1（${fmtPrice(tp1)}）時，止盈 50% 倉位並移動止損至成本</div>
-    <div class="rule-item">✦ 帶量突破確認後入場，不搶板、不追高、不逆勢</div>
-    ${deriv ? `<div class="rule-item">✦ 當前資金費率 <strong style="color:${deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)'}">${(deriv.fundingRate*100).toFixed(4)}%</strong>（${deriv.fundingRate < 0 ? '負費率利好多頭' : '正費率利好空頭'}）</div>` : ''}
-    ${deriv?.topLongRatio != null ? `<div class="rule-item">✦ 頂級交易員多頭倉位 <strong style="color:${deriv.topLongRatio > 0.55 ? 'var(--bull)' : deriv.topLongRatio < 0.45 ? 'var(--bear)' : 'var(--neutral)'}">${(deriv.topLongRatio*100).toFixed(1)}%</strong>（聰明錢方向）</div>` : ''}
+    <div class="rules-title">⚡ 短線操作守則</div>
+    <div class="rule-item">✦ 單筆倉位最多佔資金 <strong>3~5%</strong>，虧損不超過資金的 <strong>0.5~1%</strong></div>
+    <div class="rule-item">✦ 進場後立即掛好止損單，不根據情緒調整止損</div>
+    <div class="rule-item">✦ 到達止盈1（<strong style="color:var(--bull)">${fmtPrice(tp1)}</strong>）即出 60%，剩餘移至成本</div>
+    <div class="rule-item">✦ 若 15m K棒轉向且成交量放大，不等止損主動離場</div>
+    ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)'}">${(deriv.fundingRate*100).toFixed(4)}%</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>`;
 }
 
-/* ── 新聞重點整理（取代完整新聞列表）──────────────────────── */
-async function loadNewsSummary() {
-  const el = document.getElementById('news-body');
-  if (!el) return;
+/* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
+function buildSituationSummary(coin, mtfData, deriv, fearGreed) {
+  const price = parseFloat(coin.price) || 0;
+  const tfLabels = { '15m': '15分', '1h': '1小時', '4h': '4小時', '1d': '日線' };
+  const sigs = ['15m','1h','4h','1d'].map(tf => ({ tf, d: mtfData[tf]?.signal })).filter(x => x.d);
+  const bullTFs = sigs.filter(x => x.d.signal.includes('bull')).map(x => tfLabels[x.tf]);
+  const bearTFs = sigs.filter(x => x.d.signal.includes('bear')).map(x => tfLabels[x.tf]);
+  const vBreakTFs = sigs.filter(x => (x.d.bullBreak || x.d.bearBreak) && x.d.isHighVol).map(x => tfLabels[x.tf]);
 
-  const news = await fetchCryptoNews();
-  if (!news || news.length === 0) {
-    el.innerHTML = `<div class="news-fallback">
-      <p style="color:var(--text3);font-size:0.82rem;margin-bottom:10px">新聞 API 無法訪問，請前往以下網站查看</p>
-      <div class="news-links">
-        <a href="https://cointelegraph.com" target="_blank" class="news-link-btn">CoinTelegraph</a>
-        <a href="https://coindesk.com" target="_blank" class="news-link-btn">CoinDesk</a>
-        <a href="https://cryptopanic.com" target="_blank" class="news-link-btn">CryptoPanic</a>
-      </div>
-    </div>`;
-    return;
+  const points = [];
+
+  // 1. 趨勢方向
+  if (bullTFs.length >= bearTFs.length + 2) {
+    points.push({ icon: '📈', color: 'var(--bull)', label: '趨勢', text: `多頭佔優，${bullTFs.join('、')} 看漲${bearTFs.length ? `（${bearTFs.join('、')} 仍偏空，注意分歧）` : '，方向一致'}` });
+  } else if (bearTFs.length >= bullTFs.length + 2) {
+    points.push({ icon: '📉', color: 'var(--bear)', label: '趨勢', text: `空頭主導，${bearTFs.join('、')} 看跌${bullTFs.length ? `（${bullTFs.join('、')} 有支撐）` : '，趨勢較強'}` });
+  } else {
+    points.push({ icon: '🔄', color: 'var(--neutral)', label: '趨勢', text: `多空分歧（看漲: ${bullTFs.join('、') || '無'}；看跌: ${bearTFs.join('、') || '無'}），等待方向選擇` });
   }
 
-  // 按情緒分類
-  const bullish = news.filter(n => n.votes?.positive > n.votes?.negative);
-  const bearish  = news.filter(n => n.votes?.negative > n.votes?.positive);
-  const bullPct  = Math.round(bullish.length / news.length * 100);
-  const sentColor = bullPct > 60 ? 'var(--bull)' : bullPct < 40 ? 'var(--bear)' : 'var(--neutral)';
-  const sentLabel = bullPct > 60 ? '偏多' : bullPct < 40 ? '偏空' : '中性';
+  // 2. 突破信號
+  if (vBreakTFs.length > 0) {
+    const dir = sigs.find(x => (x.d.bullBreak || x.d.bearBreak) && x.d.isHighVol)?.d.bullBreak ? '多方' : '空方';
+    points.push({ icon: '⚡', color: dir === '多方' ? 'var(--bull)' : 'var(--bear)', label: '突破', text: `${vBreakTFs.join('、')} 出現帶量實體K棒突破，${dir}信號有效，可信度高` });
+  }
 
-  // 關鍵詞分類標記
-  const TAG_MAP = [
-    { kw: ['SEC','CFTC','regulat','法規','禁止','法案'],    tag: '監管', color: '#ff6d00' },
-    { kw: ['ETF','Bitcoin','BTC','halving','減半'],          tag: 'BTC',  color: 'var(--neutral)' },
-    { kw: ['hack','exploit','breach','黑客','漏洞'],         tag: '安全', color: 'var(--bear)' },
-    { kw: ['Fed','interest rate','inflation','GDP','宏觀'],  tag: '宏觀', color: 'var(--blue)' },
-    { kw: ['launch','partnership','upgrade','更新','合作'],  tag: '項目', color: 'var(--bull)' },
-  ];
-  const tagify = (title) => {
-    for (const { kw, tag, color } of TAG_MAP) {
-      if (kw.some(k => title.toLowerCase().includes(k.toLowerCase()))) {
-        return `<span class="news-tag" style="background:${color}20;color:${color}">${tag}</span>`;
-      }
-    }
-    return '';
-  };
+  // 3. 動能（RSI + ADX）
+  const rsi = coin.rsi, adx = coin.adx;
+  let moColor = 'var(--text2)', moText = '';
+  if (rsi > 70)      { moColor = 'var(--bear)';    moText = `RSI ${rsi} 超買，短線注意回撤壓力`; }
+  else if (rsi > 58) { moColor = 'var(--bull)';    moText = `RSI ${rsi} 偏強，多頭動能充足`; }
+  else if (rsi < 30) { moColor = 'var(--bull)';    moText = `RSI ${rsi} 超賣，可觀察止跌信號`; }
+  else if (rsi < 42) { moColor = 'var(--bear)';    moText = `RSI ${rsi} 偏弱，空頭佔據主動`; }
+  else               { moColor = 'var(--neutral)'; moText = `RSI ${rsi} 中性`; }
+  moText += `　ADX ${adx}（${adx > 35 ? '趨勢強勁' : adx > 25 ? '趨勢確立' : adx > 18 ? '趨勢初現' : '震盪無趨勢'}）`;
+  points.push({ icon: '💫', color: moColor, label: '動能', text: moText });
 
-  // 取前5條最重要新聞（優先帶量看漲/看跌的）
-  const sorted = [...bullish.slice(0,3), ...bearish.slice(0,2), ...news.filter(n => !bullish.includes(n) && !bearish.includes(n)).slice(0,1)].slice(0,5);
+  // 4. 衍生品（若有數據）
+  if (deriv) {
+    const fr = deriv.fundingRate;
+    const ts = deriv.takerBuySell;
+    const tl = deriv.topLongRatio;
+    let derivText = '';
+    derivText += `資金費率 <strong style="color:${fr < -0.002 ? 'var(--bull)' : fr > 0.002 ? 'var(--bear)' : 'var(--text2)'}">${(fr*100).toFixed(4)}%</strong>`;
+    if (tl != null) derivText += `　頂級交易員多頭 <strong style="color:${tl > 0.55 ? 'var(--bull)' : tl < 0.45 ? 'var(--bear)' : 'var(--text2)'}">${(tl*100).toFixed(1)}%</strong>`;
+    if (ts != null) derivText += `　Taker 買賣比 <strong style="color:${ts > 1.1 ? 'var(--bull)' : ts < 0.9 ? 'var(--bear)' : 'var(--text2)'}">${ts.toFixed(2)}</strong>`;
+    const derivBull = (fr < -0.002 ? 1 : 0) + (tl > 0.55 ? 1 : 0) + (ts > 1.1 ? 1 : 0);
+    const derivBear = (fr > 0.002 ? 1 : 0) + (tl < 0.45 ? 1 : 0) + (ts < 0.9 ? 1 : 0);
+    const derivIcon = derivBull > derivBear ? '🟢' : derivBear > derivBull ? '🔴' : '⚪';
+    points.push({ icon: derivIcon, color: 'var(--blue)', label: '合約', text: derivText });
+  }
 
-  el.innerHTML = `<div class="news-summary">
-    <div class="news-sentiment-hdr">
-      <span>當前新聞情緒：<strong style="color:${sentColor}">${sentLabel}</strong></span>
-      <span class="news-sent-pct">
-        <span class="text-bull">▲${bullPct}%</span>
-        <span class="text-bear">▼${100-bullPct}%</span>
-      </span>
-    </div>
-    <div class="news-key-points">
-      ${sorted.map((item, i) => `
-        <div class="news-point">
-          <span class="news-point-num">${i+1}</span>
-          <div class="news-point-body">
-            ${tagify(item.title)}
-            <a href="${item.url}" target="_blank" rel="noopener" class="news-point-title">${item.title}</a>
-            <span class="news-point-src">${item.source?.title || ''}</span>
-          </div>
+  // 5. 市場情緒（F&G）
+  if (fearGreed) {
+    const v  = parseInt(fearGreed.value);
+    const zh = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fearGreed.value_classification] || fearGreed.value_classification;
+    const fc = v >= 75 ? 'var(--bear)' : v >= 55 ? '#ff6d00' : v <= 25 ? 'var(--bull)' : v <= 45 ? 'var(--sbull)' : 'var(--neutral)';
+    const advice = v >= 75 ? '市場過熱，短線謹慎追多' : v >= 55 ? '情緒偏樂觀，注意過熱' : v <= 25 ? '市場恐慌，逢低機會但波動大' : v <= 45 ? '情緒低迷，等待企穩' : '情緒中性，以技術為主';
+    points.push({ icon: '🧭', color: fc, label: '情緒', text: `恐慌貪婪指數 <strong style="color:${fc}">${v}（${zh}）</strong>　${advice}` });
+  }
+
+  // 6. 短線關鍵位
+  const h1sig = mtfData['1h']?.signal;
+  const swH   = h1sig?.swingHigh;
+  const swL   = h1sig?.swingLow;
+  if (swH && swL) {
+    const posColor = price >= swH * 0.998 ? 'var(--bull)' : price <= swL * 1.002 ? 'var(--bear)' : 'var(--text2)';
+    points.push({ icon: '📌', color: posColor, label: '關鍵位', text: `1h 壓力 <strong>${fmtPrice(swH)}</strong>　支撐 <strong>${fmtPrice(swL)}</strong>　現價 ${price >= swH * 0.998 ? '<span style="color:var(--bull)">貼近壓力，注意突破或反轉</span>' : price <= swL * 1.002 ? '<span style="color:var(--bear)">貼近支撐，注意守位或跌破</span>' : '位於震盪區間內'}` });
+  }
+
+  return `<div class="situation-list">
+    ${points.map(p => `
+      <div class="situation-item">
+        <span class="situ-icon">${p.icon}</span>
+        <div class="situ-content">
+          <span class="situ-label" style="color:${p.color}">${p.label}</span>
+          <span class="situ-text">${p.text}</span>
         </div>
-      `).join('')}
-    </div>
-    <div style="text-align:right;margin-top:8px">
-      <a href="https://cryptopanic.com" target="_blank" rel="noopener" style="font-size:0.78rem;color:var(--blue)">查看更多 →</a>
-    </div>
+      </div>
+    `).join('')}
   </div>`;
 }
 
@@ -825,48 +861,6 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   </div>`;
 }
 
-/* ── 恐慌貪婪指數面板 ─────────────────────────────────────── */
-function buildFearGreedPanel(fg) {
-  if (!fg) return '<div class="adv-loading">無法獲取情緒數據</div>';
-  const val   = parseInt(fg.value);
-  const label = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg.value_classification] || fg.value_classification;
-  const color = val >= 75 ? 'var(--bear)' : val >= 55 ? '#ff6d00' : val <= 25 ? 'var(--bull)' : val <= 45 ? '#69f0ae' : 'var(--neutral)';
-  return `<div class="fg-widget">
-    <div class="fg-num" style="color:${color}">${val}</div>
-    <div class="fg-label" style="color:${color}">${label}</div>
-    <div class="fg-bar-track"><div class="fg-bar-fill" style="width:${val}%;background:${color}"></div></div>
-    <div class="fg-scale"><span>恐慌</span><span>中性</span><span>貪婪</span></div>
-  </div>`;
-}
-
-/* ── 新聞面板（異步）─────────────────────────────────────── */
-async function loadNewsPanel() {
-  const el = document.getElementById('news-body');
-  if (!el) return;
-  const news = await fetchCryptoNews();
-  if (!news || news.length === 0) {
-    el.innerHTML = `<div class="news-fallback">
-      <p style="color:var(--text3);font-size:0.82rem;margin-bottom:10px">新聞 API 無法訪問（可能受網絡限制），請直接前往以下網站</p>
-      <div class="news-links">
-        <a href="https://cointelegraph.com" target="_blank" class="news-link-btn">CoinTelegraph</a>
-        <a href="https://coindesk.com" target="_blank" class="news-link-btn">CoinDesk</a>
-        <a href="https://decrypt.co" target="_blank" class="news-link-btn">Decrypt</a>
-        <a href="https://cryptopanic.com" target="_blank" class="news-link-btn">CryptoPanic</a>
-      </div>
-    </div>`;
-    return;
-  }
-  el.innerHTML = news.map(item => {
-    const t   = new Date(item.published_at).toLocaleString('zh-TW', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
-    const src = item.source?.title || '';
-    const v   = item.votes;
-    const sent = v && v.positive > v.negative ? 'bullish' : v && v.negative > v.positive ? 'bearish' : '';
-    return `<a href="${item.url}" target="_blank" rel="noopener" class="news-item ${sent}">
-      <div class="news-title">${item.title}</div>
-      <div class="news-meta"><span>${src}</span><span>${t}</span>${sent ? `<span class="news-sent ${sent}">${sent==='bullish'?'看漲':'看跌'}</span>` : ''}</div>
-    </a>`;
-  }).join('');
-}
 
 /* ── 幣種詳情（async）────────────────────────────────────── */
 async function renderCoinDetail(symbol) {
@@ -939,7 +933,7 @@ async function renderCoinDetail(symbol) {
 
   // 重置所有異步區塊
   const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
-  setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('fg-body'); setL('news-body');
+  setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('situation-body');
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
@@ -952,14 +946,12 @@ async function renderCoinDetail(symbol) {
 
   const set = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
 
-  set('deriv-body',  buildDerivativesPanel(deriv));
-  set('setup-body',  buildTradeSetup(coin, mtfData, deriv));
-  set('mtf-body',    buildMTFTable(mtfData));
-  set('of-body',     buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
-  set('ai-body',     generateAIAnalysis(coin, mtfData, fearGreed));
-  set('fg-body',     buildFearGreedPanel(fearGreed));
-
-  loadNewsSummary();
+  set('deriv-body',     buildDerivativesPanel(deriv));
+  set('setup-body',     buildTradeSetup(coin, mtfData, deriv));
+  set('mtf-body',       buildMTFTable(mtfData));
+  set('of-body',        buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
+  set('ai-body',        generateAIAnalysis(coin, mtfData, fearGreed));
+  set('situation-body', buildSituationSummary(coin, mtfData, deriv, fearGreed));
 }
 
 function setTag(id, text, color) {

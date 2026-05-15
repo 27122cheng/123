@@ -1016,40 +1016,23 @@ a { text-decoration: none; cursor: pointer; }
 .news-link-btn:hover { background: rgba(0,212,255,0.14); }
 
 /* ── 新聞重點整理 ────────────────────────────────────────────── */
-.news-summary { display: flex; flex-direction: column; gap: 10px; }
-.news-sentiment-hdr {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 8px 12px; background: rgba(255,255,255,0.03);
-  border-radius: 8px; font-size: 0.83rem;
-}
-.news-sent-pct { display: flex; gap: 10px; font-size: 0.78rem; font-weight: 600; }
-.news-key-points { display: flex; flex-direction: column; gap: 8px; }
-.news-point {
-  display: flex; gap: 10px; align-items: flex-start;
-  padding: 8px 12px; border-radius: 8px;
-  background: rgba(255,255,255,0.02);
-  border: 1px solid rgba(255,255,255,0.05);
+/* ── 局勢重點 ─────────────────────────────────────────────── */
+.situation-list { display: flex; flex-direction: column; gap: 10px; }
+.situation-item {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 10px 14px; border-radius: 10px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
   transition: background 0.15s;
 }
-.news-point:hover { background: rgba(255,255,255,0.04); }
-.news-point-num {
-  flex-shrink: 0; width: 20px; height: 20px;
-  background: rgba(0,212,255,0.12); color: var(--blue);
-  border-radius: 50%; font-size: 0.72rem; font-weight: 700;
-  display: flex; align-items: center; justify-content: center;
+.situation-item:hover { background: rgba(255,255,255,0.04); }
+.situ-icon { font-size: 1.15rem; flex-shrink: 0; line-height: 1.4; }
+.situ-content { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.situ-label {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
-.news-point-body { display: flex; flex-direction: column; gap: 3px; flex: 1; }
-.news-tag {
-  display: inline-block; padding: 1px 6px; border-radius: 4px;
-  font-size: 0.65rem; font-weight: 700; margin-bottom: 2px;
-  width: fit-content;
-}
-.news-point-title {
-  font-size: 0.82rem; color: var(--text); line-height: 1.45;
-  text-decoration: none;
-}
-.news-point-title:hover { color: var(--blue); }
-.news-point-src { font-size: 0.72rem; color: var(--text3); }
+.situ-text { font-size: 0.83rem; color: var(--text2); line-height: 1.5; }
 
 /* ── 衍生品合約數據 ──────────────────────────────────────────── */
 .deriv-grid {
