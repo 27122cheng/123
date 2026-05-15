@@ -666,6 +666,76 @@
         </div>
       </div>
 
+      <!-- 交易信號通知 -->
+      <div class="settings-card">
+        <h3 class="settings-group-ttl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          交易信號通知
+        </h3>
+
+        <!-- 瀏覽器推播 -->
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">📲 瀏覽器推播通知</div>
+            <div class="setting-desc">分頁開啟時收到桌面通知（無需帳號）</div>
+          </div>
+          <button id="s-notif-browser-btn" class="btn-ghost" onclick="requestBrowserNotifPermission()" style="white-space:nowrap;min-width:90px">點擊啟用</button>
+        </div>
+
+        <!-- Telegram -->
+        <div class="setting-row vertical" style="gap:10px;margin-top:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div class="setting-name">✈️ Telegram Bot 通知</div>
+              <div class="setting-desc">信號出現時主動推送到手機（免費、即時）</div>
+            </div>
+            <label class="toggle-wrap">
+              <input type="checkbox" id="s-tg-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div class="tg-setup-grid">
+            <div class="tg-field">
+              <label class="tg-label">Bot Token</label>
+              <input id="s-tg-token" type="password" class="setting-input" placeholder="1234567890:ABCD..." autocomplete="off" />
+            </div>
+            <div class="tg-field">
+              <label class="tg-label">Chat ID</label>
+              <input id="s-tg-chatid" type="text" class="setting-input" placeholder="123456789" autocomplete="off" />
+            </div>
+          </div>
+          <button class="btn-ghost" onclick="testTelegramNotif()" style="align-self:flex-start;font-size:0.82rem">📨 發送測試訊息</button>
+          <div class="tg-guide">
+            <div class="tg-guide-title">📖 Telegram 設定步驟</div>
+            <ol class="tg-guide-steps">
+              <li>在 Telegram 搜尋 <code>@BotFather</code>，發送 <code>/newbot</code> 建立 Bot，取得 <strong>Bot Token</strong></li>
+              <li>搜尋 <code>@userinfobot</code>，發送任意訊息，取得你的 <strong>Chat ID</strong></li>
+              <li>先向你的 Bot 發送一條訊息（不然 Bot 無法主動聯繫你）</li>
+              <li>填入上方欄位後點「發送測試訊息」驗證</li>
+            </ol>
+            <div style="font-size:0.75rem;color:var(--text3);margin-top:6px">⚠ LINE Notify 已於 2025年4月終止服務；Telegram 為目前最佳免費替代方案</div>
+          </div>
+        </div>
+
+        <!-- 通知門檻 -->
+        <div class="setting-row" style="margin-top:8px">
+          <div class="setting-name">做多通知門檻</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="range" id="s-notif-bull-thr" min="60" max="85" value="65"
+              oninput="document.getElementById('notif-bull-val').textContent=this.value" />
+            <span id="notif-bull-val" style="width:28px;text-align:right;color:var(--bull);font-weight:700">65</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-name">做空通知門檻</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="range" id="s-notif-bear-thr" min="15" max="40" value="35"
+              oninput="document.getElementById('notif-bear-val').textContent=this.value" />
+            <span id="notif-bear-val" style="width:28px;text-align:right;color:var(--bear);font-weight:700">35</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 自定義幣種管理 -->
       <div class="settings-card pairs-mgr-card">
         <h3 class="settings-group-ttl">

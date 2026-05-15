@@ -411,6 +411,36 @@ async function fetchHalvingInfo() {
   } catch { return null; }
 }
 
+/* ── Telegram Bot 通知（直接從瀏覽器呼叫，不需後端）────────── */
+async function sendTelegramMessage(token, chatId, text) {
+  if (!token || !chatId) return false;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    });
+    return res.ok;
+  } catch { return false; }
+}
+
+function buildTelegramText(coin, direction) {
+  const isLong  = direction === 'long';
+  const icon    = isLong ? '▲' : '▼';
+  const dirTx   = isLong ? '做多（Long）' : '做空（Short）';
+  const time    = new Date().toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+  return `🚨 <b>交易信號提醒</b>
+
+${icon} <b>${dirTx}：${coin.symbol}</b>
+📊 綜合評分：<b>${coin.score}</b> / 100
+📈 趨勢判斷：${coin.trend}
+💰 現價：<b>$${coin.price}</b>
+📉 RSI：${coin.rsi} ｜ ADX：${coin.adx}
+
+⏰ ${time}
+#${coin.symbol.replace('/USDT','')} #crypto #${isLong ? 'long' : 'short'}`;
+}
+
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */
 async function fetchMarketData(timeframe = '15m') {
   const settings = loadSettings();
@@ -456,6 +486,12 @@ const DEFAULT_SETTINGS = {
   apiKey:          '6bD4UNcdb8wfkHVa3Zd2D4hfsEmcEwtqMBxr2GZe2XFQ2jvdCjT4vtg5cSD4BWcPtV',
   bullThreshold:   60,
   bearThreshold:   40,
+  notifBrowser:    false,
+  notifTelegram:   false,
+  tgToken:         '',
+  tgChatId:        '',
+  notifBullScore:  65,
+  notifBearScore:  35,
 };
 
 function loadSettings() {

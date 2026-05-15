@@ -105,6 +105,7 @@ function startRefreshCycle() {
     hideScanBar();
     applyFilters();
     renderAll();
+    checkAndSendAlerts(data);
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
@@ -1442,7 +1443,102 @@ function triggerRescan() {
     state.data = data; state.dataSource = source;
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
+    checkAndSendAlerts(data);
   });
+}
+
+/* ── 信號偵測與通知發送 ──────────────────────────────────────── */
+const SIGNAL_CACHE_KEY = 'csp_signal_cache';
+
+async function checkAndSendAlerts(data) {
+  const s = loadSettings();
+  if (!s.notifBrowser && !s.notifTelegram) return;
+
+  const bullThr = s.notifBullScore || 65;
+  const bearThr = s.notifBearScore || 35;
+  const prev    = JSON.parse(localStorage.getItem(SIGNAL_CACHE_KEY) || '{}');
+  const next    = {};
+
+  for (const coin of data) {
+    const isLong  = coin.score >= bullThr && (coin.trend === '強勢看漲' || coin.trend === '看漲');
+    const isShort = coin.score <= bearThr && (coin.trend === '強勢看跌' || coin.trend === '看跌');
+    if (!isLong && !isShort) continue;
+
+    const dir = isLong ? 'long' : 'short';
+    next[coin.symbol] = dir;
+
+    if (prev[coin.symbol] === dir) continue; // 已通知過，跳過
+
+    if (s.notifBrowser) {
+      sendBrowserNotification(
+        `${isLong ? '▲ 做多' : '▼ 做空'} 信號：${coin.symbol}`,
+        `評分 ${coin.score} | ${coin.trend} | 現價 $${coin.price}`,
+        coin.symbol
+      );
+    }
+    if (s.notifTelegram && s.tgToken && s.tgChatId) {
+      sendTelegramMessage(s.tgToken, s.tgChatId, buildTelegramText(coin, dir));
+    }
+  }
+
+  localStorage.setItem(SIGNAL_CACHE_KEY, JSON.stringify(next));
+}
+
+function sendBrowserNotification(title, body, tag) {
+  if (Notification.permission !== 'granted') return;
+  try {
+    new Notification(title, {
+      body,
+      tag:  tag || 'csp-signal',
+      icon: '/favicon.ico',
+      requireInteraction: true,
+    });
+  } catch (e) { console.warn('Notification failed', e); }
+}
+
+async function requestBrowserNotifPermission() {
+  if (!('Notification' in window)) {
+    showToast('此瀏覽器不支援推播通知', 'error'); return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    saveSettings({ notifBrowser: true });
+    state.settings = loadSettings();
+    updateNotifBtn();
+    showToast('瀏覽器通知已啟用 ✓', 'success');
+    new Notification('加密掃描 Pro', { body: '交易信號通知已開啟！', tag: 'csp-test' });
+  } else {
+    saveSettings({ notifBrowser: false });
+    state.settings = loadSettings();
+    updateNotifBtn();
+    showToast('通知權限被拒絕，請在瀏覽器設定中手動允許', 'error');
+  }
+}
+
+function updateNotifBtn() {
+  const btn = document.getElementById('s-notif-browser-btn');
+  if (!btn) return;
+  const perm = Notification.permission;
+  const on   = perm === 'granted' && loadSettings().notifBrowser;
+  btn.textContent  = on ? '✓ 已啟用' : perm === 'denied' ? '⚠ 已被封鎖' : '點擊啟用';
+  btn.style.background = on ? 'rgba(0,230,118,0.15)' : perm === 'denied' ? 'rgba(255,29,68,0.15)' : '';
+  btn.style.color = on ? 'var(--bull)' : perm === 'denied' ? 'var(--bear)' : '';
+}
+
+async function testTelegramNotif() {
+  const token  = document.getElementById('s-tg-token')?.value.trim();
+  const chatId = document.getElementById('s-tg-chatid')?.value.trim();
+  if (!token || !chatId) { showToast('請先填入 Token 和 Chat ID', 'error'); return; }
+  showToast('正在發送測試訊息...', 'info');
+  const ok = await sendTelegramMessage(token, chatId,
+    '✅ <b>加密掃描 Pro</b>\n\n測試訊息發送成功！\n交易信號通知已連接。');
+  if (ok) {
+    saveSettings({ notifTelegram: true, tgToken: token, tgChatId: chatId });
+    state.settings = loadSettings();
+    showToast('Telegram 測試成功！已儲存設定', 'success');
+  } else {
+    showToast('發送失敗，請確認 Token 和 Chat ID 是否正確', 'error');
+  }
 }
 
 function renderPairsList() {
@@ -1485,6 +1581,19 @@ function populateSettingsPage() {
   const bear = document.getElementById('s-bear-threshold');
   if (bear) { bear.value = s.bearThreshold || 40; document.getElementById('bear-thr-val').textContent = bear.value; }
 
+  // 通知設定
+  const tgToken  = document.getElementById('s-tg-token');
+  const tgChatId = document.getElementById('s-tg-chatid');
+  const tgToggle = document.getElementById('s-tg-toggle');
+  const nBullThr = document.getElementById('s-notif-bull-thr');
+  const nBearThr = document.getElementById('s-notif-bear-thr');
+  if (tgToken)  tgToken.value  = s.tgToken  || '';
+  if (tgChatId) tgChatId.value = s.tgChatId || '';
+  if (tgToggle) tgToggle.checked = !!s.notifTelegram;
+  if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
+  if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
+  updateNotifBtn();
+
   renderPairsList();
 }
 
@@ -1500,6 +1609,11 @@ function saveAllSettings() {
     apiKey,
     bullThreshold:   parseInt(document.getElementById('s-bull-threshold')?.value) || 60,
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
+    notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
+    tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
+    tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
+    notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
+    notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();

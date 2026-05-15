@@ -1179,6 +1179,43 @@ a { text-decoration: none; cursor: pointer; }
   .deriv-grid { grid-template-columns: 1fr 1fr; }
 }
 
+/* ── 通知設定 ────────────────────────────────────────────────── */
+.tg-setup-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.tg-field { display: flex; flex-direction: column; gap: 4px; }
+.tg-label { font-size: 0.75rem; color: var(--text3); }
+.tg-guide {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px; padding: 12px 14px;
+  margin-top: 4px;
+}
+.tg-guide-title { font-size: 0.8rem; font-weight: 700; margin-bottom: 8px; }
+.tg-guide-steps {
+  padding-left: 16px; display: flex; flex-direction: column; gap: 5px;
+}
+.tg-guide-steps li { font-size: 0.78rem; color: var(--text2); line-height: 1.5; }
+.tg-guide-steps code {
+  background: rgba(0,212,255,0.1); color: var(--blue);
+  padding: 1px 5px; border-radius: 4px; font-size: 0.8em;
+}
+.toggle-wrap { display: flex; align-items: center; cursor: pointer; }
+.toggle-track {
+  width: 40px; height: 22px; background: rgba(255,255,255,0.1);
+  border-radius: 11px; position: relative; transition: 0.2s;
+  border: 1px solid rgba(255,255,255,0.15);
+}
+input:checked + .toggle-track { background: rgba(0,230,118,0.3); border-color: var(--bull); }
+.toggle-thumb {
+  position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; background: var(--text3);
+  border-radius: 50%; transition: 0.2s;
+}
+input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull); }
+.toggle-wrap input { display: none; }
+@media (max-width: 500px) { .tg-setup-grid { grid-template-columns: 1fr; } }
+
 .settings-footer {
   display: flex; gap: 12px; align-items: center; padding-top: 8px;
 }
