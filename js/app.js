@@ -812,17 +812,45 @@ function buildMTFTable(mtfData) {
 /* ── 訂單流面板 ───────────────────────────────────────────── */
 function buildOrderFlowPanel(coin, of15m) {
   if (!of15m) return '<div class="adv-loading">訂單流數據不可用</div>';
-  const cvdColor = of15m.cvdTrend === 'bull' ? 'var(--bull)' : 'var(--bear)';
-  const cvdTx    = of15m.cvdTrend === 'bull' ? '↑ 上升，資金持續流入' : '↓ 下降，資金持續流出';
+
+  // CVD 標籤：結合整體趨勢與近期 Delta，避免方向矛盾
+  let cvdColor, cvdTx;
+  const recentBull = of15m.recentDeltaSum >= 0;
+  if (of15m.cvdTrend === 'bull' && recentBull) {
+    cvdColor = 'var(--bull)';   cvdTx = '↑ 持續上升，買盤主導';
+  } else if (of15m.cvdTrend === 'bull' && !recentBull) {
+    cvdColor = 'var(--neutral)'; cvdTx = '↗ 整體偏升，但近期轉為賣出';
+  } else if (of15m.cvdTrend === 'bear' && !recentBull) {
+    cvdColor = 'var(--bear)';   cvdTx = '↓ 持續下降，賣盤主導';
+  } else {
+    cvdColor = 'var(--neutral)'; cvdTx = '↘ 整體偏降，但近期轉為買入';
+  }
+
   const volColor = of15m.volRatio >= 1.5 ? 'var(--bull)' : of15m.volRatio >= 1 ? 'var(--neutral)' : 'var(--text3)';
   const volTx    = of15m.volRatio >= 1.5 ? '顯著放量 🔥' : of15m.volRatio >= 1 ? '正常量' : '縮量';
-  const dColor   = of15m.recentDeltaSum >= 0 ? 'var(--bull)' : 'var(--bear)';
-  const dIcon    = of15m.recentDeltaSum >= 0 ? '▲' : '▼';
-  const pressureTx = of15m.buyPct >= 65 ? '主動買盤為主，多方主導'
-    : of15m.buyPct >= 55 ? '買方略佔優勢'
-    : of15m.buyPct <= 35 ? '主動賣盤為主，空方主導'
-    : of15m.buyPct <= 45 ? '賣方略佔優勢' : '買賣均衡，觀望為主';
-  const pClr = of15m.buyPct >= 60 ? 'var(--bull)' : of15m.buyPct <= 40 ? 'var(--bear)' : 'var(--neutral)';
+  const dColor   = recentBull ? 'var(--bull)' : 'var(--bear)';
+  const dIcon    = recentBull ? '▲' : '▼';
+
+  // 資金流向判斷：三個指標多數決（buyPct + 近期Delta + CVD趨勢）
+  const bBuy  = of15m.buyPct >= 55;
+  const bDelta = recentBull;
+  const bCVD  = of15m.cvdTrend === 'bull';
+  const bullCount = (bBuy ? 1 : 0) + (bDelta ? 1 : 0) + (bCVD ? 1 : 0);
+  const bearCount = 3 - bullCount;
+
+  let pressureTx, pClr;
+  if (bullCount === 3) {
+    pressureTx = '三項指標一致看多，主動買盤主導'; pClr = 'var(--bull)';
+  } else if (bearCount === 3) {
+    pressureTx = '三項指標一致看空，主動賣盤主導'; pClr = 'var(--bear)';
+  } else if (bullCount === 2) {
+    const conf = bBuy ? '買賣壓' : bDelta ? '近期Delta' : 'CVD';
+    pressureTx = `多方佔優（${conf}偏多），但有分歧`; pClr = 'var(--sbull)';
+  } else {
+    const conf = !bBuy ? '買賣壓' : !bDelta ? '近期Delta' : 'CVD';
+    pressureTx = `空方佔優（${conf}偏空），但有分歧`; pClr = 'var(--sbear)';
+  }
+
   return `<div class="of-grid">
     <div class="of-block">
       <div class="of-label">買賣方壓力（近20根K棒）</div>
@@ -840,7 +868,9 @@ function buildOrderFlowPanel(coin, of15m) {
       <div class="of-sub">近20根大K棒：<span style="color:var(--neutral)">${of15m.bigCandles} 根</span></div>
     </div>
     <div class="of-block">
-      <div class="of-label">資金流向判斷</div>
+      <div class="of-label">資金流向判斷
+        <span style="font-size:0.7rem;color:var(--text3);font-weight:400;margin-left:4px">（買賣壓 / 近期Delta / CVD 三項多數決）</span>
+      </div>
       <div class="of-stat" style="color:${pClr}">${pressureTx}</div>
     </div>
   </div>`;
