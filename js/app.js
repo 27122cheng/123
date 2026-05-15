@@ -453,7 +453,194 @@ function renderReversalCards() {
 }
 
 /* ── 币种详情 ───────────────────────────────────────────────── */
-function renderCoinDetail(symbol) {
+/* ── 多週期分析表 ─────────────────────────────────────────── */
+function buildMTFTable(mtfData) {
+  const tfs = [
+    { key: '15m', label: '15分' }, { key: '1h', label: '1小時' },
+    { key: '4h', label: '4小時' }, { key: '1d', label: '日線' },
+  ];
+  const sigLabel = {
+    strong_bull: '<span class="text-bull">強勢看漲 ▲▲</span>',
+    bull_break:  '<span class="text-bull">帶量突破 ▲</span>',
+    bull:        '<span class="text-bull">偏多 ↑</span>',
+    neutral:     '<span class="text-neutral">中性 ◆</span>',
+    bear:        '<span class="text-bear">偏空 ↓</span>',
+    bear_break:  '<span class="text-bear">帶量跌破 ▼</span>',
+    strong_bear: '<span class="text-bear">強勢看跌 ▼▼</span>',
+  };
+  let bullCount = 0, bearCount = 0;
+  const rows = tfs.map(({ key, label }) => {
+    const d = mtfData[key];
+    if (!d || !d.signal) return `<tr><td class="mtf-tf">${label}</td><td colspan="5" style="color:var(--text3)">數據不足</td></tr>`;
+    const s = d.signal;
+    if (s.signal.includes('bull')) bullCount++;
+    if (s.signal.includes('bear')) bearCount++;
+    const breakCell = s.bullBreak ? '<span class="text-bull">✅ 實體貫穿高點</span>'
+      : s.bearBreak ? '<span class="text-bear">✅ 實體貫穿低點</span>'
+      : '<span style="color:var(--text3)">—</span>';
+    const volCell = s.isHighVol
+      ? `<span class="text-bull">${s.volRatio}x ▲放量</span>`
+      : `<span style="color:var(--text3)">${s.volRatio}x</span>`;
+    return `<tr>
+      <td class="mtf-tf">${label}</td>
+      <td>${sigLabel[s.signal] || '--'}</td>
+      <td style="color:${rsiColor(s.rsi)}">${s.rsi}</td>
+      <td>${breakCell}</td>
+      <td>${volCell}</td>
+      <td style="font-size:0.72rem;color:var(--text3)">${fmtPrice(s.swingHigh)}<br>${fmtPrice(s.swingLow)}</td>
+    </tr>`;
+  }).join('');
+  const badge = document.getElementById('mtf-badge');
+  if (badge) {
+    const txt = bullCount >= 3 ? '多頭主導' : bearCount >= 3 ? '空頭主導' : '多空分歧';
+    const clr = bullCount >= 3 ? 'var(--bull)' : bearCount >= 3 ? 'var(--bear)' : 'var(--neutral)';
+    const bg  = bullCount >= 3 ? 'rgba(0,230,118,0.12)' : bearCount >= 3 ? 'rgba(255,29,68,0.12)' : 'rgba(255,215,64,0.12)';
+    badge.textContent = txt; badge.style.color = clr; badge.style.background = bg;
+  }
+  return `<div class="mtf-wrap"><table class="mtf-table">
+    <thead><tr>
+      <th>週期</th><th>信號</th><th>RSI</th><th>K棒突破</th><th>成交量/均量</th><th>高點 / 低點</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/* ── 訂單流面板 ───────────────────────────────────────────── */
+function buildOrderFlowPanel(coin, of15m) {
+  if (!of15m) return '<div class="adv-loading">訂單流數據不可用</div>';
+  const cvdColor = of15m.cvdTrend === 'bull' ? 'var(--bull)' : 'var(--bear)';
+  const cvdTx    = of15m.cvdTrend === 'bull' ? '↑ 上升，資金持續流入' : '↓ 下降，資金持續流出';
+  const volColor = of15m.volRatio >= 1.5 ? 'var(--bull)' : of15m.volRatio >= 1 ? 'var(--neutral)' : 'var(--text3)';
+  const volTx    = of15m.volRatio >= 1.5 ? '顯著放量 🔥' : of15m.volRatio >= 1 ? '正常量' : '縮量';
+  const dColor   = of15m.recentDeltaSum >= 0 ? 'var(--bull)' : 'var(--bear)';
+  const dIcon    = of15m.recentDeltaSum >= 0 ? '▲' : '▼';
+  const pressureTx = of15m.buyPct >= 65 ? '主動買盤為主，多方主導'
+    : of15m.buyPct >= 55 ? '買方略佔優勢'
+    : of15m.buyPct <= 35 ? '主動賣盤為主，空方主導'
+    : of15m.buyPct <= 45 ? '賣方略佔優勢' : '買賣均衡，觀望為主';
+  const pClr = of15m.buyPct >= 60 ? 'var(--bull)' : of15m.buyPct <= 40 ? 'var(--bear)' : 'var(--neutral)';
+  return `<div class="of-grid">
+    <div class="of-block">
+      <div class="of-label">買賣方壓力（近20根K棒）</div>
+      <div class="of-bar-wrap"><div class="of-bar-buy" style="width:${of15m.buyPct}%"></div></div>
+      <div class="of-pcts"><span class="text-bull">${of15m.buyPct}% 買方</span><span class="text-bear">${of15m.sellPct}% 賣方</span></div>
+    </div>
+    <div class="of-block">
+      <div class="of-label">累積成交量差（CVD）</div>
+      <div class="of-stat" style="color:${cvdColor}">${cvdTx}</div>
+      <div class="of-sub">近10根淨Delta：<span style="color:${dColor}">${dIcon} ${fmtVolume(Math.abs(of15m.recentDeltaSum))}</span></div>
+    </div>
+    <div class="of-block">
+      <div class="of-label">成交量 vs 均量（20期）</div>
+      <div class="of-stat" style="color:${volColor}">${of15m.volRatio}x ${volTx}</div>
+      <div class="of-sub">近20根大K棒：<span style="color:var(--neutral)">${of15m.bigCandles} 根</span></div>
+    </div>
+    <div class="of-block">
+      <div class="of-label">資金流向判斷</div>
+      <div class="of-stat" style="color:${pClr}">${pressureTx}</div>
+    </div>
+  </div>`;
+}
+
+/* ── AI 市場分析 ──────────────────────────────────────────── */
+function generateAIAnalysis(coin, mtfData, fearGreed) {
+  const tfLabels = { '15m': '15分鐘', '1h': '1小時', '4h': '4小時', '1d': '日線' };
+  const sigs    = ['15m','1h','4h','1d'].map(tf => ({ tf, d: mtfData[tf]?.signal })).filter(x => x.d);
+  const bullTFs = sigs.filter(x => x.d.signal.includes('bull')).map(x => tfLabels[x.tf]);
+  const bearTFs = sigs.filter(x => x.d.signal.includes('bear')).map(x => tfLabels[x.tf]);
+  const breaks  = sigs.filter(x => x.d.bullBreak || x.d.bearBreak);
+  const vBreaks = breaks.filter(x => x.d.isHighVol);
+
+  let p1;
+  if (bullTFs.length >= bearTFs.length + 2)
+    p1 = `📈 多週期分析顯示 <strong>${coin.symbol}</strong> 整體偏多。${bullTFs.length ? `在 <strong>${bullTFs.join('、')}</strong> 週期均呈現看漲信號` : ''}${bearTFs.length ? `，但 <strong>${bearTFs.join('、')}</strong> 存在偏空壓力，注意短線回調風險。` : '，多頭方向較一致。'}`;
+  else if (bearTFs.length >= bullTFs.length + 2)
+    p1 = `📉 多週期分析顯示 <strong>${coin.symbol}</strong> 整體偏空。${bearTFs.length ? `在 <strong>${bearTFs.join('、')}</strong> 週期呈現看跌信號` : ''}${bullTFs.length ? `，但 <strong>${bullTFs.join('、')}</strong> 存在支撐。` : '，空頭趨勢較強勢。'}`;
+  else
+    p1 = `🔄 <strong>${coin.symbol}</strong> 多空信號分歧（看漲: ${bullTFs.join('、') || '無'}；看跌: ${bearTFs.join('、') || '無'}），建議等待方向性突破確認後再行操作。`;
+
+  let p2 = '';
+  if (vBreaks.length > 0) {
+    const dir = vBreaks[0].d.bullBreak ? '高點' : '低點';
+    p2 = `⚡ <strong>帶量突破</strong>：<strong>${vBreaks.map(x => tfLabels[x.tf]).join('、')}</strong> 週期出現實體K棒貫穿${dir}且伴隨顯著放量，信號有效性高。`;
+  } else if (breaks.length > 0) {
+    const dir = breaks[0].d.bullBreak ? '高點' : '低點';
+    p2 = `⚠️ <strong>${breaks.map(x => tfLabels[x.tf]).join('、')}</strong> 出現K棒突破${dir}但量能未顯著放大，需等待量能配合確認有效性。`;
+  }
+
+  let p3 = '';
+  if (fearGreed) {
+    const v  = parseInt(fearGreed.value);
+    const zh = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fearGreed.value_classification] || fearGreed.value_classification;
+    const c  = v >= 75 ? 'var(--bear)' : v >= 55 ? '#ff6d00' : v <= 25 ? 'var(--bull)' : v <= 45 ? '#69f0ae' : 'var(--neutral)';
+    if (v >= 75)      p3 = `📊 市場情緒指數 <strong style="color:${c}">${v}（${zh}）</strong>：極度貪婪，歷史上此區間往往面臨較大回調壓力，建議不追高、分批止盈。`;
+    else if (v >= 55) p3 = `📊 市場情緒指數 <strong style="color:${c}">${v}（${zh}）</strong>：情緒偏貪婪，整體趨樂觀，注意過熱風險。`;
+    else if (v <= 25) p3 = `📊 市場情緒指數 <strong style="color:${c}">${v}（${zh}）</strong>：極度恐慌，歷史上往往為中長線較佳布局區域，短期波動仍大，建議分批布局。`;
+    else if (v <= 45) p3 = `📊 市場情緒指數 <strong style="color:${c}">${v}（${zh}）</strong>：情緒偏恐慌，可觀察底部止跌信號。`;
+    else              p3 = `📊 市場情緒指數 <strong style="color:var(--neutral)">${v}（${zh}）</strong>：情緒中性，多空分歧，以技術信號為主要參考。`;
+  }
+
+  const rsi = coin.rsi, adx = coin.adx;
+  let p4;
+  const h1Swing = mtfData['1h']?.signal?.swingHigh;
+  const h1Low   = mtfData['1h']?.signal?.swingLow;
+  if (rsi > 70 && adx > 30)              p4 = `⚠️ <strong>操作建議</strong>：RSI 超買（${rsi}）且趨勢強勁（ADX ${adx}），不宜追高，等待回調至 EMA20（${fmtPrice(coin.ema20)}）附近再考慮介入，設置嚴格止損。`;
+  else if (rsi < 30 && adx > 25)         p4 = `💡 <strong>操作建議</strong>：RSI 超賣（${rsi}），若出現帶量反彈K棒可輕倉試多，止損設於近期低點下方。`;
+  else if (bullTFs.length > bearTFs.length && adx > 22) p4 = `✅ <strong>操作建議</strong>：多頭趨勢中（ADX ${adx}），可在回撤至 EMA20（${fmtPrice(coin.ema20)}）附近結合訂單流確認後介入，風險收益比較佳。`;
+  else if (bearTFs.length > bullTFs.length && adx > 22) p4 = `📉 <strong>操作建議</strong>：空頭趨勢中（ADX ${adx}），避免逆勢做多，等待 RSI 底部背離或帶量止跌K棒信號出現後再考慮布局。`;
+  else                                    p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。`;
+
+  return `<div class="ai-analysis-body">
+    <div class="ai-para">${p1}</div>
+    ${p2 ? `<div class="ai-para">${p2}</div>` : ''}
+    ${p3 ? `<div class="ai-para">${p3}</div>` : ''}
+    <div class="ai-para">${p4}</div>
+  </div>`;
+}
+
+/* ── 恐慌貪婪指數面板 ─────────────────────────────────────── */
+function buildFearGreedPanel(fg) {
+  if (!fg) return '<div class="adv-loading">無法獲取情緒數據</div>';
+  const val   = parseInt(fg.value);
+  const label = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg.value_classification] || fg.value_classification;
+  const color = val >= 75 ? 'var(--bear)' : val >= 55 ? '#ff6d00' : val <= 25 ? 'var(--bull)' : val <= 45 ? '#69f0ae' : 'var(--neutral)';
+  return `<div class="fg-widget">
+    <div class="fg-num" style="color:${color}">${val}</div>
+    <div class="fg-label" style="color:${color}">${label}</div>
+    <div class="fg-bar-track"><div class="fg-bar-fill" style="width:${val}%;background:${color}"></div></div>
+    <div class="fg-scale"><span>恐慌</span><span>中性</span><span>貪婪</span></div>
+  </div>`;
+}
+
+/* ── 新聞面板（異步）─────────────────────────────────────── */
+async function loadNewsPanel() {
+  const el = document.getElementById('news-body');
+  if (!el) return;
+  const news = await fetchCryptoNews();
+  if (!news || news.length === 0) {
+    el.innerHTML = `<div class="news-fallback">
+      <p style="color:var(--text3);font-size:0.82rem;margin-bottom:10px">新聞 API 無法訪問（可能受網絡限制），請直接前往以下網站</p>
+      <div class="news-links">
+        <a href="https://cointelegraph.com" target="_blank" class="news-link-btn">CoinTelegraph</a>
+        <a href="https://coindesk.com" target="_blank" class="news-link-btn">CoinDesk</a>
+        <a href="https://decrypt.co" target="_blank" class="news-link-btn">Decrypt</a>
+        <a href="https://cryptopanic.com" target="_blank" class="news-link-btn">CryptoPanic</a>
+      </div>
+    </div>`;
+    return;
+  }
+  el.innerHTML = news.map(item => {
+    const t   = new Date(item.published_at).toLocaleString('zh-TW', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
+    const src = item.source?.title || '';
+    const v   = item.votes;
+    const sent = v && v.positive > v.negative ? 'bullish' : v && v.negative > v.positive ? 'bearish' : '';
+    return `<a href="${item.url}" target="_blank" rel="noopener" class="news-item ${sent}">
+      <div class="news-title">${item.title}</div>
+      <div class="news-meta"><span>${src}</span><span>${t}</span>${sent ? `<span class="news-sent ${sent}">${sent==='bullish'?'看漲':'看跌'}</span>` : ''}</div>
+    </a>`;
+  }).join('');
+}
+
+/* ── 幣種詳情（async）────────────────────────────────────── */
+async function renderCoinDetail(symbol) {
   const coin = state.data.find(d => d.symbol === symbol);
   if (!coin) return;
 
@@ -520,6 +707,29 @@ function renderCoinDetail(symbol) {
   document.getElementById('risk-desc').textContent = desc;
 
   setTimeout(() => loadTradingViewChart(symbol, tfToTV(state.timeframe)), 50);
+
+  // 重置異步區塊
+  const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
+  setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('fg-body'); setL('news-body');
+  const badge = document.getElementById('mtf-badge');
+  if (badge) badge.textContent = '';
+
+  // 並行獲取多週期數據 + 恐慌貪婪指數
+  const [mtfData, fearGreed] = await Promise.all([fetchMTFKlines(symbol), fetchFearGreed()]);
+
+  const mtfEl = document.getElementById('mtf-body');
+  if (mtfEl) mtfEl.innerHTML = buildMTFTable(mtfData);
+
+  const ofEl = document.getElementById('of-body');
+  if (ofEl) ofEl.innerHTML = buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null);
+
+  const aiEl = document.getElementById('ai-body');
+  if (aiEl) aiEl.innerHTML = generateAIAnalysis(coin, mtfData, fearGreed);
+
+  const fgEl = document.getElementById('fg-body');
+  if (fgEl) fgEl.innerHTML = buildFearGreedPanel(fearGreed);
+
+  loadNewsPanel();
 }
 
 function setTag(id, text, color) {
@@ -559,7 +769,7 @@ function loadTradingViewChart(symbol, interval) {
       state.tvWidget = new TradingView.widget({
         container_id: 'tv-chart-container',
         width:    '100%',
-        height:   500,
+        height:   700,
         symbol:   tvSymbol,
         interval: interval || '15',
         timezone: 'Asia/Shanghai',

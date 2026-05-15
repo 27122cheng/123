@@ -181,3 +181,110 @@ function analyzeKlines(symbol, raw) {
     strength:   Math.round(adx),
   };
 }
+
+/* ── 成交量移動平均 ─────────────────────────────────── */
+function calcVolSMA(volumes, period = 20) {
+  const len = Math.min(period, volumes.length);
+  return volumes.slice(-len).reduce((a, b) => a + b, 0) / len;
+}
+
+/* ── 每根K棒的成交量Delta估算 ─────────────────────── */
+function calcVolumeDelta(opens, closes, highs, lows, volumes) {
+  return volumes.map((v, i) => {
+    const range = highs[i] - lows[i];
+    if (range === 0) return v * (closes[i] >= opens[i] ? 0.5 : -0.5);
+    const body = Math.abs(closes[i] - opens[i]);
+    const pct  = body / range;
+    return closes[i] >= opens[i] ? pct * v : -pct * v;
+  });
+}
+
+/* ── 累積成交量差 CVD ──────────────────────────────── */
+function calcCVD(opens, closes, highs, lows, volumes) {
+  const deltas = calcVolumeDelta(opens, closes, highs, lows, volumes);
+  let sum = 0;
+  return deltas.map(d => (sum += d));
+}
+
+/* ── 近期擺動高低點 ───────────────────────────────── */
+function findSwingPoints(highs, lows, lookback = 30) {
+  const h = highs.slice(-lookback);
+  const l = lows.slice(-lookback);
+  return { swingHigh: Math.max(...h), swingLow: Math.min(...l) };
+}
+
+/* ── 完整訂單流分析 ──────────────────────────────── */
+function analyzeOrderFlow(raw) {
+  if (!raw || raw.length < 10) return null;
+  const { opens, closes, highs, lows, volumes } = parseKlines(raw);
+
+  const volSMA   = calcVolSMA(volumes, 20);
+  const lastVol  = volumes[volumes.length - 1];
+  const volRatio = volSMA > 0 ? lastVol / volSMA : 1;
+
+  const deltas = calcVolumeDelta(opens, closes, highs, lows, volumes);
+  const cvdArr = calcCVD(opens, closes, highs, lows, volumes);
+  const cvdLast = cvdArr[cvdArr.length - 1];
+  const cvdPrev = cvdArr[Math.max(0, cvdArr.length - 6)];
+
+  const recent20  = deltas.slice(-20);
+  const buyVol    = recent20.filter(d => d > 0).reduce((a, b) => a + b, 0);
+  const sellVol   = Math.abs(recent20.filter(d => d < 0).reduce((a, b) => a + b, 0));
+  const total     = buyVol + sellVol;
+  const buyPct    = total > 0 ? Math.round(buyVol / total * 100) : 50;
+
+  const v20mean   = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const bigCandles = volumes.slice(-20).filter(v => v > v20mean * 2).length;
+  const recentDeltaSum = deltas.slice(-10).reduce((a, b) => a + b, 0);
+
+  return {
+    volRatio:       parseFloat(volRatio.toFixed(2)),
+    volSMA,
+    lastVol,
+    cvdTrend:       cvdLast > cvdPrev ? 'bull' : 'bear',
+    cvdLast,
+    recentDeltaSum,
+    bigCandles,
+    buyPct,
+    sellPct: 100 - buyPct,
+  };
+}
+
+/* ── 單一時間框架突破信號 ─────────────────────────── */
+function analyzeTimeframeSignal(raw) {
+  if (!raw || raw.length < 30) return null;
+  const { opens, closes, highs, lows, volumes } = parseKlines(raw);
+  const price = closes[closes.length - 1];
+
+  const { swingHigh, swingLow } = findSwingPoints(highs, lows, 30);
+  const volSMA    = calcVolSMA(volumes, 20);
+  const lastVol   = volumes[volumes.length - 1];
+  const isHighVol = lastVol > volSMA * 1.4;
+  const volRatio  = volSMA > 0 ? parseFloat((lastVol / volSMA).toFixed(2)) : 1;
+
+  const n          = opens.length - 1;
+  const bodyHigh   = Math.max(opens[n], closes[n]);
+  const bodyLow    = Math.min(opens[n], closes[n]);
+  const isBullCdl  = closes[n] >= opens[n];
+
+  const bullBreak = isBullCdl && bodyLow <= swingHigh * 1.003 && bodyHigh > swingHigh * 1.001;
+  const bearBreak = !isBullCdl && bodyHigh >= swingLow * 0.997 && bodyLow < swingLow * 0.999;
+
+  const rsi   = calcRSI(closes, 14);
+  const ema20 = calcEMA(closes, 20);
+  const ema50 = calcEMA(closes, 50);
+
+  let signal = 'neutral';
+  if      (bullBreak && isHighVol) signal = 'strong_bull';
+  else if (bearBreak && isHighVol) signal = 'strong_bear';
+  else if (bullBreak)              signal = 'bull_break';
+  else if (bearBreak)              signal = 'bear_break';
+  else if (price > ema20 && ema20 > ema50 && rsi > 55) signal = 'bull';
+  else if (price < ema20 && ema20 < ema50 && rsi < 45) signal = 'bear';
+
+  return {
+    signal, price, rsi: parseFloat(rsi.toFixed(1)),
+    ema20, ema50, swingHigh, swingLow,
+    bullBreak, bearBreak, isHighVol, volRatio,
+  };
+}

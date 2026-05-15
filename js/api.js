@@ -287,6 +287,54 @@ function fmtPrice(p) {
   return parseFloat(p.toFixed(8));
 }
 
+/* ═══════════════════ 多週期 & 情緒數據 ══════════════════ */
+
+/* 獲取單幣多時間框架 K 線並分析 */
+async function fetchMTFKlines(symbol) {
+  const base = symbol.replace('/', '');
+  const tfs  = ['15m', '1h', '4h', '1d'];
+  const out  = {};
+
+  await Promise.allSettled(tfs.map(async tf => {
+    const raw = await fetchKlines(base, tf, 100);
+    if (raw && raw.length >= 30) {
+      out[tf] = {
+        signal:    analyzeTimeframeSignal(raw),
+        orderFlow: analyzeOrderFlow(raw),
+      };
+    }
+  }));
+
+  return out;
+}
+
+/* 恐慌貪婪指數 (alternative.me) */
+async function fetchFearGreed() {
+  try {
+    const ctrl = new AbortController();
+    const t    = setTimeout(() => ctrl.abort(), 5000);
+    const res  = await fetch('https://api.alternative.me/fng/?limit=1', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error();
+    return (await res.json()).data[0];
+  } catch { return null; }
+}
+
+/* 加密貨幣新聞 (CryptoPanic free) */
+async function fetchCryptoNews() {
+  try {
+    const ctrl = new AbortController();
+    const t    = setTimeout(() => ctrl.abort(), 7000);
+    const res  = await fetch(
+      'https://cryptopanic.com/api/free/v1/posts/?auth_token=free&kind=news&filter=hot&public=true',
+      { signal: ctrl.signal }
+    );
+    clearTimeout(t);
+    if (!res.ok) throw new Error();
+    return ((await res.json()).results || []).slice(0, 8);
+  } catch { return []; }
+}
+
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */
 async function fetchMarketData(timeframe = '15m') {
   const settings = loadSettings();
