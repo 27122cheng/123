@@ -424,21 +424,60 @@ async function sendTelegramMessage(token, chatId, text) {
   } catch { return false; }
 }
 
-function buildTelegramText(coin, direction) {
-  const isLong  = direction === 'long';
-  const icon    = isLong ? '▲' : '▼';
-  const dirTx   = isLong ? '做多（Long）' : '做空（Short）';
-  const time    = new Date().toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
-  return `🚨 <b>交易信號提醒</b>
+function buildTelegramText(coin, direction, setup, macro) {
+  const isLong = direction === 'long';
+  const icon   = isLong ? '▲' : '▼';
+  const dirTx  = isLong ? '做多（Long）' : '做空（Short）';
+  const time   = new Date().toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+  const sym    = coin.symbol.replace('/USDT','').replace('USDT','');
 
-${icon} <b>${dirTx}：${coin.symbol}</b>
-📊 綜合評分：<b>${coin.score}</b> / 100
-📈 趨勢判斷：${coin.trend}
-💰 現價：<b>$${coin.price}</b>
-📉 RSI：${coin.rsi} ｜ ADX：${coin.adx}
+  const p = parseFloat(coin.price) || 1;
+  const fmt = v => {
+    if (!v && v !== 0) return '--';
+    return p >= 1000 ? v.toFixed(1) : p >= 1 ? v.toFixed(3) : v.toFixed(6);
+  };
+  const pct = (a, b) => {
+    const d = ((b - a) / Math.abs(a) * 100);
+    return (d >= 0 ? '+' : '') + d.toFixed(2) + '%';
+  };
 
-⏰ ${time}
-#${coin.symbol.replace('/USDT','')} #crypto #${isLong ? 'long' : 'short'}`;
+  let msg = `🚨 <b>加密掃描 Pro — 交易信號</b>\n\n`;
+  msg += `${icon} <b>${dirTx}：${coin.symbol}</b>\n`;
+  msg += `📊 評分 <b>${coin.score}</b>/100 ｜ RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
+
+  if (setup) {
+    msg += `📍 <b>進場：$${fmt(setup.entry)}</b>\n`;
+    msg += `   ↳ ${setup.entryReason}\n\n`;
+
+    const tp1Pct = pct(setup.entry, setup.tp1);
+    msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${setup.rr1}:1)\n`;
+    msg += `   ↳ ${setup.tp1Reason}\n\n`;
+
+    const tp2Pct = pct(setup.entry, setup.tp2);
+    msg += `🚀 <b>止盈二：$${fmt(setup.tp2)}</b>  (${tp2Pct} | R:R ${setup.rr2}:1)\n`;
+    msg += `   ↳ ${setup.tp2Reason}\n\n`;
+
+    const slPct = pct(setup.entry, setup.sl);
+    msg += `🛑 <b>止損：$${fmt(setup.sl)}</b>  (${slPct})\n`;
+    msg += `   ↳ ${setup.slReason}\n\n`;
+  } else {
+    msg += `💰 現價：<b>$${coin.price}</b>  ｜  趨勢：${coin.trend}\n\n`;
+  }
+
+  if (macro) {
+    const parts = [];
+    if (macro.marketCapChange != null)
+      parts.push(`市值 ${macro.marketCapChange > 0 ? '+' : ''}${macro.marketCapChange}%`);
+    if (macro.btcDominance)
+      parts.push(`BTC 佔比 ${macro.btcDominance}%`);
+    if (macro.fg?.value)
+      parts.push(`F&G ${macro.fg.value}（${macro.fg.value_classification || ''}）`);
+    if (parts.length) msg += `🌐 宏觀：${parts.join(' ｜ ')}\n\n`;
+  }
+
+  msg += `⏰ ${time}\n`;
+  msg += `#${sym} #crypto #${isLong ? 'long' : 'short'}`;
+  return msg;
 }
 
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */

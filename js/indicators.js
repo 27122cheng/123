@@ -213,6 +213,43 @@ function findSwingPoints(highs, lows, lookback = 30) {
   return { swingHigh: Math.max(...h), swingLow: Math.min(...l) };
 }
 
+/* ── 多層支撐壓力位（pivot point 法）──────────────── */
+function findPivotLevels(highs, lows, closes, lookback = 60) {
+  const n  = Math.min(highs.length, lookback);
+  const h  = highs.slice(-n);
+  const l  = lows.slice(-n);
+  const c  = closes.slice(-n);
+  const price = c[c.length - 1];
+
+  const pivotH = [], pivotL = [];
+  for (let i = 2; i < h.length - 2; i++) {
+    if (h[i] >= h[i-1] && h[i] >= h[i-2] && h[i] >= h[i+1] && h[i] >= h[i+2]) pivotH.push(h[i]);
+    if (l[i] <= l[i-1] && l[i] <= l[i-2] && l[i] <= l[i+1] && l[i] <= l[i+2]) pivotL.push(l[i]);
+  }
+
+  const cluster = (arr, asc) => {
+    if (!arr.length) return [];
+    const sorted = [...arr].sort((a, b) => asc ? a - b : b - a);
+    const out = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const last = out[out.length - 1];
+      if (Math.abs(sorted[i] - last) / last > 0.006) out.push(sorted[i]);
+    }
+    return out.slice(0, 4);
+  };
+
+  const swingHigh = Math.max(...h);
+  const swingLow  = Math.min(...l);
+
+  let resistances = cluster(pivotH.filter(p => p > price * 1.001), true);
+  let supports    = cluster(pivotL.filter(p => p < price * 0.999), false);
+
+  if (!resistances.length) resistances = [price * 1.015, price * 1.03];
+  if (!supports.length)    supports    = [price * 0.985, price * 0.97];
+
+  return { resistances, supports, swingHigh, swingLow };
+}
+
 /* ── 完整訂單流分析 ──────────────────────────────── */
 function analyzeOrderFlow(raw) {
   if (!raw || raw.length < 10) return null;
@@ -256,7 +293,8 @@ function analyzeTimeframeSignal(raw) {
   const { opens, closes, highs, lows, volumes } = parseKlines(raw);
   const price = closes[closes.length - 1];
 
-  const { swingHigh, swingLow } = findSwingPoints(highs, lows, 30);
+  const pivotLevels = findPivotLevels(highs, lows, closes, 60);
+  const { swingHigh, swingLow } = pivotLevels;
   const volSMA    = calcVolSMA(volumes, 20);
   const lastVol   = volumes[volumes.length - 1];
   const isHighVol = lastVol > volSMA * 1.4;
@@ -270,9 +308,13 @@ function analyzeTimeframeSignal(raw) {
   const bullBreak = isBullCdl && bodyLow <= swingHigh * 1.003 && bodyHigh > swingHigh * 1.001;
   const bearBreak = !isBullCdl && bodyHigh >= swingLow * 0.997 && bodyLow < swingLow * 0.999;
 
-  const rsi   = calcRSI(closes, 14);
+  const rsi     = calcRSI(closes, 14);
+  const rsiPrev = calcRSI(closes.slice(0, -3), 14);
+  const rsiSlope = parseFloat((rsi - rsiPrev).toFixed(1));
+
   const ema20 = calcEMA(closes, 20);
   const ema50 = calcEMA(closes, 50);
+  const atr   = calcATR(highs, lows, closes, 14);
 
   let signal = 'neutral';
   if      (bullBreak && isHighVol) signal = 'strong_bull';
@@ -283,9 +325,10 @@ function analyzeTimeframeSignal(raw) {
   else if (price < ema20 && ema20 < ema50 && rsi < 45) signal = 'bear';
 
   return {
-    signal, price, rsi: parseFloat(rsi.toFixed(1)),
+    signal, price, rsi: parseFloat(rsi.toFixed(1)), rsiSlope,
     ema20, ema50, swingHigh, swingLow,
     bullBreak, bearBreak, isHighVol, volRatio,
+    atr, pivotLevels,
   };
 }
 

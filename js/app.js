@@ -2,6 +2,10 @@
    app.js — 主應用邏輯（繁體中文 + 幣安實時K線版）
    ============================================================ */
 
+/* ── 交易設置緩存（供 Telegram 通知使用）────────────────────── */
+const _tradeSetupCache = {};
+let   _macroCache      = null;
+
 /* ── 狀態 ───────────────────────────────────────────────────── */
 const state = {
   data:         [],
@@ -526,12 +530,11 @@ function buildDerivativesPanel(d) {
   </div>`;
 }
 
-/* ── 交易建議（頂級交易員思維）──────────────────────────────── */
+/* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
 function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
 
-  // 短線交易：以 15m 和 1h 為主要信號，4h 作為趨勢過濾
   const m15  = mtfData['15m']?.signal;
   const h1   = mtfData['1h']?.signal;
   const h4   = mtfData['4h']?.signal;
@@ -544,11 +547,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     if (sig.bullBreak && sig.isHighVol) bullScore += weight;
     if (sig.bearBreak && sig.isHighVol) bearScore += weight;
   };
-  scoreOf(m15, 2);  // 15m 雙倍權重
-  scoreOf(h1,  2);  // 1h 雙倍權重
-  scoreOf(h4,  1);  // 4h 趨勢過濾
+  scoreOf(m15, 2);
+  scoreOf(h1,  2);
+  scoreOf(h4,  1);
 
-  // 衍生品短線加權
   let derivBullBonus = 0, derivBearBonus = 0;
   if (deriv) {
     if (deriv.fundingRate < -0.003) derivBullBonus++;
@@ -559,36 +561,44 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     if (deriv.topLongRatio < 0.43)  derivBearBonus++;
   }
 
-  // 宏觀加權：全球市場 24h 變化 ±1 加分/扣分
   let macroBullBonus = 0, macroBearBonus = 0;
   if (globalMkt) {
     const chg = globalMkt.marketCapChange || 0;
     if (chg > 2)  macroBullBonus++;
     if (chg < -2) macroBearBonus++;
+    if (globalMkt.btcDominance > 58) macroBearBonus++;  // BTC 主導→山寨偏空
+    if (globalMkt.btcDominance < 44) macroBullBonus++;  // 山寨季潛力
   }
 
   const totalBull = bullScore + derivBullBonus + macroBullBonus;
   const totalBear = bearScore + derivBearBonus + macroBearBonus;
 
   let direction = 'wait';
-  // 短線入場要求：主要時框（15m/1h）至少一個有方向，且總分領先
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
   const primaryBear = (m15?.signal?.includes('bear') ? 1 : 0) + (h1?.signal?.includes('bear') ? 1 : 0);
   if (primaryBull >= 1 && totalBull >= 3 && totalBull > totalBear + 1) direction = 'long';
   else if (primaryBear >= 1 && totalBear >= 3 && totalBear > totalBull + 1) direction = 'short';
 
-  // 評分門檻：60+ 才推薦做多，40- 才推薦做空
   if (direction === 'long'  && coin.score < 60) direction = 'wait';
   if (direction === 'short' && coin.score > 40) direction = 'wait';
 
-  // 短線 ATR：基於 1h 擺動範圍估算，更緊的止損
+  // ATR：優先使用 1h 真實 ATR
   const atrPct = coin.adx > 35 ? 0.018 : coin.adx > 25 ? 0.013 : 0.009;
-  const atr    = price * atrPct;
+  const atr    = h1?.atr || price * atrPct;
 
-  // 使用 1h 擺動高低點
-  const swHigh = h1?.swingHigh || h4?.swingHigh || price * 1.025;
-  const swLow  = h1?.swingLow  || h4?.swingLow  || price * 0.975;
-  const ema20  = parseFloat(coin.ema20) || price;
+  // S/R 層位：1h pivot 優先，fallback 到 4h / 簡估
+  const pl      = h1?.pivotLevels || h4?.pivotLevels;
+  const resists = (pl?.resistances || []).filter(r => r > price);
+  const supps   = (pl?.supports    || []).filter(s => s < price);
+  const swHigh  = pl?.swingHigh || h4?.swingHigh || price * 1.025;
+  const swLow   = pl?.swingLow  || h4?.swingLow  || price * 0.975;
+
+  // 訂單流 & RSI 斜率
+  const of15m    = mtfData['15m']?.orderFlow;
+  const buyPct   = of15m?.buyPct   || 50;
+  const cvdTrend = of15m?.cvdTrend || 'neutral';
+  const rsiSlope = h1?.rsiSlope    || 0;
+  const rsi      = parseFloat(coin.rsi) || 50;
 
   if (direction === 'wait') {
     const reasons = [];
@@ -598,6 +608,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     if (coin.rsi < 28) reasons.push(`RSI ${coin.rsi} 超賣，短線追空風險高`);
     if (totalBull === totalBear) reasons.push('多空積分相當，等待方向選擇');
     if (coin.score >= 41 && coin.score <= 59) reasons.push(`評分 ${coin.score}，需達 60+ 才推薦做多，40 以下才推薦做空`);
+    const entryHigh = resists[0] || swHigh;
+    const entryLow  = supps[0]  || swLow;
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⏳</div>
       <div class="setup-wait-title">建議觀望，短線方向未明</div>
@@ -606,8 +618,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
       </ul>
       <div class="setup-wait-cond">
         <strong>等待條件：</strong>15m/1h 帶量實體K棒收破
-        <span style="color:var(--bull)">${fmtPrice(swHigh)}</span>（做多）
-        或 <span style="color:var(--bear)">${fmtPrice(swLow)}</span>（做空）
+        <span style="color:var(--bull)">${fmtPrice(entryHigh)}</span>（做多）
+        或 <span style="color:var(--bear)">${fmtPrice(entryLow)}</span>（做空）
       </div>
     </div>`;
   }
@@ -617,29 +629,113 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
   const dirLabel = isLong ? '短線做多' : '短線做空';
   const dirIcon  = isLong ? '▲' : '▼';
 
-  // 短線進場：貼近現價或 15m EMA20
-  const m15ema = m15?.ema20 || ema20;
-  const entry  = isLong
-    ? Math.min(price, m15ema * 1.002)
-    : Math.max(price, m15ema * 0.998);
-  // 止損：1.5×ATR，不超過擺動高低點
-  const sl   = isLong
-    ? Math.max(swLow,  entry - atr * 1.5)
-    : Math.min(swHigh, entry + atr * 1.5);
-  const risk = Math.abs(entry - sl);
-  // 止盈：短線目標 1.5:1 / 2.5:1
-  const tp1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
-  // TP2：以擺動高/低點為參考，但必須比 TP1 更有利
-  // 做多：TP2 在擺動高點下方，但不能低於 TP1
-  // 做空：TP2 在擺動低點上方，但不能高於 TP1（否則改用純 R/R）
-  let tp2 = isLong
-    ? Math.min(swHigh, entry + risk * 2.5)
-    : Math.max(swLow,  entry - risk * 2.5);
-  if ( isLong && tp2 <= tp1) tp2 = entry + risk * 2.5;  // 確保做多 TP2 > TP1
-  if (!isLong && tp2 >= tp1) tp2 = entry - risk * 2.5;  // 確保做空 TP2 < TP1
-  const rr  = (risk > 0 ? Math.abs(tp1 - entry) / risk : 0).toFixed(1);
+  // ── 進場點 ──
+  const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
+  let entry, entryReasons = [];
+  if (isLong) {
+    const nearSup = supps[0];
+    if (nearSup && (price - nearSup) < atr * 0.8) {
+      entry = Math.min(price, nearSup + atr * 0.15);
+      entryReasons.push(`1h 結構支撐 ${fmtPrice(nearSup)} 附近確認`);
+    } else if (m15ema < price && (price - m15ema) < atr * 0.6) {
+      entry = Math.min(price, m15ema * 1.002);
+      entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
+    } else {
+      entry = price;
+    }
+    if (rsi < 45 && rsiSlope > 1)  entryReasons.push(`RSI ${rsi} 低位回升（+${rsiSlope}）`);
+    else if (rsi < 38)             entryReasons.push(`RSI ${rsi} 超賣反彈機會`);
+    if (buyPct > 57)               entryReasons.push(`主動買盤佔 ${buyPct}%`);
+    if (cvdTrend === 'bull')       entryReasons.push('CVD 上升，買壓持續');
+    if (!entryReasons.length)      entryReasons.push('15m/1h 多頭信號共振');
+  } else {
+    const nearRes = resists[0];
+    if (nearRes && (nearRes - price) < atr * 0.8) {
+      entry = Math.max(price, nearRes - atr * 0.15);
+      entryReasons.push(`1h 結構壓力 ${fmtPrice(nearRes)} 附近確認`);
+    } else if (m15ema > price && (m15ema - price) < atr * 0.6) {
+      entry = Math.max(price, m15ema * 0.998);
+      entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
+    } else {
+      entry = price;
+    }
+    if (rsi > 55 && rsiSlope < -1) entryReasons.push(`RSI ${rsi} 高位回落（${rsiSlope}）`);
+    else if (rsi > 62)             entryReasons.push(`RSI ${rsi} 超買回調機會`);
+    if (buyPct < 43)               entryReasons.push(`主動賣盤佔 ${100 - buyPct}%`);
+    if (cvdTrend === 'bear')       entryReasons.push('CVD 下降，賣壓持續');
+    if (!entryReasons.length)      entryReasons.push('15m/1h 空頭信號共振');
+  }
 
-  const conf = Math.min(90, (isLong ? totalBull : totalBear) * 12);
+  // ── 止損：結構位 + 緩衝 ──
+  let sl, slReason;
+  if (isLong) {
+    const structSup = supps[0] || (price - atr * 2);
+    sl = Math.min(structSup - atr * 0.3, entry - atr * 1.3);
+    const slDistPct = ((entry - sl) / price * 100).toFixed(2);
+    slReason = supps[0]
+      ? `1h 支撐結構 ${fmtPrice(supps[0])} 下方緩衝，-${slDistPct}%，跌破結構反轉`
+      : `現價下方 ${slDistPct}%（ATR 止損），動能失效離場`;
+  } else {
+    const structRes = resists[0] || (price + atr * 2);
+    sl = Math.max(structRes + atr * 0.3, entry + atr * 1.3);
+    const slDistPct = ((sl - entry) / price * 100).toFixed(2);
+    slReason = resists[0]
+      ? `1h 壓力結構 ${fmtPrice(resists[0])} 上方緩衝，+${slDistPct}%，突破結構反轉`
+      : `現價上方 ${slDistPct}%（ATR 止損），動能失效離場`;
+  }
+  const risk = Math.abs(entry - sl) || atr;
+
+  // ── 止盈一：最近有意義 S/R，最低 2:1 ──
+  let tp1, tp1Reason;
+  const minTP1 = isLong ? entry + risk * 2 : entry - risk * 2;
+  if (isLong) {
+    const r1 = resists.find(r => r >= minTP1 * 0.99);
+    tp1 = r1 || minTP1;
+    const rr1v = ((tp1 - entry) / risk).toFixed(1);
+    tp1Reason = r1
+      ? `前高壓力 ${fmtPrice(r1)}，R/R ${rr1v}:1，到達後減倉 60%`
+      : `短線目標 R/R ${rr1v}:1，到達後減倉 60%`;
+  } else {
+    const s1 = supps.find(s => s <= minTP1 * 1.01);
+    tp1 = s1 || minTP1;
+    const rr1v = ((entry - tp1) / risk).toFixed(1);
+    tp1Reason = s1
+      ? `前低支撐 ${fmtPrice(s1)}，R/R ${rr1v}:1，到達後減倉 60%`
+      : `短線目標 R/R ${rr1v}:1，到達後減倉 60%`;
+  }
+
+  // ── 止盈二：次遠 S/R 或擺動極值，最低 3:1 ──
+  let tp2, tp2Reason;
+  const minTP2 = isLong ? entry + risk * 3 : entry - risk * 3;
+  if (isLong) {
+    const r2 = resists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
+    tp2 = r2 || Math.max(swHigh, minTP2);
+    if (tp2 <= tp1) tp2 = Math.max(tp1 + price * 0.004, minTP2);
+    const rr2v = ((tp2 - entry) / risk).toFixed(1);
+    tp2Reason = r2
+      ? `波段壓力 ${fmtPrice(r2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
+      : `1h 擺動高點 ${fmtPrice(swHigh)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
+  } else {
+    const s2 = supps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
+    tp2 = s2 || Math.min(swLow, minTP2);
+    if (tp2 >= tp1) tp2 = Math.min(tp1 - price * 0.004, minTP2);
+    const rr2v = ((entry - tp2) / risk).toFixed(1);
+    tp2Reason = s2
+      ? `波段支撐 ${fmtPrice(s2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
+      : `1h 擺動低點 ${fmtPrice(swLow)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
+  }
+
+  const rr1str = ((Math.abs(tp1 - entry) / risk)).toFixed(1);
+  const rr2str = ((Math.abs(tp2 - entry) / risk)).toFixed(1);
+  const conf   = Math.min(90, (isLong ? totalBull : totalBear) * 12);
+
+  // 緩存完整設置供 Telegram 通知使用
+  _tradeSetupCache[coin.symbol] = {
+    entry, sl, tp1, tp2,
+    entryReason: entryReasons.join('，'),
+    slReason, tp1Reason, tp2Reason,
+    rr1: rr1str, rr2: rr2str, atr,
+  };
 
   return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
@@ -656,22 +752,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
   <div class="setup-levels">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
-      <div class="level-desc">${isLong ? '現價或回踩 15m EMA20 確認，帶量實體K棒收漲' : '現價或反彈 15m EMA20 確認，帶量實體K棒收跌'}</div>
+      <div class="level-desc">${entryReasons.join('　')}</div>
       <div class="level-price-val">${fmtPrice(entry)}</div>
     </div>
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈1</div>
-      <div class="level-desc">短線第一目標，R:R = 1:${rr}，到達後出 60%</div>
+      <div class="level-desc">${tp1Reason}</div>
       <div class="level-price-val">${fmtPrice(tp1)}</div>
     </div>
     <div class="level-row level-tp2">
       <div class="level-tag">🚀 止盈2</div>
-      <div class="level-desc">${isLong ? '1h 擺動高點' : '1h 擺動低點'}，剩餘倉位移至成本止損</div>
+      <div class="level-desc">${tp2Reason}</div>
       <div class="level-price-val">${fmtPrice(tp2)}</div>
     </div>
     <div class="level-row level-sl">
       <div class="level-tag">🛑 止損</div>
-      <div class="level-desc">1.5×ATR + ${isLong ? '1h 擺動低點下方' : '1h 擺動高點上方'}（閉市前無論盈虧必執行）</div>
+      <div class="level-desc">${slReason}</div>
       <div class="level-price-val">${fmtPrice(sl)}</div>
     </div>
   </div>
@@ -679,7 +775,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     <div class="rules-title">⚡ 短線操作守則</div>
     <div class="rule-item">✦ 單筆倉位最多佔資金 <strong>3~5%</strong>，虧損不超過資金的 <strong>0.5~1%</strong></div>
     <div class="rule-item">✦ 進場後立即掛好止損單，不根據情緒調整止損</div>
-    <div class="rule-item">✦ 到達止盈1（<strong style="color:var(--bull)">${fmtPrice(tp1)}</strong>）即出 60%，剩餘移至成本</div>
+    <div class="rule-item">✦ 到達止盈1（<strong style="color:${dirColor}">${fmtPrice(tp1)}</strong>）即出 60%，剩餘移至成本</div>
     <div class="rule-item">✦ 若 15m K棒轉向且成交量放大，不等止損主動離場</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)'}">${(deriv.fundingRate*100).toFixed(4)}%</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>`;
@@ -1179,6 +1275,9 @@ async function renderCoinDetail(symbol) {
     fetchHalvingInfo(),
   ]);
 
+  // 緩存宏觀數據供 Telegram 通知使用
+  if (globalMkt || fearGreed) _macroCache = { ...(globalMkt || {}), fg: fearGreed };
+
   const set = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
 
   set('macro-body',     buildMacroPanel(globalMkt, halving, fearGreed));
@@ -1467,7 +1566,7 @@ async function checkAndSendAlerts(data) {
     const dir = isLong ? 'long' : 'short';
     next[coin.symbol] = dir;
 
-    if (prev[coin.symbol] === dir) continue; // 已通知過，跳過
+    if (prev[coin.symbol] === dir) continue;
 
     if (s.notifBrowser) {
       sendBrowserNotification(
@@ -1477,11 +1576,41 @@ async function checkAndSendAlerts(data) {
       );
     }
     if (s.notifTelegram && s.tgToken && s.tgChatId) {
-      sendTelegramMessage(s.tgToken, s.tgChatId, buildTelegramText(coin, dir));
+      // 優先使用緩存的詳細設置；否則快速估算
+      const setup = _tradeSetupCache[coin.symbol] || computeSimpleSetup(coin, isLong);
+      sendTelegramMessage(s.tgToken, s.tgChatId,
+        buildTelegramText(coin, dir, setup, _macroCache));
     }
   }
 
   localStorage.setItem(SIGNAL_CACHE_KEY, JSON.stringify(next));
+}
+
+function computeSimpleSetup(coin, isLong) {
+  const price = parseFloat(coin.price) || 1;
+  const adx   = parseFloat(coin.adx)   || 20;
+  const rsi   = parseFloat(coin.rsi)   || 50;
+  const ema20 = parseFloat(coin.ema20) || price * 0.99;
+  const atrPct = adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009;
+  const atr    = price * atrPct;
+  const entry  = isLong ? Math.min(price, ema20 * 1.002) : Math.max(price, ema20 * 0.998);
+  const sl     = isLong ? entry - atr * 1.8 : entry + atr * 1.8;
+  const risk   = Math.abs(entry - sl);
+  const tp1    = isLong ? entry + risk * 2   : entry - risk * 2;
+  const tp2    = isLong ? entry + risk * 3.5 : entry - risk * 3.5;
+  const reasons = isLong
+    ? [(rsi < 45 ? `RSI ${rsi} 偏低` : ''), '15m/1h 多頭信號確認'].filter(Boolean)
+    : [(rsi > 55 ? `RSI ${rsi} 偏高` : ''), '15m/1h 空頭信號確認'].filter(Boolean);
+  return {
+    entry, sl, tp1, tp2,
+    entryReason: reasons.join('，'),
+    slReason:  `現價${isLong ? '下' : '上'}方 ${((Math.abs(entry - sl) / price) * 100).toFixed(2)}%，結構止損`,
+    tp1Reason: `短線目標 R/R ${(Math.abs(tp1 - entry) / risk).toFixed(1)}:1，到達後減倉 60%`,
+    tp2Reason: `波段目標 R/R ${(Math.abs(tp2 - entry) / risk).toFixed(1)}:1，剩餘倉位移至成本`,
+    rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
+    rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
+    atr,
+  };
 }
 
 function sendBrowserNotification(title, body, tag) {
