@@ -373,6 +373,44 @@ async function fetchCryptoNews() {
   } catch { return []; }
 }
 
+/* ── 全球加密貨幣市場數據（CoinGecko 免費）──────────────────── */
+async function fetchGlobalMarket() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const res = await fetch('https://api.coingecko.com/api/v3/global', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    const { data } = await res.json();
+    return {
+      btcDominance:   parseFloat((data.market_cap_percentage?.btc || 0).toFixed(1)),
+      ethDominance:   parseFloat((data.market_cap_percentage?.eth || 0).toFixed(1)),
+      totalMarketCap: data.total_market_cap?.usd || null,
+      marketCapChange: parseFloat((data.market_cap_change_percentage_24h_usd || 0).toFixed(2)),
+      totalVolume:    data.total_volume?.usd || null,
+      activeCryptos:  data.active_cryptocurrencies || null,
+    };
+  } catch { return null; }
+}
+
+/* ── 比特幣區塊高度（mempool.space，用於計算減半倒數）──────── */
+async function fetchHalvingInfo() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch('https://mempool.space/api/blocks/tip/height', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    const height = await res.json();
+    const nextHalving  = Math.ceil(height / 210000) * 210000;
+    const blocksLeft   = nextHalving - height;
+    const daysLeft     = Math.round(blocksLeft * 10 / 1440);
+    const halvingCount = Math.floor(height / 210000) + 1;
+    const reward       = 3.125 / Math.pow(2, halvingCount - 4); // 從第4次減半後計算
+    return { height, nextHalving, blocksLeft, daysLeft, halvingCount };
+  } catch { return null; }
+}
+
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */
 async function fetchMarketData(timeframe = '15m') {
   const settings = loadSettings();

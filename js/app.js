@@ -526,7 +526,7 @@ function buildDerivativesPanel(d) {
 }
 
 /* ── 交易建議（頂級交易員思維）──────────────────────────────── */
-function buildTradeSetup(coin, mtfData, deriv) {
+function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
 
@@ -558,8 +558,16 @@ function buildTradeSetup(coin, mtfData, deriv) {
     if (deriv.topLongRatio < 0.43)  derivBearBonus++;
   }
 
-  const totalBull = bullScore + derivBullBonus;
-  const totalBear = bearScore + derivBearBonus;
+  // 宏觀加權：全球市場 24h 變化 ±1 加分/扣分
+  let macroBullBonus = 0, macroBearBonus = 0;
+  if (globalMkt) {
+    const chg = globalMkt.marketCapChange || 0;
+    if (chg > 2)  macroBullBonus++;
+    if (chg < -2) macroBearBonus++;
+  }
+
+  const totalBull = bullScore + derivBullBonus + macroBullBonus;
+  const totalBear = bearScore + derivBearBonus + macroBearBonus;
 
   let direction = 'wait';
   // 短線入場要求：主要時框（15m/1h）至少一個有方向，且總分領先
@@ -677,7 +685,148 @@ function buildTradeSetup(coin, mtfData, deriv) {
 }
 
 /* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
-function buildSituationSummary(coin, mtfData, deriv, fearGreed) {
+/* ── 宏觀市場環境面板 ─────────────────────────────────────── */
+function buildMacroPanel(global, halving, fg) {
+
+  /* ── 頂部數據卡 ── */
+  const fmtTrillion = v => v >= 1e12 ? (v/1e12).toFixed(2)+'兆'
+    : v >= 1e9 ? (v/1e9).toFixed(1)+'億' : '--';
+  const chgColor = v => v > 0 ? 'var(--bull)' : v < 0 ? 'var(--bear)' : 'var(--text3)';
+
+  const metrics = [];
+  if (global) {
+    metrics.push({
+      label: '加密總市值',
+      val:   global.totalMarketCap ? '$' + fmtTrillion(global.totalMarketCap) : '--',
+      sub:   global.marketCapChange != null
+        ? `<span style="color:${chgColor(global.marketCapChange)}">${global.marketCapChange > 0 ? '+' : ''}${global.marketCapChange}% 24h</span>`
+        : '',
+      icon: '🌐',
+    });
+    metrics.push({
+      label: 'BTC 市值佔比',
+      val:   global.btcDominance != null ? global.btcDominance + '%' : '--',
+      sub:   global.btcDominance > 55 ? '<span style="color:var(--neutral)">高主導→幣圈避險</span>'
+           : global.btcDominance < 45 ? '<span style="color:var(--bull)">低主導→山寨季潛力</span>'
+           : '<span style="color:var(--text3)">中性</span>',
+      icon: '₿',
+    });
+    metrics.push({
+      label: '24h 總交易量',
+      val:   global.totalVolume ? '$' + fmtTrillion(global.totalVolume) : '--',
+      sub:   `${global.activeCryptos?.toLocaleString() || '--'} 個活躍幣種`,
+      icon: '📊',
+    });
+  }
+  if (halving) {
+    metrics.push({
+      label: '下次比特幣減半',
+      val:   halving.daysLeft != null ? halving.daysLeft + ' 天' : '--',
+      sub:   `區塊 ${halving.nextHalving?.toLocaleString() || '--'}（剩 ${halving.blocksLeft?.toLocaleString() || '--'} 個）`,
+      icon: '✂️',
+    });
+  }
+  if (fg) {
+    const fgVal = parseInt(fg.value);
+    const fgZh  = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg.value_classification] || fg.value_classification;
+    const fgClr = fgVal >= 75 ? 'var(--bear)' : fgVal >= 55 ? '#ff6d00' : fgVal <= 25 ? 'var(--bull)' : fgVal <= 45 ? 'var(--sbull)' : 'var(--neutral)';
+    metrics.push({
+      label: '恐慌貪婪指數',
+      val:   `<span style="color:${fgClr}">${fgVal}</span>`,
+      sub:   `<span style="color:${fgClr}">${fgZh}</span>`,
+      icon: '🧭',
+    });
+  }
+
+  /* ── 宏觀影響因素說明卡 ── */
+  const factors = [
+    {
+      icon: '🏛️', title: '聯準會（Fed）利率政策',
+      color: '#7c83fd',
+      desc: '降息→流動性寬鬆，加密幣利多；升息→資金緊縮，加密幣承壓。密切關注 FOMC 會議紀錄與 CME FedWatch 利率期貨。',
+      link: 'https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html',
+      linkTx: 'CME FedWatch →',
+    },
+    {
+      icon: '💵', title: '美元指數（DXY）',
+      color: '#64b5f6',
+      desc: 'DXY 上漲→美元強勢，壓制比特幣等風險資產；DXY 下跌→美元弱勢，通常利多加密市場。與 BTC 呈高度負相關。',
+      link: 'https://www.tradingview.com/chart/?symbol=TVC:DXY',
+      linkTx: 'DXY 走勢圖 →',
+    },
+    {
+      icon: '📈', title: '比特幣現貨 ETF 資金流',
+      color: '#ffd740',
+      desc: '2024年1月通過後，貝萊德（iShares）等機構每日 ETF 淨流入/流出量成為市場領先指標，反映華爾街機構態度。',
+      link: 'https://farside.co.uk/bitcoin-etf-flow-all-data/',
+      linkTx: 'ETF 資金流數據 →',
+    },
+    {
+      icon: '🏦', title: '美國通膨數據（CPI）',
+      color: '#ff6d00',
+      desc: 'CPI 高於預期→市場預期升息，加密幣重挫；CPI 低於預期→降息預期升溫，加密幣走強。每月第二週公布。',
+      link: 'https://www.bls.gov/cpi/',
+      linkTx: 'CPI 報告 →',
+    },
+    {
+      icon: '⚖️', title: '監管政策動向',
+      color: '#ef5350',
+      desc: 'SEC、CFTC 對交易所與穩定幣的態度、各國政府的禁令或合法化政策，直接影響資金進場門檻與市場信心。',
+      link: 'https://www.sec.gov/spotlight/cybersecurity',
+      linkTx: 'SEC 最新動態 →',
+    },
+    {
+      icon: '🌍', title: '地緣政治風險',
+      color: '#aaa',
+      desc: '地緣衝突初期加密幣可能隨風險資產下跌，但若被視為「數位黃金」，可能在後期轉為避險買盤。觀察 VIX 恐慌指數。',
+      link: 'https://www.tradingview.com/chart/?symbol=CBOE:VIX',
+      linkTx: 'VIX 恐慌指數 →',
+    },
+  ];
+
+  /* ── 宏觀總結訊號 ── */
+  let macroSignal = '', macroColor = 'var(--neutral)';
+  if (global) {
+    const chg = global.marketCapChange || 0;
+    const dom = global.btcDominance || 50;
+    if (chg > 3 && dom < 55)       { macroSignal = '加密市場整體強勢，山寨幣機會較大'; macroColor = 'var(--bull)'; }
+    else if (chg > 1)               { macroSignal = '市場小幅回暖，風險偏好略升'; macroColor = 'var(--sbull)'; }
+    else if (chg < -3 && dom > 55)  { macroSignal = '市場整體下跌，資金避險流向 BTC'; macroColor = 'var(--bear)'; }
+    else if (chg < -1)              { macroSignal = '市場偏弱，謹慎操作'; macroColor = 'var(--sbear)'; }
+    else if (dom > 60)              { macroSignal = 'BTC 主導強，山寨幣表現分化'; macroColor = 'var(--neutral)'; }
+    else                            { macroSignal = '市場橫盤整理，等待方向選擇'; macroColor = 'var(--neutral)'; }
+  }
+
+  return `
+  ${metrics.length ? `<div class="macro-metrics">
+    ${metrics.map(m => `
+      <div class="macro-metric-card">
+        <div class="macro-metric-icon">${m.icon}</div>
+        <div class="macro-metric-label">${m.label}</div>
+        <div class="macro-metric-val">${m.val}</div>
+        <div class="macro-metric-sub">${m.sub}</div>
+      </div>
+    `).join('')}
+  </div>` : ''}
+  ${macroSignal ? `<div class="macro-signal-bar" style="border-color:${macroColor};color:${macroColor}">
+    📡 宏觀訊號：${macroSignal}
+  </div>` : ''}
+  <div class="macro-factors-title">影響加密市場的六大宏觀因素</div>
+  <div class="macro-factors-grid">
+    ${factors.map(f => `
+      <div class="macro-factor-card" style="border-top:2px solid ${f.color}20;border-left:1px solid ${f.color}15">
+        <div class="macro-factor-hdr">
+          <span class="macro-factor-icon" style="color:${f.color}">${f.icon}</span>
+          <span class="macro-factor-title" style="color:${f.color}">${f.title}</span>
+        </div>
+        <div class="macro-factor-desc">${f.desc}</div>
+        <a href="${f.link}" target="_blank" rel="noopener" class="macro-factor-link">${f.linkTx}</a>
+      </div>
+    `).join('')}
+  </div>`;
+}
+
+function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt) {
   const price = parseFloat(coin.price) || 0;
   const tfLabels = { '15m': '15分', '1h': '1小時', '4h': '4小時', '1d': '日線' };
   const sigs = ['15m','1h','4h','1d'].map(tf => ({ tf, d: mtfData[tf]?.signal })).filter(x => x.d);
@@ -737,7 +886,19 @@ function buildSituationSummary(coin, mtfData, deriv, fearGreed) {
     points.push({ icon: '🧭', color: fc, label: '情緒', text: `恐慌貪婪指數 <strong style="color:${fc}">${v}（${zh}）</strong>　${advice}` });
   }
 
-  // 6. 短線關鍵位
+  // 6. 宏觀環境（若有全球市場數據）
+  if (globalMkt) {
+    const chg = globalMkt.marketCapChange || 0;
+    const dom = globalMkt.btcDominance || 50;
+    const chgColor = chg > 0 ? 'var(--bull)' : chg < 0 ? 'var(--bear)' : 'var(--text3)';
+    const macroIcon = chg > 2 ? '🌐' : chg < -2 ? '⚠️' : '🔵';
+    const macroClr  = chg > 2 ? 'var(--bull)' : chg < -2 ? 'var(--bear)' : 'var(--neutral)';
+    const macroTx   = `加密總市值 24h <strong style="color:${chgColor}">${chg > 0 ? '+' : ''}${chg}%</strong>　BTC 主導 <strong>${dom}%</strong>`
+      + (dom > 58 ? '（資金避險流向BTC，山寨幣承壓）' : dom < 45 ? '（山寨季潛力，資金擴散）' : '');
+    points.push({ icon: macroIcon, color: macroClr, label: '宏觀', text: macroTx });
+  }
+
+  // 7. 短線關鍵位
   const h1sig = mtfData['1h']?.signal;
   const swH   = h1sig?.swingHigh;
   const swL   = h1sig?.swingLow;
@@ -1004,25 +1165,28 @@ async function renderCoinDetail(symbol) {
 
   // 重置所有異步區塊
   const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
-  setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('situation-body');
+  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('situation-body');
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
-  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品數據
-  const [mtfData, fearGreed, deriv] = await Promise.all([
+  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊
+  const [mtfData, fearGreed, deriv, globalMkt, halving] = await Promise.all([
     fetchMTFKlines(symbol),
     fetchFearGreed(),
     fetchDerivativesData(symbol),
+    fetchGlobalMarket(),
+    fetchHalvingInfo(),
   ]);
 
   const set = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
 
+  set('macro-body',     buildMacroPanel(globalMkt, halving, fearGreed));
   set('deriv-body',     buildDerivativesPanel(deriv));
-  set('setup-body',     buildTradeSetup(coin, mtfData, deriv));
+  set('setup-body',     buildTradeSetup(coin, mtfData, deriv, globalMkt));
   set('mtf-body',       buildMTFTable(mtfData));
   set('of-body',        buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
   set('ai-body',        generateAIAnalysis(coin, mtfData, fearGreed));
-  set('situation-body', buildSituationSummary(coin, mtfData, deriv, fearGreed));
+  set('situation-body', buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt));
 }
 
 function setTag(id, text, color) {
