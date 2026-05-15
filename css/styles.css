@@ -1015,6 +1015,130 @@ a { text-decoration: none; cursor: pointer; }
 }
 .news-link-btn:hover { background: rgba(0,212,255,0.14); }
 
+/* ── 新聞重點整理 ────────────────────────────────────────────── */
+.news-summary { display: flex; flex-direction: column; gap: 10px; }
+.news-sentiment-hdr {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; background: rgba(255,255,255,0.03);
+  border-radius: 8px; font-size: 0.83rem;
+}
+.news-sent-pct { display: flex; gap: 10px; font-size: 0.78rem; font-weight: 600; }
+.news-key-points { display: flex; flex-direction: column; gap: 8px; }
+.news-point {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 8px 12px; border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.05);
+  transition: background 0.15s;
+}
+.news-point:hover { background: rgba(255,255,255,0.04); }
+.news-point-num {
+  flex-shrink: 0; width: 20px; height: 20px;
+  background: rgba(0,212,255,0.12); color: var(--blue);
+  border-radius: 50%; font-size: 0.72rem; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.news-point-body { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.news-tag {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-size: 0.65rem; font-weight: 700; margin-bottom: 2px;
+  width: fit-content;
+}
+.news-point-title {
+  font-size: 0.82rem; color: var(--text); line-height: 1.45;
+  text-decoration: none;
+}
+.news-point-title:hover { color: var(--blue); }
+.news-point-src { font-size: 0.72rem; color: var(--text3); }
+
+/* ── 衍生品合約數據 ──────────────────────────────────────────── */
+.deriv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.deriv-item {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px; padding: 14px 16px;
+}
+.deriv-label { font-size: 0.75rem; color: var(--text3); margin-bottom: 6px; }
+.deriv-val {
+  font-size: 1.1rem; font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  margin-bottom: 3px;
+}
+.deriv-sub { font-size: 0.75rem; color: var(--text3); }
+
+/* ── 交易建議 ────────────────────────────────────────────────── */
+.setup-verdict {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-radius: 12px; margin-bottom: 16px;
+  flex-wrap: wrap; gap: 12px;
+}
+.verdict-long  { background: rgba(0,230,118,0.08); border: 1px solid rgba(0,230,118,0.3); }
+.verdict-short { background: rgba(255,29,68,0.08);  border: 1px solid rgba(255,29,68,0.3); }
+.verdict-dir { display: flex; align-items: center; gap: 10px; }
+.verdict-arrow { font-size: 1.8rem; line-height: 1; }
+.verdict-label { font-size: 1.1rem; font-weight: 700; color: var(--text); }
+.verdict-conf-wrap { display: flex; align-items: center; gap: 10px; }
+.conf-bar {
+  width: 100px; height: 6px;
+  background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden;
+}
+.conf-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+
+.setup-levels { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.level-row {
+  display: grid; grid-template-columns: 90px 1fr auto;
+  align-items: center; gap: 12px;
+  padding: 11px 16px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.07);
+}
+.level-entry { background: rgba(0,212,255,0.06);  border-color: rgba(0,212,255,0.2); }
+.level-tp1   { background: rgba(0,230,118,0.06);  border-color: rgba(0,230,118,0.2); }
+.level-tp2   { background: rgba(0,230,118,0.04);  border-color: rgba(0,230,118,0.15); }
+.level-sl    { background: rgba(255,29,68,0.06);   border-color: rgba(255,29,68,0.2); }
+.level-tag { font-size: 0.8rem; font-weight: 700; white-space: nowrap; }
+.level-desc { font-size: 0.78rem; color: var(--text3); }
+.level-price-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.95rem; font-weight: 700; color: var(--text);
+  white-space: nowrap;
+}
+
+.setup-rules {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 10px; padding: 14px 16px;
+}
+.rules-title { font-size: 0.85rem; font-weight: 700; margin-bottom: 10px; color: var(--text); }
+.rule-item { font-size: 0.8rem; color: var(--text2); padding: 4px 0; line-height: 1.5; }
+
+.setup-wait {
+  text-align: center; padding: 24px 20px;
+  background: rgba(255,215,64,0.05);
+  border: 1px solid rgba(255,215,64,0.2);
+  border-radius: 12px;
+}
+.setup-wait-icon  { font-size: 2.4rem; margin-bottom: 10px; }
+.setup-wait-title { font-size: 1rem; font-weight: 700; color: var(--neutral); margin-bottom: 12px; }
+.setup-wait-reasons {
+  text-align: left; list-style: none;
+  background: rgba(255,255,255,0.03); border-radius: 8px;
+  padding: 10px 14px; margin: 0 auto 14px; max-width: 480px;
+}
+.setup-wait-reasons li { font-size: 0.82rem; color: var(--text2); padding: 3px 0; }
+.setup-wait-reasons li::before { content: '• '; color: var(--neutral); }
+.setup-wait-cond { font-size: 0.82rem; color: var(--text3); }
+
+@media (max-width: 640px) {
+  .level-row { grid-template-columns: 80px 1fr; }
+  .level-price-val { grid-column: 2; }
+  .setup-verdict { flex-direction: column; }
+  .deriv-grid { grid-template-columns: 1fr 1fr; }
+}
+
 .settings-footer {
   display: flex; gap: 12px; align-items: center; padding-top: 8px;
 }

@@ -289,6 +289,44 @@ function fmtPrice(p) {
 
 /* ═══════════════════ 多週期 & 情緒數據 ══════════════════ */
 
+/* 衍生品合約數據（幣安 Futures API，替代 CoinGlass）*/
+async function fetchDerivativesData(symbol) {
+  const sym = symbol.replace('/', '');
+  const base = 'https://fapi.binance.com';
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const [frR, oiR, lsR, topR, tkR] = await Promise.allSettled([
+      fetch(`${base}/fapi/v1/fundingRate?symbol=${sym}&limit=1`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      fetch(`${base}/fapi/v1/openInterest?symbol=${sym}`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      fetch(`${base}/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      fetch(`${base}/futures/data/topLongShortAccountRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      fetch(`${base}/futures/data/takerlongshortRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+    ]);
+    clearTimeout(t);
+
+    const fr    = frR.status === 'fulfilled' && Array.isArray(frR.value) ? parseFloat(frR.value[0]?.fundingRate) : null;
+    const oi    = oiR.status === 'fulfilled' && oiR.value?.openInterest  ? parseFloat(oiR.value.openInterest) : null;
+    const ls    = lsR.status === 'fulfilled' && Array.isArray(lsR.value)  ? lsR.value[0] : null;
+    const top   = topR.status === 'fulfilled' && Array.isArray(topR.value) ? topR.value[0] : null;
+    const taker = tkR.status === 'fulfilled' && Array.isArray(tkR.value)  ? tkR.value[0] : null;
+
+    if (fr === null && oi === null) return null; // 現貨幣種無合約數據
+
+    return {
+      fundingRate:      fr ?? 0,
+      openInterest:     oi ?? 0,
+      longRatio:        ls  ? parseFloat(ls.longAccount)       : null,
+      shortRatio:       ls  ? parseFloat(ls.shortAccount)      : null,
+      lsRatio:          ls  ? parseFloat(ls.longShortRatio)    : null,
+      topLongRatio:     top ? parseFloat(top.longAccount)      : null,
+      topShortRatio:    top ? parseFloat(top.shortAccount)     : null,
+      topLSRatio:       top ? parseFloat(top.longShortRatio)   : null,
+      takerBuySell:     taker ? parseFloat(taker.buySellRatio) : null,
+    };
+  } catch { return null; }
+}
+
 /* 獲取單幣多時間框架 K 線並分析 */
 async function fetchMTFKlines(symbol) {
   const base = symbol.replace('/', '');

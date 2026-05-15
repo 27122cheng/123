@@ -288,3 +288,20 @@ function analyzeTimeframeSignal(raw) {
     bullBreak, bearBreak, isHighVol, volRatio,
   };
 }
+
+/* ── 平均真實波動幅度 ATR（Wilder 平滑）─────────────────── */
+function calcATR(highs, lows, closes, period = 14) {
+  const trs = [];
+  for (let i = 1; i < highs.length; i++) {
+    trs.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i]  - closes[i - 1]),
+      Math.abs(lows[i]   - closes[i - 1])
+    ));
+  }
+  if (!trs.length) return 0;
+  const p = Math.min(period, trs.length);
+  let atr = trs.slice(0, p).reduce((a, b) => a + b, 0) / p;
+  for (let i = p; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
+  return atr;
+}

@@ -452,7 +452,236 @@ function renderReversalCards() {
   }).join('');
 }
 
-/* ── 币种详情 ───────────────────────────────────────────────── */
+/* ── 幣種詳情輔助函數 ────────────────────────────────────────── */
+
+/* ── 衍生品合約面板（資金費率 / 多空比 / OI）──────────────── */
+function buildDerivativesPanel(d) {
+  if (!d) return '<div class="adv-loading">此幣種暫無合約數據（可能為純現貨幣種）</div>';
+  const frPct   = (d.fundingRate * 100).toFixed(4);
+  const frColor = d.fundingRate < -0.005 ? 'var(--bull)' : d.fundingRate > 0.005 ? 'var(--bear)' : 'var(--neutral)';
+  const frTx    = d.fundingRate < 0 ? '空頭支付費率，多頭有利' : d.fundingRate > 0 ? '多頭支付費率，空頭有利' : '費率中性';
+  const topColor = d.topLongRatio > 0.55 ? 'var(--bull)' : d.topLongRatio < 0.45 ? 'var(--bear)' : 'var(--neutral)';
+  const takerColor = d.takerBuySell > 1.05 ? 'var(--bull)' : d.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--neutral)';
+  return `<div class="deriv-grid">
+    <div class="deriv-item">
+      <div class="deriv-label">💰 資金費率（8小時）</div>
+      <div class="deriv-val" style="color:${frColor}">${frPct}%</div>
+      <div class="deriv-sub">${frTx}</div>
+    </div>
+    <div class="deriv-item">
+      <div class="deriv-label">📊 全帳戶多空比</div>
+      <div class="deriv-val" style="color:${d.lsRatio > 1 ? 'var(--bull)' : 'var(--bear)'}">
+        ${d.lsRatio?.toFixed(2) ?? '--'}
+      </div>
+      <div class="deriv-sub">多: ${d.longRatio != null ? (d.longRatio*100).toFixed(1)+'%' : '--'} &nbsp;/&nbsp; 空: ${d.shortRatio != null ? (d.shortRatio*100).toFixed(1)+'%' : '--'}</div>
+    </div>
+    <div class="deriv-item">
+      <div class="deriv-label">🏆 頂級交易員持倉</div>
+      <div class="deriv-val" style="color:${topColor}">
+        多 ${d.topLongRatio != null ? (d.topLongRatio*100).toFixed(1)+'%' : '--'}
+      </div>
+      <div class="deriv-sub">聰明錢方向指標 — ${d.topLongRatio > 0.55 ? '聰明錢偏多' : d.topLongRatio < 0.45 ? '聰明錢偏空' : '聰明錢中性'}</div>
+    </div>
+    <div class="deriv-item">
+      <div class="deriv-label">⚡ 主動買賣比（Taker）</div>
+      <div class="deriv-val" style="color:${takerColor}">${d.takerBuySell?.toFixed(2) ?? '--'}</div>
+      <div class="deriv-sub">${d.takerBuySell > 1 ? '主動買盤為主 ▲' : d.takerBuySell < 1 ? '主動賣盤為主 ▼' : '買賣均衡'}</div>
+    </div>
+    ${d.openInterest > 0 ? `<div class="deriv-item" style="grid-column:1/-1">
+      <div class="deriv-label">📈 未平倉合約（OI）</div>
+      <div class="deriv-val" style="color:var(--blue)">${fmtVolume(d.openInterest)} USDT</div>
+    </div>` : ''}
+  </div>`;
+}
+
+/* ── 交易建議（頂級交易員思維）──────────────────────────────── */
+function buildTradeSetup(coin, mtfData, deriv) {
+  const price = parseFloat(coin.price) || 0;
+  if (!price) return '<div class="adv-loading">價格數據不可用</div>';
+
+  const sigs     = ['1d','4h','1h','15m'].map(tf => mtfData[tf]?.signal).filter(Boolean);
+  const bullCnt  = sigs.filter(s => s.signal.includes('bull')).length;
+  const bearCnt  = sigs.filter(s => s.signal.includes('bear')).length;
+  const bullBreaks = sigs.filter(s => s.bullBreak && s.isHighVol).length;
+  const bearBreaks = sigs.filter(s => s.bearBreak && s.isHighVol).length;
+
+  // 衍生品訊號加權
+  let derivBullBonus = 0, derivBearBonus = 0;
+  if (deriv) {
+    if (deriv.fundingRate < -0.003) derivBullBonus++;
+    if (deriv.fundingRate > 0.003) derivBearBonus++;
+    if (deriv.topLongRatio > 0.57) derivBullBonus++;
+    if (deriv.topLongRatio < 0.43) derivBearBonus++;
+    if (deriv.takerBuySell > 1.1) derivBullBonus++;
+    if (deriv.takerBuySell < 0.9) derivBearBonus++;
+  }
+
+  const totalBull = bullCnt + bullBreaks + derivBullBonus;
+  const totalBear = bearCnt + bearBreaks + derivBearBonus;
+
+  let direction = 'wait';
+  if (totalBull >= 4 && totalBull > totalBear + 1) direction = 'long';
+  else if (totalBear >= 4 && totalBear > totalBull + 1) direction = 'short';
+
+  // ATR 估算（利用 ADX 和 RSI 推估波動度）
+  const atrPct = coin.adx > 35 ? 0.028 : coin.adx > 25 ? 0.020 : 0.014;
+  const atr    = price * atrPct;
+
+  const h1  = mtfData['1h']?.signal;
+  const h4  = mtfData['4h']?.signal;
+  const swHigh = h4?.swingHigh || h1?.swingHigh || price * 1.04;
+  const swLow  = h4?.swingLow  || h1?.swingLow  || price * 0.96;
+  const ema20  = parseFloat(coin.ema20) || price;
+  const ema50  = parseFloat(coin.ema50) || price * 0.97;
+
+  if (direction === 'wait') {
+    const reasons = [];
+    if (bullCnt === bearCnt) reasons.push('多空週期數量相當，方向不明');
+    if (coin.adx < 18)       reasons.push(`ADX ${coin.adx} 偏低，市場震盪無趨勢`);
+    if (coin.rsi > 65)        reasons.push(`RSI ${coin.rsi} 偏高，追多風險大`);
+    if (coin.rsi < 35)        reasons.push(`RSI ${coin.rsi} 偏低，追空風險大`);
+    return `<div class="setup-wait">
+      <div class="setup-wait-icon">⏳</div>
+      <div class="setup-wait-title">建議觀望，暫不入場</div>
+      <ul class="setup-wait-reasons">
+        ${reasons.length ? reasons.map(r => `<li>${r}</li>`).join('') : '<li>多空信號分歧，等待更清晰的方向確認</li>'}
+      </ul>
+      <div class="setup-wait-cond">
+        <strong>入場條件：</strong>帶量實體K棒突破 <span style="color:var(--bull)">${fmtPrice(swHigh)}</span>（做多）
+        或跌破 <span style="color:var(--bear)">${fmtPrice(swLow)}</span>（做空）+ 3個以上週期確認
+      </div>
+    </div>`;
+  }
+
+  const isLong = direction === 'long';
+  const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
+  const dirLabel = isLong ? '做多（Long）' : '做空（Short）';
+  const dirIcon  = isLong ? '▲' : '▼';
+
+  const entry  = isLong ? Math.min(price, ema20 * 1.003) : Math.max(price, ema20 * 0.997);
+  const sl     = isLong ? Math.max(swLow,  entry - atr * 2) : Math.min(swHigh, entry + atr * 2);
+  const risk   = Math.abs(entry - sl);
+  const tp1    = isLong ? entry + risk * 2    : entry - risk * 2;
+  const tp2    = isLong ? Math.min(swHigh, entry + risk * 3.5) : Math.max(swLow, entry - risk * 3.5);
+  const rr     = (risk > 0 ? Math.abs(tp1 - entry) / risk : 0).toFixed(1);
+
+  const conf   = Math.min(90, (isLong ? totalBull : totalBear) * 15);
+
+  return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
+    <div class="verdict-dir">
+      <span class="verdict-arrow">${dirIcon}</span>
+      <span class="verdict-label">${dirLabel}</span>
+    </div>
+    <div class="verdict-conf-wrap">
+      <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
+      <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${dirColor}"></div></div>
+      <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf}%</span>
+    </div>
+  </div>
+  <div class="setup-levels">
+    <div class="level-row level-entry">
+      <div class="level-tag">📍 進場</div>
+      <div class="level-desc">${isLong ? '回撤至 EMA20 或帶量突破確認' : '反彈至 EMA20 或帶量跌破確認'}</div>
+      <div class="level-price-val">${fmtPrice(entry)}</div>
+    </div>
+    <div class="level-row level-tp1">
+      <div class="level-tag">🎯 止盈1</div>
+      <div class="level-desc">保守目標，風險回報 1:${rr}，到達後止盈 50%</div>
+      <div class="level-price-val">${fmtPrice(tp1)}</div>
+    </div>
+    <div class="level-row level-tp2">
+      <div class="level-tag">🚀 止盈2</div>
+      <div class="level-desc">進取目標，剩餘倉位移動止損追蹤</div>
+      <div class="level-price-val">${fmtPrice(tp2)}</div>
+    </div>
+    <div class="level-row level-sl">
+      <div class="level-tag">🛑 止損</div>
+      <div class="level-desc">2×ATR + ${isLong ? '近期擺動低點下方' : '近期擺動高點上方'}（硬止損，不動搖）</div>
+      <div class="level-price-val">${fmtPrice(sl)}</div>
+    </div>
+  </div>
+  <div class="setup-rules">
+    <div class="rules-title">🧠 頂級交易員入場守則</div>
+    <div class="rule-item">✦ 單次最大虧損控制在總資金的 <strong>1~2%</strong>，嚴格執行</div>
+    <div class="rule-item">✦ 先設止損，再設止盈，永遠不要盈虧倒掛</div>
+    <div class="rule-item">✦ 到達止盈1（${fmtPrice(tp1)}）時，止盈 50% 倉位並移動止損至成本</div>
+    <div class="rule-item">✦ 帶量突破確認後入場，不搶板、不追高、不逆勢</div>
+    ${deriv ? `<div class="rule-item">✦ 當前資金費率 <strong style="color:${deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)'}">${(deriv.fundingRate*100).toFixed(4)}%</strong>（${deriv.fundingRate < 0 ? '負費率利好多頭' : '正費率利好空頭'}）</div>` : ''}
+    ${deriv?.topLongRatio != null ? `<div class="rule-item">✦ 頂級交易員多頭倉位 <strong style="color:${deriv.topLongRatio > 0.55 ? 'var(--bull)' : deriv.topLongRatio < 0.45 ? 'var(--bear)' : 'var(--neutral)'}">${(deriv.topLongRatio*100).toFixed(1)}%</strong>（聰明錢方向）</div>` : ''}
+  </div>`;
+}
+
+/* ── 新聞重點整理（取代完整新聞列表）──────────────────────── */
+async function loadNewsSummary() {
+  const el = document.getElementById('news-body');
+  if (!el) return;
+
+  const news = await fetchCryptoNews();
+  if (!news || news.length === 0) {
+    el.innerHTML = `<div class="news-fallback">
+      <p style="color:var(--text3);font-size:0.82rem;margin-bottom:10px">新聞 API 無法訪問，請前往以下網站查看</p>
+      <div class="news-links">
+        <a href="https://cointelegraph.com" target="_blank" class="news-link-btn">CoinTelegraph</a>
+        <a href="https://coindesk.com" target="_blank" class="news-link-btn">CoinDesk</a>
+        <a href="https://cryptopanic.com" target="_blank" class="news-link-btn">CryptoPanic</a>
+      </div>
+    </div>`;
+    return;
+  }
+
+  // 按情緒分類
+  const bullish = news.filter(n => n.votes?.positive > n.votes?.negative);
+  const bearish  = news.filter(n => n.votes?.negative > n.votes?.positive);
+  const bullPct  = Math.round(bullish.length / news.length * 100);
+  const sentColor = bullPct > 60 ? 'var(--bull)' : bullPct < 40 ? 'var(--bear)' : 'var(--neutral)';
+  const sentLabel = bullPct > 60 ? '偏多' : bullPct < 40 ? '偏空' : '中性';
+
+  // 關鍵詞分類標記
+  const TAG_MAP = [
+    { kw: ['SEC','CFTC','regulat','法規','禁止','法案'],    tag: '監管', color: '#ff6d00' },
+    { kw: ['ETF','Bitcoin','BTC','halving','減半'],          tag: 'BTC',  color: 'var(--neutral)' },
+    { kw: ['hack','exploit','breach','黑客','漏洞'],         tag: '安全', color: 'var(--bear)' },
+    { kw: ['Fed','interest rate','inflation','GDP','宏觀'],  tag: '宏觀', color: 'var(--blue)' },
+    { kw: ['launch','partnership','upgrade','更新','合作'],  tag: '項目', color: 'var(--bull)' },
+  ];
+  const tagify = (title) => {
+    for (const { kw, tag, color } of TAG_MAP) {
+      if (kw.some(k => title.toLowerCase().includes(k.toLowerCase()))) {
+        return `<span class="news-tag" style="background:${color}20;color:${color}">${tag}</span>`;
+      }
+    }
+    return '';
+  };
+
+  // 取前5條最重要新聞（優先帶量看漲/看跌的）
+  const sorted = [...bullish.slice(0,3), ...bearish.slice(0,2), ...news.filter(n => !bullish.includes(n) && !bearish.includes(n)).slice(0,1)].slice(0,5);
+
+  el.innerHTML = `<div class="news-summary">
+    <div class="news-sentiment-hdr">
+      <span>當前新聞情緒：<strong style="color:${sentColor}">${sentLabel}</strong></span>
+      <span class="news-sent-pct">
+        <span class="text-bull">▲${bullPct}%</span>
+        <span class="text-bear">▼${100-bullPct}%</span>
+      </span>
+    </div>
+    <div class="news-key-points">
+      ${sorted.map((item, i) => `
+        <div class="news-point">
+          <span class="news-point-num">${i+1}</span>
+          <div class="news-point-body">
+            ${tagify(item.title)}
+            <a href="${item.url}" target="_blank" rel="noopener" class="news-point-title">${item.title}</a>
+            <span class="news-point-src">${item.source?.title || ''}</span>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <div style="text-align:right;margin-top:8px">
+      <a href="https://cryptopanic.com" target="_blank" rel="noopener" style="font-size:0.78rem;color:var(--blue)">查看更多 →</a>
+    </div>
+  </div>`;
+}
+
 /* ── 多週期分析表 ─────────────────────────────────────────── */
 function buildMTFTable(mtfData) {
   const tfs = [
@@ -708,28 +937,29 @@ async function renderCoinDetail(symbol) {
 
   setTimeout(() => loadTradingViewChart(symbol, tfToTV(state.timeframe)), 50);
 
-  // 重置異步區塊
+  // 重置所有異步區塊
   const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
-  setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('fg-body'); setL('news-body');
+  setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('fg-body'); setL('news-body');
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
-  // 並行獲取多週期數據 + 恐慌貪婪指數
-  const [mtfData, fearGreed] = await Promise.all([fetchMTFKlines(symbol), fetchFearGreed()]);
+  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品數據
+  const [mtfData, fearGreed, deriv] = await Promise.all([
+    fetchMTFKlines(symbol),
+    fetchFearGreed(),
+    fetchDerivativesData(symbol),
+  ]);
 
-  const mtfEl = document.getElementById('mtf-body');
-  if (mtfEl) mtfEl.innerHTML = buildMTFTable(mtfData);
+  const set = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
 
-  const ofEl = document.getElementById('of-body');
-  if (ofEl) ofEl.innerHTML = buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null);
+  set('deriv-body',  buildDerivativesPanel(deriv));
+  set('setup-body',  buildTradeSetup(coin, mtfData, deriv));
+  set('mtf-body',    buildMTFTable(mtfData));
+  set('of-body',     buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
+  set('ai-body',     generateAIAnalysis(coin, mtfData, fearGreed));
+  set('fg-body',     buildFearGreedPanel(fearGreed));
 
-  const aiEl = document.getElementById('ai-body');
-  if (aiEl) aiEl.innerHTML = generateAIAnalysis(coin, mtfData, fearGreed);
-
-  const fgEl = document.getElementById('fg-body');
-  if (fgEl) fgEl.innerHTML = buildFearGreedPanel(fearGreed);
-
-  loadNewsPanel();
+  loadNewsSummary();
 }
 
 function setTag(id, text, color) {
