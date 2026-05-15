@@ -391,6 +391,7 @@ a { text-decoration: none; cursor: pointer; }
   transition: var(--trans);
 }
 .tbl-card.full-tbl { grid-column: 1 / -1; }
+#search-results-wrap { margin-bottom: 32px; }
 
 .tbl-head {
   display: flex; align-items: center; justify-content: space-between;

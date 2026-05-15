@@ -251,6 +251,34 @@
         </div>
       </div>
 
+      <!-- 搜尋結果 / 中性幣種（搜尋或選中性過濾器時顯示） -->
+      <div id="search-results-wrap" style="display:none">
+        <div class="tbl-card" style="width:100%;max-width:100%">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot" id="search-dot" style="background:var(--blue)"></span>
+              <span id="search-results-title">搜尋結果</span>
+            </div>
+            <span class="tbl-badge" id="search-results-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl">
+              <thead><tr>
+                <th>#</th>
+                <th>幣種</th>
+                <th>評分</th>
+                <th>趨勢</th>
+                <th>價格</th>
+                <th>RSI</th>
+                <th>ADX</th>
+                <th>成交量</th>
+              </tr></thead>
+              <tbody id="all-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <!-- 反转机会 -->
       <div class="section-row">
         <div class="section-label">

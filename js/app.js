@@ -270,7 +270,8 @@ function applyFilters() {
     result = result.filter(d => d.trend === state.activeFilter);
   }
   if (state.dashSearch) {
-    result = result.filter(d => d.symbol.replace('/USDT','').includes(state.dashSearch));
+    const q = state.dashSearch.toUpperCase();
+    result = result.filter(d => d.symbol.replace('/USDT','').includes(q));
   }
   state.filtered = result;
 }
@@ -317,52 +318,82 @@ function animateCount(id, target) {
 
 /* ── 仪表板排行表 ───────────────────────────────────────────── */
 function renderDashboardTables() {
-  const source = state.filtered.length ? state.filtered : state.data;
+  const hasFilter   = state.activeFilter !== 'all';
+  const hasSearch   = !!state.dashSearch;
+  const source      = (hasFilter || hasSearch) ? state.filtered : state.data;
+  const unifiedMode = hasSearch || state.activeFilter === '中性';
 
-  let bullData = source.filter(d => d.trend === '強勢看漲' || d.trend === '看漲');
-  let bearData = source.filter(d => d.trend === '強勢看跌' || d.trend === '看跌');
+  const searchWrap = document.getElementById('search-results-wrap');
+  const tablesRow  = document.querySelector('.tables-row');
 
-  bullData = sortArr(bullData, state.sortState.bull.key, state.sortState.bull.dir);
-  bearData = sortArr(bearData, state.sortState.bear.key, state.sortState.bear.dir);
+  if (unifiedMode) {
+    if (tablesRow)  tablesRow.style.display  = 'none';
+    if (searchWrap) searchWrap.style.display = '';
 
-  document.getElementById('bull-count').textContent = bullData.length;
-  document.getElementById('bear-count').textContent = bearData.length;
+    const titleEl = document.getElementById('search-results-title');
+    const cntEl   = document.getElementById('search-results-count');
+    const dotEl   = document.getElementById('search-dot');
+    if (titleEl) titleEl.textContent = hasSearch ? `「${state.dashSearch}」搜尋結果` : '中性幣種';
+    if (cntEl)   cntEl.textContent   = source.length;
+    if (dotEl)   dotEl.style.background = hasSearch ? 'var(--blue)' : 'var(--neutral)';
 
-  renderTableBody('bull-tbody', bullData);
-  renderTableBody('bear-tbody', bearData);
+    const tbody = document.getElementById('all-tbody');
+    if (tbody) {
+      if (source.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:28px">找不到匹配的幣種</td></tr>`;
+      } else {
+        tbody.innerHTML = sortArr([...source], 'score', 'desc').map((row, i) =>
+          buildDashRow(row, i + 1)
+        ).join('');
+      }
+    }
+  } else {
+    if (tablesRow)  tablesRow.style.display  = '';
+    if (searchWrap) searchWrap.style.display = 'none';
+
+    let bullData = source.filter(d => d.trend === '強勢看漲' || d.trend === '看漲');
+    let bearData = source.filter(d => d.trend === '強勢看跌' || d.trend === '看跌');
+    bullData = sortArr(bullData, state.sortState.bull.key, state.sortState.bull.dir);
+    bearData = sortArr(bearData, state.sortState.bear.key, state.sortState.bear.dir);
+
+    document.getElementById('bull-count').textContent = bullData.length;
+    document.getElementById('bear-count').textContent = bearData.length;
+    renderTableBody('bull-tbody', bullData);
+    renderTableBody('bear-tbody', bearData);
+  }
+}
+
+function buildDashRow(row, rank) {
+  return `<tr onclick="navigateTo('coin','${row.symbol}')">
+    <td class="rank-cell">${rank}</td>
+    <td class="sym-cell">
+      <span class="sym-base">${row.symbol.replace('/USDT','')}</span>
+      <span class="sym-quote">/USDT</span>
+    </td>
+    <td class="score-cell">
+      <div class="score-wrap">
+        <span class="score-num" style="color:${scoreColor(row.score)}">${row.score}</span>
+        <div class="score-mini-bar">
+          <div class="score-mini-fill" style="width:${row.score}%;background:${scoreColor(row.score)}"></div>
+        </div>
+      </div>
+    </td>
+    <td><span class="trend-badge ${trendClass(row.trend)}">${trendArrow(row.trend)} ${row.trend}</span></td>
+    <td class="price-cell">${fmtPrice(row.price)}</td>
+    <td class="rsi-cell" style="color:${rsiColor(row.rsi)}">${row.rsi}</td>
+    <td class="adx-cell">${row.adx}</td>
+    <td><span class="vol-chip vol-${volClass(row.volumeStrength)}">${row.volumeStrength}</span></td>
+  </tr>`;
 }
 
 function renderTableBody(tbodyId, rows) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
-
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">暂无数据</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">暫無數據</td></tr>`;
     return;
   }
-
-  tbody.innerHTML = rows.slice(0, 25).map((row, i) => `
-    <tr onclick="navigateTo('coin','${row.symbol}')">
-      <td class="rank-cell">${i + 1}</td>
-      <td class="sym-cell">
-        <span class="sym-base">${row.symbol.replace('/USDT','')}</span>
-        <span class="sym-quote">/USDT</span>
-      </td>
-      <td class="score-cell">
-        <div class="score-wrap">
-          <span class="score-num" style="color:${scoreColor(row.score)}">${row.score}</span>
-          <div class="score-mini-bar">
-            <div class="score-mini-fill" style="width:${row.score}%;background:${scoreColor(row.score)}"></div>
-          </div>
-        </div>
-      </td>
-      <td><span class="trend-badge ${trendClass(row.trend)}">${trendArrow(row.trend)} ${row.trend}</span></td>
-      <td class="price-cell">${fmtPrice(row.price)}</td>
-      <td class="rsi-cell" style="color:${rsiColor(row.rsi)}">${row.rsi}</td>
-      <td class="adx-cell">${row.adx}</td>
-      <td><span class="vol-chip vol-${volClass(row.volumeStrength)}">${row.volumeStrength}</span></td>
-    </tr>
-  `).join('');
+  tbody.innerHTML = rows.slice(0, 25).map((row, i) => buildDashRow(row, i + 1)).join('');
 }
 
 /* ── 市场排名表 ─────────────────────────────────────────────── */
