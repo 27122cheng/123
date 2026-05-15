@@ -568,6 +568,10 @@ function buildTradeSetup(coin, mtfData, deriv) {
   if (primaryBull >= 1 && totalBull >= 3 && totalBull > totalBear + 1) direction = 'long';
   else if (primaryBear >= 1 && totalBear >= 3 && totalBear > totalBull + 1) direction = 'short';
 
+  // 評分門檻：60+ 才推薦做多，40- 才推薦做空
+  if (direction === 'long'  && coin.score < 60) direction = 'wait';
+  if (direction === 'short' && coin.score > 40) direction = 'wait';
+
   // 短線 ATR：基於 1h 擺動範圍估算，更緊的止損
   const atrPct = coin.adx > 35 ? 0.018 : coin.adx > 25 ? 0.013 : 0.009;
   const atr    = price * atrPct;
@@ -580,10 +584,11 @@ function buildTradeSetup(coin, mtfData, deriv) {
   if (direction === 'wait') {
     const reasons = [];
     if (primaryBull === 0 && primaryBear === 0) reasons.push('15m/1h 尚未出現明確突破訊號');
-    if (coin.adx < 18) reasons.push(`ADX ${coin.adx} 過低，短線震盪不宜追）`);
+    if (coin.adx < 18) reasons.push(`ADX ${coin.adx} 過低，短線震盪不宜追`);
     if (coin.rsi > 72) reasons.push(`RSI ${coin.rsi} 超買，短線追多風險高`);
     if (coin.rsi < 28) reasons.push(`RSI ${coin.rsi} 超賣，短線追空風險高`);
     if (totalBull === totalBear) reasons.push('多空積分相當，等待方向選擇');
+    if (coin.score >= 41 && coin.score <= 59) reasons.push(`評分 ${coin.score}，需達 60+ 才推薦做多，40 以下才推薦做空`);
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⏳</div>
       <div class="setup-wait-title">建議觀望，短線方向未明</div>
@@ -614,11 +619,16 @@ function buildTradeSetup(coin, mtfData, deriv) {
     : Math.min(swHigh, entry + atr * 1.5);
   const risk = Math.abs(entry - sl);
   // 止盈：短線目標 1.5:1 / 2.5:1
-  const tp1  = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
-  const tp2  = isLong
+  const tp1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
+  // TP2：以擺動高/低點為參考，但必須比 TP1 更有利
+  // 做多：TP2 在擺動高點下方，但不能低於 TP1
+  // 做空：TP2 在擺動低點上方，但不能高於 TP1（否則改用純 R/R）
+  let tp2 = isLong
     ? Math.min(swHigh, entry + risk * 2.5)
     : Math.max(swLow,  entry - risk * 2.5);
-  const rr   = (risk > 0 ? Math.abs(tp1 - entry) / risk : 0).toFixed(1);
+  if ( isLong && tp2 <= tp1) tp2 = entry + risk * 2.5;  // 確保做多 TP2 > TP1
+  if (!isLong && tp2 >= tp1) tp2 = entry - risk * 2.5;  // 確保做空 TP2 < TP1
+  const rr  = (risk > 0 ? Math.abs(tp1 - entry) / risk : 0).toFixed(1);
 
   const conf = Math.min(90, (isLong ? totalBull : totalBear) * 12);
 
