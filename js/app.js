@@ -540,10 +540,94 @@ function buildDerivativesPanel(d) {
   </div>`;
 }
 
+/* ── 已開倉時顯示持倉詳情 + 即時損益 ──────────────────────────── */
+function buildOpenPositionSetup(t, currentPrice) {
+  const isLong   = t.direction === 'long';
+  const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
+  const dirLabel = isLong ? '▲ 持倉做多' : '▼ 持倉做空';
+  const entry    = t.entry || 0;
+  const sl       = t.sl   || 0;
+  const tp1      = t.tp1  || 0;
+  const tp2      = t.tp2  || 0;
+  const risk     = Math.abs(entry - sl) || 1;
+  const conf     = t.conf || Math.min(90, t.score || 60);
+  const confClr  = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
+
+  // 即時未實現損益
+  let unrealHtml = '';
+  if (currentPrice && entry) {
+    const move    = isLong ? currentPrice - entry : entry - currentPrice;
+    const unrealR = move / risk;
+    const unrealPct = (move / entry * 100);
+    const uClr   = unrealR > 0 ? 'var(--bull)' : unrealR < 0 ? 'var(--bear)' : 'var(--text2)';
+    unrealHtml = `
+      <div class="open-unreal-row">
+        <span style="color:var(--text3);font-size:0.78rem">未實現損益</span>
+        <span style="color:${uClr};font-size:1.1rem;font-weight:800">${unrealR >= 0 ? '+' : ''}${unrealR.toFixed(2)} R</span>
+        <span style="color:${uClr};font-size:0.85rem">${unrealPct >= 0 ? '+' : ''}${unrealPct.toFixed(2)}%</span>
+      </div>`;
+  }
+
+  // 進場原因
+  const reasons = (t.entryReason || '').split('，').filter(Boolean);
+  const reasonsHtml = reasons.map(r => `<div class="level-desc" style="margin-bottom:3px">• ${r}</div>`).join('');
+
+  const fmt = v => v ? fmtPrice(v) : '--';
+  const pctStr = (a, b) => {
+    if (!a || !b) return '';
+    const d = ((b - a) / Math.abs(a) * 100);
+    return `<span style="font-size:0.72rem;color:var(--text3);margin-left:4px">${d >= 0 ? '+' : ''}${d.toFixed(2)}%</span>`;
+  };
+
+  return `
+    <div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
+      <div class="verdict-dir">
+        <span class="verdict-arrow">${isLong ? '▲' : '▼'}</span>
+        <span class="verdict-label">${dirLabel}</span>
+        <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">持倉進行中</span>
+      </div>
+      <div class="verdict-conf-wrap">
+        <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
+        <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confClr}"></div></div>
+        <span style="color:${confClr};font-weight:700;font-size:0.9rem">${conf}%</span>
+      </div>
+    </div>
+    ${unrealHtml}
+    <div class="setup-levels">
+      <div class="level-row level-entry">
+        <div class="level-tag">📍 進場</div>
+        <div class="level-desc" style="flex:1">${reasonsHtml || t.entryReason || '—'}</div>
+        <div class="level-price-val">${fmt(entry)}</div>
+      </div>
+      <div class="level-row level-tp1">
+        <div class="level-tag">🎯 止盈1</div>
+        <div class="level-desc">${t.tp1Reason || '—'}</div>
+        <div class="level-price-val">${fmt(tp1)}${pctStr(entry, tp1)}</div>
+      </div>
+      <div class="level-row" style="border-left:3px solid #22c55e">
+        <div class="level-tag">🚀 止盈2</div>
+        <div class="level-desc">${t.tp2Reason || '—'}</div>
+        <div class="level-price-val">${fmt(tp2)}${pctStr(entry, tp2)}</div>
+      </div>
+      <div class="level-row level-sl">
+        <div class="level-tag">🛑 止損</div>
+        <div class="level-desc">${t.slReason || '—'}</div>
+        <div class="level-price-val">${fmt(sl)}${pctStr(entry, sl)}</div>
+      </div>
+    </div>
+    ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，建議移動止損至成本價保護利潤</div>' : ''}
+    <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">進場時間：${fmtDateTime(t.timestamp)} · ${fmtRelTime(t.timestamp)}</div>`;
+}
+
 /* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
 function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
+
+  // 若已有進行中的開倉，優先顯示已記錄的設置 + 即時未實現損益
+  const existingOpen = loadTradeLog().find(t => t.symbol === coin.symbol && t.status === 'open' && t.entry);
+  if (existingOpen) return buildOpenPositionSetup(existingOpen, price);
+
 
   const m15  = mtfData['15m']?.signal;
   const h1   = mtfData['1h']?.signal;
