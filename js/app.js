@@ -539,7 +539,7 @@ function buildDerivativesPanel(d) {
 }
 
 /* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
-function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
+function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
 
@@ -578,8 +578,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     if (globalMkt.btcDominance < 44) macroBullBonus++;  // 山寨季潛力
   }
 
-  const totalBull = bullScore + derivBullBonus + macroBullBonus;
-  const totalBear = bearScore + derivBearBonus + macroBearBonus;
+  // 巨鯨資金流向加成
+  let whaleBullBonus = 0, whaleBearBonus = 0;
+  if (whale && whale.total > 0) {
+    if (whale.bias === 'bull' && whale.bigBuyCount >= 3)  whaleBullBonus++;
+    if (whale.bias === 'bear' && whale.bigSellCount >= 3) whaleBearBonus++;
+    // 淨流入超過 50% 時強化信號
+    if (whale.buyPct > 70 && whale.bigBuyCount >= 5)      whaleBullBonus++;
+    if (whale.buyPct < 30 && whale.bigSellCount >= 5)     whaleBearBonus++;
+  }
+
+  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus;
+  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus;
 
   let direction = 'wait';
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
@@ -655,6 +665,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     else if (rsi < 38)             entryReasons.push(`RSI ${rsi} 超賣反彈機會`);
     if (buyPct > 57)               entryReasons.push(`主動買盤佔 ${buyPct}%`);
     if (cvdTrend === 'bull')       entryReasons.push('CVD 上升，買壓持續');
+    if (whale?.bias === 'bull' && whale.bigBuyCount >= 3)
+      entryReasons.push(`巨鯨大額買入 ${whale.bigBuyCount} 筆（佔大單 ${whale.buyPct}%）`);
     if (!entryReasons.length)      entryReasons.push('15m/1h 多頭信號共振');
   } else {
     const nearRes = resists[0];
@@ -671,6 +683,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     else if (rsi > 62)             entryReasons.push(`RSI ${rsi} 超買回調機會`);
     if (buyPct < 43)               entryReasons.push(`主動賣盤佔 ${100 - buyPct}%`);
     if (cvdTrend === 'bear')       entryReasons.push('CVD 下降，賣壓持續');
+    if (whale?.bias === 'bear' && whale.bigSellCount >= 3)
+      entryReasons.push(`巨鯨大額賣出 ${whale.bigSellCount} 筆（佔大單 ${(100 - whale.buyPct).toFixed(1)}%）`);
     if (!entryReasons.length)      entryReasons.push('15m/1h 空頭信號共振');
   }
 
@@ -1053,7 +1067,7 @@ function buildMacroPanel(global, halving, fg) {
   </div>`;
 }
 
-function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt) {
+function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale) {
   const price = parseFloat(coin.price) || 0;
   const tfLabels = { '15m': '15分', '1h': '1小時', '4h': '4小時', '1d': '日線' };
   const sigs = ['15m','1h','4h','1d'].map(tf => ({ tf, d: mtfData[tf]?.signal })).filter(x => x.d);
@@ -1132,6 +1146,21 @@ function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt) {
   if (swH && swL) {
     const posColor = price >= swH * 0.998 ? 'var(--bull)' : price <= swL * 1.002 ? 'var(--bear)' : 'var(--text2)';
     points.push({ icon: '📌', color: posColor, label: '關鍵位', text: `1h 壓力 <strong>${fmtPrice(swH)}</strong>　支撐 <strong>${fmtPrice(swL)}</strong>　現價 ${price >= swH * 0.998 ? '<span style="color:var(--bull)">貼近壓力，注意突破或反轉</span>' : price <= swL * 1.002 ? '<span style="color:var(--bear)">貼近支撐，注意守位或跌破</span>' : '位於震盪區間內'}` });
+  }
+
+  // 8. 巨鯨資金流向（有效訊號才顯示）
+  if (whale && whale.total > 0 && (whale.bigBuyCount + whale.bigSellCount) >= 3) {
+    const notable = whale.buyPct > 65 || whale.buyPct < 35;
+    if (notable) {
+      const isBullWhale = whale.bias === 'bull';
+      const wColor = isBullWhale ? 'var(--bull)' : 'var(--bear)';
+      const wIcon  = isBullWhale ? '🐋' : '🦈';
+      const netM   = Math.abs(whale.netFlow / 1e6).toFixed(1);
+      const wText  = isBullWhale
+        ? `大額買單佔 <strong style="color:var(--bull)">${whale.buyPct}%</strong>（${whale.bigBuyCount} 筆），淨買超 <strong>$${netM}M</strong>，機構資金入場跡象`
+        : `大額賣單佔 <strong style="color:var(--bear)">${(100 - whale.buyPct).toFixed(1)}%</strong>（${whale.bigSellCount} 筆），淨賣超 <strong>$${netM}M</strong>，大戶出貨跡象`;
+      points.push({ icon: wIcon, color: wColor, label: '鯨魚', text: wText });
+    }
   }
 
   return `<div class="situation-list">
@@ -1394,13 +1423,14 @@ async function renderCoinDetail(symbol) {
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
-  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊
-  const [mtfData, fearGreed, deriv, globalMkt, halving] = await Promise.all([
+  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊 + 巨鯨偵測
+  const [mtfData, fearGreed, deriv, globalMkt, halving, whale] = await Promise.all([
     fetchMTFKlines(symbol),
     fetchFearGreed(),
     fetchDerivativesData(symbol),
     fetchGlobalMarket(),
     fetchHalvingInfo(),
+    fetchWhaleTrades(symbol),
   ]);
 
   // 緩存宏觀數據供 Telegram 通知使用
@@ -1410,11 +1440,11 @@ async function renderCoinDetail(symbol) {
 
   set('macro-body',     buildMacroPanel(globalMkt, halving, fearGreed));
   set('deriv-body',     buildDerivativesPanel(deriv));
-  set('setup-body',     buildTradeSetup(coin, mtfData, deriv, globalMkt));
+  set('setup-body',     buildTradeSetup(coin, mtfData, deriv, globalMkt, whale));
   set('mtf-body',       buildMTFTable(mtfData));
   set('of-body',        buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
   set('ai-body',        generateAIAnalysis(coin, mtfData, fearGreed));
-  set('situation-body', buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt));
+  set('situation-body', buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
 }
 
 function setTag(id, text, color) {

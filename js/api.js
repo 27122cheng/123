@@ -481,6 +481,52 @@ function buildTelegramText(coin, direction, setup, macro) {
   return msg;
 }
 
+/* ── 巨鯨偵測（大額現貨成交，不顯示，僅用於多空分析）────────── */
+async function fetchWhaleTrades(symbol) {
+  const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 7000);
+      const res = await fetch(`${host}/api/v3/aggTrades?symbol=${sym}&limit=500`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const trades = await res.json();
+      if (!Array.isArray(trades) || trades.length === 0) return null;
+
+      const price = parseFloat(trades[trades.length - 1]?.p) || 1;
+      // 動態門檻：依幣價決定「巨鯨」最低成交額
+      const threshold = price > 10000 ? 500000
+        : price > 1000 ? 100000
+        : price > 10   ? 30000
+        : 5000;
+
+      let buyVol = 0, sellVol = 0, bigBuyCount = 0, bigSellCount = 0;
+      for (const tr of trades) {
+        const val = parseFloat(tr.p) * parseFloat(tr.q);
+        if (val < threshold) continue;
+        // m=true 表示主動賣出（maker 是買方），m=false 表示主動買入
+        if (!tr.m) { buyVol += val; bigBuyCount++; }
+        else        { sellVol += val; bigSellCount++; }
+      }
+
+      const total  = buyVol + sellVol;
+      if (total === 0) return null;
+      const buyPct = buyVol / total * 100;
+      const bias   = buyPct > 60 ? 'bull' : buyPct < 40 ? 'bear' : 'neutral';
+      return {
+        buyVol, sellVol, total,
+        buyPct:      parseFloat(buyPct.toFixed(1)),
+        netFlow:     buyVol - sellVol,
+        bias,
+        bigBuyCount, bigSellCount,
+        threshold,
+      };
+    } catch { continue; }
+  }
+  return null;
+}
+
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */
 async function fetchMarketData(timeframe = '15m') {
   const settings = loadSettings();
