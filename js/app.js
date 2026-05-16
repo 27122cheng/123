@@ -795,11 +795,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
       <span class="verdict-label">${dirLabel}</span>
       <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">15m ~ 1h 時間框架</span>
     </div>
-    <div class="verdict-conf-wrap">
+    ${conf >= 60 ? `<div class="verdict-conf-wrap">
       <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
       <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${dirColor}"></div></div>
       <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf}%</span>
-    </div>
+    </div>` : ''}
   </div>
   <div class="setup-levels">
     <div class="level-row level-entry">
