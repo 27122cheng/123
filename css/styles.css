@@ -1401,3 +1401,11 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .outlook-event-high { border-color:rgba(251,191,36,.3); background:rgba(251,191,36,.06); color:#fbbf24; }
 .outlook-event-date { font-weight:700; color:var(--accent); margin-right:2px; }
 .outlook-event-high .outlook-event-date { color:#fbbf24; }
+
+/* ── 分析概覽（快速指標）───────────────────────────────────── */
+.quick-analysis-wrap { margin-bottom:16px; }
+.qa-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:4px 0; }
+@media(max-width:540px){ .qa-grid { grid-template-columns:repeat(2,1fr); } }
+.qa-item { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:3px; }
+.qa-lbl { font-size:0.68rem; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; }
+.qa-val { font-size:0.88rem; font-weight:700; line-height:1.3; }

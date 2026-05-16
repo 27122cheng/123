@@ -1372,11 +1372,9 @@ async function renderCoinDetail(symbol) {
   setSig('ema50-sig',  p > e50  ? '價格高於EMA50' : '價格低於EMA50',  p > e50);
   setSig('ema200-sig', p > e200 ? '高於長期均線'   : '低於長期均線',   p > e200);
 
-  // 分析
-  document.getElementById('a-trend').innerHTML    = buildTrendAnalysis(coin);
-  document.getElementById('a-sr').innerHTML       = buildSupportResistance(coin);
-  document.getElementById('a-momentum').innerHTML = buildMomentumAnalysis(coin);
-  document.getElementById('a-strength').innerHTML = buildStrengthAnalysis(coin);
+  // 整合分析概覽
+  const qa = document.getElementById('a-quick');
+  if (qa) qa.innerHTML = buildQuickAnalysis(coin);
 
   // 风险
   const { level, desc, pct, cls } = buildRisk(coin);
@@ -1511,6 +1509,46 @@ function renderFallbackChart(container, symbol) {
 }
 
 /* ── 分析内容构建 ───────────────────────────────────────────── */
+/* ── 整合快速分析（趨勢 + 動量 + 強度 合一）─────────────────── */
+function buildQuickAnalysis(coin) {
+  const p   = parseFloat(coin.price)  || 0;
+  const e20 = parseFloat(coin.ema20)  || p;
+  const e50 = parseFloat(coin.ema50)  || p;
+  const e200= parseFloat(coin.ema200) || p;
+
+  const emaAlign = p > e20 && e20 > e50 && e50 > e200 ? '多頭排列 ↑'
+                 : p < e20 && e20 < e50 && e50 < e200 ? '空頭排列 ↓'
+                 : '混合排列';
+  const emaColor = emaAlign.includes('多') ? 'var(--bull)' : emaAlign.includes('空') ? 'var(--bear)' : 'var(--neutral)';
+
+  const rsiSig  = coin.rsi > 70 ? '⚠ 超買'
+                : coin.rsi < 30 ? '⚠ 超賣'
+                : coin.rsi > 55 ? '偏強'
+                : coin.rsi < 45 ? '偏弱'
+                : '中性';
+  const macdSig  = coin.macdHist > 0 ? '看漲 ▲' : coin.macdHist < 0 ? '看跌 ▼' : '中性';
+  const macdColor= coin.macdHist > 0 ? 'var(--bull)' : coin.macdHist < 0 ? 'var(--bear)' : 'var(--text3)';
+  const momColor = parseFloat(coin.momentum) >= 0 ? 'var(--bull)' : 'var(--bear)';
+
+  const items = [
+    { lbl: '趨勢',   val: coin.trend,  color: scoreColor(coin.score) },
+    { lbl: 'RSI',    val: `${coin.rsi}　${rsiSig}`,  color: rsiColor(coin.rsi) },
+    { lbl: 'ADX',    val: `${coin.adx}　${adxLabel(coin.adx)}`, color: adxColor(coin.adx) },
+    { lbl: '均線',   val: emaAlign, color: emaColor },
+    { lbl: '動量',   val: `${parseFloat(coin.momentum) >= 0 ? '+' : ''}${coin.momentum}`, color: momColor },
+    { lbl: 'MACD',   val: macdSig,  color: macdColor },
+    { lbl: '成交量', val: coin.volumeStrength, color: coin.volumeStrength === '高' ? 'var(--blue)' : 'var(--text2)' },
+    { lbl: '評分',   val: `${coin.score} / 100`, color: scoreColor(coin.score) },
+  ];
+
+  return `<div class="qa-grid">${items.map(it =>
+    `<div class="qa-item">
+      <span class="qa-lbl">${it.lbl}</span>
+      <span class="qa-val" style="color:${it.color}">${it.val}</span>
+    </div>`
+  ).join('')}</div>`;
+}
+
 function buildTrendAnalysis(coin) {
   const e20 = parseFloat(coin.ema20), e50 = parseFloat(coin.ema50), e200 = parseFloat(coin.ema200);
   const p   = coin.price;
