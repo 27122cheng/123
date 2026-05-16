@@ -447,8 +447,12 @@ function buildTelegramText(coin, direction, setup, macro) {
   msg += `📊 評分 <b>${coin.score}</b>/100 ｜ RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   if (setup) {
+    if (setup.conf) {
+      msg += `📶 信號強度：<b>${setup.conf}%</b>\n\n`;
+    }
+    const reasonLines = (setup.entryReason || '').split('，').filter(Boolean).map(r => `   • ${r}`).join('\n');
     msg += `📍 <b>進場：$${fmt(setup.entry)}</b>\n`;
-    msg += `   ↳ ${setup.entryReason}\n\n`;
+    msg += `${reasonLines || '   • 多重信號共振'}\n\n`;
 
     const tp1Pct = pct(setup.entry, setup.tp1);
     msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${setup.rr1}:1)\n`;

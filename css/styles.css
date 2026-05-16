@@ -1409,3 +1409,31 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .qa-item { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:3px; }
 .qa-lbl { font-size:0.68rem; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; }
 .qa-val { font-size:0.88rem; font-weight:700; line-height:1.3; }
+
+/* ── 交易記錄可點擊行 ──────────────────────────────────────── */
+.tl-row-click { cursor:pointer; transition:background .15s; }
+.tl-row-click:hover { background:rgba(255,255,255,.05); }
+
+/* ── 交易詳情彈窗 ──────────────────────────────────────────── */
+.td-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:9000; display:flex; align-items:center; justify-content:center; opacity:0; pointer-events:none; transition:opacity .2s; }
+.td-overlay.td-open { opacity:1; pointer-events:all; }
+.td-modal { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:20px; width:min(480px,94vw); max-height:88vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+.td-header { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+.td-symbol { font-size:1.1rem; font-weight:800; }
+.td-dir { font-size:0.92rem; font-weight:700; }
+.td-close-btn { margin-left:auto; background:rgba(255,255,255,.08); border:none; color:var(--text2); border-radius:6px; width:28px; height:28px; cursor:pointer; font-size:0.9rem; display:flex; align-items:center; justify-content:center; }
+.td-close-btn:hover { background:rgba(255,255,255,.15); }
+.td-conf-row { display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+.td-conf-bar { flex:1; height:6px; background:rgba(255,255,255,.1); border-radius:4px; overflow:hidden; }
+.td-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
+.td-cell { background:rgba(255,255,255,.04); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+.td-cell-lbl { font-size:0.68rem; color:var(--text3); text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px; }
+.td-cell-val { font-size:0.9rem; font-weight:700; }
+.td-pct { font-size:0.72rem; font-weight:400; color:var(--text3); margin-left:5px; }
+.td-section { border-top:1px solid var(--border); padding-top:12px; margin-top:4px; }
+.td-section-title { font-size:0.78rem; font-weight:700; color:var(--text3); text-transform:uppercase; letter-spacing:.05em; margin-bottom:10px; }
+.td-reason-item { font-size:0.83rem; color:var(--text2); margin-bottom:5px; line-height:1.5; }
+.td-learn { margin-top:8px; }
+.td-learn-item { background:rgba(255,100,100,.06); border:1px solid rgba(255,100,100,.15); border-radius:8px; padding:10px 12px; margin-bottom:8px; }
+.td-learn-issue { font-size:0.82rem; color:#ff8080; margin-bottom:4px; }
+.td-learn-sugg { font-size:0.8rem; color:var(--bull); }

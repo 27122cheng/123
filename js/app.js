@@ -761,7 +761,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
     entry, sl, tp1, tp2,
     entryReason: entryReasons.join('，'),
     slReason, tp1Reason, tp2Reason,
-    rr1: rr1str, rr2: rr2str, atr,
+    rr1: rr1str, rr2: rr2str, atr, conf,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -773,6 +773,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
       ex.entry = entry; ex.sl = sl; ex.tp1 = tp1; ex.tp2 = tp2;
       ex.entryReason = entryReasons.join('，');
       ex.slReason = slReason; ex.tp1Reason = tp1Reason; ex.tp2Reason = tp2Reason;
+      ex.conf = conf;
       ex.refined = true;
       saveTradeLog(tlog);
     }
@@ -784,7 +785,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
       entryPrice: price, entry, sl, tp1, tp2,
       rsi: parseFloat(coin.rsi) || 50,
       adx: parseFloat(coin.adx) || 20,
-      score: coin.score, trend: coin.trend,
+      score: coin.score, trend: coin.trend, conf,
       entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
       status: 'open', outcome: null, tp1Hit: false,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -1792,6 +1793,7 @@ function recordSignalsFromScan(data) {
       rsi: parseFloat(coin.rsi) || 50,
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
+      conf: Math.min(90, coin.score),
       status: 'open', outcome: null, tp1Hit: false,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
       refined: false,
@@ -1998,7 +2000,7 @@ function renderTradeLogPage() {
       const exitTimeHtml = t.exitTime
         ? `<div style="font-size:0.72rem;color:var(--text3)">${fmtRelTime(t.exitTime)}</div>` : '';
 
-      return `<tr>
+      return `<tr class="tl-row-click" onclick="showTradeDetail('${t.id}')">
         <td style="color:var(--text3);font-size:0.78rem">${fmtRelTime(t.timestamp)}${exitTimeHtml}</td>
         <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
         <td>${dirHtml}</td>
@@ -2084,6 +2086,117 @@ function clearTradeLog() {
   saveTradeLog([]);
   renderTradeLogPage();
   showToast('交易記錄已清除', 'info');
+}
+
+/* ── 交易詳情彈窗 ─────────────────────────────────────────────── */
+function showTradeDetail(id) {
+  const trade = loadTradeLog().find(t => t.id === id);
+  if (!trade) return;
+
+  const isLong    = trade.direction === 'long';
+  const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
+  const dirColor  = isLong ? 'var(--bull)' : 'var(--bear)';
+  const p         = trade.entry || 1;
+  const fmt       = v => v != null ? fmtPrice(v) : '--';
+  const pctStr    = (a, b) => {
+    const d = ((b - a) / Math.abs(a) * 100);
+    return (d >= 0 ? '+' : '') + d.toFixed(2) + '%';
+  };
+
+  const outcomeMap = { tp2:'止盈二 ✅', tp1:'止盈一 ✅', sl:'止損 ❌', be:'保本 ➡️' };
+  const outcomeHtml = trade.outcome
+    ? `<span class="tl-badge tl-badge-${trade.outcome}">${outcomeMap[trade.outcome]}</span>`
+    : `<span class="tl-badge tl-badge-open">進行中</span>`;
+
+  const pnlNum  = parseFloat(trade.pnlR);
+  const pnlHtml = trade.pnlR != null
+    ? `<span class="${pnlNum > 0 ? 'tl-pnl-pos' : pnlNum < 0 ? 'tl-pnl-neg' : 'tl-pnl-zero'}">${pnlNum > 0 ? '+' : ''}${trade.pnlR} R</span>`
+    : '--';
+
+  const conf      = trade.conf || Math.min(90, trade.score || 50);
+  const confColor = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
+
+  const reasons = (trade.entryReason || '').split('，').filter(Boolean);
+  const reasonsHtml = reasons.length
+    ? reasons.map(r => `<div class="td-reason-item">• ${r}</div>`).join('')
+    : '<div class="td-reason-item" style="color:var(--text3)">無詳細原因（快速估算）</div>';
+
+  let learnHtml = '';
+  if (trade.analysis && (trade.outcome === 'sl' || trade.outcome === 'be')) {
+    const issues = trade.analysis.issues || [];
+    const suggs  = trade.analysis.suggestions || [];
+    learnHtml = `
+      <div class="td-section td-learn">
+        <div class="td-section-title">📚 改進分析</div>
+        ${issues.map((iss, i) => `
+          <div class="td-learn-item">
+            <div class="td-learn-issue">⚠️ ${iss}</div>
+            ${suggs[i] ? `<div class="td-learn-sugg">→ ${suggs[i]}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>`;
+  }
+
+  const html = `
+    <div class="td-header">
+      <span class="td-symbol">${trade.symbol.replace('/USDT','')}<span style="color:var(--text3);font-size:0.85rem">/USDT</span></span>
+      <span class="td-dir" style="color:${dirColor}">${dirLabel}</span>
+      <button class="td-close-btn" onclick="closeTradeModal()">✕</button>
+    </div>
+    <div class="td-conf-row">
+      <span style="color:var(--text3);font-size:0.78rem">信號強度</span>
+      <div class="td-conf-bar"><div style="width:${conf}%;background:${confColor};height:100%;border-radius:4px;transition:width .3s"></div></div>
+      <span style="color:${confColor};font-weight:700">${conf}%</span>
+    </div>
+    <div class="td-grid">
+      <div class="td-cell">
+        <div class="td-cell-lbl">進場價</div>
+        <div class="td-cell-val">${fmt(trade.entry)}</div>
+      </div>
+      <div class="td-cell">
+        <div class="td-cell-lbl">止損</div>
+        <div class="td-cell-val" style="color:var(--bear)">${fmt(trade.sl)}<span class="td-pct">${trade.entry && trade.sl ? pctStr(trade.entry, trade.sl) : ''}</span></div>
+      </div>
+      <div class="td-cell">
+        <div class="td-cell-lbl">止盈一</div>
+        <div class="td-cell-val" style="color:var(--bull)">${fmt(trade.tp1)}<span class="td-pct">${trade.entry && trade.tp1 ? pctStr(trade.entry, trade.tp1) : ''}</span></div>
+      </div>
+      <div class="td-cell">
+        <div class="td-cell-lbl">止盈二</div>
+        <div class="td-cell-val" style="color:#22c55e">${fmt(trade.tp2)}<span class="td-pct">${trade.entry && trade.tp2 ? pctStr(trade.entry, trade.tp2) : ''}</span></div>
+      </div>
+      <div class="td-cell">
+        <div class="td-cell-lbl">交易結果</div>
+        <div class="td-cell-val">${outcomeHtml}</div>
+      </div>
+      <div class="td-cell">
+        <div class="td-cell-lbl">盈虧</div>
+        <div class="td-cell-val">${pnlHtml}</div>
+      </div>
+    </div>
+    <div class="td-section">
+      <div class="td-section-title">📍 進場理由</div>
+      ${reasonsHtml}
+    </div>
+    ${learnHtml}
+  `;
+
+  let overlay = document.getElementById('trade-detail-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'trade-detail-overlay';
+    overlay.className = 'td-overlay';
+    overlay.innerHTML = `<div class="td-modal" id="trade-detail-modal"></div>`;
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeTradeModal(); });
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('trade-detail-modal').innerHTML = html;
+  overlay.classList.add('td-open');
+}
+
+function closeTradeModal() {
+  const overlay = document.getElementById('trade-detail-overlay');
+  if (overlay) overlay.classList.remove('td-open');
 }
 
 function fmtRelTime(ts) {
