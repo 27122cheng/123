@@ -599,6 +599,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
 
   if (direction === 'long'  && coin.score < 60) direction = 'wait';
   if (direction === 'short' && coin.score > 40) direction = 'wait';
+  // 信號強度未達 60% 一律觀望（多空通用）
+  if (direction !== 'wait') {
+    const prelimConf = Math.min(90, (direction === 'long' ? totalBull : totalBear) * 12);
+    if (prelimConf < 60) direction = 'wait';
+  }
 
   // ATR：優先使用 1h 真實 ATR
   const atrPct = coin.adx > 35 ? 0.018 : coin.adx > 25 ? 0.013 : 0.009;
