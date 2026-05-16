@@ -2696,10 +2696,7 @@ async function checkAndSendAlerts(data) {
   for (const coin of data) {
     const isLong  = coin.score >= bullThr && (coin.trend === '強勢看漲' || coin.trend === '看漲');
     const isShort = coin.score <= bearThr && (coin.trend === '強勢看跌' || coin.trend === '看跌');
-    if (!isLong && !isShort) {
-      delete next[coin.symbol]; // 訊號消失（中性），清除紀錄讓下次重新出現時可再通知
-      continue;
-    }
+    if (!isLong && !isShort) continue; // 訊號消失，保留快取讓冷卻期繼續計算
 
     const dir    = isLong ? 'long' : 'short';
     const cached = prev[coin.symbol];
