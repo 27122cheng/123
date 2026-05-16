@@ -2713,6 +2713,11 @@ async function checkAndSendAlerts(data) {
     }
     if (s.notifTelegram && s.tgToken && s.tgChatId) {
       const setup = _tradeSetupCache[coin.symbol] || computeSimpleSetup(coin, isLong);
+      // 優先使用交易記錄中已儲存的精確 conf
+      if (!setup.conf) {
+        const tradeRecord = loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open');
+        if (tradeRecord?.conf) setup.conf = tradeRecord.conf;
+      }
       sendTelegramMessage(s.tgToken, s.tgChatId,
         buildTelegramText(coin, dir, setup, _macroCache));
     }
@@ -2747,6 +2752,7 @@ function computeSimpleSetup(coin, isLong) {
     rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
     atr,
+    conf: Math.min(90, coin.score || 60),
   };
 }
 
