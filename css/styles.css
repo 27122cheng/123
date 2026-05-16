@@ -1437,3 +1437,26 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .td-learn-item { background:rgba(255,100,100,.06); border:1px solid rgba(255,100,100,.15); border-radius:8px; padding:10px 12px; margin-bottom:8px; }
 .td-learn-issue { font-size:0.82rem; color:#ff8080; margin-bottom:4px; }
 .td-learn-sugg { font-size:0.8rem; color:var(--bull); }
+
+/* ── AI 學習面板 ───────────────────────────────────────────────── */
+.ai-learn-card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px; margin-top:20px; }
+.ai-learn-header { font-size:1rem; font-weight:800; color:var(--accent); margin-bottom:16px; display:flex; align-items:center; gap:10px; }
+.ai-learn-sub { font-size:0.75rem; font-weight:400; color:var(--text3); margin-left:auto; }
+.ai-learn-section { border-top:1px solid var(--border); padding-top:14px; margin-top:14px; }
+.ai-section-title { font-size:0.75rem; font-weight:700; color:var(--text3); text-transform:uppercase; letter-spacing:.05em; margin-bottom:10px; }
+.ai-rule-item { background:rgba(251,191,36,.06); border:1px solid rgba(251,191,36,.2); border-radius:8px; padding:10px 12px; margin-bottom:8px; }
+.ai-rule-cond { font-size:0.83rem; color:#fbbf24; font-weight:600; margin-bottom:4px; }
+.ai-rule-stats { font-size:0.75rem; color:var(--text3); }
+.ai-zone-row { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+.ai-zone-cell { flex:1; min-width:60px; background:rgba(255,255,255,.04); border:1px solid var(--border); border-radius:8px; padding:7px 6px; text-align:center; }
+.ai-zone-label { font-size:0.65rem; color:var(--text3); margin-bottom:3px; }
+.ai-zone-rate { font-size:0.88rem; font-weight:700; }
+.ai-zone-count { font-size:0.65rem; margin-top:2px; }
+.ai-best-item { display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--border); font-size:0.83rem; }
+.ai-best-item:last-child { border-bottom:none; }
+.ai-best-lbl { color:var(--text3); }
+.ai-best-val { color:var(--text2); font-weight:600; text-align:right; }
+.ai-issue-row { background:rgba(255,100,100,.05); border:1px solid rgba(255,100,100,.12); border-radius:8px; padding:9px 12px; margin-bottom:6px; }
+.ai-issue-txt { font-size:0.82rem; color:#ff8080; margin-bottom:3px; }
+.ai-issue-cnt { background:rgba(255,100,100,.2); border-radius:4px; padding:1px 5px; font-size:0.72rem; margin-left:6px; }
+.ai-sugg-txt { font-size:0.8rem; color:var(--bull); }

@@ -754,7 +754,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
 
   const rr1str = ((Math.abs(tp1 - entry) / risk)).toFixed(1);
   const rr2str = ((Math.abs(tp2 - entry) / risk)).toFixed(1);
-  const conf   = Math.min(90, (isLong ? totalBull : totalBear) * 12);
+  const rawConf = Math.min(90, (isLong ? totalBull : totalBear) * 12);
+
+  // AI 學習調整：依歷史止損模式下調信心
+  const { penalty: learnPenalty, warnings: learnWarnings } = applyLearnAdjustment(direction, rsi, parseFloat(coin.adx) || 20);
+  const conf = Math.max(0, rawConf - learnPenalty);
+  if (conf < 60) direction = 'wait'; // 學習後信心不足，改觀望
+  if (learnWarnings.length && direction !== 'wait') {
+    learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
+  }
 
   // 緩存完整設置供 Telegram 通知使用
   _tradeSetupCache[coin.symbol] = {
@@ -1858,7 +1866,132 @@ function updateOpenTrades(data) {
       changed = true;
     }
   }
-  if (changed) saveTradeLog(tlog);
+  if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
+}
+
+/* ── AI 學習系統 ─────────────────────────────────────────────── */
+let _learnCache = null;
+function invalidateLearnCache() { _learnCache = null; }
+
+function computeLearnProfile() {
+  const closed = loadTradeLog().filter(t => t.status === 'closed');
+  if (closed.length < 3) return { ready: false, closed: closed.length };
+
+  const losses = closed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
+  const wins   = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+
+  // ── 區間分析 helper ──
+  const zoneStats = (arr, field, ranges) =>
+    ranges.map(z => {
+      const inZone    = arr.filter(t => (t[field] || 0) >= z.min && (t[field] || 0) < z.max);
+      const lossZone  = inZone.filter(t => t.outcome === 'sl' || t.outcome === 'be');
+      return { ...z, total: inZone.length, lossCount: lossZone.length,
+        lossRate: inZone.length >= 2 ? lossZone.length / inZone.length : null };
+    });
+
+  const rsiZones = [
+    { label: '< 30', min: 0,  max: 30  },
+    { label: '30–45', min: 30, max: 45 },
+    { label: '45–55', min: 45, max: 55 },
+    { label: '55–65', min: 55, max: 65 },
+    { label: '65–75', min: 65, max: 75 },
+    { label: '> 75',  min: 75, max: 200},
+  ];
+  const adxZones = [
+    { label: '< 15',  min: 0,  max: 15  },
+    { label: '15–20', min: 15, max: 20  },
+    { label: '20–30', min: 20, max: 30  },
+    { label: '30–40', min: 30, max: 40  },
+    { label: '> 40',  min: 40, max: 200 },
+  ];
+  const confZones = [
+    { label: '60–65%', min: 60, max: 65 },
+    { label: '65–70%', min: 65, max: 70 },
+    { label: '70–80%', min: 70, max: 80 },
+    { label: '> 80%',  min: 80, max: 100},
+  ];
+
+  const rsiStats  = zoneStats(closed, 'rsi', rsiZones);
+  const adxStats  = zoneStats(closed, 'adx', adxZones);
+  const confStats = zoneStats(closed, 'conf', confZones);
+
+  // ── 方向性特定條件 ──
+  const longClosed  = closed.filter(t => t.direction === 'long');
+  const shortClosed = closed.filter(t => t.direction === 'short');
+  const longLosses  = longClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
+  const shortLosses = shortClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
+
+  const check = (cond, subLoss, subAll, penaltyConf, warnTpl) => {
+    if (subAll.length < 3) return null;
+    const rate = subLoss.length / subAll.length;
+    if (rate < 0.55) return null;
+    return { condition: cond, lossCount: subLoss.length, total: subAll.length,
+      rate, penaltyConf, warning: warnTpl(Math.round(rate * 100)) };
+  };
+
+  const rules = [
+    check('long_high_rsi',
+      longLosses.filter(t => (t.rsi||50) > 65),
+      longClosed.filter(t => (t.rsi||50) > 65),
+      15, r => `RSI > 65 做多歷史止損率 ${r}%，AI 已下調信心`),
+    check('short_low_rsi',
+      shortLosses.filter(t => (t.rsi||50) < 35),
+      shortClosed.filter(t => (t.rsi||50) < 35),
+      15, r => `RSI < 35 做空歷史止損率 ${r}%，AI 已下調信心`),
+    check('low_adx',
+      losses.filter(t => (t.adx||20) < 20),
+      closed.filter(t => (t.adx||20) < 20),
+      10, r => `ADX < 20 震盪市止損率 ${r}%，AI 已下調信心`),
+    check('long_high_score_rsi',
+      longLosses.filter(t => (t.rsi||50) > 72),
+      longClosed.filter(t => (t.rsi||50) > 72),
+      20, r => `RSI > 72 超買做多止損率 ${r}%，AI 建議等回調`),
+    check('short_oversold',
+      shortLosses.filter(t => (t.rsi||50) < 28),
+      shortClosed.filter(t => (t.rsi||50) < 28),
+      20, r => `RSI < 28 超賣做空止損率 ${r}%，AI 建議等反彈後追空`),
+  ].filter(Boolean);
+
+  // ── 最佳進場條件（從盈利交易學習）──
+  const bestConditions = [];
+  if (wins.length >= 3) {
+    const avgWinRsi = wins.reduce((s,t) => s+(t.rsi||50), 0) / wins.length;
+    const avgWinAdx = wins.reduce((s,t) => s+(t.adx||20), 0) / wins.length;
+    const avgLossRsi = losses.length ? losses.reduce((s,t) => s+(t.rsi||50), 0) / losses.length : null;
+    const avgLossAdx = losses.length ? losses.reduce((s,t) => s+(t.adx||20), 0) / losses.length : null;
+    bestConditions.push({ label: '最佳 RSI 區間', value: `${Math.round(avgWinRsi)}（盈利平均）${avgLossRsi ? '，止損平均 ' + Math.round(avgLossRsi) : ''}` });
+    bestConditions.push({ label: '最佳 ADX 強度', value: `${Math.round(avgWinAdx)}（盈利平均）${avgLossAdx ? '，止損平均 ' + Math.round(avgLossAdx) : ''}` });
+  }
+
+  return {
+    ready: true, closed: closed.length,
+    wins: wins.length, losses: losses.length,
+    winRate: (wins.length / closed.length * 100).toFixed(1),
+    rsiStats, adxStats, confStats,
+    rules, bestConditions,
+  };
+}
+
+function getLearnProfile() {
+  if (!_learnCache) _learnCache = computeLearnProfile();
+  return _learnCache;
+}
+
+function applyLearnAdjustment(direction, rsi, adx) {
+  const profile = getLearnProfile();
+  if (!profile.ready || !profile.rules.length) return { penalty: 0, warnings: [] };
+  let penalty = 0;
+  const warnings = [];
+  for (const rule of profile.rules) {
+    const match =
+      (rule.condition === 'long_high_rsi'    && direction === 'long'  && rsi > 65) ||
+      (rule.condition === 'short_low_rsi'    && direction === 'short' && rsi < 35) ||
+      (rule.condition === 'low_adx'          && adx < 20) ||
+      (rule.condition === 'long_high_score_rsi' && direction === 'long'  && rsi > 72) ||
+      (rule.condition === 'short_oversold'   && direction === 'short' && rsi < 28);
+    if (match) { penalty += rule.penaltyConf; warnings.push(rule.warning); }
+  }
+  return { penalty, warnings };
 }
 
 /* ── 止損/保本交易學習分析 ────────────────────────────────────── */
@@ -1897,6 +2030,108 @@ function generateTradeAnalysis(trade) {
     suggestions.push('建議同步確認宏觀市場環境再入場');
   }
   return { issues, suggestions };
+}
+
+/* ── AI 學習面板渲染 ──────────────────────────────────────────── */
+function buildAILearnPanel(closed) {
+  const profile = getLearnProfile();
+
+  if (!profile.ready) {
+    const needed = Math.max(0, 3 - profile.closed);
+    return `<div class="ai-learn-card">
+      <div class="ai-learn-header">🤖 AI 學習引擎</div>
+      <div style="color:var(--text3);font-size:0.83rem;padding:12px 0">
+        尚需 <strong style="color:var(--accent)">${needed}</strong> 筆已結束的交易才能開始學習，目前已累積 ${profile.closed} 筆。
+      </div>
+    </div>`;
+  }
+
+  // ── 應用中的規則 ──
+  const rulesHtml = profile.rules.length
+    ? profile.rules.map(r => `
+        <div class="ai-rule-item">
+          <div class="ai-rule-cond">⚡ ${r.warning}</div>
+          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · 已自動下調信心 <strong>${r.penaltyConf}%</strong></div>
+        </div>`).join('')
+    : `<div style="color:var(--bull);font-size:0.83rem;padding:6px 0">✅ 目前無高風險模式，歷史條件分佈均衡</div>`;
+
+  // ── RSI 熱力圖 ──
+  const rsiBar = profile.rsiStats.filter(z => z.total > 0).map(z => {
+    const lr = z.lossRate;
+    const clr = lr === null ? 'var(--text3)' : lr > 0.65 ? 'var(--bear)' : lr > 0.45 ? '#ff6d00' : 'var(--bull)';
+    const txt = lr === null ? '—' : `${Math.round(lr*100)}%`;
+    return `<div class="ai-zone-cell" style="border-color:${clr}20">
+      <div class="ai-zone-label">${z.label}</div>
+      <div class="ai-zone-rate" style="color:${clr}">${txt}</div>
+      <div class="ai-zone-count" style="color:var(--text3)">${z.total}筆</div>
+    </div>`;
+  }).join('');
+
+  // ── ADX 熱力圖 ──
+  const adxBar = profile.adxStats.filter(z => z.total > 0).map(z => {
+    const lr = z.lossRate;
+    const clr = lr === null ? 'var(--text3)' : lr > 0.65 ? 'var(--bear)' : lr > 0.45 ? '#ff6d00' : 'var(--bull)';
+    const txt = lr === null ? '—' : `${Math.round(lr*100)}%`;
+    return `<div class="ai-zone-cell" style="border-color:${clr}20">
+      <div class="ai-zone-label">${z.label}</div>
+      <div class="ai-zone-rate" style="color:${clr}">${txt}</div>
+      <div class="ai-zone-count" style="color:var(--text3)">${z.total}筆</div>
+    </div>`;
+  }).join('');
+
+  // ── 最佳條件 ──
+  const bestHtml = profile.bestConditions.map(b =>
+    `<div class="ai-best-item"><span class="ai-best-lbl">${b.label}</span><span class="ai-best-val">${b.value}</span></div>`
+  ).join('');
+
+  // ── 個別止損交易改進摘要 ──
+  const badTrades = closed.filter(t => (t.outcome === 'sl' || t.outcome === 'be') && t.analysis);
+  let perTradeHtml = '';
+  if (badTrades.length > 0) {
+    const issueCount = {}, suggMap = {};
+    badTrades.forEach(t => t.analysis.issues.forEach((iss, i) => {
+      issueCount[iss] = (issueCount[iss] || 0) + 1;
+      if (!suggMap[iss] && t.analysis.suggestions[i]) suggMap[iss] = t.analysis.suggestions[i];
+    }));
+    const top = Object.keys(issueCount).sort((a,b) => issueCount[b]-issueCount[a]).slice(0,4);
+    perTradeHtml = `<div class="ai-learn-section">
+      <div class="ai-section-title">📋 反覆出現的問題（${badTrades.length} 筆止損/保本）</div>
+      ${top.map(iss => `
+        <div class="ai-issue-row">
+          <div class="ai-issue-txt">⚠️ ${iss}<span class="ai-issue-cnt">×${issueCount[iss]}</span></div>
+          ${suggMap[iss] ? `<div class="ai-sugg-txt">→ ${suggMap[iss]}</div>` : ''}
+        </div>`).join('')}
+    </div>`;
+  }
+
+  return `<div class="ai-learn-card">
+    <div class="ai-learn-header">
+      🤖 AI 學習引擎
+      <span class="ai-learn-sub">${profile.closed} 筆歷史交易 · 勝率 ${profile.winRate}%</span>
+    </div>
+
+    <div class="ai-learn-section">
+      <div class="ai-section-title">⚙️ 已學習並套用的風控規則</div>
+      ${rulesHtml}
+    </div>
+
+    ${bestHtml ? `<div class="ai-learn-section">
+      <div class="ai-section-title">🏆 盈利交易最佳條件</div>
+      ${bestHtml}
+    </div>` : ''}
+
+    <div class="ai-learn-section">
+      <div class="ai-section-title">📊 RSI 止損率分佈（越紅越危險）</div>
+      <div class="ai-zone-row">${rsiBar || '<span style="color:var(--text3)">數據不足</span>'}</div>
+    </div>
+
+    <div class="ai-learn-section">
+      <div class="ai-section-title">📊 ADX 止損率分佈</div>
+      <div class="ai-zone-row">${adxBar || '<span style="color:var(--text3)">數據不足</span>'}</div>
+    </div>
+
+    ${perTradeHtml}
+  </div>`;
 }
 
 /* ── 交易記錄頁面渲染 ─────────────────────────────────────────── */
@@ -2027,38 +2262,8 @@ function renderTradeLogPage() {
     </div>`;
   }
 
-  // Learning analysis section
-  const badTrades = closed.filter(t => (t.outcome === 'sl' || t.outcome === 'be') && t.analysis);
-  let learnHtml = '';
-  if (badTrades.length > 0) {
-    const issueCount = {};
-    const suggMap    = {};
-    for (const t of badTrades) {
-      if (!t.analysis) continue;
-      t.analysis.issues.forEach((iss, i) => {
-        issueCount[iss] = (issueCount[iss] || 0) + 1;
-        if (!suggMap[iss] && t.analysis.suggestions[i]) suggMap[iss] = t.analysis.suggestions[i];
-      });
-    }
-    const sortedIssues = Object.keys(issueCount).sort((a, b) => issueCount[b] - issueCount[a]).slice(0, 5);
-    const issueItems  = sortedIssues.map(iss => `<div class="tl-issue-item">${iss}（${issueCount[iss]}次）</div>`).join('');
-    const suggestItems = sortedIssues.map(iss => suggMap[iss] ? `<div class="tl-suggest-item">${suggMap[iss]}</div>` : '').join('');
-
-    learnHtml = `<div class="tl-learn">
-      <div class="tl-learn-title">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-        學習分析（${badTrades.length} 筆止損/保本）
-      </div>
-      <div class="tl-learn-section">
-        <h4>常見問題</h4>
-        ${issueItems}
-      </div>
-      <div class="tl-learn-section">
-        <h4>改進建議</h4>
-        ${suggestItems}
-      </div>
-    </div>`;
-  }
+  // AI 學習分析區塊
+  const learnHtml = buildAILearnPanel(closed);
 
   // Clear button
   const clearHtml = `<div style="text-align:right;margin-top:8px">
@@ -2088,6 +2293,7 @@ function setTlFilter(f) {
 function clearTradeLog() {
   if (!confirm('確定要清除所有交易記錄嗎？此操作無法復原。')) return;
   saveTradeLog([]);
+  invalidateLearnCache();
   renderTradeLogPage();
   showToast('交易記錄已清除', 'info');
 }
