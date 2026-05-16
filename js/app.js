@@ -115,6 +115,7 @@ function startRefreshCycle() {
     checkAndSendAlerts(data);
     updateOpenTrades(data);
     recordSignalsFromScan(data);
+    if (state.currentPage === 'positions') renderPositionsPage();
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
@@ -221,6 +222,7 @@ function navigateTo(page, coinSymbol) {
   if (page === 'dashboard') loadDashboardMacro();
   if (page === 'ranking') renderRankingTable('');
   if (page === 'settings') populateSettingsPage();
+  if (page === 'positions') renderPositionsPage();
   if (page === 'tradelog') renderTradeLogPage();
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2132,6 +2134,160 @@ function buildAILearnPanel(closed) {
 
     ${perTradeHtml}
   </div>`;
+}
+
+/* ── 持倉中頁面渲染 ───────────────────────────────────────────── */
+function renderPositionsPage() {
+  const container = document.getElementById('positions-content');
+  if (!container) return;
+
+  const open = loadTradeLog().filter(t => t.status === 'open' && t.entry);
+  if (open.length === 0) {
+    container.innerHTML = `
+      <div class="page-header"><div>
+        <h1 class="page-title">持倉中</h1>
+        <p class="page-subtitle">目前進行中的交易推薦</p>
+      </div></div>
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到評分 60 以上（做多）或 40 以下（做空）的訊號時會自動出現</span></div>`;
+    return;
+  }
+
+  // 計算整體未實現統計
+  let totalUnrealR = 0, totalRisk = 0, hasPrice = 0;
+  const cards = open.map(t => {
+    const cur = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
+    const entry   = t.entry   || 0;
+    const sl      = t.sl      || 0;
+    const tp1     = t.tp1     || 0;
+    const tp2     = t.tp2     || 0;
+    const risk    = Math.abs(entry - sl) || 1;
+    const isLong  = t.direction === 'long';
+
+    let unrealR   = null, unrealPct = null, priceClr = 'var(--text2)';
+    if (cur && entry) {
+      const move   = isLong ? cur - entry : entry - cur;
+      unrealR      = move / risk;
+      unrealPct    = ((isLong ? cur - entry : entry - cur) / entry * 100);
+      priceClr     = unrealR > 0 ? 'var(--bull)' : unrealR < 0 ? 'var(--bear)' : 'var(--text2)';
+      totalUnrealR += unrealR;
+      totalRisk    += risk;
+      hasPrice++;
+    }
+
+    const conf      = t.conf || Math.min(90, t.score || 60);
+    const confClr   = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
+    const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
+    const dirColor  = isLong ? 'var(--bull)' : 'var(--bear)';
+
+    // 進度：距離 TP1 / TP2 / SL 的百分比
+    let progressHtml = '';
+    if (cur && entry && tp1 && sl) {
+      const target  = isLong ? tp1 : tp1; // TP1 as first target
+      const total   = Math.abs(tp1 - entry);
+      const moved   = isLong ? cur - entry : entry - cur;
+      const pct     = total > 0 ? Math.max(-100, Math.min(100, moved / total * 100)) : 0;
+      const barClr  = pct >= 100 ? '#22c55e' : pct > 0 ? 'var(--bull)' : 'var(--bear)';
+      progressHtml = `
+        <div class="pos-progress-wrap">
+          <div class="pos-progress-labels">
+            <span style="color:var(--bear)">SL ${fmtPrice(sl)}</span>
+            <span style="color:var(--text3);font-size:0.72rem">進度至止盈一</span>
+            <span style="color:var(--bull)">TP1 ${fmtPrice(tp1)}</span>
+          </div>
+          <div class="pos-progress-bar">
+            <div class="pos-progress-fill" style="width:${Math.max(0,pct)}%;background:${barClr}"></div>
+          </div>
+        </div>`;
+    }
+
+    const reasons = (t.entryReason || '').split('，').filter(Boolean);
+
+    return `<div class="pos-card" onclick="navigateTo('coin','${t.symbol}')">
+      <div class="pos-card-top">
+        <div class="pos-symbol">
+          <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
+          <span class="pos-dir" style="color:${dirColor}">${dirLabel}</span>
+        </div>
+        <div class="pos-unreal ${unrealR !== null ? (unrealR > 0 ? 'pos-unreal-pos' : unrealR < 0 ? 'pos-unreal-neg' : '') : ''}">
+          ${unrealR !== null
+            ? `${unrealR >= 0 ? '+' : ''}${unrealR.toFixed(2)} R<span class="pos-unreal-pct">${unrealPct >= 0 ? '+' : ''}${unrealPct.toFixed(2)}%</span>`
+            : '等待價格更新'}
+        </div>
+      </div>
+
+      <div class="pos-grid">
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">現價</div>
+          <div class="pos-cell-val" style="color:${priceClr}">${cur ? fmtPrice(cur) : '—'}</div>
+        </div>
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">進場價</div>
+          <div class="pos-cell-val">${fmtPrice(entry)}</div>
+        </div>
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">止損</div>
+          <div class="pos-cell-val" style="color:var(--bear)">${fmtPrice(sl)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&sl ? ((isLong?sl-entry:entry-sl)/entry*100).toFixed(2)+'%' : ''}</span></div>
+        </div>
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">止盈一</div>
+          <div class="pos-cell-val" style="color:var(--bull)">${fmtPrice(tp1)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp1 ? ((isLong?tp1-entry:entry-tp1)/entry*100).toFixed(2)+'%' : ''}</span></div>
+        </div>
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">止盈二</div>
+          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
+        </div>
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">信號強度</div>
+          <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
+        </div>
+      </div>
+
+      ${progressHtml}
+
+      <div class="pos-reasons">
+        <div class="pos-reasons-lbl">📍 進場理由</div>
+        ${reasons.length ? reasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('') : '<span style="color:var(--text3);font-size:0.78rem">無詳細原因</span>'}
+      </div>
+
+      <div class="pos-footer">
+        <span style="color:var(--text3);font-size:0.72rem">進場時間：${fmtDateTime(t.timestamp)} · ${fmtRelTime(t.timestamp)}</span>
+        ${t.tp1Hit ? '<span class="pos-tp1-badge">止盈一已觸及 ✅</span>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // 統計匯總
+  const totalUnrealStr = hasPrice > 0
+    ? `${totalUnrealR >= 0 ? '+' : ''}${totalUnrealR.toFixed(2)} R`
+    : '—';
+  const totalClr = totalUnrealR > 0 ? 'var(--bull)' : totalUnrealR < 0 ? 'var(--bear)' : 'var(--text2)';
+
+  container.innerHTML = `
+    <div class="page-header"><div>
+      <h1 class="page-title">持倉中</h1>
+      <p class="page-subtitle">目前進行中的交易推薦（${open.length} 筆）</p>
+    </div></div>
+
+    <div class="pos-summary">
+      <div class="pos-sum-card">
+        <div class="pos-sum-val">${open.length}</div>
+        <div class="pos-sum-lbl">進行中</div>
+      </div>
+      <div class="pos-sum-card">
+        <div class="pos-sum-val" style="color:${totalClr}">${totalUnrealStr}</div>
+        <div class="pos-sum-lbl">合計未實現</div>
+      </div>
+      <div class="pos-sum-card">
+        <div class="pos-sum-val" style="color:var(--bull)">${open.filter(t=>t.tp1Hit).length}</div>
+        <div class="pos-sum-lbl">止盈一已達</div>
+      </div>
+    </div>
+
+    <div class="pos-list">${cards}</div>
+
+    <div style="text-align:center;margin-top:16px;font-size:0.75rem;color:var(--text3)">
+      點擊任一卡片查看幣種詳情 · 每次掃描自動更新未實現損益
+    </div>`;
 }
 
 /* ── 交易記錄頁面渲染 ─────────────────────────────────────────── */
