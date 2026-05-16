@@ -41,8 +41,8 @@ async function init() {
   state.data       = data;
   state.dataSource = source;
   state.filtered   = [...data];
-  recordSignalsFromScan(data);
   updateOpenTrades(data);
+  recordSignalsFromScan(data);
 
   hideLoading();
   hideScanBar();
@@ -113,8 +113,8 @@ function startRefreshCycle() {
     applyFilters();
     renderAll();
     checkAndSendAlerts(data);
-    recordSignalsFromScan(data);
     updateOpenTrades(data);
+    recordSignalsFromScan(data);
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
@@ -771,7 +771,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
       ex.refined = true;
       saveTradeLog(tlog);
     }
-  } else {
+  } else if (!inCooldown(tlog, coin.symbol, direction)) {
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -1741,16 +1741,27 @@ function triggerRescan() {
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
     checkAndSendAlerts(data);
-    recordSignalsFromScan(data);
     updateOpenTrades(data);
+    recordSignalsFromScan(data);
   });
 }
 
 /* ── 交易記錄 ────────────────────────────────────────────────── */
-const TRADE_LOG_KEY = 'csp_trade_log';
+const TRADE_LOG_KEY     = 'csp_trade_log';
+const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內不重複記錄
 
 function loadTradeLog() { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); }
 function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
+
+/* 判斷是否在冷卻期（防止同一進場機會被重複記錄）*/
+function inCooldown(tlog, symbol, direction) {
+  const now = Date.now();
+  return tlog.some(t =>
+    t.symbol === symbol &&
+    t.direction === direction &&
+    (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN
+  );
+}
 
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
 function recordSignalsFromScan(data) {
@@ -1763,6 +1774,7 @@ function recordSignalsFromScan(data) {
     const direction = isLong ? 'long' : 'short';
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
     if (hasOpen) continue;
+    if (inCooldown(tlog, coin.symbol, direction)) continue;
     const setup = computeSimpleSetup(coin, isLong);
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
