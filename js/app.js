@@ -2001,7 +2001,11 @@ function renderTradeLogPage() {
         ? `<div style="font-size:0.72rem;color:var(--text3)">${fmtRelTime(t.exitTime)}</div>` : '';
 
       return `<tr class="tl-row-click" onclick="showTradeDetail('${t.id}')">
-        <td style="color:var(--text3);font-size:0.78rem">${fmtRelTime(t.timestamp)}${exitTimeHtml}</td>
+        <td style="font-size:0.78rem">
+          <div style="color:var(--text2)">${fmtDateTime(t.timestamp)}</div>
+          <div style="color:var(--text3);font-size:0.7rem">${fmtRelTime(t.timestamp)}</div>
+          ${exitTimeHtml}
+        </td>
         <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
         <td>${dirHtml}</td>
         <td>${fmtPrice(t.entry)}</td>
@@ -2150,6 +2154,14 @@ function showTradeDetail(id) {
     </div>
     <div class="td-grid">
       <div class="td-cell">
+        <div class="td-cell-lbl">進場時間</div>
+        <div class="td-cell-val" style="font-size:0.85rem">${fmtDateTime(trade.timestamp)}</div>
+      </div>
+      <div class="td-cell">
+        <div class="td-cell-lbl">結束時間</div>
+        <div class="td-cell-val" style="font-size:0.85rem">${trade.exitTime ? fmtDateTime(trade.exitTime) : '—'}</div>
+      </div>
+      <div class="td-cell">
         <div class="td-cell-lbl">進場價</div>
         <div class="td-cell-val">${fmt(trade.entry)}</div>
       </div>
@@ -2210,6 +2222,16 @@ function fmtRelTime(ts) {
   const days = Math.floor(hrs / 24);
   if (days === 1) return '昨天';
   return `${days}天前`;
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return '--';
+  const d = new Date(ts);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  return `${mm}/${dd} ${hh}:${mi}`;
 }
 
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */
