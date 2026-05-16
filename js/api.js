@@ -212,7 +212,7 @@ async function fetchAllFromBinance(timeframe) {
           ema50:  fmtPrice(fallbackPrice * 0.97),
           ema200: fmtPrice(fallbackPrice * 0.90),
           volume: 0, volumeStrength: '中',
-          momentum: 0, strength: 20, macdHist: 0,
+          momentum: 0, strength: 20, macdHist: 0, change24h: 0,
         };
       }
     });
@@ -246,6 +246,7 @@ function enrichData(raw) {
       momentum: item.momentum ?? parseFloat((rsi - 50).toFixed(1)),
       strength: item.strength ?? Math.round(adx),
       macdHist: item.macdHist ?? 0,
+      change24h: item.change24h ?? 0,
     };
   });
 }

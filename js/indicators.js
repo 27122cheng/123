@@ -166,6 +166,16 @@ function analyzeKlines(symbol, raw) {
   /* 取最近 96 根 K 線的 USDT 成交額作為 24h 成交量估算 */
   const vol24h = quoteVols.slice(-96).reduce((a, b) => a + b, 0);
 
+  /* 24h 漲跌幅：用時間戳找最接近 24h 前的 K 棒 */
+  const lastCloseTime = raw[raw.length - 1][6];
+  const target24h     = lastCloseTime - 24 * 3600 * 1000;
+  let idx24h = 0;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    if (raw[i][0] <= target24h) { idx24h = i; break; }
+  }
+  const price24hAgo = parseFloat(raw[idx24h][4]) || price;
+  const change24h   = parseFloat(((price - price24hAgo) / price24hAgo * 100).toFixed(2));
+
   return {
     symbol,
     price:      fmtDecimals(price),
@@ -179,6 +189,7 @@ function analyzeKlines(symbol, raw) {
     volume:     Math.round(vol24h),
     momentum:   parseFloat((rsi - 50).toFixed(1)),
     strength:   Math.round(adx),
+    change24h,
   };
 }
 

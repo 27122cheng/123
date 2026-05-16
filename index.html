@@ -201,6 +201,11 @@
         </div>
       </div>
 
+      <!-- 市場大方向 -->
+      <div class="market-outlook-card">
+        <div id="market-outlook-body"><div class="adv-loading">載入市場大方向分析...</div></div>
+      </div>
+
       <!-- 排行榜 -->
       <div class="tables-row">
         <!-- 看涨表格 -->
@@ -215,14 +220,11 @@
           <div class="tbl-scroll">
             <table class="data-tbl" id="bull-tbl">
               <thead><tr>
-                <th data-sort="rank"         data-tbl="bull">#</th>
-                <th data-sort="symbol"       data-tbl="bull">币种</th>
-                <th data-sort="score"        data-tbl="bull">评分</th>
-                <th data-sort="trend"        data-tbl="bull">趋势</th>
-                <th data-sort="price"        data-tbl="bull">价格</th>
-                <th data-sort="rsi"          data-tbl="bull">RSI</th>
-                <th data-sort="adx"          data-tbl="bull">ADX</th>
-                <th data-sort="volumeStrength" data-tbl="bull">成交量</th>
+                <th data-sort="symbol"       data-tbl="bull">幣種</th>
+                <th data-sort="price"        data-tbl="bull">價格</th>
+                <th data-sort="trend"        data-tbl="bull">趨勢</th>
+                <th data-sort="volume"       data-tbl="bull">成交量</th>
+                <th data-sort="change24h"    data-tbl="bull">今日漲跌</th>
               </tr></thead>
               <tbody id="bull-tbody"></tbody>
             </table>
@@ -241,14 +243,11 @@
           <div class="tbl-scroll">
             <table class="data-tbl" id="bear-tbl">
               <thead><tr>
-                <th data-sort="rank"         data-tbl="bear">#</th>
-                <th data-sort="symbol"       data-tbl="bear">币种</th>
-                <th data-sort="score"        data-tbl="bear">评分</th>
-                <th data-sort="trend"        data-tbl="bear">趋势</th>
-                <th data-sort="price"        data-tbl="bear">价格</th>
-                <th data-sort="rsi"          data-tbl="bear">RSI</th>
-                <th data-sort="adx"          data-tbl="bear">ADX</th>
-                <th data-sort="volumeStrength" data-tbl="bear">成交量</th>
+                <th data-sort="symbol"       data-tbl="bear">幣種</th>
+                <th data-sort="price"        data-tbl="bear">價格</th>
+                <th data-sort="trend"        data-tbl="bear">趨勢</th>
+                <th data-sort="volume"       data-tbl="bear">成交量</th>
+                <th data-sort="change24h"    data-tbl="bear">今日漲跌</th>
               </tr></thead>
               <tbody id="bear-tbody"></tbody>
             </table>
@@ -269,14 +268,11 @@
           <div class="tbl-scroll">
             <table class="data-tbl">
               <thead><tr>
-                <th>#</th>
                 <th>幣種</th>
-                <th>評分</th>
-                <th>趨勢</th>
                 <th>價格</th>
-                <th>RSI</th>
-                <th>ADX</th>
+                <th>趨勢</th>
                 <th>成交量</th>
+                <th>今日漲跌</th>
               </tr></thead>
               <tbody id="all-tbody"></tbody>
             </table>

@@ -47,6 +47,7 @@ async function init() {
   hideLoading();
   hideScanBar();
   renderAll();
+  loadDashboardMacro();
   startRefreshCycle();
   bindEvents();
   checkApiStatus();
@@ -217,6 +218,7 @@ function navigateTo(page, coinSymbol) {
     if (coinLink) coinLink.style.display = 'none';
   }
 
+  if (page === 'dashboard') loadDashboardMacro();
   if (page === 'ranking') renderRankingTable('');
   if (page === 'settings') populateSettingsPage();
   if (page === 'tradelog') renderTradeLogPage();
@@ -350,10 +352,10 @@ function renderDashboardTables() {
     const tbody = document.getElementById('all-tbody');
     if (tbody) {
       if (source.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:28px">找不到匹配的幣種</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:28px">找不到匹配的幣種</td></tr>`;
       } else {
-        tbody.innerHTML = sortArr([...source], 'score', 'desc').map((row, i) =>
-          buildDashRow(row, i + 1)
+        tbody.innerHTML = sortArr([...source], 'score', 'desc').map(row =>
+          buildDashRow(row)
         ).join('');
       }
     }
@@ -373,37 +375,38 @@ function renderDashboardTables() {
   }
 }
 
-function buildDashRow(row, rank) {
+function buildDashRow(row) {
+  const chg = parseFloat(row.change24h) || 0;
+  const chgColor = chg > 0 ? 'var(--bull)' : chg < 0 ? 'var(--bear)' : 'var(--text3)';
+  const chgSign  = chg > 0 ? '+' : '';
   return `<tr onclick="navigateTo('coin','${row.symbol}')">
-    <td class="rank-cell">${rank}</td>
     <td class="sym-cell">
       <span class="sym-base">${row.symbol.replace('/USDT','')}</span>
       <span class="sym-quote">/USDT</span>
     </td>
-    <td class="score-cell">
-      <div class="score-wrap">
-        <span class="score-num" style="color:${scoreColor(row.score)}">${row.score}</span>
-        <div class="score-mini-bar">
-          <div class="score-mini-fill" style="width:${row.score}%;background:${scoreColor(row.score)}"></div>
-        </div>
-      </div>
-    </td>
-    <td><span class="trend-badge ${trendClass(row.trend)}">${trendArrow(row.trend)} ${row.trend}</span></td>
     <td class="price-cell">${fmtPrice(row.price)}</td>
-    <td class="rsi-cell" style="color:${rsiColor(row.rsi)}">${row.rsi}</td>
-    <td class="adx-cell">${row.adx}</td>
-    <td><span class="vol-chip vol-${volClass(row.volumeStrength)}">${row.volumeStrength}</span></td>
+    <td><span class="trend-badge ${trendClass(row.trend)}">${trendArrow(row.trend)} ${row.trend}</span></td>
+    <td><span class="vol-chip vol-${volClass(row.volumeStrength)}">${fmtVol(row.volume)}</span></td>
+    <td style="color:${chgColor};font-weight:600;white-space:nowrap">${chgSign}${chg.toFixed(2)}%</td>
   </tr>`;
+}
+
+function fmtVol(v) {
+  v = parseFloat(v) || 0;
+  if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return '$' + (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e3) return '$' + (v / 1e3).toFixed(0) + 'K';
+  return '$' + v.toFixed(0);
 }
 
 function renderTableBody(tbodyId, rows) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   if (rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">暫無數據</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:24px">暫無數據</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.slice(0, 25).map((row, i) => buildDashRow(row, i + 1)).join('');
+  tbody.innerHTML = rows.slice(0, 25).map(row => buildDashRow(row)).join('');
 }
 
 /* ── 市场排名表 ─────────────────────────────────────────────── */
@@ -817,6 +820,98 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
 }
 
 /* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
+/* ── 儀表板市場大方向 ─────────────────────────────────────── */
+function buildMarketOutlook(fg, global) {
+  const fgVal = fg ? parseInt(fg.value) : null;
+  const fgZh  = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg?.value_classification] || '';
+  const chg   = global?.marketCapChange || 0;
+  const dom   = global?.btcDominance   || 50;
+
+  let bullPts = 0, bearPts = 0;
+  const bullArgs = [], bearArgs = [];
+
+  // 恐慌貪婪
+  if (fgVal !== null) {
+    if (fgVal >= 60)      { bullPts++; bullArgs.push(`恐慌貪婪 ${fgVal}（${fgZh}），市場情緒偏多`); }
+    else if (fgVal <= 40) { bearPts++; bearArgs.push(`恐慌貪婪 ${fgVal}（${fgZh}），市場情緒偏空`); }
+    else                  { bullArgs.push(`恐慌貪婪 ${fgVal}（中性），情緒平衡`); }
+  }
+  // 市值變化
+  if (chg > 2)       { bullPts += 2; bullArgs.push(`加密總市值 24h +${chg}%，資金積極流入`); }
+  else if (chg > 0)  { bullPts++;    bullArgs.push(`加密總市值 24h +${chg}%，小幅成長`); }
+  else if (chg < -2) { bearPts += 2; bearArgs.push(`加密總市值 24h ${chg}%，資金明顯流出`); }
+  else if (chg < 0)  { bearPts++;    bearArgs.push(`加密總市值 24h ${chg}%，輕微回調`); }
+  // BTC 主導
+  if (dom > 56)      { bearPts++; bearArgs.push(`BTC 主導 ${dom}%（偏高），山寨資金分散難度大`); }
+  else if (dom < 44) { bullPts++; bullArgs.push(`BTC 主導 ${dom}%（偏低），山寨季資金活躍`); }
+  else               { bullArgs.push(`BTC 主導 ${dom}%（均衡），多空資金分布合理`); }
+
+  // 靜態宏觀背景（2026 Q2）
+  bullArgs.push('比特幣現貨 ETF 持續吸引機構配置資金');
+  bullArgs.push('鏈上活躍地址與交易量維持成長趨勢');
+  bearArgs.push('美聯儲政策謹慎，市場等待明確降息信號');
+  bearArgs.push('全球通脹尚未完全降至目標，降息時程仍有不確定性');
+
+  // 即將公佈事件（2026 Q2/Q3）
+  const events = [
+    { date: '5/21', label: 'FOMC 會議紀要', impact: 'high' },
+    { date: '6/11', label: '美國 CPI（5月）', impact: 'high' },
+    { date: '6/18', label: 'FOMC 利率決策', impact: 'high' },
+    { date: '7/10', label: '美國 CPI（6月）', impact: 'high' },
+    { date: '7/30', label: 'FOMC 利率決策', impact: 'high' },
+    { date: '8/14', label: '美國 CPI（7月）', impact: 'high' },
+  ];
+
+  const total = bullPts + bearPts || 1;
+  const bullW = Math.round(bullPts / total * 100);
+  const bearW = 100 - bullW;
+  let bias, bColor, bIcon;
+  if (bullPts > bearPts + 1)      { bias = '偏多'; bColor = 'var(--bull)'; bIcon = '▲'; }
+  else if (bearPts > bullPts + 1) { bias = '偏空'; bColor = 'var(--bear)'; bIcon = '▼'; }
+  else                             { bias = '中性偏多';  bColor = 'var(--neutral)'; bIcon = '◆'; }
+
+  return `<div class="outlook-header">
+      <span class="outlook-title">🌐 加密市場大方向</span>
+      <span class="outlook-bias" style="color:${bColor}">${bIcon} ${bias}</span>
+    </div>
+    <div class="outlook-bar-wrap">
+      <span class="outlook-bar-lbl" style="color:var(--bull)">多方</span>
+      <div class="outlook-bar">
+        <div style="width:${bullW}%;height:100%;background:var(--bull);border-radius:4px 0 0 4px"></div>
+        <div style="width:${bearW}%;height:100%;background:var(--bear);border-radius:0 4px 4px 0"></div>
+      </div>
+      <span class="outlook-bar-lbl" style="color:var(--bear)">空方</span>
+    </div>
+    <div class="outlook-body">
+      <div class="outlook-col">
+        <div class="outlook-col-title" style="color:var(--bull)">📈 多方論點</div>
+        ${bullArgs.map(a => `<div class="outlook-arg">• ${a}</div>`).join('')}
+      </div>
+      <div class="outlook-col">
+        <div class="outlook-col-title" style="color:var(--bear)">📉 空方論點</div>
+        ${bearArgs.map(a => `<div class="outlook-arg">• ${a}</div>`).join('')}
+      </div>
+    </div>
+    <div class="outlook-events">
+      <div class="outlook-events-title">📅 即將公佈重要數據</div>
+      <div class="outlook-events-list">
+        ${events.map(e => `<div class="outlook-event${e.impact === 'high' ? ' outlook-event-high' : ''}">
+          <span class="outlook-event-date">${e.date}</span>${e.label}</div>`).join('')}
+      </div>
+    </div>`;
+}
+
+async function loadDashboardMacro() {
+  const el = document.getElementById('market-outlook-body');
+  if (!el) return;
+  try {
+    const [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
+    el.innerHTML = buildMarketOutlook(fg, global);
+  } catch {
+    el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
+  }
+}
+
 /* ── 宏觀市場環境面板 ─────────────────────────────────────── */
 function buildMacroPanel(global, halving, fg) {
 
@@ -1723,32 +1818,30 @@ let _tlFilter = 'all';
 function renderTradeLogPage() {
   const container = document.getElementById('tradelog-content');
   if (!container) return;
-  const trades = loadTradeLog();
-  const closed = trades.filter(t => t.status === 'closed');
-  const wins   = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
-  const losses = closed.filter(t => t.outcome === 'sl');
-  const bes    = closed.filter(t => t.outcome === 'be');
+  const trades  = loadTradeLog();
+  const closed  = trades.filter(t => t.status === 'closed');
+  const wins    = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+  const losses  = closed.filter(t => t.outcome === 'sl');
+  const bes     = closed.filter(t => t.outcome === 'be');
   const winRate = closed.length ? (wins.length / closed.length * 100).toFixed(1) : '0.0';
   const avgWinR = wins.length
     ? (wins.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0) / wins.length).toFixed(2)
     : '--';
-  const netR = closed.length
+  const netR    = closed.length
     ? closed.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0).toFixed(2)
     : '0.0';
 
-  // Filter trades for display
-  let display = trades;
-  if (_tlFilter === 'open')   display = trades.filter(t => t.status === 'open');
-  if (_tlFilter === 'tp')     display = trades.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
-  if (_tlFilter === 'sl')     display = trades.filter(t => t.outcome === 'sl');
-  if (_tlFilter === 'be')     display = trades.filter(t => t.outcome === 'be');
+  // 只顯示已結束的交易，按篩選器過濾
+  let display = closed;
+  if (_tlFilter === 'tp') display = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+  if (_tlFilter === 'sl') display = closed.filter(t => t.outcome === 'sl');
+  if (_tlFilter === 'be') display = closed.filter(t => t.outcome === 'be');
 
-  // Stats
   const netRNum = parseFloat(netR);
   const statsHtml = `<div class="tl-stats">
     <div class="tl-stat-card">
-      <div class="tl-stat-val">${trades.length}</div>
-      <div class="tl-stat-lbl">總交易次數</div>
+      <div class="tl-stat-val">${closed.length}</div>
+      <div class="tl-stat-lbl">已完成交易</div>
     </div>
     <div class="tl-stat-card">
       <div class="tl-stat-val" style="color:${parseFloat(winRate) >= 50 ? 'var(--bull)' : 'var(--bear)'}">${winRate}%</div>
@@ -1760,21 +1853,28 @@ function renderTradeLogPage() {
     </div>
     <div class="tl-stat-card">
       <div class="tl-stat-val ${netRNum > 0 ? 'tl-pnl-pos' : netRNum < 0 ? 'tl-pnl-neg' : 'tl-pnl-zero'}">${netRNum > 0 ? '+' : ''}${netR} R</div>
-      <div class="tl-stat-lbl">Net R</div>
+      <div class="tl-stat-lbl">累計 R</div>
     </div>
     <div class="tl-stat-card">
-      <div class="tl-stat-val" style="color:var(--neutral)">${trades.filter(t => t.status === 'open').length}</div>
-      <div class="tl-stat-lbl">進行中</div>
+      <div class="tl-stat-val" style="color:var(--bull)">${wins.length}</div>
+      <div class="tl-stat-lbl">止盈</div>
+    </div>
+    <div class="tl-stat-card">
+      <div class="tl-stat-val" style="color:var(--bear)">${losses.length}</div>
+      <div class="tl-stat-lbl">止損</div>
+    </div>
+    <div class="tl-stat-card">
+      <div class="tl-stat-val" style="color:var(--text3)">${bes.length}</div>
+      <div class="tl-stat-lbl">保本</div>
     </div>
   </div>`;
 
-  // Filter buttons
+  // 篩選器（只針對結束的交易）
   const filters = [
     { key: 'all', label: '全部' },
-    { key: 'open', label: '進行中' },
-    { key: 'tp', label: '止盈' },
-    { key: 'sl', label: '止損' },
-    { key: 'be', label: '保本' },
+    { key: 'tp',  label: '止盈' },
+    { key: 'sl',  label: '止損' },
+    { key: 'be',  label: '保本' },
   ];
   const filterHtml = `<div class="tl-filters">
     ${filters.map(f => `<button class="tl-filter-btn${_tlFilter === f.key ? ' active' : ''}" onclick="setTlFilter('${f.key}')">${f.label}</button>`).join('')}
@@ -1783,7 +1883,7 @@ function renderTradeLogPage() {
   // Trade table
   let tableHtml = '';
   if (display.length === 0) {
-    tableHtml = `<div class="tl-empty">暫無交易記錄。打開幣種詳情頁即自動記錄交易信號。</div>`;
+    tableHtml = `<div class="tl-empty">暫無已結束的交易記錄。系統正在追蹤中，待交易觸及止盈或止損後會自動顯示在此。</div>`;
   } else {
     const rows = display.map(t => {
       const dirHtml = t.direction === 'long'
@@ -1810,21 +1910,14 @@ function renderTradeLogPage() {
         pnlHtml = `<span class="${cls}">${pnl > 0 ? '+' : ''}${t.pnlR} R</span>`;
       }
 
-      let curPriceHtml = '';
-      if (t.status === 'open') {
-        const cur = state.data.find(d => d.symbol === t.symbol);
-        if (cur) {
-          const chgPct = ((parseFloat(cur.price) - t.entry) / t.entry * 100);
-          const chgCls = chgPct >= 0 ? 'tl-pnl-pos' : 'tl-pnl-neg';
-          curPriceHtml = `<div style="font-size:0.72rem;color:var(--text3)">${fmtPrice(cur.price)} <span class="${chgCls}">(${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)</span></div>`;
-        }
-      }
+      const exitTimeHtml = t.exitTime
+        ? `<div style="font-size:0.72rem;color:var(--text3)">${fmtRelTime(t.exitTime)}</div>` : '';
 
       return `<tr>
-        <td style="color:var(--text3);font-size:0.78rem">${fmtRelTime(t.timestamp)}</td>
+        <td style="color:var(--text3);font-size:0.78rem">${fmtRelTime(t.timestamp)}${exitTimeHtml}</td>
         <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
         <td>${dirHtml}</td>
-        <td>${fmtPrice(t.entry)}${curPriceHtml}</td>
+        <td>${fmtPrice(t.entry)}</td>
         <td style="color:var(--bear)">${fmtPrice(t.sl)}</td>
         <td style="color:var(--bull)">${fmtPrice(t.tp1)}</td>
         <td style="color:#22c55e">${fmtPrice(t.tp2)}</td>
