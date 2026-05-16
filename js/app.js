@@ -41,6 +41,7 @@ async function init() {
   state.data       = data;
   state.dataSource = source;
   state.filtered   = [...data];
+  updateOpenTrades(data);
 
   hideLoading();
   hideScanBar();
@@ -110,6 +111,7 @@ function startRefreshCycle() {
     applyFilters();
     renderAll();
     checkAndSendAlerts(data);
+    updateOpenTrades(data);
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
@@ -215,6 +217,7 @@ function navigateTo(page, coinSymbol) {
 
   if (page === 'ranking') renderRankingTable('');
   if (page === 'settings') populateSettingsPage();
+  if (page === 'tradelog') renderTradeLogPage();
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -736,6 +739,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     slReason, tp1Reason, tp2Reason,
     rr1: rr1str, rr2: rr2str, atr,
   };
+
+  // Record trade signal (avoid duplicate open trades for same symbol+direction)
+  const tlog = loadTradeLog();
+  const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
+  if (!hasOpen) {
+    tlog.unshift({
+      id: `${coin.symbol}-${Date.now()}`,
+      symbol: coin.symbol, direction,
+      timestamp: Date.now(),
+      entryPrice: price, entry, sl, tp1, tp2,
+      rsi: parseFloat(coin.rsi) || 50,
+      adx: parseFloat(coin.adx) || 20,
+      score: coin.score, trend: coin.trend,
+      entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
+      status: 'open', outcome: null, tp1Hit: false,
+      exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+    });
+    if (tlog.length > 500) tlog.splice(500);
+    saveTradeLog(tlog);
+  }
 
   return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
@@ -1551,6 +1574,305 @@ const TRADE_LOG_KEY = 'csp_trade_log';
 
 function loadTradeLog() { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); }
 function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
+
+/* ── 開倉追蹤：掃描開放交易是否已觸及 TP / SL ─────────────────── */
+function updateOpenTrades(data) {
+  const tlog = loadTradeLog();
+  let changed = false;
+  for (const trade of tlog) {
+    if (trade.status !== 'open') continue;
+    const coin = data.find(d => d.symbol === trade.symbol);
+    if (!coin) continue;
+    const cur = parseFloat(coin.price) || 0;
+    if (!cur) continue;
+    const { entry, sl, tp1, tp2, direction } = trade;
+    const risk = Math.abs(entry - sl) || 1;
+    const isLong = direction === 'long';
+    let outcome = null;
+    if (isLong) {
+      if (cur >= tp2) {
+        outcome = 'tp2';
+      } else if (cur >= tp1 && !trade.tp1Hit) {
+        trade.tp1Hit = true; changed = true;
+      } else if (cur <= sl) {
+        outcome = trade.tp1Hit ? 'be' : 'sl';
+      }
+    } else {
+      if (cur <= tp2) {
+        outcome = 'tp2';
+      } else if (cur <= tp1 && !trade.tp1Hit) {
+        trade.tp1Hit = true; changed = true;
+      } else if (cur >= sl) {
+        outcome = trade.tp1Hit ? 'be' : 'sl';
+      }
+    }
+    if (outcome) {
+      trade.status   = 'closed';
+      trade.outcome  = outcome;
+      trade.exitTime = Date.now();
+      if (outcome === 'tp2') {
+        trade.exitPrice = tp2;
+        trade.pnlR = ((Math.abs(tp2 - entry) / risk)).toFixed(2);
+      } else if (outcome === 'tp1') {
+        trade.exitPrice = tp1;
+        trade.pnlR = ((Math.abs(tp1 - entry) / risk)).toFixed(2);
+      } else if (outcome === 'be') {
+        trade.exitPrice = entry;
+        trade.pnlR = '0.0';
+      } else {
+        trade.exitPrice = sl;
+        trade.pnlR = '-1.0';
+      }
+      if (outcome === 'sl' || outcome === 'be') {
+        trade.analysis = generateTradeAnalysis(trade);
+      }
+      changed = true;
+    }
+  }
+  if (changed) saveTradeLog(tlog);
+}
+
+/* ── 止損/保本交易學習分析 ────────────────────────────────────── */
+function generateTradeAnalysis(trade) {
+  const issues = [], suggestions = [];
+  const isLong = trade.direction === 'long';
+  if (isLong) {
+    if (trade.rsi > 60) {
+      issues.push(`RSI 進場時 ${trade.rsi} 偏高，多頭追入有回調風險`);
+      suggestions.push('下次等 RSI 回落至 50 以下再考慮多頭進場');
+    }
+    if (trade.adx < 20) {
+      issues.push(`ADX ${trade.adx} 過低，趨勢不明確`);
+      suggestions.push('確保 ADX > 20 再進場，避免震盪市追多');
+    }
+    if (trade.score < 65) {
+      issues.push(`評分 ${trade.score} 偏低，信號強度有限`);
+      suggestions.push('多頭信號需評分 65 以上再操作');
+    }
+  } else {
+    if (trade.rsi < 40) {
+      issues.push(`RSI 進場時 ${trade.rsi} 偏低，空頭追入有反彈風險`);
+      suggestions.push('下次等 RSI 回升至 50 以上再考慮空頭進場');
+    }
+    if (trade.adx < 20) {
+      issues.push(`ADX ${trade.adx} 過低，趨勢不明確`);
+      suggestions.push('確保 ADX > 20 再進場，避免震盪市追空');
+    }
+    if (trade.score > 35) {
+      issues.push(`評分 ${trade.score} 偏高，空頭信號強度有限`);
+      suggestions.push('空頭信號需評分 35 以下再操作');
+    }
+  }
+  if (issues.length === 0) {
+    issues.push('技術指標條件尚可，可能受宏觀或突發新聞影響');
+    suggestions.push('建議同步確認宏觀市場環境再入場');
+  }
+  return { issues, suggestions };
+}
+
+/* ── 交易記錄頁面渲染 ─────────────────────────────────────────── */
+let _tlFilter = 'all';
+
+function renderTradeLogPage() {
+  const container = document.getElementById('tradelog-content');
+  if (!container) return;
+  const trades = loadTradeLog();
+  const closed = trades.filter(t => t.status === 'closed');
+  const wins   = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+  const losses = closed.filter(t => t.outcome === 'sl');
+  const bes    = closed.filter(t => t.outcome === 'be');
+  const winRate = closed.length ? (wins.length / closed.length * 100).toFixed(1) : '0.0';
+  const avgWinR = wins.length
+    ? (wins.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0) / wins.length).toFixed(2)
+    : '--';
+  const netR = closed.length
+    ? closed.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0).toFixed(2)
+    : '0.0';
+
+  // Filter trades for display
+  let display = trades;
+  if (_tlFilter === 'open')   display = trades.filter(t => t.status === 'open');
+  if (_tlFilter === 'tp')     display = trades.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+  if (_tlFilter === 'sl')     display = trades.filter(t => t.outcome === 'sl');
+  if (_tlFilter === 'be')     display = trades.filter(t => t.outcome === 'be');
+
+  // Stats
+  const netRNum = parseFloat(netR);
+  const statsHtml = `<div class="tl-stats">
+    <div class="tl-stat-card">
+      <div class="tl-stat-val">${trades.length}</div>
+      <div class="tl-stat-lbl">總交易次數</div>
+    </div>
+    <div class="tl-stat-card">
+      <div class="tl-stat-val" style="color:${parseFloat(winRate) >= 50 ? 'var(--bull)' : 'var(--bear)'}">${winRate}%</div>
+      <div class="tl-stat-lbl">勝率</div>
+    </div>
+    <div class="tl-stat-card">
+      <div class="tl-stat-val" style="color:var(--bull)">${avgWinR}</div>
+      <div class="tl-stat-lbl">平均盈利 R</div>
+    </div>
+    <div class="tl-stat-card">
+      <div class="tl-stat-val ${netRNum > 0 ? 'tl-pnl-pos' : netRNum < 0 ? 'tl-pnl-neg' : 'tl-pnl-zero'}">${netRNum > 0 ? '+' : ''}${netR} R</div>
+      <div class="tl-stat-lbl">Net R</div>
+    </div>
+    <div class="tl-stat-card">
+      <div class="tl-stat-val" style="color:var(--neutral)">${trades.filter(t => t.status === 'open').length}</div>
+      <div class="tl-stat-lbl">進行中</div>
+    </div>
+  </div>`;
+
+  // Filter buttons
+  const filters = [
+    { key: 'all', label: '全部' },
+    { key: 'open', label: '進行中' },
+    { key: 'tp', label: '止盈' },
+    { key: 'sl', label: '止損' },
+    { key: 'be', label: '保本' },
+  ];
+  const filterHtml = `<div class="tl-filters">
+    ${filters.map(f => `<button class="tl-filter-btn${_tlFilter === f.key ? ' active' : ''}" onclick="setTlFilter('${f.key}')">${f.label}</button>`).join('')}
+  </div>`;
+
+  // Trade table
+  let tableHtml = '';
+  if (display.length === 0) {
+    tableHtml = `<div class="tl-empty">暫無交易記錄。打開幣種詳情頁即自動記錄交易信號。</div>`;
+  } else {
+    const rows = display.map(t => {
+      const dirHtml = t.direction === 'long'
+        ? `<span class="tl-dir-long">▲ 多</span>`
+        : `<span class="tl-dir-short">▼ 空</span>`;
+
+      let statusHtml;
+      if (t.status === 'open') {
+        statusHtml = `<span class="tl-badge tl-badge-open">進行中</span>`;
+      } else if (t.outcome === 'tp2') {
+        statusHtml = `<span class="tl-badge tl-badge-tp2">止盈二 ✅</span>`;
+      } else if (t.outcome === 'tp1') {
+        statusHtml = `<span class="tl-badge tl-badge-tp1">止盈一 ✅</span>`;
+      } else if (t.outcome === 'sl') {
+        statusHtml = `<span class="tl-badge tl-badge-sl">止損 ❌</span>`;
+      } else {
+        statusHtml = `<span class="tl-badge tl-badge-be">保本 ➡️</span>`;
+      }
+
+      let pnlHtml = '--';
+      if (t.pnlR !== null && t.pnlR !== undefined) {
+        const pnl = parseFloat(t.pnlR);
+        const cls = pnl > 0 ? 'tl-pnl-pos' : pnl < 0 ? 'tl-pnl-neg' : 'tl-pnl-zero';
+        pnlHtml = `<span class="${cls}">${pnl > 0 ? '+' : ''}${t.pnlR} R</span>`;
+      }
+
+      let curPriceHtml = '';
+      if (t.status === 'open') {
+        const cur = state.data.find(d => d.symbol === t.symbol);
+        if (cur) {
+          const chgPct = ((parseFloat(cur.price) - t.entry) / t.entry * 100);
+          const chgCls = chgPct >= 0 ? 'tl-pnl-pos' : 'tl-pnl-neg';
+          curPriceHtml = `<div style="font-size:0.72rem;color:var(--text3)">${fmtPrice(cur.price)} <span class="${chgCls}">(${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%)</span></div>`;
+        }
+      }
+
+      return `<tr>
+        <td style="color:var(--text3);font-size:0.78rem">${fmtRelTime(t.timestamp)}</td>
+        <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
+        <td>${dirHtml}</td>
+        <td>${fmtPrice(t.entry)}${curPriceHtml}</td>
+        <td style="color:var(--bear)">${fmtPrice(t.sl)}</td>
+        <td style="color:var(--bull)">${fmtPrice(t.tp1)}</td>
+        <td style="color:#22c55e">${fmtPrice(t.tp2)}</td>
+        <td>${statusHtml}</td>
+        <td>${pnlHtml}</td>
+      </tr>`;
+    }).join('');
+
+    tableHtml = `<div class="tl-table-wrap">
+      <table class="tl-table">
+        <thead><tr>
+          <th>時間</th><th>幣種</th><th>方向</th><th>進場</th><th>止損</th><th>止盈1</th><th>止盈2</th><th>現狀</th><th>盈虧 R</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }
+
+  // Learning analysis section
+  const badTrades = closed.filter(t => (t.outcome === 'sl' || t.outcome === 'be') && t.analysis);
+  let learnHtml = '';
+  if (badTrades.length > 0) {
+    const issueCount = {};
+    const suggMap    = {};
+    for (const t of badTrades) {
+      if (!t.analysis) continue;
+      t.analysis.issues.forEach((iss, i) => {
+        issueCount[iss] = (issueCount[iss] || 0) + 1;
+        if (!suggMap[iss] && t.analysis.suggestions[i]) suggMap[iss] = t.analysis.suggestions[i];
+      });
+    }
+    const sortedIssues = Object.keys(issueCount).sort((a, b) => issueCount[b] - issueCount[a]).slice(0, 5);
+    const issueItems  = sortedIssues.map(iss => `<div class="tl-issue-item">${iss}（${issueCount[iss]}次）</div>`).join('');
+    const suggestItems = sortedIssues.map(iss => suggMap[iss] ? `<div class="tl-suggest-item">${suggMap[iss]}</div>` : '').join('');
+
+    learnHtml = `<div class="tl-learn">
+      <div class="tl-learn-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+        學習分析（${badTrades.length} 筆止損/保本）
+      </div>
+      <div class="tl-learn-section">
+        <h4>常見問題</h4>
+        ${issueItems}
+      </div>
+      <div class="tl-learn-section">
+        <h4>改進建議</h4>
+        ${suggestItems}
+      </div>
+    </div>`;
+  }
+
+  // Clear button
+  const clearHtml = `<div style="text-align:right;margin-top:8px">
+    <button class="tl-clear-btn" onclick="clearTradeLog()">清除記錄</button>
+  </div>`;
+
+  container.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">交易記錄</h1>
+        <p class="page-subtitle">自動記錄每一個交易信號與結果追蹤</p>
+      </div>
+    </div>
+    ${statsHtml}
+    ${filterHtml}
+    ${tableHtml}
+    ${learnHtml}
+    ${clearHtml}
+  `;
+}
+
+function setTlFilter(f) {
+  _tlFilter = f;
+  renderTradeLogPage();
+}
+
+function clearTradeLog() {
+  if (!confirm('確定要清除所有交易記錄嗎？此操作無法復原。')) return;
+  saveTradeLog([]);
+  renderTradeLogPage();
+  showToast('交易記錄已清除', 'info');
+}
+
+function fmtRelTime(ts) {
+  if (!ts) return '--';
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1)  return '剛剛';
+  if (mins < 60) return `${mins}分鐘前`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}小時前`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return '昨天';
+  return `${days}天前`;
+}
 
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */
 const SIGNAL_CACHE_KEY = 'csp_signal_cache';
