@@ -1905,6 +1905,7 @@ function recordSignalsFromScan(data) {
 function updateOpenTrades(data) {
   const tlog = loadTradeLog();
   let changed = false;
+  const tp1Hits = []; // trades that just reached TP1 this cycle
   for (const trade of tlog) {
     if (trade.status !== 'open') continue;
     const coin = data.find(d => d.symbol === trade.symbol);
@@ -1920,6 +1921,7 @@ function updateOpenTrades(data) {
         outcome = 'tp2';
       } else if (cur >= tp1 && !trade.tp1Hit) {
         trade.tp1Hit = true; changed = true;
+        tp1Hits.push({ trade, coin, cur });
       } else if (cur <= sl) {
         outcome = trade.tp1Hit ? 'be' : 'sl';
       }
@@ -1928,6 +1930,7 @@ function updateOpenTrades(data) {
         outcome = 'tp2';
       } else if (cur <= tp1 && !trade.tp1Hit) {
         trade.tp1Hit = true; changed = true;
+        tp1Hits.push({ trade, coin, cur });
       } else if (cur >= sl) {
         outcome = trade.tp1Hit ? 'be' : 'sl';
       }
@@ -1956,6 +1959,35 @@ function updateOpenTrades(data) {
     }
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
+  if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
+}
+
+async function sendTP1Notifications(hits) {
+  const s = loadSettings();
+  if (!s.notifBrowser && !s.notifTelegram) return;
+  for (const { trade, coin, cur } of hits) {
+    const dir = trade.direction === 'long' ? '做多' : '做空';
+    const rr  = (Math.abs(trade.tp1 - trade.entry) / (Math.abs(trade.entry - trade.sl) || 1)).toFixed(1);
+    if (s.notifBrowser) {
+      sendBrowserNotification(
+        `🎯 止盈一達到：${trade.symbol}`,
+        `${dir} | 進場 $${trade.entry} → TP1 $${trade.tp1} | R/R ${rr}:1`,
+        `tp1-${trade.id}`
+      );
+    }
+    if (s.notifTelegram && s.tgToken && s.tgChatId) {
+      const fmt = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+      const msg =
+        `🎯 <b>止盈一已達到！</b>\n\n` +
+        `💎 <b>${trade.symbol}</b>  ${trade.direction === 'long' ? '▲ 做多' : '▼ 做空'}\n\n` +
+        `✅ 止盈一：<b>$${fmt(trade.tp1)}</b>\n` +
+        `📍 進場價：$${fmt(trade.entry)}\n` +
+        `💰 現價：$${fmt(cur)}\n` +
+        `📊 獲利幅度：<b>+${rr}R</b>\n\n` +
+        `🔔 建議：移動止損至成本價 <b>$${fmt(trade.entry)}</b>，持倉等待止盈二 $${fmt(trade.tp2)}`;
+      sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+    }
+  }
 }
 
 /* ── AI 學習系統 ─────────────────────────────────────────────── */
