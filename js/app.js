@@ -1546,6 +1546,12 @@ function triggerRescan() {
   });
 }
 
+/* ── 交易記錄 ────────────────────────────────────────────────── */
+const TRADE_LOG_KEY = 'csp_trade_log';
+
+function loadTradeLog() { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); }
+function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
+
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */
 const SIGNAL_CACHE_KEY = 'csp_signal_cache';
 
