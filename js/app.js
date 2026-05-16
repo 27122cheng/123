@@ -687,7 +687,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
 
   // ── 止盈一：最近有意義 S/R，最低 2:1 ──
   let tp1, tp1Reason;
-  const minTP1 = isLong ? entry + risk * 2 : entry - risk * 2;
+  const minTP1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
   if (isLong) {
     const r1 = resists.find(r => r >= minTP1 * 0.99);
     tp1 = r1 || minTP1;
@@ -706,7 +706,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
 
   // ── 止盈二：次遠 S/R 或擺動極值，最低 3:1 ──
   let tp2, tp2Reason;
-  const minTP2 = isLong ? entry + risk * 3 : entry - risk * 3;
+  const minTP2 = isLong ? entry + risk * 2.5 : entry - risk * 2.5;
   if (isLong) {
     const r2 = resists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
     tp2 = r2 || Math.max(swHigh, minTP2);
@@ -1596,8 +1596,8 @@ function computeSimpleSetup(coin, isLong) {
   const entry  = isLong ? Math.min(price, ema20 * 1.002) : Math.max(price, ema20 * 0.998);
   const sl     = isLong ? entry - atr * 1.8 : entry + atr * 1.8;
   const risk   = Math.abs(entry - sl);
-  const tp1    = isLong ? entry + risk * 2   : entry - risk * 2;
-  const tp2    = isLong ? entry + risk * 3.5 : entry - risk * 3.5;
+  const tp1    = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
+  const tp2    = isLong ? entry + risk * 2.5 : entry - risk * 2.5;
   const reasons = isLong
     ? [(rsi < 45 ? `RSI ${rsi} 偏低` : ''), '15m/1h 多頭信號確認'].filter(Boolean)
     : [(rsi > 55 ? `RSI ${rsi} 偏高` : ''), '15m/1h 空頭信號確認'].filter(Boolean);
