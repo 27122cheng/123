@@ -1872,6 +1872,9 @@ function recordSignalsFromScan(data) {
     const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
     if (!isLong && !isShort) continue;
     const direction = isLong ? 'long' : 'short';
+    // conf：多頭用評分，空頭用反向評分（100 - score）
+    const conf = Math.min(90, isLong ? coin.score : 100 - coin.score);
+    if (conf < 60) continue; // 信號強度不足，不記錄
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
@@ -1887,7 +1890,7 @@ function recordSignalsFromScan(data) {
       rsi: parseFloat(coin.rsi) || 50,
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
-      conf: Math.min(90, coin.score),
+      conf,
       status: 'open', outcome: null, tp1Hit: false,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
       refined: false,
@@ -2704,6 +2707,12 @@ async function checkAndSendAlerts(data) {
     // 同一方向且在冷卻期內（2小時）→ 跳過，不重複通知
     if (cached && cached.dir === dir && (now - (cached.sentAt || 0)) < SIGNAL_COOLDOWN) continue;
 
+    // 信號強度未達 60% → 不通知
+    const notifConf = _tradeSetupCache[coin.symbol]?.conf
+      ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
+      ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
+    if (notifConf < 60) continue;
+
     if (s.notifBrowser) {
       sendBrowserNotification(
         `${isLong ? '▲ 做多' : '▼ 做空'} 信號：${coin.symbol}`,
@@ -2713,11 +2722,7 @@ async function checkAndSendAlerts(data) {
     }
     if (s.notifTelegram && s.tgToken && s.tgChatId) {
       const setup = _tradeSetupCache[coin.symbol] || computeSimpleSetup(coin, isLong);
-      // 優先使用交易記錄中已儲存的精確 conf
-      if (!setup.conf) {
-        const tradeRecord = loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open');
-        if (tradeRecord?.conf) setup.conf = tradeRecord.conf;
-      }
+      setup.conf = notifConf; // 使用已解析的精確 conf
       sendTelegramMessage(s.tgToken, s.tgChatId,
         buildTelegramText(coin, dir, setup, _macroCache));
     }
