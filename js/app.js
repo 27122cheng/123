@@ -41,6 +41,7 @@ async function init() {
   state.data       = data;
   state.dataSource = source;
   state.filtered   = [...data];
+  recordSignalsFromScan(data);
   updateOpenTrades(data);
 
   hideLoading();
@@ -111,6 +112,7 @@ function startRefreshCycle() {
     applyFilters();
     renderAll();
     checkAndSendAlerts(data);
+    recordSignalsFromScan(data);
     updateOpenTrades(data);
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
@@ -740,10 +742,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
     rr1: rr1str, rr2: rr2str, atr,
   };
 
-  // Record trade signal (avoid duplicate open trades for same symbol+direction)
+  // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
   const tlog = loadTradeLog();
-  const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
-  if (!hasOpen) {
+  const existIdx = tlog.findIndex(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
+  if (existIdx >= 0) {
+    const ex = tlog[existIdx];
+    if (!ex.refined) {
+      ex.entry = entry; ex.sl = sl; ex.tp1 = tp1; ex.tp2 = tp2;
+      ex.entryReason = entryReasons.join('，');
+      ex.slReason = slReason; ex.tp1Reason = tp1Reason; ex.tp2Reason = tp2Reason;
+      ex.refined = true;
+      saveTradeLog(tlog);
+    }
+  } else {
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -755,6 +766,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt) {
       entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
       status: 'open', outcome: null, tp1Hit: false,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+      refined: true,
     });
     if (tlog.length > 500) tlog.splice(500);
     saveTradeLog(tlog);
@@ -1566,6 +1578,8 @@ function triggerRescan() {
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
     checkAndSendAlerts(data);
+    recordSignalsFromScan(data);
+    updateOpenTrades(data);
   });
 }
 
@@ -1575,7 +1589,40 @@ const TRADE_LOG_KEY = 'csp_trade_log';
 function loadTradeLog() { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); }
 function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
 
-/* ── 開倉追蹤：掃描開放交易是否已觸及 TP / SL ─────────────────── */
+/* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
+function recordSignalsFromScan(data) {
+  const tlog = loadTradeLog();
+  let changed = false;
+  for (const coin of data) {
+    const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
+    const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
+    if (!isLong && !isShort) continue;
+    const direction = isLong ? 'long' : 'short';
+    const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
+    if (hasOpen) continue;
+    const setup = computeSimpleSetup(coin, isLong);
+    tlog.unshift({
+      id: `${coin.symbol}-${Date.now()}`,
+      symbol: coin.symbol, direction,
+      timestamp: Date.now(),
+      entryPrice: parseFloat(coin.price) || 0,
+      entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
+      entryReason: setup.entryReason, slReason: setup.slReason,
+      tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
+      rsi: parseFloat(coin.rsi) || 50,
+      adx: parseFloat(coin.adx) || 20,
+      score: coin.score, trend: coin.trend,
+      status: 'open', outcome: null, tp1Hit: false,
+      exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+      refined: false,
+    });
+    changed = true;
+  }
+  if (changed) {
+    if (tlog.length > 500) tlog.splice(500);
+    saveTradeLog(tlog);
+  }
+}
 function updateOpenTrades(data) {
   const tlog = loadTradeLog();
   let changed = false;
