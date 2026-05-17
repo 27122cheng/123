@@ -36,6 +36,7 @@ async function init() {
   state.settings = loadSettings();
   applySettingsToUI();
   animateLoadingBar();
+  registerSW(); // 後台通知 Service Worker
 
   const { data, source } = await fetchMarketData(state.timeframe);
   state.data       = data;
@@ -51,6 +52,43 @@ async function init() {
   startRefreshCycle();
   bindEvents();
   checkApiStatus();
+}
+
+/* ── Service Worker 後台通知 ────────────────────────────────── */
+async function registerSW() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    // 等待 SW 激活後同步設定
+    const doSync = () => syncSettingsToSW();
+    if (reg.active) {
+      doSync();
+    } else {
+      const candidate = reg.installing || reg.waiting;
+      if (candidate) candidate.addEventListener('statechange', e => { if (e.target.state === 'activated') doSync(); });
+    }
+    // 請求週期性後台同步（Chrome PWA / Android）
+    if ('periodicSync' in reg) {
+      try {
+        const perm = await navigator.permissions.query({ name: 'periodic-background-sync' });
+        if (perm.state === 'granted') {
+          await reg.periodicSync.register('csp-check', { minInterval: 5 * 60 * 1000 });
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.warn('[SW] 註冊失敗', e);
+  }
+}
+
+function syncSettingsToSW() {
+  if (!navigator.serviceWorker?.controller) return;
+  const s = loadSettings();
+  navigator.serviceWorker.controller.postMessage({
+    type: 'SYNC_SETTINGS', settings: s, pairs: loadPairs(),
+  });
+  const cache = JSON.parse(localStorage.getItem(SIGNAL_CACHE_KEY) || '{}');
+  navigator.serviceWorker.controller.postMessage({ type: 'SYNC_CACHE', cache });
 }
 
 /* ── 加載動畫 ───────────────────────────────────────────────── */
@@ -620,7 +658,7 @@ function buildOpenPositionSetup(t, currentPrice) {
 }
 
 /* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
-function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
+function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
 
@@ -889,6 +927,27 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
     saveTradeLog(tlog);
   }
 
+  // ── 宏觀經濟摘要 ──
+  const fgVal  = fearGreed ? parseInt(fearGreed.value) : null;
+  const fgZh   = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fearGreed?.value_classification] || '';
+  const mktChg = globalMkt?.marketCapChange || 0;
+  const btcDom = globalMkt?.btcDominance   || 0;
+  const fgColor = fgVal != null ? (fgVal < 35 ? 'var(--bear)' : fgVal > 65 ? 'var(--bull)' : 'var(--text2)') : '';
+  const macroFavor = (() => {
+    if (!fearGreed && !globalMkt) return null;
+    let bull = 0, bear = 0;
+    if (fgVal != null) { if (fgVal < 35) bull++; else if (fgVal > 65) bear++; }
+    if (mktChg > 2) bull++; else if (mktChg < -2) bear++;
+    if (btcDom > 58) bear++; else if (btcDom < 44) bull++;
+    if (bull > bear) return `宏觀偏多，${isLong ? '順勢' : '逆勢'}`;
+    if (bear > bull) return `宏觀偏空，${isLong ? '逆勢需謹慎' : '順勢'}`;
+    return '宏觀中性';
+  })();
+
+  // ── AI 學習摘要 ──
+  const profile = getLearnProfile();
+  const aiReady = profile.ready && profile.closed >= 3;
+
   return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
@@ -901,6 +960,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
       <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf}%</span>
     </div>` : ''}
   </div>
+
+  ${(fearGreed || globalMkt) ? `<div class="setup-macro-row">
+    <div class="setup-macro-title">🌐 宏觀環境參考</div>
+    <div class="setup-macro-chips">
+      ${fgVal != null ? `<span class="setup-macro-chip" style="color:${fgColor}">🌡 恐貪 ${fgVal}（${fgZh}）</span>` : ''}
+      ${mktChg ? `<span class="setup-macro-chip" style="color:${mktChg > 0 ? 'var(--bull)' : 'var(--bear)'}">📈 市值 ${mktChg > 0 ? '+' : ''}${mktChg.toFixed(1)}%</span>` : ''}
+      ${btcDom ? `<span class="setup-macro-chip" style="color:${btcDom > 58 ? 'var(--bear)' : btcDom < 44 ? 'var(--bull)' : 'var(--text2)'}">₿ BTC主導 ${btcDom.toFixed(1)}%</span>` : ''}
+      ${macroFavor ? `<span class="setup-macro-chip setup-macro-verdict">${macroFavor}</span>` : ''}
+    </div>
+  </div>` : ''}
+
   <div class="setup-levels">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
@@ -930,7 +1000,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale) {
     <div class="rule-item">✦ 到達止盈1（<strong style="color:${dirColor}">${fmtPrice(tp1)}</strong>）即出 60%，剩餘移至成本</div>
     <div class="rule-item">✦ 若 15m K棒轉向且成交量放大，不等止損主動離場</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)'}">${(deriv.fundingRate*100).toFixed(4)}%</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
-  </div>`;
+  </div>
+
+  ${aiReady ? `<div class="setup-ai-panel">
+    <div class="setup-ai-header">
+      <span class="setup-ai-title">🤖 AI 歷史學習建議</span>
+      <span class="setup-ai-stats">勝率 <strong>${profile.winRate}%</strong>（${profile.wins}勝 / ${profile.losses}敗，共 ${profile.closed} 筆）</span>
+    </div>
+    ${learnWarnings.length ? `<div class="setup-ai-warns">
+      ${learnWarnings.map(w => `<div class="setup-ai-warn-item">⚠️ ${w}</div>`).join('')}
+    </div>` : `<div class="setup-ai-ok">✅ 當前條件符合歷史高勝率範圍</div>`}
+    ${profile.bestConditions.length ? `<div class="setup-ai-bests">
+      ${profile.bestConditions.map(c => `<div class="setup-ai-best-item">📈 ${c.label}：${c.value}</div>`).join('')}
+    </div>` : ''}
+    ${profile.rules.length ? `<div class="setup-ai-rules">
+      ${profile.rules.map(r => `<div class="setup-ai-rule">🔴 ${r.warning}</div>`).join('')}
+    </div>` : ''}
+  </div>` : ''}`;
 }
 
 /* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
@@ -1540,7 +1626,7 @@ async function renderCoinDetail(symbol) {
 
   set('macro-body',     buildMacroPanel(globalMkt, halving, fearGreed));
   set('deriv-body',     buildDerivativesPanel(deriv));
-  set('setup-body',     buildTradeSetup(coin, mtfData, deriv, globalMkt, whale));
+  set('setup-body',     buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed));
   set('mtf-body',       buildMTFTable(mtfData));
   set('of-body',        buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
   set('ai-body',        generateAIAnalysis(coin, mtfData, fearGreed));
@@ -1830,6 +1916,13 @@ function resetCustomPairs() {
   renderPairsList();
   showToast('已重置為默認幣種清單', 'info');
   triggerRescan();
+}
+
+function clearAllPairs() {
+  if (!confirm('確定要清空所有追蹤幣種嗎？清空後需手動重新添加。')) return;
+  savePairs([]);
+  renderPairsList();
+  showToast('已清空所有幣種', 'info');
 }
 
 function triggerRescan() {
@@ -2763,6 +2856,10 @@ async function checkAndSendAlerts(data) {
   }
 
   localStorage.setItem(SIGNAL_CACHE_KEY, JSON.stringify(next));
+  // 同步到 SW IDB，讓後台掃描能讀取最新冷卻狀態
+  if (navigator.serviceWorker?.controller) {
+    navigator.serviceWorker.controller.postMessage({ type: 'SYNC_CACHE', cache: next });
+  }
 }
 
 function computeSimpleSetup(coin, isLong) {
@@ -2926,6 +3023,7 @@ function saveAllSettings() {
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();
+  syncSettingsToSW(); // 更新後台 SW 的設定
   showToast('设置已成功保存', 'success');
 }
 
