@@ -2049,6 +2049,7 @@ function updateOpenTrades(data) {
       if (outcome === 'sl' || outcome === 'be') {
         trade.analysis = generateTradeAnalysis(trade);
       }
+      archiveExpiredToMemory([trade]); // 立即存入 AI 記憶，不等月底清理
       changed = true;
     }
   }
@@ -2161,10 +2162,17 @@ function archiveExpiredToMemory(trades) {
   if (!trades.length) return;
   const mem = loadAIMemory();
   const now = Date.now();
-  const lossT = trades.filter(t => t.outcome === 'sl' || t.outcome === 'be');
-  const winT  = trades.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
 
-  // 累計問題統計
+  // ── 已歸檔 ID 集合，防止同一筆交易重複計入統計 ──
+  if (!mem.archivedIds) mem.archivedIds = [];
+  const archivedSet = new Set(mem.archivedIds);
+  const newTrades = trades.filter(t => t.id && !archivedSet.has(t.id));
+  if (!newTrades.length) return; // 全部已歸檔，避免重複
+
+  const lossT = newTrades.filter(t => t.outcome === 'sl' || t.outcome === 'be');
+  const winT  = newTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+
+  // ── 累計止損問題統計（每筆只計一次）──
   const issueMap = {};
   lossT.forEach(t => {
     if (!t.analysis) t.analysis = generateTradeAnalysis(t);
@@ -2179,10 +2187,15 @@ function archiveExpiredToMemory(trades) {
     mem.issues[text].lastSeen = now;
   }
 
-  // 累積統計（只往上加，不往下減）
-  mem.cumStats.totalClosed  = (mem.cumStats.totalClosed  || 0) + trades.length;
+  // ── 累積統計（永遠只增不減）──
+  mem.cumStats.totalClosed  = (mem.cumStats.totalClosed  || 0) + newTrades.length;
   mem.cumStats.totalWins    = (mem.cumStats.totalWins    || 0) + winT.length;
   mem.cumStats.totalLosses  = (mem.cumStats.totalLosses  || 0) + lossT.length;
+
+  // ── 記錄已歸檔 ID（最多保留最新 2000 個，防止無限增長）──
+  const allArchived = [...archivedSet, ...newTrades.map(t => t.id)];
+  mem.archivedIds = allArchived.slice(-2000);
+
   saveAIMemory(mem);
 }
 
@@ -2786,9 +2799,20 @@ function renderTradeLogPage() {
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
-  // Clear button
-  const clearHtml = `<div style="text-align:right;margin-top:8px">
-    <button class="tl-clear-btn" onclick="clearTradeLog()">清除記錄</button>
+  // Bottom action buttons
+  const mem = loadAIMemory();
+  const memCount = Object.keys(mem.issues || {}).length;
+  const memRules = Object.keys(mem.rules || {}).length;
+  const clearHtml = `<div class="tl-actions-row">
+    <div class="tl-mem-status">
+      🧠 AI 記憶已保存 ${memCount} 個止損問題 · ${memRules} 條風控規則
+      <span style="color:var(--text3);font-size:0.7rem">（網站更新/清除記錄均不影響）</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-ghost" onclick="exportAIMemory()" style="font-size:0.8rem">📤 匯出 AI 記憶</button>
+      <button class="btn-ghost" onclick="importAIMemory()" style="font-size:0.8rem">📥 匯入 AI 記憶</button>
+      <button class="tl-clear-btn" onclick="clearTradeLog()">清除記錄</button>
+    </div>
   </div>`;
 
   container.innerHTML = `
@@ -2812,11 +2836,66 @@ function setTlFilter(f) {
 }
 
 function clearTradeLog() {
-  if (!confirm('確定要清除所有交易記錄嗎？此操作無法復原。')) return;
+  if (!confirm('確定要清除所有交易記錄嗎？\n\n⚠️ AI 學習記憶（止損原因、優化方案）不受影響，會繼續保留。')) return;
+  const closed = loadTradeLog().filter(t => t.status === 'closed');
+  if (closed.length) archiveExpiredToMemory(closed); // 清除前先歸檔 AI 記憶
   saveTradeLog([]);
   invalidateLearnCache();
   renderTradeLogPage();
-  showToast('交易記錄已清除', 'info');
+  showToast('交易記錄已清除（AI 記憶已保留）', 'info');
+}
+
+/* ── AI 記憶匯出 / 匯入 ─────────────────────────────────────────── */
+function exportAIMemory() {
+  const mem  = loadAIMemory();
+  const json = JSON.stringify(mem, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `csp_ai_memory_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('AI 記憶已匯出', 'success');
+}
+
+function importAIMemory() {
+  const input = document.createElement('input');
+  input.type  = 'file';
+  input.accept = '.json';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const imported = JSON.parse(ev.target.result);
+        if (!imported.issues && !imported.rules) throw new Error('格式錯誤');
+        // 合併而非覆蓋：保留現有記憶並疊加匯入的內容
+        const current = loadAIMemory();
+        // 合併 issues
+        for (const [k, v] of Object.entries(imported.issues || {})) {
+          if (!current.issues[k]) { current.issues[k] = v; }
+          else { current.issues[k].count = Math.max(current.issues[k].count, v.count); }
+        }
+        // 合併 rules
+        for (const [k, v] of Object.entries(imported.rules || {})) {
+          if (!current.rules[k]) current.rules[k] = v;
+        }
+        // 取兩者中較大的累積統計
+        const ic = imported.cumStats || {};
+        current.cumStats.totalClosed  = Math.max(current.cumStats.totalClosed  || 0, ic.totalClosed  || 0);
+        current.cumStats.totalWins    = Math.max(current.cumStats.totalWins    || 0, ic.totalWins    || 0);
+        current.cumStats.totalLosses  = Math.max(current.cumStats.totalLosses  || 0, ic.totalLosses  || 0);
+        saveAIMemory(current);
+        invalidateLearnCache();
+        renderTradeLogPage();
+        showToast('AI 記憶已成功匯入並合併', 'success');
+      } catch { showToast('匯入失敗：檔案格式不正確', 'error'); }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
 }
 
 /* ── 交易詳情彈窗 ─────────────────────────────────────────────── */
