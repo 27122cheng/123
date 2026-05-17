@@ -36,7 +36,8 @@ async function init() {
   state.settings = loadSettings();
   applySettingsToUI();
   animateLoadingBar();
-  registerSW(); // 後台通知 Service Worker
+  registerSW();        // 後台通知 Service Worker
+  monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
 
   const { data, source } = await fetchMarketData(state.timeframe);
   state.data       = data;
@@ -2155,6 +2156,52 @@ function mergeRulesIntoMemory(freshRules, freshIssues, freshBest, freshStats) {
   return mem;
 }
 
+/* ── 每月自動清理交易記錄（保留 AI 記憶）────────────────────── */
+function archiveExpiredToMemory(trades) {
+  if (!trades.length) return;
+  const mem = loadAIMemory();
+  const now = Date.now();
+  const lossT = trades.filter(t => t.outcome === 'sl' || t.outcome === 'be');
+  const winT  = trades.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+
+  // 累計問題統計
+  const issueMap = {};
+  lossT.forEach(t => {
+    if (!t.analysis) t.analysis = generateTradeAnalysis(t);
+    (t.analysis.issues || []).forEach((iss, i) => {
+      if (!issueMap[iss]) issueMap[iss] = { text: iss, suggestion: (t.analysis.suggestions || [])[i] || '', count: 0 };
+      issueMap[iss].count++;
+    });
+  });
+  for (const [text, d] of Object.entries(issueMap)) {
+    if (!mem.issues[text]) mem.issues[text] = { text, suggestion: d.suggestion, count: 0, firstDetected: now, lastSeen: now };
+    mem.issues[text].count += d.count;
+    mem.issues[text].lastSeen = now;
+  }
+
+  // 累積統計（只往上加，不往下減）
+  mem.cumStats.totalClosed  = (mem.cumStats.totalClosed  || 0) + trades.length;
+  mem.cumStats.totalWins    = (mem.cumStats.totalWins    || 0) + winT.length;
+  mem.cumStats.totalLosses  = (mem.cumStats.totalLosses  || 0) + lossT.length;
+  saveAIMemory(mem);
+}
+
+function monthlyTradePrune() {
+  const tlog = loadTradeLog();
+  const ONE_MONTH = 30 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const keep = [], expired = [];
+  for (const t of tlog) {
+    if (t.status === 'open') { keep.push(t); continue; }
+    (now - (t.exitTime || t.timestamp || 0)) < ONE_MONTH ? keep.push(t) : expired.push(t);
+  }
+  if (!expired.length) return;
+  archiveExpiredToMemory(expired); // 歸檔後才刪除
+  saveTradeLog(keep);
+  invalidateLearnCache();
+  console.log(`[AI] 已歸檔 ${expired.length} 筆超過一個月的交易記錄到 AI 記憶`);
+}
+
 function computeLearnProfile() {
   const closed = loadTradeLog().filter(t => t.status === 'closed');
   if (closed.length < 3) return { ready: false, closed: closed.length };
@@ -2206,9 +2253,10 @@ function computeLearnProfile() {
   const check = (cond, subLoss, subAll, penaltyConf, warnTpl) => {
     if (subAll.length < 3) return null;
     const rate = subLoss.length / subAll.length;
-    if (rate < 0.55) return null;
+    if (rate < 0.20) return null; // AI 目標勝率 80%+，止損率 > 20% 即觸發規則
+    const scaledPenalty = rate >= 0.6 ? penaltyConf + 15 : rate >= 0.4 ? penaltyConf + 5 : penaltyConf;
     return { condition: cond, lossCount: subLoss.length, total: subAll.length,
-      rate, penaltyConf, warning: warnTpl(Math.round(rate * 100)) };
+      rate, penaltyConf: scaledPenalty, warning: warnTpl(Math.round(rate * 100)) };
   };
 
   const rules = [
@@ -2346,85 +2394,89 @@ function generateTradeAnalysis(trade) {
 
 /* ── AI 學習面板渲染 ──────────────────────────────────────────── */
 function buildAILearnPanel(closed) {
-  const profile = getLearnProfile();
-  const mem     = profile.mem || loadAIMemory();
-  const fmtDate = ts => ts ? new Date(ts).toLocaleDateString('zh-TW', { month:'2-digit', day:'2-digit' }) : '';
-
-  if (!profile.ready) {
-    const needed = Math.max(0, 3 - profile.closed);
-    return `<div class="ai-learn-card">
-      <div class="ai-learn-header">🤖 AI 學習引擎</div>
-      <div style="color:var(--text3);font-size:0.83rem;padding:12px 0">
-        尚需 <strong style="color:var(--accent)">${needed}</strong> 筆已結束的交易才能開始學習，目前已累積 ${profile.closed} 筆。
-      </div>
-    </div>`;
-  }
-
+  const profile   = getLearnProfile();
+  const mem       = profile.mem || loadAIMemory();
+  const fmtDate   = ts => ts ? new Date(ts).toLocaleDateString('zh-TW', { month:'2-digit', day:'2-digit' }) : '';
   const isFromMem = !!profile.fromMemory;
-  const cumClosed = mem.cumStats?.totalClosed || profile.closed;
+  const cumClosed = Math.max(mem.cumStats?.totalClosed || 0, profile.closed || 0);
+  const winRateNum = profile.fromMemory
+    ? ((mem.cumStats.totalWins / (mem.cumStats.totalClosed || 1)) * 100)
+    : parseFloat(profile.winRate || 0);
+  const winRate = winRateNum.toFixed(1);
+  const winRateColor = winRateNum >= 80 ? 'var(--bull)' : winRateNum >= 60 ? '#f59e0b' : 'var(--bear)';
 
-  // ── 應用中的規則（含記憶中的）──
-  const rulesHtml = profile.rules.length
-    ? profile.rules.map(r => {
+  // ── 目前的風控規則（含記憶）──
+  const rules = profile.rules || [];
+  const rulesHtml = rules.length
+    ? rules.map(r => {
         const fd = r.firstDetected ? `首次發現 ${fmtDate(r.firstDetected)}` : '';
-        const occ = r.occurrences > 1 ? `· 已出現 ${r.occurrences} 次` : '';
+        const occ = (r.occurrences || 0) > 1 ? `· 出現 ${r.occurrences} 次` : '';
         const memBadge = !r.active ? `<span class="ai-mem-badge">記憶</span>` : '';
         return `<div class="ai-rule-item">
           <div class="ai-rule-cond">⚡ ${r.warning} ${memBadge}</div>
           <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · 下調信心 <strong>${r.penaltyConf}%</strong>${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
         </div>`;
       }).join('')
-    : `<div style="color:var(--bull);font-size:0.83rem;padding:6px 0">✅ 目前無高風險模式，歷史條件分佈均衡</div>`;
+    : `<div class="ai-learn-ok">✅ 目前無高風險模式，歷史條件均衡</div>`;
 
-  // ── RSI 熱力圖 ──
-  const rsiBar = profile.rsiStats.filter(z => z.total > 0).map(z => {
-    const lr = z.lossRate;
-    const clr = lr === null ? 'var(--text3)' : lr > 0.65 ? 'var(--bear)' : lr > 0.45 ? '#ff6d00' : 'var(--bull)';
-    const txt = lr === null ? '—' : `${Math.round(lr*100)}%`;
+  // ── RSI / ADX 熱力圖（僅有實際數據時才渲染）──
+  const makeZoneBar = stats => (stats || []).filter(z => z.total > 0).map(z => {
+    const lr  = z.lossRate;
+    const clr = lr === null ? 'var(--text3)' : lr > 0.2 ? (lr > 0.4 ? 'var(--bear)' : '#f59e0b') : 'var(--bull)';
     return `<div class="ai-zone-cell" style="border-color:${clr}20">
       <div class="ai-zone-label">${z.label}</div>
-      <div class="ai-zone-rate" style="color:${clr}">${txt}</div>
-      <div class="ai-zone-count" style="color:var(--text3)">${z.total}筆</div>
+      <div class="ai-zone-rate" style="color:${clr}">${lr === null ? '—' : Math.round(lr*100)+'%'}</div>
+      <div class="ai-zone-count">${z.total}筆</div>
     </div>`;
   }).join('');
+  const rsiBar = makeZoneBar(profile.rsiStats);
+  const adxBar = makeZoneBar(profile.adxStats);
 
-  // ── ADX 熱力圖 ──
-  const adxBar = profile.adxStats.filter(z => z.total > 0).map(z => {
-    const lr = z.lossRate;
-    const clr = lr === null ? 'var(--text3)' : lr > 0.65 ? 'var(--bear)' : lr > 0.45 ? '#ff6d00' : 'var(--bull)';
-    const txt = lr === null ? '—' : `${Math.round(lr*100)}%`;
-    return `<div class="ai-zone-cell" style="border-color:${clr}20">
-      <div class="ai-zone-label">${z.label}</div>
-      <div class="ai-zone-rate" style="color:${clr}">${txt}</div>
-      <div class="ai-zone-count" style="color:var(--text3)">${z.total}筆</div>
-    </div>`;
-  }).join('');
-
-  // ── 最佳條件 ──
-  const bestHtml = profile.bestConditions.map(b =>
+  // ── 最佳進場條件 ──
+  const bestHtml = (profile.bestConditions || []).map(b =>
     `<div class="ai-best-item"><span class="ai-best-lbl">${b.label}</span><span class="ai-best-val">${b.value}</span></div>`
   ).join('');
 
-  // ── 個別止損問題（從記憶層讀取，累積不丟失）──
-  const memIssues = Object.values(mem.issues || {}).sort((a,b) => b.count - a.count).slice(0, 4);
-  const perTradeHtml = memIssues.length > 0 ? `<div class="ai-learn-section">
-    <div class="ai-section-title">📋 累積記錄的反覆問題（永久保存）</div>
-    ${memIssues.map(iss => `
-      <div class="ai-issue-row">
-        <div class="ai-issue-txt">⚠️ ${iss.text}<span class="ai-issue-cnt">×${iss.count}</span>${iss.firstDetected ? `<span class="ai-mem-date">首次 ${fmtDate(iss.firstDetected)}</span>` : ''}</div>
-        ${iss.suggestion ? `<div class="ai-sugg-txt">→ ${iss.suggestion}</div>` : ''}
-      </div>`).join('')}
-  </div>` : '';
+  // ── 累積問題記錄（永遠從記憶中讀，不因重置消失）──
+  const memIssues = Object.values(mem.issues || {}).sort((a,b) => b.count - a.count).slice(0, 5);
+  const issuesHtml = memIssues.length
+    ? `<div class="ai-learn-section">
+        <div class="ai-section-title">📋 過往止損原因記錄（永久保存，跨月累積）</div>
+        ${memIssues.map(iss => `
+          <div class="ai-issue-row">
+            <div class="ai-issue-txt">⚠️ ${iss.text}<span class="ai-issue-cnt">×${iss.count}</span>${iss.firstDetected ? `<span class="ai-mem-date">首次 ${fmtDate(iss.firstDetected)}</span>` : ''}</div>
+            ${iss.suggestion ? `<div class="ai-sugg-txt">→ ${iss.suggestion}</div>` : ''}
+          </div>`).join('')}
+      </div>`
+    : `<div class="ai-learn-section">
+        <div class="ai-section-title">📋 過往止損原因記錄（永久保存）</div>
+        <div style="color:var(--text3);font-size:0.82rem;padding:6px 0">尚無止損記錄。每次止損後 AI 會自動分析原因並永久記憶。</div>
+      </div>`;
 
-  const winRate = profile.fromMemory
-    ? ((mem.cumStats.totalWins / (mem.cumStats.totalClosed || 1)) * 100).toFixed(1)
-    : profile.winRate;
+  const notReadyNote = !profile.ready ? `<div class="ai-learn-section">
+    <div style="color:var(--text3);font-size:0.82rem">
+      目前交易記錄不足（${profile.closed || 0}/3 筆），部分分析數據尚無法計算。<br>
+      <strong style="color:var(--accent)">AI 記憶中的止損經驗已持續套用至交易建議。</strong>
+    </div>
+  </div>` : '';
 
   return `<div class="ai-learn-card">
     <div class="ai-learn-header">
-      🤖 AI 學習引擎${isFromMem ? ' <span class="ai-mem-badge" style="font-size:0.72rem;vertical-align:middle">記憶模式</span>' : ''}
-      <span class="ai-learn-sub">累積 ${cumClosed} 筆交易 · 勝率 ${winRate}%${mem.updatedAt ? ' · 最後更新 ' + fmtDate(mem.updatedAt) : ''}</span>
+      🤖 AI 學習引擎${isFromMem ? ' <span class="ai-mem-badge">記憶模式</span>' : ''}
+      <span class="ai-learn-sub">累積 ${cumClosed} 筆 · 勝率 <strong style="color:${winRateColor}">${winRate}%</strong>${mem.updatedAt ? ' · 更新 ' + fmtDate(mem.updatedAt) : ''}</span>
     </div>
+
+    <div class="ai-goal-bar">
+      <span class="ai-goal-lbl">🎯 AI 目標勝率</span>
+      <div class="ai-goal-track">
+        <div class="ai-goal-fill" style="width:${Math.min(winRateNum,100)}%;background:${winRateColor}"></div>
+        <div class="ai-goal-mark80"></div>
+      </div>
+      <span class="ai-goal-pct" style="color:${winRateColor}">${winRate}%</span>
+      <span class="ai-goal-target">目標 80%</span>
+    </div>
+
+    ${notReadyNote}
 
     <div class="ai-learn-section">
       <div class="ai-section-title">⚙️ 已學習並套用的風控規則</div>
@@ -2436,17 +2488,17 @@ function buildAILearnPanel(closed) {
       ${bestHtml}
     </div>` : ''}
 
-    <div class="ai-learn-section">
-      <div class="ai-section-title">📊 RSI 止損率分佈（越紅越危險）</div>
-      <div class="ai-zone-row">${rsiBar || '<span style="color:var(--text3)">數據不足</span>'}</div>
-    </div>
+    ${rsiBar ? `<div class="ai-learn-section">
+      <div class="ai-section-title">📊 RSI 止損率分佈（目標每區 &lt; 20%）</div>
+      <div class="ai-zone-row">${rsiBar}</div>
+    </div>` : ''}
 
-    <div class="ai-learn-section">
+    ${adxBar ? `<div class="ai-learn-section">
       <div class="ai-section-title">📊 ADX 止損率分佈</div>
-      <div class="ai-zone-row">${adxBar || '<span style="color:var(--text3)">數據不足</span>'}</div>
-    </div>
+      <div class="ai-zone-row">${adxBar}</div>
+    </div>` : ''}
 
-    ${perTradeHtml}
+    ${issuesHtml}
   </div>`;
 }
 
@@ -2703,12 +2755,11 @@ function renderTradeLogPage() {
       }
 
       const exitTimeHtml = t.exitTime
-        ? `<div style="font-size:0.72rem;color:var(--text3)">${fmtRelTime(t.exitTime)}</div>` : '';
+        ? `<div style="font-size:0.7rem;color:var(--text3);margin-top:2px">結束 ${fmtDateTime(t.exitTime)}</div>` : '';
 
       return `<tr class="tl-row-click" onclick="showTradeDetail('${t.id}')">
-        <td style="font-size:0.78rem">
-          <div style="color:var(--text2)">${fmtDateTime(t.timestamp)}</div>
-          <div style="color:var(--text3);font-size:0.7rem">${fmtRelTime(t.timestamp)}</div>
+        <td style="font-size:0.78rem;min-width:130px">
+          <div style="color:var(--text2)">開單 ${fmtDateTime(t.timestamp)}</div>
           ${exitTimeHtml}
         </td>
         <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
@@ -2829,13 +2880,13 @@ function showTradeDetail(id) {
       <span style="color:${confColor};font-weight:700">${conf}%</span>
     </div>
     <div class="td-grid">
-      <div class="td-cell">
-        <div class="td-cell-lbl">進場時間</div>
-        <div class="td-cell-val" style="font-size:0.85rem">${fmtDateTime(trade.timestamp)}</div>
+      <div class="td-cell" style="grid-column:span 2">
+        <div class="td-cell-lbl">開單時間</div>
+        <div class="td-cell-val" style="font-size:0.83rem">${fmtDateTime(trade.timestamp)}</div>
       </div>
-      <div class="td-cell">
+      <div class="td-cell" style="grid-column:span 2">
         <div class="td-cell-lbl">結束時間</div>
-        <div class="td-cell-val" style="font-size:0.85rem">${trade.exitTime ? fmtDateTime(trade.exitTime) : '—'}</div>
+        <div class="td-cell-val" style="font-size:0.83rem">${trade.exitTime ? fmtDateTime(trade.exitTime) : '進行中'}</div>
       </div>
       <div class="td-cell">
         <div class="td-cell-lbl">進場價</div>
@@ -2902,12 +2953,14 @@ function fmtRelTime(ts) {
 
 function fmtDateTime(ts) {
   if (!ts) return '--';
-  const d = new Date(ts);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mi = String(d.getMinutes()).padStart(2, '0');
-  return `${mm}/${dd} ${hh}:${mi}`;
+  const d    = new Date(ts);
+  const mm   = d.getMonth() + 1;
+  const dd   = d.getDate();
+  const h24  = d.getHours();
+  const mi   = String(d.getMinutes()).padStart(2, '0');
+  const ampm = h24 < 12 ? '上午' : '下午';
+  const h12  = h24 % 12 || 12;
+  return `${mm}月${dd}日 ${ampm} ${h12}:${mi}`;
 }
 
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */

@@ -1519,3 +1519,13 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 /* ── AI 記憶標記 ───────────────────────────────────────────────── */
 .ai-mem-badge { display:inline-block; background:rgba(99,102,241,.2); border:1px solid rgba(99,102,241,.4); color:#a5b4fc; border-radius:10px; padding:1px 7px; font-size:0.68rem; font-weight:600; vertical-align:middle; margin-left:4px; }
 .ai-mem-date { font-size:0.68rem; color:var(--text3); margin-left:6px; }
+
+/* ── AI 目標勝率進度條 ─────────────────────────────────────────── */
+.ai-goal-bar { display:flex; align-items:center; gap:8px; padding:8px 0 12px; border-bottom:1px solid var(--border); margin-bottom:4px; flex-wrap:wrap; }
+.ai-goal-lbl { font-size:0.78rem; color:var(--text3); white-space:nowrap; }
+.ai-goal-track { flex:1; min-width:80px; height:8px; background:rgba(255,255,255,.1); border-radius:4px; position:relative; overflow:visible; }
+.ai-goal-fill { height:100%; border-radius:4px; transition:width .6s; }
+.ai-goal-mark80 { position:absolute; top:-3px; left:80%; width:2px; height:14px; background:rgba(255,255,255,.4); border-radius:1px; }
+.ai-goal-pct { font-size:0.88rem; font-weight:700; white-space:nowrap; }
+.ai-goal-target { font-size:0.7rem; color:var(--text3); white-space:nowrap; }
+.ai-learn-ok { color:var(--bull); font-size:0.83rem; padding:6px 0; }
