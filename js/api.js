@@ -62,7 +62,7 @@ function loadPairs() {
     const raw = localStorage.getItem(PAIRS_KEY);
     if (raw) {
       const arr = JSON.parse(raw);
-      if (Array.isArray(arr) && arr.length > 0) return arr;
+      if (Array.isArray(arr)) return arr;
     }
   } catch {}
   return [...DEFAULT_PAIRS];
