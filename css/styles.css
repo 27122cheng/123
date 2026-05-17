@@ -1533,3 +1533,55 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 /* ── 交易記錄底部操作列 ────────────────────────────────────────── */
 .tl-actions-row { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-top:12px; padding:12px 14px; background:rgba(99,102,241,.06); border:1px solid rgba(99,102,241,.2); border-radius:10px; }
 .tl-mem-status { font-size:0.78rem; color:var(--accent); font-weight:500; }
+
+/* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ──────────────────────────── */
+.vp-panel { display:flex; flex-direction:column; gap:12px; }
+.vp-narr-summary { background:rgba(0,212,255,.07); border:1px solid rgba(0,212,255,.2); border-radius:8px; padding:9px 12px; font-size:0.82rem; color:var(--text2); line-height:1.55; }
+.vp-section, .vp-whale-section, .vp-volai-section { background:rgba(255,255,255,.02); border:1px solid var(--card-border); border-radius:10px; padding:12px 14px; }
+.vp-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:4px; }
+.vp-sub-title { font-size:0.8rem; font-weight:700; color:var(--text2); display:block; margin-bottom:8px; }
+.vp-dist { font-size:0.78rem; font-weight:600; }
+.vp-info-chips { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
+.vp-chip { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.1); border-radius:20px; padding:2px 9px; font-size:0.75rem; color:var(--text2); }
+.vp-chip-poc { background:rgba(255,215,64,.12); border-color:rgba(255,215,64,.35); color:var(--neutral); font-weight:600; }
+.vp-chip-vah { background:rgba(0,230,118,.08); border-color:rgba(0,230,118,.25); color:var(--bull); }
+.vp-chip-val { background:rgba(255,23,68,.08);  border-color:rgba(255,23,68,.25);  color:var(--bear); }
+
+/* VP bar chart */
+.vp-chart { display:flex; flex-direction:column; gap:2px; max-height:380px; overflow-y:auto; padding-right:2px; margin-bottom:8px; }
+.vp-row { display:flex; align-items:center; gap:6px; min-height:14px; }
+.vp-price-row { background:rgba(255,255,255,.05); border-radius:3px; }
+.vp-price-lbl { font-size:0.63rem; color:var(--text3); width:68px; text-align:right; flex-shrink:0; white-space:nowrap; overflow:hidden; }
+.vp-poc-tag { font-size:0.58rem; background:rgba(255,215,64,.25); color:var(--neutral); border-radius:3px; padding:0 3px; vertical-align:middle; margin-left:2px; }
+.vp-bar-wrap { flex:1; position:relative; height:12px; display:flex; align-items:center; }
+.vp-bar { height:10px; border-radius:2px; background:rgba(148,163,184,.22); min-width:2px; }
+.vp-poc { background:var(--neutral) !important; opacity:.9; }
+.vp-va  { background:rgba(0,212,255,.42); }
+.vp-hvn { background:rgba(0,230,118,.52); }
+.vp-lvn { background:rgba(255,23,68,.3); }
+.vp-cur-marker { position:absolute; left:calc(var(--w, 0%) + 2px); top:50%; transform:translateY(-50%); font-size:0.68rem; color:var(--neutral); pointer-events:none; }
+.vp-legend { display:flex; flex-wrap:wrap; gap:10px; }
+.vp-legend-item { display:flex; align-items:center; gap:4px; font-size:0.7rem; color:var(--text3); }
+.vp-legend-dot { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+
+/* Whale section */
+.vp-whale-pattern { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+.vp-whale-label { font-size:0.88rem; font-weight:700; min-width:60px; }
+.vp-whale-bar-wrap { flex:1; min-width:80px; height:8px; background:rgba(255,255,255,.1); border-radius:4px; overflow:hidden; }
+.vp-whale-bar { height:100%; border-radius:4px; }
+.vp-whale-pct { font-size:0.82rem; font-weight:700; min-width:34px; }
+.vp-whale-stats { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:8px; }
+.vp-ai-narr { font-size:0.8rem; padding:6px 10px; border-radius:6px; }
+.vp-narr-bull { color:var(--bull); background:rgba(0,230,118,.08); border:1px solid rgba(0,230,118,.2); }
+.vp-narr-bear { color:var(--bear); background:rgba(255,23,68,.08); border:1px solid rgba(255,23,68,.2); }
+
+/* Volume AI section */
+.vp-volai-chips { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:8px; }
+.vp-vol-signals { display:flex; flex-direction:column; gap:4px; }
+.vp-vol-sig { font-size:0.78rem; padding:4px 9px; border-radius:5px; color:var(--text2); background:rgba(255,255,255,.04); }
+.vp-vol-spike  { color:var(--neutral); background:rgba(255,215,64,.1);  border:1px solid rgba(255,215,64,.3); }
+.vp-vol-high   { color:var(--bull);    background:rgba(0,230,118,.08);  border:1px solid rgba(0,230,118,.2); }
+.vp-vol-climax { color:#ff6d00;        background:rgba(255,109,0,.1);   border:1px solid rgba(255,109,0,.3); }
+.vp-vol-break  { color:var(--blue);    background:rgba(0,212,255,.08);  border:1px solid rgba(0,212,255,.25); }
+.vp-vol-bdiv   { color:var(--bull);    background:rgba(0,230,118,.06);  border:1px solid rgba(0,230,118,.18); }
+.vp-vol-brdiv  { color:var(--bear);    background:rgba(255,23,68,.06);  border:1px solid rgba(255,23,68,.18); }

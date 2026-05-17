@@ -736,10 +736,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // S/R 層位：1h pivot 優先，fallback 到 4h / 簡估
   const pl      = h1?.pivotLevels || h4?.pivotLevels;
-  const resists = (pl?.resistances || []).filter(r => r > price);
-  const supps   = (pl?.supports    || []).filter(s => s < price);
+  let resists = (pl?.resistances || []).filter(r => r > price);
+  let supps   = (pl?.supports    || []).filter(s => s < price);
   const swHigh  = pl?.swingHigh || h4?.swingHigh || price * 1.025;
   const swLow   = pl?.swingLow  || h4?.swingLow  || price * 0.975;
+
+  // 整合 Volume Profile S/R（POC / VAH / VAL / HVN 作為額外關鍵位）
+  const vp1h = mtfData['1h']?.vp;
+  if (vp1h) {
+    const addS = v => { if (v < price * 0.999 && !supps.some(s => Math.abs(s - v) < price * 0.002)) supps.push(v); };
+    const addR = v => { if (v > price * 1.001 && !resists.some(r => Math.abs(r - v) < price * 0.002)) resists.push(v); };
+    addS(vp1h.poc); addR(vp1h.poc);
+    addS(vp1h.val); addR(vp1h.vah);
+    vp1h.hvns.forEach(h => { addS(h); addR(h); });
+    supps   = supps.sort((a, b) => b - a);
+    resists = resists.sort((a, b) => a - b);
+  }
 
   // 訂單流 & RSI 斜率
   const of15m    = mtfData['15m']?.orderFlow;
@@ -797,6 +809,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (cvdTrend === 'bull')       entryReasons.push('CVD 上升，買壓持續');
     if (whale?.bias === 'bull' && whale.bigBuyCount >= 3)
       entryReasons.push(`巨鯨大額買入 ${whale.bigBuyCount} 筆（佔大單 ${whale.buyPct}%）`);
+    if (vp1h && vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 3)
+      entryReasons.push(`籌碼密集區(POC $${fmtPrice(vp1h.poc)})上方，籌碼結構看多`);
+    if (vp1h && !vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 1.5)
+      entryReasons.push(`逼近POC $${fmtPrice(vp1h.poc)}，籌碼磁吸效應`);
     if (!entryReasons.length)      entryReasons.push('15m/1h 多頭信號共振');
   } else {
     const nearRes = resists[0];
@@ -815,6 +831,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (cvdTrend === 'bear')       entryReasons.push('CVD 下降，賣壓持續');
     if (whale?.bias === 'bear' && whale.bigSellCount >= 3)
       entryReasons.push(`巨鯨大額賣出 ${whale.bigSellCount} 筆（佔大單 ${(100 - whale.buyPct).toFixed(1)}%）`);
+    if (vp1h && !vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 3)
+      entryReasons.push(`籌碼密集區(POC $${fmtPrice(vp1h.poc)})下方，籌碼結構看空`);
+    if (vp1h && vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 1.5)
+      entryReasons.push(`逼近POC $${fmtPrice(vp1h.poc)} 壓力，籌碼磁吸阻力`);
     if (!entryReasons.length)      entryReasons.push('15m/1h 空頭信號共振');
   }
 
@@ -1113,6 +1133,126 @@ async function loadDashboardMacro() {
   }
 }
 
+/* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
+function buildVPPanel(coin, mtfData, whale) {
+  const vp1h  = mtfData['1h']?.vp;
+  const volAI = mtfData['1h']?.volAI;
+  const wPat  = analyzeWhalePattern(whale);
+  const price = parseFloat(coin.price) || 0;
+
+  /* ── 籌碼分佈視覺圖 ── */
+  let vpHtml = '';
+  if (vp1h) {
+    const maxVol = Math.max(...vp1h.buckets.map(b => b.vol));
+    const barsHtml = [...vp1h.buckets].reverse().map(b => {
+      const widthPct = Math.round((b.vol / maxVol) * 100);
+      const isPOC   = Math.abs(b.mid - vp1h.poc) < vp1h.bucketSize * 0.6;
+      const inVA    = b.mid >= vp1h.val && b.mid <= vp1h.vah;
+      const isHVN   = vp1h.hvns.some(h => Math.abs(h - b.mid) < vp1h.bucketSize * 0.7);
+      const isLVN   = !isHVN && vp1h.lvns.some(l => Math.abs(l - b.mid) < vp1h.bucketSize * 0.7);
+      const isPrice = price >= b.low && price <= b.high;
+      const barCls  = isPOC ? 'vp-bar vp-poc' : inVA ? 'vp-bar vp-va' : isHVN ? 'vp-bar vp-hvn' : isLVN ? 'vp-bar vp-lvn' : 'vp-bar';
+      return `<div class="vp-row${isPrice ? ' vp-price-row' : ''}">
+        <div class="vp-price-lbl">${fmtPrice(b.mid)}${isPOC ? ' <span class="vp-poc-tag">POC</span>' : ''}</div>
+        <div class="vp-bar-wrap"><div class="${barCls}" style="width:${widthPct}%"></div>${isPrice ? '<span class="vp-cur-marker">◀</span>' : ''}</div>
+      </div>`;
+    }).join('');
+
+    const distSign  = vp1h.distToPOC >= 0 ? '+' : '';
+    const distColor = Math.abs(vp1h.distToPOC) < 1 ? 'var(--neutral)' : vp1h.priceAbovePOC ? 'var(--bull)' : 'var(--bear)';
+
+    vpHtml = `<div class="vp-section">
+      <div class="vp-header">
+        <span class="vp-sub-title" style="margin-bottom:0">📊 籌碼分佈（1h Volume Profile）</span>
+        <span class="vp-dist" style="color:${distColor}">距POC ${distSign}${vp1h.distToPOC}%</span>
+      </div>
+      <div class="vp-info-chips">
+        <span class="vp-chip vp-chip-poc">🎯 POC: ${fmtPrice(vp1h.poc)}</span>
+        <span class="vp-chip vp-chip-vah">▲ VAH: ${fmtPrice(vp1h.vah)}</span>
+        <span class="vp-chip vp-chip-val">▼ VAL: ${fmtPrice(vp1h.val)}</span>
+        <span class="vp-chip">現價${vp1h.priceAbovePOC ? '在POC上方' : '在POC下方'}</span>
+      </div>
+      <div class="vp-chart">${barsHtml}</div>
+      <div class="vp-legend">
+        <span class="vp-legend-item"><span class="vp-legend-dot" style="background:var(--neutral)"></span>POC</span>
+        <span class="vp-legend-item"><span class="vp-legend-dot" style="background:rgba(0,212,255,.45)"></span>VA 70%</span>
+        <span class="vp-legend-item"><span class="vp-legend-dot" style="background:rgba(0,230,118,.55)"></span>HVN</span>
+        <span class="vp-legend-item"><span class="vp-legend-dot" style="background:rgba(255,23,68,.35)"></span>LVN</span>
+      </div>
+    </div>`;
+  }
+
+  /* ── 巨鯨進退場 ── */
+  let whaleHtml = '';
+  if (wPat) {
+    const netM    = (Math.abs(wPat.netFlow) / 1e6).toFixed(2);
+    const netDir  = wPat.netFlow > 0 ? '買' : '賣';
+    const narrCls = wPat.pattern === 'accumulation' ? 'vp-narr-bull' : wPat.pattern === 'distribution' ? 'vp-narr-bear' : '';
+    const narr    = wPat.pattern === 'accumulation' ? '⚠️ 偵測到機構吸籌跡象，大額買單持續進場，短線或有拉升行情'
+      : wPat.pattern === 'distribution' ? '⚠️ 偵測到大戶出貨跡象，大額賣單主導，謹防下行風險'
+      : wPat.pattern === 'light_buy'    ? '🔍 溫和吸籌，資金緩步流入，暫無強烈信號'
+      : wPat.pattern === 'light_sell'   ? '🔍 溫和出貨，資金緩步流出，注意壓力'
+      : '多空均衡，大戶無明確方向';
+    whaleHtml = `<div class="vp-whale-section">
+      <div class="vp-sub-title">🐋 巨鯨進退場偵測</div>
+      <div class="vp-whale-pattern" style="color:${wPat.color}">
+        <span class="vp-whale-label">${wPat.label}</span>
+        <div class="vp-whale-bar-wrap"><div class="vp-whale-bar" style="width:${wPat.strength}%;background:${wPat.color}"></div></div>
+        <span class="vp-whale-pct">${wPat.strength}%</span>
+      </div>
+      <div class="vp-whale-stats">
+        <span class="vp-chip" style="color:var(--bull)">買單 ${wPat.buyPct.toFixed(1)}%（${wPat.bigBuyCount}筆）</span>
+        <span class="vp-chip" style="color:var(--bear)">賣單 ${wPat.sellPct}%（${wPat.bigSellCount}筆）</span>
+        <span class="vp-chip" style="color:${wPat.netFlow > 0 ? 'var(--bull)' : 'var(--bear)'}">淨${netDir} $${netM}M</span>
+      </div>
+      <div class="vp-ai-narr ${narrCls}" style="${!narrCls ? 'color:var(--text3)' : ''}">${narr}</div>
+    </div>`;
+  } else {
+    whaleHtml = `<div class="vp-whale-section">
+      <div class="vp-sub-title">🐋 巨鯨進退場偵測</div>
+      <div style="color:var(--text3);font-size:0.8rem;padding:4px 0">大額交易數據不足，無法判斷</div>
+    </div>`;
+  }
+
+  /* ── 成交量 AI 分析 ── */
+  let volAIHtml = '';
+  if (volAI) {
+    const trendInfo = { rising: { label: '量能上升 📈', color: 'var(--bull)' }, falling: { label: '量能萎縮 📉', color: 'var(--bear)' }, flat: { label: '量能平穩 ➡', color: 'var(--text2)' } }[volAI.volTrend] || { label: '量能平穩', color: 'var(--text2)' };
+    const biasInfo  = { bull: { label: '買盤主導', color: 'var(--bull)' }, bear: { label: '賣盤主導', color: 'var(--bear)' }, neutral: { label: '多空均衡', color: 'var(--text2)' } }[volAI.bias] || { label: '多空均衡', color: 'var(--text2)' };
+    const sigs = [];
+    if (volAI.isSpike)                            sigs.push(`<span class="vp-vol-sig vp-vol-spike">🔥 成交量暴增 ${volAI.volRatio}x 均量</span>`);
+    else if (volAI.isHighVol)                     sigs.push(`<span class="vp-vol-sig vp-vol-high">📶 放量 ${volAI.volRatio}x 均量</span>`);
+    else                                          sigs.push(`<span class="vp-vol-sig" style="color:var(--text3)">成交量 ${volAI.volRatio}x 均量（正常）</span>`);
+    if (volAI.isClimax)   sigs.push(`<span class="vp-vol-sig vp-vol-climax">⚡ 頂底量（高量小實體，潛在反轉）</span>`);
+    if (volAI.isBreakout) sigs.push(`<span class="vp-vol-sig vp-vol-break">💥 連續放量突破（近3根），5日 ${volAI.priceChg5 >= 0 ? '+' : ''}${volAI.priceChg5}%</span>`);
+    if (volAI.divergence === 'bullish_div') sigs.push(`<span class="vp-vol-sig vp-vol-bdiv">↑ 看漲背離：量跌價跌，下跌動能衰竭</span>`);
+    if (volAI.divergence === 'bearish_div') sigs.push(`<span class="vp-vol-sig vp-vol-brdiv">↓ 看跌背離：量跌價漲，上漲動能不足</span>`);
+    volAIHtml = `<div class="vp-volai-section">
+      <div class="vp-sub-title">📉 成交量 AI 分析（1h）</div>
+      <div class="vp-volai-chips">
+        <span class="vp-chip" style="color:${trendInfo.color}">${trendInfo.label}</span>
+        <span class="vp-chip" style="color:${biasInfo.color}">${biasInfo.label}</span>
+        <span class="vp-chip" style="color:var(--text2)">上漲量比 ${Math.round(volAI.upVolRatio * 100)}%</span>
+        <span class="vp-chip" style="color:var(--text2)">5日漲幅 ${volAI.priceChg5 >= 0 ? '+' : ''}${volAI.priceChg5}%</span>
+      </div>
+      <div class="vp-vol-signals">${sigs.join('')}</div>
+    </div>`;
+  }
+
+  /* ── AI 綜合敘述 ── */
+  let narrative = '';
+  if (vp1h || wPat || volAI) {
+    const parts = [];
+    if (vp1h)  parts.push(vp1h.priceAbovePOC ? `籌碼密集區 POC $${fmtPrice(vp1h.poc)} 提供支撐，VAH $${fmtPrice(vp1h.vah)} 為上方壓力` : `現價低於 POC $${fmtPrice(vp1h.poc)}，VAL $${fmtPrice(vp1h.val)} 為關鍵支撐`);
+    if (wPat && wPat.pattern !== 'neutral')  parts.push(wPat.label + `（${wPat.strength}%強度）`);
+    if (volAI && (volAI.isBreakout || volAI.isSpike || volAI.isClimax || volAI.divergence))
+      parts.push(volAI.isBreakout ? '成交量放大確認突破' : volAI.isClimax ? '頂底量提示注意反轉' : volAI.divergence === 'bullish_div' ? '看漲背離出現' : volAI.divergence === 'bearish_div' ? '看跌背離需謹慎' : `量能${volAI.volRatio}x`);
+    if (parts.length) narrative = `<div class="vp-narr-summary">🤖 ${parts.join('；')}。</div>`;
+  }
+
+  return `<div class="vp-panel">${narrative}${vpHtml}${whaleHtml}${volAIHtml}</div>`;
+}
+
 /* ── 宏觀市場環境面板 ─────────────────────────────────────── */
 function buildMacroPanel(global, halving, fg) {
 
@@ -1348,6 +1488,36 @@ function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale
         : `大額賣單佔 <strong style="color:var(--bear)">${(100 - whale.buyPct).toFixed(1)}%</strong>（${whale.bigSellCount} 筆），淨賣超 <strong>$${netM}M</strong>，大戶出貨跡象`;
       points.push({ icon: wIcon, color: wColor, label: '鯨魚', text: wText });
     }
+  }
+
+  // 9. 籌碼分佈（Volume Profile）
+  const vp1h = mtfData['1h']?.vp;
+  if (vp1h) {
+    const poc = fmtPrice(vp1h.poc);
+    const abv = vp1h.priceAbovePOC;
+    const dist = Math.abs(vp1h.distToPOC);
+    const vpColor = abv ? 'var(--bull)' : 'var(--bear)';
+    const posDesc = abv
+      ? `現價在籌碼密集區 POC <strong>$${poc}</strong> 上方 ${dist}%，短線籌碼較輕，VAH 壓力 <strong>${fmtPrice(vp1h.vah)}</strong>`
+      : `現價在籌碼密集區 POC <strong>$${poc}</strong> 下方 ${dist}%，下方 VAL 支撐 <strong>${fmtPrice(vp1h.val)}</strong>`;
+    points.push({ icon: '📦', color: vpColor, label: '籌碼', text: posDesc });
+  }
+
+  // 10. 成交量 AI
+  const volAI = mtfData['1h']?.volAI;
+  if (volAI) {
+    const sigs = [];
+    if (volAI.isBreakout)                           sigs.push('連續放量突破確認');
+    if (volAI.isSpike)                              sigs.push(`成交量暴增 ${volAI.volRatio}x 均量`);
+    else if (volAI.isHighVol)                       sigs.push(`放量 ${volAI.volRatio}x 均量`);
+    if (volAI.isClimax)                             sigs.push('頂底量（可能反轉）');
+    if (volAI.divergence === 'bullish_div')         sigs.push('看漲背離（量跌價跌）');
+    else if (volAI.divergence === 'bearish_div')    sigs.push('看跌背離（量跌價漲）');
+    const biasText  = volAI.bias === 'bull' ? '買盤主導' : volAI.bias === 'bear' ? '賣盤主導' : '多空均衡';
+    const trendText = volAI.volTrend === 'rising' ? '量能上升📈' : volAI.volTrend === 'falling' ? '量能萎縮📉' : '量能平穩';
+    const volColor  = volAI.bias === 'bull' ? 'var(--bull)' : volAI.bias === 'bear' ? 'var(--bear)' : 'var(--text2)';
+    const volText   = `${biasText}，${trendText}（${volAI.volRatio}x）${sigs.length ? '　' + sigs.join('，') : ''}`;
+    points.push({ icon: '📊', color: volColor, label: '成交量', text: volText });
   }
 
   return `<div class="situation-list">
@@ -1606,7 +1776,7 @@ async function renderCoinDetail(symbol) {
 
   // 重置所有異步區塊
   const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
-  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('situation-body');
+  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('vp-body'); setL('situation-body');
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
@@ -1631,6 +1801,7 @@ async function renderCoinDetail(symbol) {
   set('mtf-body',       buildMTFTable(mtfData));
   set('of-body',        buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
   set('ai-body',        generateAIAnalysis(coin, mtfData, fearGreed));
+  set('vp-body',        buildVPPanel(coin, mtfData, whale));
   set('situation-body', buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
 }
 

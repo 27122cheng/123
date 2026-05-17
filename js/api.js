@@ -341,11 +341,40 @@ async function fetchMTFKlines(symbol) {
       out[tf] = {
         signal:    analyzeTimeframeSignal(raw),
         orderFlow: analyzeOrderFlow(raw),
+        volAI:     tf === '1h' ? analyzeVolumeAI(raw) : undefined,
+        vp:        (tf === '1h' || tf === '4h') ? computeVolumeProfile(raw) : undefined,
       };
     }
   }));
 
   return out;
+}
+
+/* ── 巨鯨行為模式分析 ─────────────────────────────────────── */
+function analyzeWhalePattern(whale) {
+  if (!whale || whale.total === 0) return null;
+  const { buyPct, bigBuyCount, bigSellCount, netFlow } = whale;
+  const sellPct = 100 - buyPct;
+
+  let pattern, strength, label, color;
+  if (buyPct > 72 && bigBuyCount >= 5) {
+    pattern = 'accumulation'; strength = Math.min(95, Math.round(buyPct * 0.9));
+    label = `強力吸籌`; color = 'var(--bull)';
+  } else if (sellPct > 72 && bigSellCount >= 5) {
+    pattern = 'distribution'; strength = Math.min(95, Math.round(sellPct * 0.9));
+    label = `主動出貨`; color = 'var(--bear)';
+  } else if (buyPct > 60 && bigBuyCount >= 3) {
+    pattern = 'light_buy'; strength = Math.round(buyPct * 0.7);
+    label = `溫和吸籌`; color = 'var(--bull)';
+  } else if (sellPct > 60 && bigSellCount >= 3) {
+    pattern = 'light_sell'; strength = Math.round(sellPct * 0.7);
+    label = `溫和出貨`; color = 'var(--bear)';
+  } else {
+    pattern = 'neutral'; strength = 50;
+    label = `多空均衡`; color = 'var(--text3)';
+  }
+
+  return { pattern, strength, label, color, buyPct, sellPct: parseFloat(sellPct.toFixed(1)), bigBuyCount, bigSellCount, netFlow };
 }
 
 /* 恐慌貪婪指數 (alternative.me) */

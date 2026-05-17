@@ -359,3 +359,115 @@ function calcATR(highs, lows, closes, period = 14) {
   for (let i = p; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
   return atr;
 }
+
+/* ── 籌碼分佈（Volume Profile）─────────────────────────────── */
+function computeVolumeProfile(klines, numBuckets = 24) {
+  if (!klines || klines.length < 10) return null;
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const vols   = klines.map(k => parseFloat(k[5]));
+
+  const priceHigh = Math.max(...highs);
+  const priceLow  = Math.min(...lows);
+  if (priceHigh <= priceLow) return null;
+
+  const bucketSize = (priceHigh - priceLow) / numBuckets;
+  const buckets = Array.from({ length: numBuckets }, (_, i) => ({
+    low:  priceLow + i * bucketSize,
+    high: priceLow + (i + 1) * bucketSize,
+    mid:  priceLow + (i + 0.5) * bucketSize,
+    vol:  0,
+  }));
+
+  klines.forEach((_, idx) => {
+    const h = highs[idx], l = lows[idx], v = vols[idx];
+    const range = h - l || 0.0001;
+    for (const b of buckets) {
+      const overlap = Math.max(0, Math.min(h, b.high) - Math.max(l, b.low));
+      if (overlap > 0) b.vol += v * (overlap / range);
+    }
+  });
+
+  const totalVol = buckets.reduce((s, b) => s + b.vol, 0);
+  const poc = buckets.reduce((m, b) => b.vol > m.vol ? b : m, buckets[0]);
+
+  // Value Area — 70% of volume around POC
+  let vaVol = poc.vol, lo = buckets.indexOf(poc), hi = lo;
+  const vaTarget = totalVol * 0.70;
+  while (vaVol < vaTarget && (lo > 0 || hi < numBuckets - 1)) {
+    const upVol = hi + 1 < numBuckets ? buckets[hi + 1].vol : -1;
+    const dnVol = lo - 1 >= 0 ? buckets[lo - 1].vol : -1;
+    if (upVol >= dnVol && hi + 1 < numBuckets) { hi++; vaVol += buckets[hi].vol; }
+    else if (lo - 1 >= 0) { lo--; vaVol += buckets[lo].vol; }
+    else break;
+  }
+
+  // HVN / LVN
+  const sorted = [...buckets].sort((a, b) => b.vol - a.vol);
+  const hvns = sorted.slice(0, 5).map(b => b.mid).sort((a, b) => a - b);
+  const lvns = sorted.slice(-4).map(b => b.mid).sort((a, b) => a - b);
+  const currentPrice = closes[closes.length - 1];
+
+  return {
+    poc: poc.mid, pocVol: poc.vol, totalVol,
+    vah: buckets[hi].high, val: buckets[lo].low,
+    hvns, lvns, buckets,
+    priceHigh, priceLow, bucketSize,
+    currentPrice,
+    priceAbovePOC: currentPrice > poc.mid,
+    distToPOC: parseFloat(((currentPrice - poc.mid) / poc.mid * 100).toFixed(2)),
+  };
+}
+
+/* ── 成交量 AI 分析 ──────────────────────────────────────────── */
+function analyzeVolumeAI(raw) {
+  if (!raw || raw.length < 20) return null;
+  const { opens, closes, highs, lows, volumes } = parseKlines(raw);
+  const n = closes.length;
+
+  const vol20MA = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  const vol5MA  = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+  const vol10MA = volumes.slice(-15, -5).reduce((a, b) => a + b, 0) / 10;
+  const lastVol = volumes[n - 1];
+  const volRatio = parseFloat((lastVol / (vol20MA || 1)).toFixed(2));
+
+  // 上漲 vs 下跌 K 棒成交量比 (近 20 根)
+  let upVol = 0, downVol = 0;
+  for (let i = n - 20; i < n; i++) {
+    if (closes[i] >= opens[i]) upVol += volumes[i]; else downVol += volumes[i];
+  }
+  const upVolRatio = parseFloat((upVol / ((upVol + downVol) || 1)).toFixed(2));
+
+  // 量能趨勢
+  const volTrend = vol5MA > vol10MA * 1.2 ? 'rising' : vol5MA < vol10MA * 0.8 ? 'falling' : 'flat';
+
+  // 背離
+  const priceChg5 = (closes[n - 1] - closes[n - 6]) / (closes[n - 6] || 1);
+  const divergence =
+    priceChg5 > 0.008 && volTrend === 'falling' ? 'bearish_div' :
+    priceChg5 < -0.008 && volTrend === 'falling' ? 'bullish_div' : null;
+
+  // 放量信號
+  const isSpike   = volRatio > 2.5;
+  const isHighVol = volRatio > 1.5;
+
+  // 頂底背離（高量小實體 = 潛在反轉）
+  const lastBodyPct = Math.abs(closes[n-1] - opens[n-1]) / ((highs[n-1] - lows[n-1]) || 0.001);
+  const isClimax    = isSpike && lastBodyPct < 0.35;
+
+  // 連續放量突破
+  const last3Vol    = volumes.slice(-3).filter(v => v > vol20MA * 1.3).length;
+  const isBreakout  = last3Vol >= 2 && priceChg5 > 0.005;
+
+  const bias = upVolRatio > 0.62 && volTrend !== 'falling' ? 'bull'
+    : upVolRatio < 0.38 && volTrend !== 'falling' ? 'bear' : 'neutral';
+
+  return {
+    volRatio, volTrend, divergence,
+    upVolRatio, bias,
+    isSpike, isHighVol, isClimax, isBreakout,
+    vol20MA: parseFloat(vol20MA.toFixed(0)),
+    priceChg5: parseFloat((priceChg5 * 100).toFixed(2)),
+  };
+}
