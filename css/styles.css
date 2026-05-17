@@ -1515,3 +1515,7 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .setup-ai-best-item { font-size:0.76rem; color:var(--text2); }
 .setup-ai-rules { display:flex; flex-direction:column; gap:4px; border-top:1px solid rgba(255,255,255,.07); padding-top:7px; margin-top:4px; }
 .setup-ai-rule { font-size:0.74rem; color:var(--bear); opacity:.85; }
+
+/* ── AI 記憶標記 ───────────────────────────────────────────────── */
+.ai-mem-badge { display:inline-block; background:rgba(99,102,241,.2); border:1px solid rgba(99,102,241,.4); color:#a5b4fc; border-radius:10px; padding:1px 7px; font-size:0.68rem; font-weight:600; vertical-align:middle; margin-left:4px; }
+.ai-mem-date { font-size:0.68rem; color:var(--text3); margin-left:6px; }

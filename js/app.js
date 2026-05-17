@@ -2087,6 +2087,74 @@ async function sendTP1Notifications(hits) {
 let _learnCache = null;
 function invalidateLearnCache() { _learnCache = null; }
 
+/* ── AI 持久記憶（localStorage）─────────────────────────────── */
+const AI_MEMORY_KEY = 'csp_ai_memory';
+
+function loadAIMemory() {
+  try {
+    const raw = localStorage.getItem(AI_MEMORY_KEY);
+    return raw ? JSON.parse(raw) : { version: 1, rules: {}, issues: {}, bestConditions: [], cumStats: { totalClosed: 0, totalWins: 0, totalLosses: 0 } };
+  } catch { return { version: 1, rules: {}, issues: {}, bestConditions: [], cumStats: { totalClosed: 0, totalWins: 0, totalLosses: 0 } }; }
+}
+
+function saveAIMemory(mem) {
+  mem.updatedAt = Date.now();
+  localStorage.setItem(AI_MEMORY_KEY, JSON.stringify(mem));
+}
+
+function mergeRulesIntoMemory(freshRules, freshIssues, freshBest, freshStats) {
+  const mem = loadAIMemory();
+  const now = Date.now();
+
+  // ── 標記所有舊規則為未激活，然後重新激活有數據的規則 ──
+  for (const k of Object.keys(mem.rules)) { mem.rules[k].active = false; }
+
+  for (const rule of freshRules) {
+    const existing = mem.rules[rule.condition];
+    if (existing) {
+      // 保留最早發現時間，更新最新統計數據
+      mem.rules[rule.condition] = {
+        ...rule, active: true,
+        firstDetected: existing.firstDetected,
+        lastUpdated: now,
+        occurrences: (existing.occurrences || 1) + 1,
+      };
+    } else {
+      mem.rules[rule.condition] = {
+        ...rule, active: true,
+        firstDetected: now, lastUpdated: now, occurrences: 1,
+      };
+    }
+  }
+
+  // ── 累積個別問題統計（永遠只增不減）──
+  for (const { text, suggestion, count } of freshIssues) {
+    if (!mem.issues[text]) {
+      mem.issues[text] = { text, suggestion, count: 0, firstDetected: now, lastSeen: now };
+    }
+    // 只在新一輪分析中出現才增加計數（避免重複累加）
+    const prev = mem.issues[text].countAtLastUpdate || 0;
+    if (count > prev) {
+      mem.issues[text].count += (count - prev);
+    }
+    mem.issues[text].countAtLastUpdate = count;
+    mem.issues[text].lastSeen = now;
+  }
+
+  // ── 更新最佳條件與累積統計 ──
+  if (freshBest.length) mem.bestConditions = freshBest.map(b => ({ ...b, updatedAt: now }));
+  if (freshStats.closed > (mem.cumStats.totalClosed || 0)) {
+    mem.cumStats = {
+      totalClosed:  freshStats.closed,
+      totalWins:    freshStats.wins,
+      totalLosses:  freshStats.losses,
+    };
+  }
+
+  saveAIMemory(mem);
+  return mem;
+}
+
 function computeLearnProfile() {
   const closed = loadTradeLog().filter(t => t.status === 'closed');
   if (closed.length < 3) return { ready: false, closed: closed.length };
@@ -2177,17 +2245,47 @@ function computeLearnProfile() {
     bestConditions.push({ label: '最佳 ADX 強度', value: `${Math.round(avgWinAdx)}（盈利平均）${avgLossAdx ? '，止損平均 ' + Math.round(avgLossAdx) : ''}` });
   }
 
+  // ── 收集個別問題統計（用於傳給記憶層）──
+  const freshIssues = [];
+  if (losses.length > 0) {
+    const issueMap = {};
+    losses.forEach(t => {
+      if (!t.analysis) return;
+      t.analysis.issues.forEach((iss, i) => {
+        if (!issueMap[iss]) issueMap[iss] = { text: iss, suggestion: t.analysis.suggestions[i] || '', count: 0 };
+        issueMap[iss].count++;
+      });
+    });
+    freshIssues.push(...Object.values(issueMap));
+  }
+
+  // ── 合併到持久記憶 ──
+  const mem = mergeRulesIntoMemory(
+    rules, freshIssues, bestConditions,
+    { closed: closed.length, wins: wins.length, losses: losses.length }
+  );
+
   return {
     ready: true, closed: closed.length,
     wins: wins.length, losses: losses.length,
     winRate: (wins.length / closed.length * 100).toFixed(1),
     rsiStats, adxStats, confStats,
-    rules, bestConditions,
+    rules, bestConditions, mem,
   };
 }
 
 function getLearnProfile() {
-  if (!_learnCache) _learnCache = computeLearnProfile();
+  if (!_learnCache) {
+    _learnCache = computeLearnProfile();
+    // 若現有交易不足，仍嘗試載入記憶中的規則
+    if (!_learnCache.ready) {
+      const mem = loadAIMemory();
+      const memRules = Object.values(mem.rules).filter(r => r.active || r.occurrences >= 2);
+      if (memRules.length > 0) {
+        _learnCache = { ..._learnCache, ready: true, fromMemory: true, rules: memRules, mem, bestConditions: mem.bestConditions || [] };
+      }
+    }
+  }
   return _learnCache;
 }
 
@@ -2249,6 +2347,8 @@ function generateTradeAnalysis(trade) {
 /* ── AI 學習面板渲染 ──────────────────────────────────────────── */
 function buildAILearnPanel(closed) {
   const profile = getLearnProfile();
+  const mem     = profile.mem || loadAIMemory();
+  const fmtDate = ts => ts ? new Date(ts).toLocaleDateString('zh-TW', { month:'2-digit', day:'2-digit' }) : '';
 
   if (!profile.ready) {
     const needed = Math.max(0, 3 - profile.closed);
@@ -2260,13 +2360,20 @@ function buildAILearnPanel(closed) {
     </div>`;
   }
 
-  // ── 應用中的規則 ──
+  const isFromMem = !!profile.fromMemory;
+  const cumClosed = mem.cumStats?.totalClosed || profile.closed;
+
+  // ── 應用中的規則（含記憶中的）──
   const rulesHtml = profile.rules.length
-    ? profile.rules.map(r => `
-        <div class="ai-rule-item">
-          <div class="ai-rule-cond">⚡ ${r.warning}</div>
-          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · 已自動下調信心 <strong>${r.penaltyConf}%</strong></div>
-        </div>`).join('')
+    ? profile.rules.map(r => {
+        const fd = r.firstDetected ? `首次發現 ${fmtDate(r.firstDetected)}` : '';
+        const occ = r.occurrences > 1 ? `· 已出現 ${r.occurrences} 次` : '';
+        const memBadge = !r.active ? `<span class="ai-mem-badge">記憶</span>` : '';
+        return `<div class="ai-rule-item">
+          <div class="ai-rule-cond">⚡ ${r.warning} ${memBadge}</div>
+          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · 下調信心 <strong>${r.penaltyConf}%</strong>${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
+        </div>`;
+      }).join('')
     : `<div style="color:var(--bull);font-size:0.83rem;padding:6px 0">✅ 目前無高風險模式，歷史條件分佈均衡</div>`;
 
   // ── RSI 熱力圖 ──
@@ -2298,30 +2405,25 @@ function buildAILearnPanel(closed) {
     `<div class="ai-best-item"><span class="ai-best-lbl">${b.label}</span><span class="ai-best-val">${b.value}</span></div>`
   ).join('');
 
-  // ── 個別止損交易改進摘要 ──
-  const badTrades = closed.filter(t => (t.outcome === 'sl' || t.outcome === 'be') && t.analysis);
-  let perTradeHtml = '';
-  if (badTrades.length > 0) {
-    const issueCount = {}, suggMap = {};
-    badTrades.forEach(t => t.analysis.issues.forEach((iss, i) => {
-      issueCount[iss] = (issueCount[iss] || 0) + 1;
-      if (!suggMap[iss] && t.analysis.suggestions[i]) suggMap[iss] = t.analysis.suggestions[i];
-    }));
-    const top = Object.keys(issueCount).sort((a,b) => issueCount[b]-issueCount[a]).slice(0,4);
-    perTradeHtml = `<div class="ai-learn-section">
-      <div class="ai-section-title">📋 反覆出現的問題（${badTrades.length} 筆止損/保本）</div>
-      ${top.map(iss => `
-        <div class="ai-issue-row">
-          <div class="ai-issue-txt">⚠️ ${iss}<span class="ai-issue-cnt">×${issueCount[iss]}</span></div>
-          ${suggMap[iss] ? `<div class="ai-sugg-txt">→ ${suggMap[iss]}</div>` : ''}
-        </div>`).join('')}
-    </div>`;
-  }
+  // ── 個別止損問題（從記憶層讀取，累積不丟失）──
+  const memIssues = Object.values(mem.issues || {}).sort((a,b) => b.count - a.count).slice(0, 4);
+  const perTradeHtml = memIssues.length > 0 ? `<div class="ai-learn-section">
+    <div class="ai-section-title">📋 累積記錄的反覆問題（永久保存）</div>
+    ${memIssues.map(iss => `
+      <div class="ai-issue-row">
+        <div class="ai-issue-txt">⚠️ ${iss.text}<span class="ai-issue-cnt">×${iss.count}</span>${iss.firstDetected ? `<span class="ai-mem-date">首次 ${fmtDate(iss.firstDetected)}</span>` : ''}</div>
+        ${iss.suggestion ? `<div class="ai-sugg-txt">→ ${iss.suggestion}</div>` : ''}
+      </div>`).join('')}
+  </div>` : '';
+
+  const winRate = profile.fromMemory
+    ? ((mem.cumStats.totalWins / (mem.cumStats.totalClosed || 1)) * 100).toFixed(1)
+    : profile.winRate;
 
   return `<div class="ai-learn-card">
     <div class="ai-learn-header">
-      🤖 AI 學習引擎
-      <span class="ai-learn-sub">${profile.closed} 筆歷史交易 · 勝率 ${profile.winRate}%</span>
+      🤖 AI 學習引擎${isFromMem ? ' <span class="ai-mem-badge" style="font-size:0.72rem;vertical-align:middle">記憶模式</span>' : ''}
+      <span class="ai-learn-sub">累積 ${cumClosed} 筆交易 · 勝率 ${winRate}%${mem.updatedAt ? ' · 最後更新 ' + fmtDate(mem.updatedAt) : ''}</span>
     </div>
 
     <div class="ai-learn-section">
