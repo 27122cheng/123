@@ -2896,6 +2896,34 @@ function setPosTab(tab) {
   _posTab = tab;
   document.querySelectorAll('.pos-tab-btn').forEach(b => b.classList.toggle('pos-tab-active', b.dataset.tab === tab));
   filterPositionCards(document.getElementById('pos-search-input')?.value || '');
+  updatePosTabSummary();
+}
+
+function updatePosTabSummary() {
+  const el = document.getElementById('pos-tab-summary');
+  if (!el) return;
+  const d = el.dataset;
+  if (_posTab === 'profit') {
+    const cnt = parseInt(d.profitCount) || 0;
+    const r   = parseFloat(d.profitR)   || 0;
+    el.innerHTML = cnt > 0
+      ? `<div class="pos-tab-stat pos-tab-stat-bull">
+           <span>📈 營利中 <strong>${cnt} 筆</strong></span>
+           <span>合計未實現獲利 <strong>+${r.toFixed(2)} R</strong></span>
+         </div>`
+      : `<div class="pos-tab-stat" style="color:var(--text3)">目前沒有營利中的持倉</div>`;
+  } else if (_posTab === 'loss') {
+    const cnt = parseInt(d.lossCount) || 0;
+    const r   = parseFloat(d.lossR)   || 0;
+    el.innerHTML = cnt > 0
+      ? `<div class="pos-tab-stat pos-tab-stat-bear">
+           <span>📉 虧損中 <strong>${cnt} 筆</strong></span>
+           <span>合計未實現虧損 <strong>${r.toFixed(2)} R</strong></span>
+         </div>`
+      : `<div class="pos-tab-stat" style="color:var(--text3)">目前沒有虧損中的持倉</div>`;
+  } else {
+    el.innerHTML = '';
+  }
 }
 
 function renderPositionsPage() {
@@ -2914,7 +2942,8 @@ function renderPositionsPage() {
   }
 
   // 計算整體未實現統計
-  let totalUnrealR = 0, totalRisk = 0, hasPrice = 0, profitCount = 0, lossCount = 0;
+  let totalUnrealR = 0, totalRisk = 0, hasPrice = 0;
+  let profitCount = 0, lossCount = 0, profitTotalR = 0, lossTotalR = 0;
   const cards = open.map(t => {
     const cur = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
     const entry   = t.entry   || 0;
@@ -2933,8 +2962,8 @@ function renderPositionsPage() {
       totalUnrealR += unrealR;
       totalRisk    += risk;
       hasPrice++;
-      if (unrealR > 0) profitCount++;
-      else if (unrealR < 0) lossCount++;
+      if (unrealR > 0) { profitCount++; profitTotalR += unrealR; }
+      else if (unrealR < 0) { lossCount++; lossTotalR += unrealR; }
     }
 
     const conf      = t.conf || Math.min(90, t.score || 60);
@@ -3052,6 +3081,15 @@ function renderPositionsPage() {
       <button class="pos-tab-btn${_posTab==='loss'?' pos-tab-active':''}" data-tab="loss" onclick="setPosTab('loss')">📉 虧損中 ${lossCount}</button>
     </div>
 
+    <div id="pos-tab-summary"
+      data-profit-count="${profitCount}"
+      data-profit-r="${profitTotalR.toFixed(2)}"
+      data-loss-count="${lossCount}"
+      data-loss-r="${lossTotalR.toFixed(2)}"
+      data-all-count="${open.length}"
+      data-all-r="${totalUnrealR.toFixed(2)}">
+    </div>
+
     <input class="pos-search" id="pos-search-input" placeholder="搜尋幣種..." oninput="filterPositionCards(this.value)">
     <div class="pos-list" id="pos-list-container">${cards}</div>
 
@@ -3059,8 +3097,9 @@ function renderPositionsPage() {
       點擊任一卡片查看幣種詳情 · 每次掃描自動更新未實現損益
     </div>`;
 
-  // 維持當前分頁篩選狀態
+  // 維持當前分頁篩選狀態與摘要
   if (_posTab !== 'all') filterPositionCards('');
+  updatePosTabSummary();
 }
 
 function filterPositionCards(query) {
