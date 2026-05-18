@@ -48,7 +48,7 @@ const DEFAULT_PAIRS = [
   { s: 'THETA/USDT',    p: 1.65       }, { s: 'TRB/USDT',      p: 60         },
   { s: 'TUSD/USDT',     p: 1          }, { s: 'UNI/USDT',      p: 10.2       },
   { s: 'USDC/USDT',     p: 1          }, { s: 'VET/USDT',      p: 0.035      },
-  { s: 'WAVES/USDT',    p: 2.1        }, { s: 'WBTC/USDT',     p: 65000      },
+  { s: 'WAVES/USDT',    p: 2.1        }, { s: 'MATIC/USDT',    p: 0.45       },
   { s: 'XEC/USDT',      p: 0.00003    }, { s: 'XLM/USDT',      p: 0.12       },
   { s: 'XRP/USDT',      p: 0.62       }, { s: 'XTZ/USDT',      p: 0.8        },
   { s: 'YFI/USDT',      p: 6800       }, { s: 'ZEC/USDT',      p: 29         },

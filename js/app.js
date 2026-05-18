@@ -2160,11 +2160,39 @@ async function addCustomPair() {
   triggerRescan();
 }
 
+/* ── 刪除幣種時一併清除所有相關數據 ──────────────────────────── */
+function purgeSymbolData(symbol) {
+  // 交易記錄（持倉 + 已結束）
+  const tlog = loadTradeLog().filter(t => t.symbol !== symbol);
+  saveTradeLog(tlog);
+  invalidateLearnCache();
+
+  // 通知冷卻快取
+  const cache = JSON.parse(localStorage.getItem(SIGNAL_CACHE_KEY) || '{}');
+  delete cache[symbol];
+  localStorage.setItem(SIGNAL_CACHE_KEY, JSON.stringify(cache));
+
+  // 交易設置快取
+  delete _tradeSetupCache[symbol];
+
+  // 當前掃描數據（儀表板）
+  state.data     = state.data.filter(d => d.symbol !== symbol);
+  state.filtered = (state.filtered || []).filter(d => d.symbol !== symbol);
+}
+
 function removePairFromList(symbol) {
+  const hasTrades = loadTradeLog().some(t => t.symbol === symbol);
+  if (hasTrades) {
+    if (!confirm(`確定要移除 ${symbol}？\n這將同時清除該幣種在儀表板、持倉中及交易結果中的所有相關數據。`)) return;
+  }
   removePairBySymbol(symbol);
+  purgeSymbolData(symbol);
   renderPairsList();
-  showToast(`已移除 ${symbol}`, 'info');
-  triggerRescan();
+  applyFilters();
+  renderAll();
+  if (state.currentPage === 'positions') renderPositionsPage();
+  if (state.currentPage === 'tradelog')  renderTradeLogPage();
+  showToast(`已移除 ${symbol} 及相關數據`, 'info');
 }
 
 function resetCustomPairs() {
@@ -2175,10 +2203,15 @@ function resetCustomPairs() {
 }
 
 function clearAllPairs() {
-  if (!confirm('確定要清空所有追蹤幣種嗎？清空後需手動重新添加。')) return;
+  if (!confirm('確定要清空所有追蹤幣種嗎？\n這將同時清除儀表板、持倉中及交易結果中所有相關數據。')) return;
+  loadPairs().forEach(p => purgeSymbolData(p.s));
   savePairs([]);
   renderPairsList();
-  showToast('已清空所有幣種', 'info');
+  applyFilters();
+  renderAll();
+  if (state.currentPage === 'positions') renderPositionsPage();
+  if (state.currentPage === 'tradelog')  renderTradeLogPage();
+  showToast('已清空所有幣種及相關數據', 'info');
 }
 
 function triggerRescan() {
@@ -2857,6 +2890,14 @@ function buildAILearnPanel(closed) {
 }
 
 /* ── 持倉中頁面渲染 ───────────────────────────────────────────── */
+let _posTab = 'all';
+
+function setPosTab(tab) {
+  _posTab = tab;
+  document.querySelectorAll('.pos-tab-btn').forEach(b => b.classList.toggle('pos-tab-active', b.dataset.tab === tab));
+  filterPositionCards(document.getElementById('pos-search-input')?.value || '');
+}
+
 function renderPositionsPage() {
   const container = document.getElementById('positions-content');
   if (!container) return;
@@ -2873,7 +2914,7 @@ function renderPositionsPage() {
   }
 
   // 計算整體未實現統計
-  let totalUnrealR = 0, totalRisk = 0, hasPrice = 0;
+  let totalUnrealR = 0, totalRisk = 0, hasPrice = 0, profitCount = 0, lossCount = 0;
   const cards = open.map(t => {
     const cur = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
     const entry   = t.entry   || 0;
@@ -2892,6 +2933,8 @@ function renderPositionsPage() {
       totalUnrealR += unrealR;
       totalRisk    += risk;
       hasPrice++;
+      if (unrealR > 0) profitCount++;
+      else if (unrealR < 0) lossCount++;
     }
 
     const conf      = t.conf || Math.min(90, t.score || 60);
@@ -2922,7 +2965,7 @@ function renderPositionsPage() {
 
     const reasons = (t.entryReason || '').split('，').filter(Boolean);
 
-    return `<div class="pos-card" data-symbol="${t.symbol}" onclick="navigateTo('coin','${t.symbol}')">
+    return `<div class="pos-card" data-symbol="${t.symbol}" data-unreal="${unrealR !== null ? unrealR.toFixed(4) : ''}" onclick="navigateTo('coin','${t.symbol}')">
       <div class="pos-card-top">
         <div class="pos-symbol">
           <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
@@ -3003,19 +3046,34 @@ function renderPositionsPage() {
       </div>
     </div>
 
+    <div class="pos-tabs">
+      <button class="pos-tab-btn${_posTab==='all'?' pos-tab-active':''}" data-tab="all" onclick="setPosTab('all')">全部 ${open.length}</button>
+      <button class="pos-tab-btn${_posTab==='profit'?' pos-tab-active':''}" data-tab="profit" onclick="setPosTab('profit')">📈 營利中 ${profitCount}</button>
+      <button class="pos-tab-btn${_posTab==='loss'?' pos-tab-active':''}" data-tab="loss" onclick="setPosTab('loss')">📉 虧損中 ${lossCount}</button>
+    </div>
+
     <input class="pos-search" id="pos-search-input" placeholder="搜尋幣種..." oninput="filterPositionCards(this.value)">
     <div class="pos-list" id="pos-list-container">${cards}</div>
 
     <div style="text-align:center;margin-top:16px;font-size:0.75rem;color:var(--text3)">
       點擊任一卡片查看幣種詳情 · 每次掃描自動更新未實現損益
     </div>`;
+
+  // 維持當前分頁篩選狀態
+  if (_posTab !== 'all') filterPositionCards('');
 }
 
 function filterPositionCards(query) {
   const q = query.trim().toLowerCase();
   document.querySelectorAll('#pos-list-container .pos-card').forEach(card => {
-    const sym = (card.getAttribute('data-symbol') || '').toLowerCase();
-    card.style.display = (!q || sym.includes(q)) ? '' : 'none';
+    const sym     = (card.getAttribute('data-symbol') || '').toLowerCase();
+    const unrealR = parseFloat(card.getAttribute('data-unreal'));
+    const matchSearch = !q || sym.includes(q);
+    const matchTab =
+      _posTab === 'all' ||
+      (_posTab === 'profit' && unrealR > 0) ||
+      (_posTab === 'loss'   && unrealR < 0);
+    card.style.display = (matchSearch && matchTab) ? '' : 'none';
   });
 }
 
