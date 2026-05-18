@@ -29,6 +29,8 @@ export interface PassedIndicator {
   value: string;
 }
 
+export type DataSource = "yahoo" | "twse" | "mock";
+
 export interface ScannedStock {
   symbol: string;
   name: string;
@@ -41,6 +43,7 @@ export interface ScannedStock {
   indicators: TechnicalIndicators;
   passedIndicators: PassedIndicator[];
   scannedAt: string;
+  dataSource?: DataSource;
 }
 
 export interface HistoricalBar {
@@ -61,6 +64,7 @@ export interface ScanResult {
   scannedAt: string;
   totalScanned: number;
   market: "TW" | "US" | "ALL";
+  dataSourceStats: { yahoo: number; twse: number; mock: number };
 }
 
 export interface ScanProgress {

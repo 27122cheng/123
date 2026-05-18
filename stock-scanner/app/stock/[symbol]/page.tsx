@@ -3,10 +3,16 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
-import type { StockDetail } from "@/types/stock";
+import type { StockDetail, DataSource } from "@/types/stock";
 import IndicatorBadge from "@/components/IndicatorBadge";
 import { MOCK_STOCKS, generateMockHistory } from "@/lib/mockData";
 import { calcIndicators, scoreStock } from "@/lib/indicators";
+
+const DATA_SOURCE_LABELS: Record<DataSource, { label: string; color: string }> = {
+  twse: { label: "台灣證交所", color: "text-blue-400" },
+  yahoo: { label: "Yahoo Finance", color: "text-purple-400" },
+  mock: { label: "展示資料", color: "text-gray-400" },
+};
 
 const StockChart = dynamic(() => import("@/components/StockChart"), { ssr: false });
 
@@ -39,16 +45,16 @@ function getBuySellAdvice(score: number, rsi: number, macdHistogram: number): { 
 export default function StockDetailPage() {
   const { symbol } = useParams<{ symbol: string }>();
   const router = useRouter();
-  const [detail, setDetail] = useState<StockDetail | null>(null);
+  const [detail, setDetail] = useState<(StockDetail & { dataSource?: DataSource }) | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
-        const res = await fetch(`/api/stock/${symbol}?mock=0`);
+        const res = await fetch(`/api/stock/${symbol}`);
         if (!res.ok) throw new Error();
-        const data: StockDetail = await res.json();
+        const data: StockDetail & { dataSource?: DataSource } = await res.json();
         setDetail(data);
       } catch {
         // Build from mock
@@ -98,19 +104,25 @@ export default function StockDetailPage() {
 
   const isUp = detail.changePercent >= 0;
   const advice = getBuySellAdvice(detail.score, detail.indicators.rsi, detail.indicators.macdHistogram);
+  const srcInfo = DATA_SOURCE_LABELS[detail.dataSource ?? "mock"];
 
   return (
     <div className="max-w-4xl mx-auto">
-      {/* Back button */}
-      <button
-        onClick={() => router.back()}
-        className="flex items-center gap-2 text-gray-400 hover:text-white text-sm mb-5 transition-colors"
-      >
-        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-        </svg>
-        返回列表
-      </button>
+      {/* Back button + data source */}
+      <div className="flex items-center justify-between mb-5">
+        <button
+          onClick={() => router.back()}
+          className="flex items-center gap-2 text-gray-400 hover:text-white text-sm transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          返回列表
+        </button>
+        <span className={`text-xs ${srcInfo.color}`}>
+          資料來源：{srcInfo.label}
+        </span>
+      </div>
 
       {/* Stock header */}
       <div className="bg-dark-800 border border-white/10 rounded-2xl p-5 mb-5">
