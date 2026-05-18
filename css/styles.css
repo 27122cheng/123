@@ -1227,3 +1227,109 @@ h3 { font-size: 0.95rem; font-weight: 600; }
 .score-neutral .score-bar-fill        { background: linear-gradient(90deg, #d97706, #fbbf24); }
 .score-bearish .score-bar-fill        { background: linear-gradient(90deg, #dc2626, #f87171); }
 .score-strong-bearish .score-bar-fill { background: linear-gradient(90deg, #7f1d1d, #ef4444); }
+
+/* ==========================================
+   STOCK SCANNER ADDITIONS
+   Taiwan/US specific styles
+   ========================================== */
+
+/* Taiwan color convention: red = up (漲), green = down (跌) */
+.up-color   { color: #ef4444; }
+.down-color { color: #22c55e; }
+
+/* Market badge — small TW/US label in coin cells */
+.market-badge {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  padding: 1px 5px;
+  border-radius: 3px;
+  vertical-align: middle;
+  margin-left: 4px;
+  line-height: 1.4;
+}
+.market-badge-TW {
+  background: rgba(0, 212, 255, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.25);
+}
+.market-badge-US {
+  background: rgba(168, 85, 247, 0.12);
+  color: var(--purple);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+}
+
+/* Signal badges — Chinese signal names mapped to visual classes */
+/* Strong Buy / 強力買進 */
+.signal-strong-buy {
+  background: rgba(22, 163, 74, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(22, 163, 74, 0.3);
+}
+/* Buy / 買進 */
+.signal-buy {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+/* Watch / 觀望 */
+.signal-watch {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+/* Sell / 賣出 */
+.signal-sell {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+/* Strong Sell / 強力賣出 */
+.signal-strong-sell {
+  background: rgba(185, 28, 28, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(185, 28, 28, 0.3);
+}
+
+/* Filter chip active states for stock signals */
+.chip-strong-buy.active  { border-color: #16a34a;        color: #4ade80;        background: rgba(22,163,74,0.12); }
+.chip-buy.active         { border-color: var(--green);    color: var(--green);   background: var(--green-dim); }
+.chip-watch.active       { border-color: var(--yellow);   color: var(--yellow);  background: var(--yellow-dim); }
+.chip-sell.active        { border-color: var(--red);      color: var(--red);     background: var(--red-dim); }
+.chip-strong-sell.active { border-color: var(--red-dark); color: #f87171;        background: rgba(185,28,28,0.12); }
+
+/* Market selector tabs in navbar */
+.market-tabs {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 3px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+
+.market-tab {
+  padding: 5px 11px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.market-tab:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.06); }
+.market-tab.active {
+  background: var(--accent);
+  color: #000;
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+/* Hide market tabs on very small screens */
+@media (max-width: 900px) {
+  .market-tabs { display: none; }
+}
