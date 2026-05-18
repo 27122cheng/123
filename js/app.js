@@ -205,8 +205,8 @@ function computeLongTermBias(mtfData) {
     if (rsi < 45) bull += 0.5;
     if (rsi > 55) bear += 0.5;
   });
-  if (bull >= 1.5 && bull > bear) return 'long';
-  if (bear >= 1.5 && bear > bull) return 'short';
+  if (bull >= 1 && bull > bear) return 'long';
+  if (bear >= 1 && bear > bull) return 'short';
   return 'neutral';
 }
 
