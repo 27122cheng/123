@@ -198,6 +198,14 @@ a { text-decoration: none; cursor: pointer; }
   box-shadow: inset 0 0 0 1px rgba(0,212,255,0.3);
 }
 
+.manual-refresh-btn {
+  background: none; border: 1px solid var(--card-border); border-radius: 50%;
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  color: var(--text2); font-size: 0.85rem; cursor: pointer; padding: 0;
+  transition: color .2s, border-color .2s;
+}
+.manual-refresh-btn:hover { color: var(--bull); border-color: var(--bull); }
+
 .refresh-pill {
   display: flex; align-items: center; gap: 6px;
   padding: 5px 12px; border-radius: 20px;
@@ -1611,3 +1619,27 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .macro-pred-impact { font-size:0.77rem; color:var(--text2); line-height:1.45; }
 .macro-pred-impact.bull { color:rgba(0,230,118,.85); }
 .macro-pred-impact.bear { color:rgba(255,29,68,.85); }
+
+/* ── 長線標注 ─────────────────────────────────────────────────── */
+.lt-tag { font-size: 0.72rem; font-weight: 600; padding: 2px 6px; border-radius: 4px; }
+.lt-bull { color: var(--bull); background: var(--bull-dim); }
+.lt-bear { color: var(--bear); background: var(--bear-dim); }
+
+/* ── 加倉區塊 ─────────────────────────────────────────────────── */
+.scalein-section {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(0,212,255,0.06);
+  border: 1px solid rgba(0,212,255,0.18);
+  border-radius: 8px;
+}
+.scalein-title { font-size: 0.8rem; font-weight: 600; color: var(--blue); margin-bottom: 6px; }
+.scalein-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 0.76rem; color: var(--text2);
+  padding: 4px 0; border-top: 1px solid rgba(255,255,255,0.04);
+}
+.scalein-row:first-of-type { border-top: none; }
+.scalein-num { font-weight: 700; color: var(--blue); min-width: 22px; }
+.scalein-badge { font-size: 0.7rem; padding: 1px 5px; border-radius: 4px; }
+.scalein-pending { opacity: 0.75; }

@@ -165,6 +165,51 @@ function updateCountdown() {
   if (el) el.textContent = state.countdown + '秒';
 }
 
+async function manualRefresh() {
+  if (state.scanning) { showToast('掃描進行中，請稍候', 'info'); return; }
+  clearInterval(state.refreshTimer);
+  clearInterval(state.countdownTimer);
+  state.scanning = true;
+  const secs = state.settings.refreshInterval || 60;
+  state.countdown = secs;
+  updateCountdown();
+  try {
+    const { data, source } = await fetchMarketData(state.timeframe);
+    state.data       = data;
+    state.dataSource = source;
+    state.scanning   = false;
+    hideScanBar();
+    applyFilters();
+    renderAll();
+    checkAndSendAlerts(data);
+    updateOpenTrades(data);
+    recordSignalsFromScan(data);
+    if (state.currentPage === 'positions') renderPositionsPage();
+    const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
+    showToast(`手動刷新完成（${srcLabel}）`, 'success');
+  } catch(e) {
+    state.scanning = false;
+    showToast('刷新失敗，請重試', 'error');
+  }
+  startRefreshCycle();
+}
+
+function computeLongTermBias(mtfData) {
+  let bull = 0, bear = 0;
+  ['4h', '1d'].forEach(tf => {
+    const sig = mtfData[tf]?.signal;
+    if (!sig) return;
+    if (sig.signal?.includes('bull')) bull++;
+    if (sig.signal?.includes('bear')) bear++;
+    const rsi = sig.rsi || 50;
+    if (rsi < 45) bull += 0.5;
+    if (rsi > 55) bear += 0.5;
+  });
+  if (bull >= 1.5 && bull > bear) return 'long';
+  if (bear >= 1.5 && bear > bull) return 'short';
+  return 'neutral';
+}
+
 /* ── 事件绑定 ───────────────────────────────────────────────── */
 function bindEvents() {
   // 时间周期按钮
@@ -592,6 +637,10 @@ function buildOpenPositionSetup(t, currentPrice) {
   const risk     = Math.abs(entry - sl) || 1;
   const conf     = t.conf || Math.min(90, t.score || 60);
   const confClr  = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
+  const ltBias  = t.longTermBias;
+  const ltTag   = ltBias === 'long'  ? ' <span class="lt-tag lt-bull">〔長線看多〕</span>'
+                : ltBias === 'short' ? ' <span class="lt-tag lt-bear">〔長線看空〕</span>'
+                : '';
 
   // 即時未實現損益
   let unrealHtml = '';
@@ -624,6 +673,7 @@ function buildOpenPositionSetup(t, currentPrice) {
       <div class="verdict-dir">
         <span class="verdict-arrow">${isLong ? '▲' : '▼'}</span>
         <span class="verdict-label">${dirLabel}</span>
+        ${ltTag}
         <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">持倉進行中</span>
       </div>
       <div class="verdict-conf-wrap">
@@ -835,6 +885,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const dirLabel = isLong ? '短線做多' : '短線做空';
   const dirIcon  = isLong ? '▲' : '▼';
 
+  // AI 長線分析（僅括號標注，不另開面板）
+  const ltBias = computeLongTermBias(mtfData);
+  const ltTag  = ltBias === 'long'  ? ' <span class="lt-tag lt-bull">〔長線看多〕</span>'
+               : ltBias === 'short' ? ' <span class="lt-tag lt-bear">〔長線看空〕</span>'
+               : '';
+  const canScaleIn = ltBias === direction;
+
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
@@ -1001,6 +1058,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     entryReason: entryReasons.join('，'),
     slReason, tp1Reason, tp2Reason,
     rr1: rr1str, rr2: rr2str, atr, conf,
+    longTermBias: ltBias, canScaleIn,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -1015,8 +1073,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ex.conf = conf;
       Object.assign(ex, tradeCtx);
       ex.refined = true;
-      saveTradeLog(tlog);
     }
+    ex.longTermBias = ltBias;
+    ex.canScaleIn   = canScaleIn;
+    if (!ex.scaleIns) ex.scaleIns = [];
+    if (ex.peakPrice == null) ex.peakPrice = null;
+    saveTradeLog(tlog);
   } else if (!inCooldown(tlog, coin.symbol, direction)) {
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
@@ -1031,6 +1093,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
       refined: true,
+      longTermBias: ltBias, canScaleIn,
+      scaleIns: [], peakPrice: null,
       ...tradeCtx,
     });
     if (tlog.length > 500) tlog.splice(500);
@@ -1062,6 +1126,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
       <span class="verdict-label">${dirLabel}</span>
+      ${ltTag}
       <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">15m ~ 1h 時間框架</span>
     </div>
     ${conf >= 60 ? `<div class="verdict-conf-wrap">
@@ -2326,6 +2391,8 @@ function recordSignalsFromScan(data) {
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
       refined: false,
+      longTermBias: null, canScaleIn: false,
+      scaleIns: [], peakPrice: null,
     });
     changed = true;
   }
@@ -2410,6 +2477,71 @@ function updateOpenTrades(data) {
       }
       archiveExpiredToMemory([trade]); // 立即存入 AI 記憶，不等月底清理
       changed = true;
+      continue;
+    }
+
+    // ── 加倉邏輯 ──
+    if (!trade.scaleIns) { trade.scaleIns = []; changed = true; }
+    const MAX_SCALE_INS  = 3;
+    const confirmedSIs   = trade.scaleIns.filter(s => s.status === 'open');
+    const pendingSI      = trade.scaleIns.find(s => s.status === 'pending');
+
+    // 處理現有等待確認的加倉
+    if (pendingSI) {
+      if (Date.now() - pendingSI.timestamp > 2 * 60 * 60 * 1000) {
+        pendingSI.status = 'expired'; changed = true;
+      } else {
+        const siTouched = isLong ? cur <= pendingSI.entryLevel * 1.005 : cur >= pendingSI.entryLevel * 0.995;
+        if (siTouched) {
+          pendingSI.status    = 'open';
+          pendingSI.entryTime = Date.now();
+          pendingSI.entryPrice = cur;
+          changed = true;
+          sendScaleInTelegramNotification(trade, pendingSI);
+          // 達到最大加倉數後上移止損至保本
+          const nowConfirmed = trade.scaleIns.filter(s => s.status === 'open').length;
+          if (nowConfirmed >= MAX_SCALE_INS) {
+            const protectedSL = isLong
+              ? Math.max(trade.sl, trade.entry * 1.001)
+              : Math.min(trade.sl, trade.entry * 0.999);
+            if (isLong ? protectedSL > trade.sl : protectedSL < trade.sl) {
+              trade.sl = protectedSL;
+              changed = true;
+            }
+          }
+        }
+      }
+    } else if (confirmedSIs.length < MAX_SCALE_INS && (trade.canScaleIn !== false)) {
+      // 追蹤峰值價格
+      if (trade.peakPrice == null) { trade.peakPrice = cur; changed = true; }
+      const newPeak = isLong ? Math.max(trade.peakPrice, cur) : Math.min(trade.peakPrice, cur);
+      if (newPeak !== trade.peakPrice) { trade.peakPrice = newPeak; changed = true; }
+
+      const inProfit   = isLong ? cur > trade.entry * 1.003 : cur < trade.entry * 0.997;
+      const peakRef    = trade.peakPrice || trade.entry;
+      const fromPeak   = peakRef > 0
+        ? Math.abs(peakRef - cur) / peakRef
+        : 0;
+      const lastSIAt   = confirmedSIs.at(-1)?.entryTime ?? trade.entryTime ?? trade.timestamp ?? 0;
+      const hasTimeGap = Date.now() - lastSIAt > 60 * 60 * 1000; // 最少 1 小時間隔
+
+      if (inProfit && fromPeak > 0.008 && hasTimeGap) {
+        const siNum   = confirmedSIs.length + 1;
+        const origRisk = Math.abs(trade.entry - trade.sl) || 1;
+        trade.scaleIns.push({
+          id: `${trade.id}-si${siNum}`,
+          seqNum: siNum,
+          timestamp: Date.now(),
+          entryLevel: cur,
+          sl: isLong ? cur - origRisk * 0.7 : cur + origRisk * 0.7,
+          tp1: trade.tp1,
+          tp2: trade.tp2,
+          status: 'pending',
+          entryTime: null,
+          entryPrice: null,
+        });
+        changed = true;
+      }
     }
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
