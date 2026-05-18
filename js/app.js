@@ -656,7 +656,51 @@ function buildOpenPositionSetup(t, currentPrice) {
       </div>
     </div>
     ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，建議移動止損至成本價保護利潤</div>' : ''}
-    <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">進場時間：${fmtDateTime(t.timestamp)} · ${fmtRelTime(t.timestamp)}</div>`;
+    <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　進場確認：<strong style="color:var(--bull)">${t.entryTime ? fmtDateTime(t.entryTime) : '—'}</strong></div>`;
+}
+
+/* ── 等待進場確認畫面 ────────────────────────────────────────── */
+function buildPendingPositionSetup(t, currentPrice) {
+  const isLong   = t.direction === 'long';
+  const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
+  const dirLabel = isLong ? '▲ 等待做多進場' : '▼ 等待做空進場';
+  const entry    = t.entry || 0;
+  const sl       = t.sl   || 0;
+  const tp1      = t.tp1  || 0;
+  const tp2      = t.tp2  || 0;
+  const distPct  = entry ? (((currentPrice - entry) / entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
+  const distClr  = distPct === null ? 'var(--text3)' : parseFloat(distPct) <= 0.5 ? 'var(--bull)' : 'var(--bear)';
+
+  return `<div class="pending-banner">
+    <div class="pending-icon">⏳</div>
+    <div>
+      <div class="pending-title" style="color:${dirColor}">${dirLabel}</div>
+      <div class="pending-sub">等待現價觸及進場位後自動確認開倉</div>
+    </div>
+  </div>
+  <div class="setup-levels" style="margin-top:10px">
+    <div class="level-row level-entry">
+      <div class="level-tag">📍 進場位</div>
+      <div class="level-desc">${distPct !== null ? `現價距進場位 <span style="color:${distClr}">${distPct > 0 ? '+' : ''}${distPct}%</span>` : '計算中…'}</div>
+      <div class="level-price-val">${fmtPrice(entry)}</div>
+    </div>
+    <div class="level-row level-tp1">
+      <div class="level-tag">🎯 止盈一</div>
+      <div class="level-desc">${t.tp1Reason || '短線目標'}</div>
+      <div class="level-price-val">${fmtPrice(tp1)}</div>
+    </div>
+    <div class="level-row level-tp2">
+      <div class="level-tag">🚀 止盈二</div>
+      <div class="level-desc">${t.tp2Reason || '波段目標'}</div>
+      <div class="level-price-val">${fmtPrice(tp2)}</div>
+    </div>
+    <div class="level-row level-sl">
+      <div class="level-tag">🛑 止損</div>
+      <div class="level-desc">${t.slReason || '結構止損'}</div>
+      <div class="level-price-val">${fmtPrice(sl)}</div>
+    </div>
+  </div>
+  <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　有效期至：${fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2)}</div>`;
 }
 
 /* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
@@ -664,9 +708,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
 
-  // 若已有進行中的開倉，優先顯示已記錄的設置 + 即時未實現損益
-  const existingOpen = loadTradeLog().find(t => t.symbol === coin.symbol && t.status === 'open' && t.entry);
-  if (existingOpen) return buildOpenPositionSetup(existingOpen, price);
+  // 若已有進行中的開倉或等待進場的掛單，優先顯示對應畫面
+  const existingActive = loadTradeLog().find(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
+  if (existingActive?.status === 'open')    return buildOpenPositionSetup(existingActive, price);
+  if (existingActive?.status === 'pending') return buildPendingPositionSetup(existingActive, price);
 
 
   const m15  = mtfData['15m']?.signal;
@@ -960,7 +1005,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
   const tlog = loadTradeLog();
-  const existIdx = tlog.findIndex(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
+  const existIdx = tlog.findIndex(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.direction === direction);
   if (existIdx >= 0) {
     const ex = tlog[existIdx];
     if (!ex.refined) {
@@ -982,7 +1027,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend, conf,
       entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
-      status: 'open', outcome: null, tp1Hit: false,
+      status: 'pending', outcome: null, tp1Hit: false,
+      entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
       refined: true,
       ...tradeCtx,
@@ -2243,8 +2289,8 @@ function inCooldown(tlog, symbol, direction) {
     t.direction === direction &&
     (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN
   );
-  // Prevent opposite-direction open trades for same symbol
-  const anyOpen = tlog.some(t => t.symbol === symbol && t.status === 'open');
+  // Prevent opposite-direction open or pending trades for same symbol
+  const anyOpen = tlog.some(t => t.symbol === symbol && (t.status === 'open' || t.status === 'pending'));
   return sameDir || anyOpen;
 }
 
@@ -2260,7 +2306,7 @@ function recordSignalsFromScan(data) {
     // conf：多頭用評分，空頭用反向評分（100 - score）
     const conf = Math.min(90, isLong ? coin.score : 100 - coin.score);
     if (conf < 60) continue; // 信號強度不足，不記錄
-    const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open');
+    const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
     const setup = computeSimpleSetup(coin, isLong);
@@ -2276,7 +2322,8 @@ function recordSignalsFromScan(data) {
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
       conf,
-      status: 'open', outcome: null, tp1Hit: false,
+      status: 'pending', outcome: null, tp1Hit: false,
+      entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
       refined: false,
     });
@@ -2292,6 +2339,27 @@ function updateOpenTrades(data) {
   let changed = false;
   const tp1Hits = []; // trades that just reached TP1 this cycle
   for (const trade of tlog) {
+    // ── 等待進場確認：現價觸及進場位後才轉為開倉 ──
+    if (trade.status === 'pending') {
+      const coin = data.find(d => d.symbol === trade.symbol);
+      // 逾期 4 小時仍未觸及進場位 → 作廢
+      if (!coin || Date.now() - (trade.timestamp || 0) > SIGNAL_COOLDOWN * 2) {
+        trade.status = 'expired'; changed = true; continue;
+      }
+      const cur    = parseFloat(coin.price) || 0;
+      const isLong = trade.direction === 'long';
+      const entry  = trade.entry;
+      // 多頭：現價降至進場價附近（0.5% 容差）
+      // 空頭：現價升至進場價附近（0.5% 容差）
+      const touched = isLong ? cur <= entry * 1.005 : cur >= entry * 0.995;
+      if (touched) {
+        trade.status    = 'open';
+        trade.entryTime = Date.now();
+        changed = true;
+      }
+      continue;
+    }
+
     if (trade.status !== 'open') continue;
     const coin = data.find(d => d.symbol === trade.symbol);
     if (!coin) continue;
@@ -3042,7 +3110,7 @@ function renderPositionsPage() {
       </div>
 
       <div class="pos-footer">
-        <span style="color:var(--text3);font-size:0.72rem">進場時間：${fmtDateTime(t.timestamp)} · ${fmtRelTime(t.timestamp)}</span>
+        <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)} · 進場確認：<strong style="color:var(--bull)">${t.entryTime ? fmtDateTime(t.entryTime) : '—'}</strong></span>
         ${t.tp1Hit ? '<span class="pos-tp1-badge">止盈一已觸及 ✅</span>' : ''}
       </div>
     </div>`;
@@ -3219,7 +3287,8 @@ function renderTradeLogPage() {
 
       return `<tr class="tl-row-click" onclick="showTradeDetail('${t.id}')">
         <td style="font-size:0.78rem;min-width:130px">
-          <div style="color:var(--text2)">開單 ${fmtDateTime(t.timestamp)}</div>
+          <div style="color:var(--text2)">信號 ${fmtDateTime(t.timestamp)}</div>
+          ${t.entryTime ? `<div style="font-size:0.7rem;color:var(--bull);margin-top:2px">進場 ${fmtDateTime(t.entryTime)}</div>` : ''}
           ${exitTimeHtml}
         </td>
         <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
@@ -3407,8 +3476,12 @@ function showTradeDetail(id) {
     </div>
     <div class="td-grid">
       <div class="td-cell" style="grid-column:span 2">
-        <div class="td-cell-lbl">開單時間</div>
+        <div class="td-cell-lbl">信號時間</div>
         <div class="td-cell-val" style="font-size:0.83rem">${fmtDateTime(trade.timestamp)}</div>
+      </div>
+      <div class="td-cell" style="grid-column:span 2">
+        <div class="td-cell-lbl">進場確認</div>
+        <div class="td-cell-val" style="font-size:0.83rem;color:${trade.entryTime ? 'var(--bull)' : 'var(--text3)'}">${trade.entryTime ? fmtDateTime(trade.entryTime) : '—'}</div>
       </div>
       <div class="td-cell" style="grid-column:span 2">
         <div class="td-cell-lbl">結束時間</div>
