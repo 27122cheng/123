@@ -542,9 +542,10 @@ function renderReversalCards() {
 /* ── 衍生品合約面板（資金費率 / 多空比 / OI）──────────────── */
 function buildDerivativesPanel(d) {
   if (!d) return '<div class="adv-loading">此幣種暫無合約數據（可能為純現貨幣種）</div>';
-  const frPct   = (d.fundingRate * 100).toFixed(4);
-  const frColor = d.fundingRate < -0.005 ? 'var(--bull)' : d.fundingRate > 0.005 ? 'var(--bear)' : 'var(--neutral)';
-  const frTx    = d.fundingRate < 0 ? '空頭支付費率，多頭有利' : d.fundingRate > 0 ? '多頭支付費率，空頭有利' : '費率中性';
+  const fr      = (d.fundingRate != null && !isNaN(d.fundingRate)) ? d.fundingRate : null;
+  const frPct   = fr != null ? (fr * 100).toFixed(4) : '--';
+  const frColor = fr == null ? 'var(--text3)' : fr < -0.005 ? 'var(--bull)' : fr > 0.005 ? 'var(--bear)' : 'var(--neutral)';
+  const frTx    = fr == null ? '無法取得費率數據' : fr < 0 ? '空頭支付費率，多頭有利' : fr > 0 ? '多頭支付費率，空頭有利' : '費率中性';
   const topColor = d.topLongRatio > 0.55 ? 'var(--bull)' : d.topLongRatio < 0.45 ? 'var(--bear)' : 'var(--neutral)';
   const takerColor = d.takerBuySell > 1.05 ? 'var(--bull)' : d.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--neutral)';
   return `<div class="deriv-grid">
@@ -686,8 +687,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   let derivBullBonus = 0, derivBearBonus = 0;
   if (deriv) {
-    if (deriv.fundingRate < -0.003) derivBullBonus++;
-    if (deriv.fundingRate > 0.003)  derivBearBonus++;
+    if ((deriv.fundingRate ?? 0) < -0.003) derivBullBonus++;
+    if ((deriv.fundingRate ?? 0) > 0.003)  derivBearBonus++;
     if (deriv.takerBuySell > 1.15)  derivBullBonus++;
     if (deriv.takerBuySell < 0.85)  derivBearBonus++;
     if (deriv.topLongRatio > 0.57)  derivBullBonus++;
@@ -1020,7 +1021,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="rule-item">✦ 進場後立即掛好止損單，不根據情緒調整止損</div>
     <div class="rule-item">✦ 到達止盈1（<strong style="color:${dirColor}">${fmtPrice(tp1)}</strong>）即出 60%，剩餘移至成本</div>
     <div class="rule-item">✦ 若 15m K棒轉向且成交量放大，不等止損主動離場</div>
-    ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)'}">${(deriv.fundingRate*100).toFixed(4)}%</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
+    ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
 
   ${aiReady ? `<div class="setup-ai-panel">
@@ -2121,11 +2122,14 @@ function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(
 /* 判斷是否在冷卻期（防止同一進場機會被重複記錄）*/
 function inCooldown(tlog, symbol, direction) {
   const now = Date.now();
-  return tlog.some(t =>
+  const sameDir = tlog.some(t =>
     t.symbol === symbol &&
     t.direction === direction &&
     (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN
   );
+  // Prevent opposite-direction open trades for same symbol
+  const anyOpen = tlog.some(t => t.symbol === symbol && t.status === 'open');
+  return sameDir || anyOpen;
 }
 
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
@@ -2140,7 +2144,7 @@ function recordSignalsFromScan(data) {
     // conf：多頭用評分，空頭用反向評分（100 - score）
     const conf = Math.min(90, isLong ? coin.score : 100 - coin.score);
     if (conf < 60) continue; // 信號強度不足，不記錄
-    const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open' && t.direction === direction);
+    const hasOpen = tlog.some(t => t.symbol === coin.symbol && t.status === 'open');
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
     const setup = computeSimpleSetup(coin, isLong);

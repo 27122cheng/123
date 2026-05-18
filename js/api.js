@@ -307,7 +307,8 @@ async function fetchDerivativesData(symbol) {
     ]);
     clearTimeout(t);
 
-    const fr    = frR.status === 'fulfilled' && Array.isArray(frR.value) ? parseFloat(frR.value[0]?.fundingRate) : null;
+    const frRaw = frR.status === 'fulfilled' && Array.isArray(frR.value) ? parseFloat(frR.value[0]?.fundingRate) : null;
+    const fr    = (frRaw != null && !isNaN(frRaw)) ? frRaw : null;
     const oi    = oiR.status === 'fulfilled' && oiR.value?.openInterest  ? parseFloat(oiR.value.openInterest) : null;
     const ls    = lsR.status === 'fulfilled' && Array.isArray(lsR.value)  ? lsR.value[0] : null;
     const top   = topR.status === 'fulfilled' && Array.isArray(topR.value) ? topR.value[0] : null;
@@ -316,7 +317,7 @@ async function fetchDerivativesData(symbol) {
     if (fr === null && oi === null) return null; // 現貨幣種無合約數據
 
     return {
-      fundingRate:      fr ?? 0,
+      fundingRate:      fr,
       openInterest:     oi ?? 0,
       longRatio:        ls  ? parseFloat(ls.longAccount)       : null,
       shortRatio:       ls  ? parseFloat(ls.shortAccount)      : null,
