@@ -706,6 +706,21 @@ function buildOpenPositionSetup(t, currentPrice) {
       </div>
     </div>
     ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，建議移動止損至成本價保護利潤</div>' : ''}
+    ${(() => {
+      const sis = (t.scaleIns || []).filter(s => s.status === 'open' || s.status === 'pending');
+      if (!sis.length) return '';
+      const confirmed = sis.filter(s => s.status === 'open').length;
+      return `<div class="scalein-section">
+        <div class="scalein-title">📈 加倉進度 ${confirmed}/${sis.length}</div>
+        ${sis.map(si => `<div class="scalein-row ${si.status === 'pending' ? 'scalein-pending' : 'scalein-open'}">
+          <span class="scalein-num">#${si.seqNum}</span>
+          <span class="scalein-badge">${si.status === 'pending' ? '⏳ 等待回踩' : '✅ 已確認'}</span>
+          <span>進場 ${fmtPrice(si.entryLevel)}</span>
+          <span style="color:var(--bear)">止損 ${fmtPrice(si.sl)}</span>
+          <span style="color:var(--bull)">止盈 ${fmtPrice(si.tp1)}</span>
+        </div>`).join('')}
+      </div>`;
+    })()}
     <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　進場確認：<strong style="color:var(--bull)">${t.entryTime ? fmtDateTime(t.entryTime) : '—'}</strong></div>`;
 }
 
@@ -2576,6 +2591,26 @@ async function sendTP1Notifications(hits) {
       sendTelegramMessage(s.tgToken, s.tgChatId, msg);
     }
   }
+}
+
+function sendScaleInTelegramNotification(trade, scaleIn) {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+  const sym = trade.symbol.replace('/USDT', '');
+  const dir = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
+  const siteUrl = window.location.origin + window.location.pathname;
+  const msg =
+    `📈 <b>加倉確認通知 #${scaleIn.seqNum}</b>\n\n` +
+    `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
+    `📍 加倉進場位：<b>$${fmt(scaleIn.entryPrice || scaleIn.entryLevel)}</b>\n` +
+    `🛑 止損位：<b>$${fmt(scaleIn.sl)}</b>\n` +
+    `🎯 止盈一：<b>$${fmt(scaleIn.tp1)}</b>\n` +
+    `🚀 止盈二：<b>$${fmt(scaleIn.tp2)}</b>\n\n` +
+    `📊 原始進場：$${fmt(trade.entry)}  止損：$${fmt(trade.sl)}\n` +
+    `🔔 共加倉 ${scaleIn.seqNum}/3 次\n\n` +
+    `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
+  sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 
 /* ── AI 學習系統 ─────────────────────────────────────────────── */
