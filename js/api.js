@@ -456,7 +456,7 @@ async function sendTelegramMessage(token, chatId, text) {
   } catch { return false; }
 }
 
-function buildTelegramText(coin, direction, setup, macro) {
+function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   const isLong = direction === 'long';
   const icon   = isLong ? '▲' : '▼';
   const dirTx  = isLong ? '做多（Long）' : '做空（Short）';
@@ -513,6 +513,10 @@ function buildTelegramText(coin, direction, setup, macro) {
 
   msg += `⏰ ${time}\n`;
   msg += `#${sym} #crypto #${isLong ? 'long' : 'short'}`;
+  if (siteUrl) {
+    const symClean = coin.symbol.replace('/USDT','').replace('USDT','');
+    msg += `\n\n🔗 <a href="${siteUrl}">查看 ${symClean} 詳細分析 →</a>`;
+  }
   return msg;
 }
 
