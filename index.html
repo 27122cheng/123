@@ -191,6 +191,30 @@
         </div>
       </div>
 
+      <!-- 市場大方向 -->
+      <div class="market-outlook-card">
+        <div id="market-outlook-body"><div class="adv-loading">載入市場大方向分析...</div></div>
+      </div>
+
+      <!-- 財經新聞 -->
+      <div class="market-outlook-card">
+        <div id="news-body"><div class="adv-loading">載入財經新聞...</div></div>
+      </div>
+
+    </section>
+
+    <!-- ═══════════════════════ 市场排名页面 ═══════════════════════ -->
+    <section class="page" id="page-ranking">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">市场排名</h1>
+        </div>
+        <div class="dash-search-wrap">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="ranking-search" placeholder="搜索币种..." autocomplete="off" />
+        </div>
+      </div>
+
       <!-- 筛选 + 搜索 -->
       <div class="toolbar">
         <div class="filter-chips">
@@ -207,17 +231,7 @@
         </div>
       </div>
 
-      <!-- 市場大方向 -->
-      <div class="market-outlook-card">
-        <div id="market-outlook-body"><div class="adv-loading">載入市場大方向分析...</div></div>
-      </div>
-
-      <!-- 財經新聞 -->
-      <div class="market-outlook-card">
-        <div id="news-body"><div class="adv-loading">載入財經新聞...</div></div>
-      </div>
-
-      <!-- 搜尋結果 / 中性幣種（搜尋或選中性過濾器時顯示） -->
+      <!-- 搜尋結果 / 中性幣種 -->
       <div id="search-results-wrap" style="display:none">
         <div class="tbl-card" style="width:100%;max-width:100%">
           <div class="tbl-head">
@@ -239,32 +253,6 @@
               <tbody id="all-tbody"></tbody>
             </table>
           </div>
-        </div>
-      </div>
-
-      <!-- 反转机会 -->
-      <div class="section-row">
-        <div class="section-label">
-          <span class="pulse-dot"></span>
-          反转机会
-        </div>
-        <span class="rev-badge" id="rev-count">0</span>
-      </div>
-      <div class="reversal-grid" id="reversal-grid">
-        <div class="rev-placeholder">正在扫描反转信号...</div>
-      </div>
-
-    </section>
-
-    <!-- ═══════════════════════ 市场排名页面 ═══════════════════════ -->
-    <section class="page" id="page-ranking">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">市场排名</h1>
-        </div>
-        <div class="dash-search-wrap">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="ranking-search" placeholder="搜索币种..." autocomplete="off" />
         </div>
       </div>
 
@@ -331,6 +319,18 @@
             <tbody id="ranking-tbody"></tbody>
           </table>
         </div>
+      </div>
+
+      <!-- 反转机会 -->
+      <div class="section-row" style="margin-top:16px">
+        <div class="section-label">
+          <span class="pulse-dot"></span>
+          反转机会
+        </div>
+        <span class="rev-badge" id="rev-count">0</span>
+      </div>
+      <div class="reversal-grid" id="reversal-grid">
+        <div class="rev-placeholder">正在扫描反转信号...</div>
       </div>
     </section>
 

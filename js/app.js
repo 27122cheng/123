@@ -308,7 +308,11 @@ function navigateTo(page, coinSymbol) {
   }
 
   if (page === 'dashboard') loadDashboardMacro();
-  if (page === 'ranking') renderRankingTable('');
+  if (page === 'ranking') {
+    renderRankingTable('');
+    renderDashboardTables();
+    renderReversalCards();
+  }
   if (page === 'settings') populateSettingsPage();
   if (page === 'positions') renderPositionsPage();
   if (page === 'tradelog') renderTradeLogPage();
