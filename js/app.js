@@ -1495,13 +1495,17 @@ function buildTodayEconWidget() {
       ? `<span class="econ-status econ-status-soon">⚡ 約 ${Math.round(minsUntil)} 分鐘後</span>`
       : `<span class="econ-status econ-status-later">約 ${Math.round(minsUntil / 60)} 小時後</span>`;
 
+    const published = minsUntil < 0;
     const confColor = (ev.aiConf || 0) >= 70 ? 'var(--bull)' : (ev.aiConf || 0) >= 55 ? '#f0a500' : 'var(--text3)';
-    const aiSection = ev.aiPred ? `
+    const aiSection = ev.aiMarketImpact ? `
       <div class="econ-ai-block">
-        <div class="econ-ai-row">
+        ${!published && ev.aiPred ? `<div class="econ-ai-row">
           <span class="econ-ai-label">🤖 AI 預測數值</span>
           <span class="econ-ai-val">${ev.aiPred}</span>
           <span class="econ-ai-conf" style="color:${confColor}">信心 ${ev.aiConf}%</span>
+        </div>` : ''}
+        <div class="econ-ai-row" style="margin-bottom:0">
+          <span class="econ-ai-label">${published ? '🔎 已公布 — AI 盤面影響' : '📊 盤面影響預測'}</span>
         </div>
         <div class="econ-ai-impact">${ev.aiMarketImpact}</div>
       </div>` : '';
@@ -1585,20 +1589,18 @@ function buildNewsWidget(items) {
     const analysis = analyzeNewsImpact(item.title, item.body || '');
     const sentClass = analysis.sentiment === 'bull' ? 'bullish' : analysis.sentiment === 'bear' ? 'bearish' : '';
     const confColor = analysis.conf >= 70 ? 'var(--bull)' : analysis.conf >= 55 ? '#f0a500' : 'var(--text3)';
-    const srcName = item.source?.title || item.domain || '加密新聞';
-    const pubTs  = item.published_at ? new Date(item.published_at * 1000) : null;
-    const timeAgo = pubTs ? (() => {
-      const m = Math.round((Date.now() - pubTs.getTime()) / 60000);
+    const srcName = item.source || '加密新聞';
+    const timeAgo = item.publishedAt ? (() => {
+      const m = Math.round((Date.now() - item.publishedAt) / 60000);
       return m < 60 ? `${m}分鐘前` : m < 1440 ? `${Math.round(m/60)}小時前` : `${Math.round(m/1440)}天前`;
     })() : '';
-    const currencies = (item.currencies || []).slice(0, 3).map(c =>
-      `<span class="news-coin-tag">${c.code}</span>`).join('');
+    const coinTags = (item.coins || []).map(c => `<span class="news-coin-tag">${c}</span>`).join('');
     return `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">
       <div class="news-title">${item.title}</div>
       <div class="news-meta">
         <span>${srcName}</span>
         ${timeAgo ? `<span>${timeAgo}</span>` : ''}
-        ${currencies}
+        ${coinTags}
         <span class="news-sent ${sentClass}" style="margin-left:auto">${analysis.label}</span>
       </div>
       <div class="news-ai-analysis">

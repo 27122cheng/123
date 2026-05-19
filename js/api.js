@@ -391,19 +391,68 @@ async function fetchFearGreed() {
   } catch { return null; }
 }
 
-/* 加密貨幣新聞 (CryptoPanic free) */
+/* 加密貨幣新聞 — 多源自動回退，統一格式 { title, url, publishedAt, source, body, coins } */
 async function fetchCryptoNews() {
-  try {
+  const tryFetch = async (url, timeout = 7000) => {
     const ctrl = new AbortController();
-    const t    = setTimeout(() => ctrl.abort(), 7000);
-    const res  = await fetch(
-      'https://cryptopanic.com/api/free/v1/posts/?auth_token=free&kind=news&filter=hot&public=true',
-      { signal: ctrl.signal }
-    );
-    clearTimeout(t);
-    if (!res.ok) throw new Error();
-    return ((await res.json()).results || []).slice(0, 8);
-  } catch { return []; }
+    const t = setTimeout(() => ctrl.abort(), timeout);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch(e) { clearTimeout(t); throw e; }
+  };
+
+  // Source 1: CryptoCompare (no key required, reliable CORS)
+  try {
+    const data = await tryFetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest&limit=10');
+    if (data?.Data?.length) {
+      return data.Data.slice(0, 8).map(item => ({
+        title:       item.title,
+        url:         item.url,
+        publishedAt: item.published_on * 1000,
+        source:      item.source_info?.name || item.source || 'CryptoCompare',
+        body:        item.body || '',
+        coins:       (item.categories || '').split('|').filter(Boolean).slice(0, 3),
+      }));
+    }
+  } catch {}
+
+  // Source 2: CoinGecko news
+  try {
+    const data = await tryFetch('https://api.coingecko.com/api/v3/news?page=1');
+    if (data?.data?.length) {
+      return data.data.slice(0, 8).map(item => {
+        const a = item.attributes || {};
+        return {
+          title:       a.title || '',
+          url:         a.url || '',
+          publishedAt: a.created_at ? new Date(a.created_at).getTime() : Date.now(),
+          source:      a.news_site || 'CoinGecko',
+          body:        a.description || '',
+          coins:       [],
+        };
+      });
+    }
+  } catch {}
+
+  // Source 3: CryptoPanic (free, sometimes CORS-blocked)
+  try {
+    const data = await tryFetch('https://cryptopanic.com/api/free/v1/posts/?auth_token=free&kind=news&filter=hot&public=true');
+    if (data?.results?.length) {
+      return data.results.slice(0, 8).map(item => ({
+        title:       item.title,
+        url:         item.url,
+        publishedAt: item.published_at ? new Date(item.published_at).getTime() : Date.now(),
+        source:      item.source?.title || 'CryptoPanic',
+        body:        '',
+        coins:       (item.currencies || []).map(c => c.code).slice(0, 3),
+      }));
+    }
+  } catch {}
+
+  return [];
 }
 
 /* ── 全球加密貨幣市場數據（CoinGecko 免費）──────────────────── */
