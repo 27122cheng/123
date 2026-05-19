@@ -1411,9 +1411,39 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .outlook-event-high .outlook-event-date { color:#fbbf24; }
 
 /* ── 今日重要數據面板 ───────────────────────────────────────── */
+.econ-today-section { margin-top:4px; }
+.econ-today-header { display:flex; align-items:center; justify-content:space-between; padding:10px 0 8px; border-top:1px solid var(--border); }
+.econ-today-title { font-size:0.82rem; font-weight:700; color:var(--text2); text-transform:uppercase; letter-spacing:.04em; }
+.econ-today-count { font-size:0.72rem; background:rgba(0,212,255,.12); color:var(--accent); border-radius:10px; padding:2px 8px; font-weight:600; }
+.econ-today-empty { font-size:0.8rem; color:var(--text3); padding:8px 0; border-top:1px solid var(--border); margin-top:4px; }
 .econ-event-row { display:flex; gap:14px; align-items:flex-start; padding:8px 0; }
-.econ-event-time { min-width:64px; text-align:center; flex-shrink:0; }
+.econ-event-time { min-width:70px; text-align:center; flex-shrink:0; }
+.econ-time-val { font-size:0.88rem; font-weight:700; color:var(--text1); display:block; margin-bottom:3px; }
+.econ-status { font-size:0.7rem; display:block; margin-bottom:2px; }
+.econ-status-done { color:var(--text3); }
+.econ-status-soon { color:var(--bear); font-weight:600; }
+.econ-status-later { color:var(--text2); }
 .econ-event-info { flex:1; }
+.econ-name { font-weight:600; font-size:0.85rem; color:var(--text1); margin-bottom:3px; }
+.econ-desc { font-size:0.74rem; color:var(--text2); margin-bottom:5px; }
+.econ-scenarios { display:flex; flex-direction:column; gap:2px; margin-bottom:6px; }
+.econ-bull { font-size:0.72rem; color:var(--bull); line-height:1.45; }
+.econ-bear { font-size:0.72rem; color:var(--bear); line-height:1.45; }
+.econ-ai-block { background:rgba(0,212,255,.05); border:1px solid rgba(0,212,255,.12); border-radius:8px; padding:8px 10px; margin-top:4px; }
+.econ-ai-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
+.econ-ai-label { font-size:0.7rem; color:var(--text3); font-weight:600; }
+.econ-ai-val { font-size:0.78rem; color:var(--text1); font-weight:600; flex:1; }
+.econ-ai-conf { font-size:0.72rem; font-weight:700; white-space:nowrap; }
+.econ-ai-impact { font-size:0.73rem; color:var(--text2); line-height:1.45; }
+.econ-divider { border:none; border-top:1px solid rgba(255,255,255,0.05); margin:4px 0; }
+
+/* ── 新聞 AI 分析 ──────────────────────────────────────────── */
+.news-ai-analysis { display:flex; align-items:flex-start; gap:6px; flex-wrap:wrap; font-size:0.72rem; margin-top:5px; padding:5px 8px; background:rgba(255,255,255,.03); border-radius:6px; line-height:1.4; }
+.news-ai-label { color:var(--text3); font-weight:600; white-space:nowrap; }
+.news-ai-conf { white-space:nowrap; font-weight:700; margin-left:auto; }
+.news-coin-tag { background:rgba(0,212,255,.1); color:var(--accent); border-radius:4px; padding:0 4px; font-size:0.66rem; font-weight:600; }
+.news-ext-link { background:rgba(255,255,255,.06); color:var(--text2); border:1px solid var(--border); border-radius:8px; padding:6px 14px; font-size:0.8rem; text-decoration:none; transition:background .15s; }
+.news-ext-link:hover { background:rgba(255,255,255,.12); color:var(--text1); }
 
 /* ── 分析概覽（快速指標）───────────────────────────────────── */
 .quick-analysis-wrap { margin-bottom:16px; }

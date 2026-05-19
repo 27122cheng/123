@@ -1428,6 +1428,7 @@ function buildMarketOutlook(fg, global) {
           <span class="outlook-event-date">${e.date}</span>${e.label}</div>`).join('')}
       </div>
     </div>
+    ${buildTodayEconWidget()}
     <div class="macro-ai-preds">
       <div class="macro-ai-title">🤖 AI 宏觀預測分析</div>
       <div class="macro-ai-subtitle">根據歷史規律、Fed政策路徑及市場反應模式推算</div>
@@ -1471,58 +1472,173 @@ function buildMarketOutlook(fg, global) {
     </div>`;
 }
 
+function fmt12h(h, m) {
+  const period = h < 12 ? 'AM' : 'PM';
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2,'0')} ${period}`;
+}
+
 function buildTodayEconWidget() {
-  const events = getTodayEconEvents();
+  const events = getTodayEconEvents().sort((a, b) => a.eventTime - b.eventTime);
   if (!events.length) {
-    return `<div class="outlook-header">
-      <span class="outlook-title">📅 今日重要數據（台灣時間）</span>
-    </div>
-    <div style="color:var(--text3);font-size:0.82rem;padding:4px 0">今日無重要經濟數據公布</div>`;
+    return `<div class="econ-today-empty">今日無重要經濟數據公布</div>`;
   }
   const now = Date.now();
   const rows = events.map(ev => {
     const impactColor = ev.impact === 'high' ? 'var(--bear)' : ev.impact === 'medium' ? '#f0a500' : 'var(--bull)';
-    const twTime = `${String(ev.twHour).padStart(2,'0')}:${String(ev.twMin).padStart(2,'0')}`;
+    const impactLabel = ev.impact === 'high' ? '🔴 高影響' : ev.impact === 'medium' ? '🟡 中影響' : '🟢 低影響';
+    const timeStr = fmt12h(ev.twHour, ev.twMin);
     const minsUntil = (ev.eventTime.getTime() - now) / 60000;
     const timeStatus = minsUntil < 0
-      ? `<span style="color:var(--text3);font-size:0.72rem">已公布</span>`
+      ? `<span class="econ-status econ-status-done">已公布</span>`
       : minsUntil < 60
-      ? `<span style="color:var(--bear);font-size:0.72rem">約 ${Math.round(minsUntil)} 分鐘後</span>`
-      : `<span style="color:var(--text2);font-size:0.72rem">約 ${Math.round(minsUntil / 60)} 小時後</span>`;
+      ? `<span class="econ-status econ-status-soon">⚡ 約 ${Math.round(minsUntil)} 分鐘後</span>`
+      : `<span class="econ-status econ-status-later">約 ${Math.round(minsUntil / 60)} 小時後</span>`;
+
+    const confColor = (ev.aiConf || 0) >= 70 ? 'var(--bull)' : (ev.aiConf || 0) >= 55 ? '#f0a500' : 'var(--text3)';
+    const aiSection = ev.aiPred ? `
+      <div class="econ-ai-block">
+        <div class="econ-ai-row">
+          <span class="econ-ai-label">🤖 AI 預測數值</span>
+          <span class="econ-ai-val">${ev.aiPred}</span>
+          <span class="econ-ai-conf" style="color:${confColor}">信心 ${ev.aiConf}%</span>
+        </div>
+        <div class="econ-ai-impact">${ev.aiMarketImpact}</div>
+      </div>` : '';
+
     return `<div class="econ-event-row">
       <div class="econ-event-time">
-        <span style="font-size:0.88rem;font-weight:600;color:var(--text1)">${twTime}</span><br>${timeStatus}
+        <span class="econ-time-val">${timeStr}</span>${timeStatus}
+        <span style="font-size:0.68rem;color:${impactColor};margin-top:2px;display:block">${impactLabel}</span>
       </div>
       <div class="econ-event-info">
-        <div style="font-weight:600;font-size:0.85rem;color:var(--text1);margin-bottom:2px">
-          <span style="color:${impactColor};margin-right:4px">●</span>${ev.name}
+        <div class="econ-name"><span style="color:${impactColor};margin-right:4px">●</span>${ev.name}</div>
+        <div class="econ-desc">${ev.description}</div>
+        <div class="econ-scenarios">
+          <span class="econ-bull">📈 ${ev.bullIf}</span>
+          <span class="econ-bear">📉 ${ev.bearIf}</span>
         </div>
-        <div style="font-size:0.75rem;color:var(--text2);margin-bottom:5px">${ev.description}</div>
-        <div style="font-size:0.73rem;line-height:1.55">
-          <span style="color:var(--bull)">📈 優於預期：</span><span style="color:var(--text2)">${ev.bullIf}</span><br>
-          <span style="color:var(--bear)">📉 差於預期：</span><span style="color:var(--text2)">${ev.bearIf}</span>
-        </div>
+        ${aiSection}
       </div>
     </div>`;
-  }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.06);margin:8px 0">');
-  return `<div class="outlook-header">
-    <span class="outlook-title">📅 今日重要數據（台灣時間）</span>
-    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">${events.length} 項</span>
+  }).join('<div class="econ-divider"></div>');
+
+  return `<div class="econ-today-section">
+    <div class="econ-today-header">
+      <span class="econ-today-title">📋 今日重要數據</span>
+      <span class="econ-today-count">${events.length} 項</span>
+    </div>
+    ${rows}
+  </div>`;
+}
+
+function analyzeNewsImpact(title, body) {
+  const text = ((title || '') + ' ' + (body || '')).toLowerCase();
+  const bull = ['etf', 'institutional', 'approval', 'bullish', 'surge', 'rally', 'adoption',
+    'buy', 'inflow', 'halving', 'upgrade', 'partnership', 'launch', 'record', 'milestone',
+    'growth', 'breakout', 'accumulate', 'positive', 'bullrun', 'all-time', 'approved',
+    'investment', 'fund', 'spot etf', 'sec approved', 'bitcoin reserve'];
+  const bear = ['hack', 'ban', 'lawsuit', 'crash', 'bubble', 'scam', 'fraud', 'bearish',
+    'drop', 'fall', 'outflow', 'warning', 'liquidation', 'penalty', 'investigation',
+    'violation', 'concern', 'regulatory crackdown', 'exchange down', 'exploit', 'ponzi',
+    'rug pull', 'insolvency', 'bankrupt', 'seized', 'delisted'];
+  let bs = 0, rs = 0;
+  bull.forEach(k => { if (text.includes(k)) bs++; });
+  bear.forEach(k => { if (text.includes(k)) rs++; });
+  if (bs > rs) {
+    const conf = Math.min(84, 52 + bs * 8);
+    return { sentiment: 'bull', conf, label: '偏多', color: 'var(--bull)',
+      impact: bs >= 3 ? '強烈利多訊號，機構資金或大量湧入，加密市場情緒明顯轉多'
+        : '輕微利多，市場情緒小幅改善，短線上行動能增加' };
+  }
+  if (rs > bs) {
+    const conf = Math.min(84, 52 + rs * 8);
+    return { sentiment: 'bear', conf, label: '偏空', color: 'var(--bear)',
+      impact: rs >= 3 ? '強烈利空訊號，風險情緒下降，加密市場可能出現拋售壓力'
+        : '輕微利空，市場情緒略趨謹慎，注意短線回調風險' };
+  }
+  return { sentiment: 'neutral', conf: 50, label: '中性', color: 'var(--text3)',
+    impact: '市場觀望為主，消息面影響有限，等待更明確的方向性信號' };
+}
+
+function buildNewsWidget(items) {
+  const fallbackLinks = [
+    { label: 'CoinDesk', url: 'https://www.coindesk.com' },
+    { label: 'CoinTelegraph', url: 'https://cointelegraph.com' },
+    { label: 'The Block', url: 'https://www.theblock.co' },
+    { label: 'Decrypt', url: 'https://decrypt.co' },
+  ];
+
+  if (!items || !items.length) {
+    return `<div class="outlook-header" style="margin-bottom:10px">
+      <span class="outlook-title">📰 財經新聞重點</span>
+    </div>
+    <div class="news-fallback">
+      <div style="color:var(--text3);font-size:0.8rem;margin-bottom:10px">即時新聞暫時無法獲取，請前往以下媒體查看：</div>
+      <div class="news-links">
+        ${fallbackLinks.map(l => `<a href="${l.url}" target="_blank" rel="noopener" class="news-ext-link">${l.label}</a>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  const newsHtml = items.slice(0, 8).map(item => {
+    const analysis = analyzeNewsImpact(item.title, item.body || '');
+    const sentClass = analysis.sentiment === 'bull' ? 'bullish' : analysis.sentiment === 'bear' ? 'bearish' : '';
+    const confColor = analysis.conf >= 70 ? 'var(--bull)' : analysis.conf >= 55 ? '#f0a500' : 'var(--text3)';
+    const srcName = item.source?.title || item.domain || '加密新聞';
+    const pubTs  = item.published_at ? new Date(item.published_at * 1000) : null;
+    const timeAgo = pubTs ? (() => {
+      const m = Math.round((Date.now() - pubTs.getTime()) / 60000);
+      return m < 60 ? `${m}分鐘前` : m < 1440 ? `${Math.round(m/60)}小時前` : `${Math.round(m/1440)}天前`;
+    })() : '';
+    const currencies = (item.currencies || []).slice(0, 3).map(c =>
+      `<span class="news-coin-tag">${c.code}</span>`).join('');
+    return `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">
+      <div class="news-title">${item.title}</div>
+      <div class="news-meta">
+        <span>${srcName}</span>
+        ${timeAgo ? `<span>${timeAgo}</span>` : ''}
+        ${currencies}
+        <span class="news-sent ${sentClass}" style="margin-left:auto">${analysis.label}</span>
+      </div>
+      <div class="news-ai-analysis">
+        <span class="news-ai-label">🤖 AI 影響分析</span>
+        <span style="color:${analysis.color}">${analysis.impact}</span>
+        <span class="news-ai-conf" style="color:${confColor}">信心 ${analysis.conf}%</span>
+      </div>
+    </a>`;
+  }).join('');
+
+  return `<div class="outlook-header" style="margin-bottom:10px">
+    <span class="outlook-title">📰 財經新聞重點</span>
+    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">AI 影響分析</span>
   </div>
-  <div style="padding:4px 0">${rows}</div>`;
+  ${newsHtml}`;
 }
 
 async function loadDashboardMacro() {
   const el = document.getElementById('market-outlook-body');
-  if (!el) return;
-  try {
-    const [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-    el.innerHTML = buildMarketOutlook(fg, global);
-  } catch {
-    el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
+  if (el) {
+    try {
+      const [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
+      el.innerHTML = buildMarketOutlook(fg, global);
+    } catch {
+      el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
+    }
   }
-  const econEl = document.getElementById('today-econ-body');
-  if (econEl) econEl.innerHTML = buildTodayEconWidget();
+  loadDashboardNews();
+}
+
+async function loadDashboardNews() {
+  const el = document.getElementById('news-body');
+  if (!el) return;
+  el.innerHTML = '<div class="adv-loading">載入財經新聞...</div>';
+  try {
+    const items = await fetchCryptoNews();
+    el.innerHTML = buildNewsWidget(items);
+  } catch {
+    el.innerHTML = buildNewsWidget([]);
+  }
 }
 
 /* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
@@ -2962,15 +3078,21 @@ const WEEKLY_DATA_SCHEDULE = [
   { name: '美國初請失業金人數', dayOfWeek: 4, twHour: 20, twMin: 30, prevKey: 'usJobless',
     description: '衡量每週新增失業人數，數字越低代表勞動市場越強勁', impact: 'medium',
     bullIf: '< 預期（就業強勁 → 聯準會鷹派 → 美元走強，加密短線承壓）',
-    bearIf: '> 預期（就業疲軟 → 降息預期升溫 → 加密可能反應偏多）' },
+    bearIf: '> 預期（就業疲軟 → 降息預期升溫 → 加密可能反應偏多）',
+    aiPred: '218K～228K', aiConf: 72,
+    aiMarketImpact: '低於 210K 美元走強加密承壓；高於 240K 降息預期升加密偏多' },
   { name: 'EIA 原油庫存', dayOfWeek: 3, twHour: 22, twMin: 30, prevKey: 'eiaOil',
     description: '美國原油庫存週報，影響通膨預期與風險情緒', impact: 'low',
     bullIf: '庫存大幅下降（通膨預期升溫，加密有時跟漲）',
-    bearIf: '庫存大幅增加（通縮壓力，風險情緒轉差）' },
+    bearIf: '庫存大幅增加（通縮壓力，風險情緒轉差）',
+    aiPred: '-0.5M ～ -2.0M 桶（小幅去庫存）', aiConf: 57,
+    aiMarketImpact: '對加密影響有限，若大幅去庫存 >3M 可能帶動通膨預期升溫' },
   { name: 'FOMC 紀要', dayOfWeek: 3, twHour: 2, twMin: 0, prevKey: 'fomc',
     description: '聯準會政策會議紀要，揭示利率決策討論細節', impact: 'high',
     bullIf: '鴿派傾向（降息預期升溫）→ 加密強烈看多',
-    bearIf: '鷹派傾向（維持高利率）→ 加密短線承壓' },
+    bearIf: '鷹派傾向（維持高利率）→ 加密短線承壓',
+    aiPred: '維持謹慎，無明確降息時程信號', aiConf: 78,
+    aiMarketImpact: '若出現年底降息暗示可強勁反彈；維持鷹派則短線震盪偏空' },
 ];
 
 // 每月重要數據（以月份某一週某一天的方式描述）
@@ -2979,27 +3101,37 @@ const MONTHLY_DATA_SCHEDULE = [
     prevKey: 'usNFP', impact: 'high',
     description: '最重要的就業數據，直接影響聯準會利率決策',
     bullIf: '< 預期（降息預期升） → 加密大幅上漲機率高',
-    bearIf: '> 預期（鷹派預期） → 美元走強，加密承壓' },
+    bearIf: '> 預期（鷹派預期） → 美元走強，加密承壓',
+    aiPred: '170K～200K（前值 175K，維持緩降趨勢）', aiConf: 63,
+    aiMarketImpact: '低於 150K 加密強勁反彈；高於 220K 美元走強短線承壓' },
   { name: '美國消費者物價指數（CPI）', weekOfMonth: 2, dayOfWeek: 2, twHour: 20, twMin: 30,
     prevKey: 'usCPI', impact: 'high',
     description: '通膨指標，聯準會最重視的數據之一',
     bullIf: '< 預期（通膨降溫）→ 降息預期升溫，加密偏多',
-    bearIf: '> 預期（通膨持續）→ 高利率預期延續，加密偏空' },
+    bearIf: '> 預期（通膨持續）→ 高利率預期延續，加密偏空',
+    aiPred: '2.3%～2.5% YoY（前值 2.4%，通膨緩慢降溫）', aiConf: 71,
+    aiMarketImpact: '低於 2.2% 加密大漲機率高；高於 2.7% 市場恐慌拋售' },
   { name: '美國生產者物價指數（PPI）', weekOfMonth: 2, dayOfWeek: 3, twHour: 20, twMin: 30,
     prevKey: 'usPPI', impact: 'medium',
     description: '生產端通膨先行指標',
     bullIf: '< 預期（生產端通縮）→ CPI 後續下行空間大，偏多',
-    bearIf: '> 預期（成本壓力增）→ 通膨預期升，偏空' },
+    bearIf: '> 預期（成本壓力增）→ 通膨預期升，偏空',
+    aiPred: '2.0%～2.3% YoY（持續回落趨勢）', aiConf: 64,
+    aiMarketImpact: '下行趨勢持續對加密中性偏多；若回升超 2.5% 則承壓' },
   { name: '美國零售銷售', weekOfMonth: 3, dayOfWeek: 2, twHour: 20, twMin: 30,
     prevKey: 'usRetail', impact: 'medium',
     description: '消費支出指標，反映經濟成長動能',
     bullIf: '< 預期（消費疲軟）→ 降息預期升，加密偏多',
-    bearIf: '> 預期（消費強勁）→ 高利率預期持續，加密承壓' },
+    bearIf: '> 預期（消費強勁）→ 高利率預期持續，加密承壓',
+    aiPred: '+0.2%～+0.4% MoM（消費趨緩但未惡化）', aiConf: 60,
+    aiMarketImpact: '消費趨緩符合降息預期，短線加密輕微偏多' },
   { name: 'ADP 就業人數', weekOfMonth: 1, dayOfWeek: 3, twHour: 20, twMin: 15,
     prevKey: 'usADP', impact: 'medium',
     description: 'NFP 前瞻指標，為非農數據的早期信號',
     bullIf: '< 預期 → 降息預期升，加密偏多',
-    bearIf: '> 預期 → 就業強勁，鷹派預期延續' },
+    bearIf: '> 預期 → 就業強勁，鷹派預期延續',
+    aiPred: '165K～185K（接近NFP預測，勞市溫和放緩）', aiConf: 63,
+    aiMarketImpact: '低於 150K 加密情緒明顯升溫；可作為 NFP 方向性參考' },
 ];
 
 const ECON_ALERT_KEY = 'csp_econ_alert_sent';
