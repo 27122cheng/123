@@ -211,11 +211,11 @@
         </div>
         <div class="dash-search-wrap">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="ranking-search" placeholder="搜索币种..." autocomplete="off" />
+          <input type="text" id="dash-search" placeholder="搜索币种代码..." autocomplete="off" />
         </div>
       </div>
 
-      <!-- 筛选 + 搜索 -->
+      <!-- 筛选 -->
       <div class="toolbar">
         <div class="filter-chips">
           <button class="chip active" data-filter="all">全部</button>
@@ -225,13 +225,9 @@
           <button class="chip chip-bear"  data-filter="看跌">看跌</button>
           <button class="chip chip-sbear" data-filter="強勢看跌">強勢看跌</button>
         </div>
-        <div class="dash-search-wrap">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="dash-search" placeholder="搜索币种代码..." autocomplete="off" />
-        </div>
       </div>
 
-      <!-- 搜尋結果 / 中性幣種 -->
+      <!-- 搜尋 / 篩選結果 -->
       <div id="search-results-wrap" style="display:none">
         <div class="tbl-card" style="width:100%;max-width:100%">
           <div class="tbl-head">
@@ -303,6 +299,18 @@
         </div>
       </div>
 
+      <!-- 反转机会 -->
+      <div class="section-row" style="margin-top:16px">
+        <div class="section-label">
+          <span class="pulse-dot"></span>
+          反转机会
+        </div>
+        <span class="rev-badge" id="rev-count">0</span>
+      </div>
+      <div class="reversal-grid" id="reversal-grid">
+        <div class="rev-placeholder">正在扫描反转信号...</div>
+      </div>
+
       <!-- 巨鯨+籌碼集中度排名 -->
       <div class="tbl-card full-tbl" style="margin-top:16px">
         <div class="tbl-scroll">
@@ -319,18 +327,6 @@
             <tbody id="ranking-tbody"></tbody>
           </table>
         </div>
-      </div>
-
-      <!-- 反转机会 -->
-      <div class="section-row" style="margin-top:16px">
-        <div class="section-label">
-          <span class="pulse-dot"></span>
-          反转机会
-        </div>
-        <span class="rev-badge" id="rev-count">0</span>
-      </div>
-      <div class="reversal-grid" id="reversal-grid">
-        <div class="rev-placeholder">正在扫描反转信号...</div>
       </div>
     </section>
 

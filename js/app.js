@@ -226,18 +226,14 @@ function bindEvents() {
     chip.addEventListener('click', () => setFilter(chip.dataset.filter));
   });
 
-  // 仪表板搜索
+  // 統一幣種搜索（排名頁）
   const dSearch = document.getElementById('dash-search');
   if (dSearch) dSearch.addEventListener('input', () => {
     state.dashSearch = dSearch.value.trim().toUpperCase();
     applyFilters();
     renderDashboardTables();
-  });
-
-  // 排名搜索
-  const rSearch = document.getElementById('ranking-search');
-  if (rSearch) rSearch.addEventListener('input', () => {
-    renderRankingTable(rSearch.value.trim().toUpperCase());
+    renderBullBearTables();
+    renderRankingTable();
   });
 
   // 顶部搜索框
@@ -309,7 +305,7 @@ function navigateTo(page, coinSymbol) {
 
   if (page === 'dashboard') loadDashboardMacro();
   if (page === 'ranking') {
-    renderRankingTable('');
+    renderRankingTable();
     renderDashboardTables();
     renderReversalCards();
   }
@@ -368,6 +364,8 @@ function setFilter(filter) {
   });
   applyFilters();
   renderDashboardTables();
+  renderBullBearTables();
+  renderRankingTable();
 }
 
 function applyFilters() {
@@ -423,37 +421,48 @@ function animateCount(id, target) {
   }, step);
 }
 
-/* ── 仪表板搜尋結果 ─────────────────────────────────────────── */
+/* ── 篩選 / 搜尋結果表格 ────────────────────────────────────── */
 function renderDashboardTables() {
-  const hasFilter   = state.activeFilter !== 'all';
-  const hasSearch   = !!state.dashSearch;
-  const source      = (hasFilter || hasSearch) ? state.filtered : state.data;
-  const unifiedMode = hasSearch || state.activeFilter === '中性';
+  const hasFilter = state.activeFilter !== 'all';
+  const hasSearch = !!state.dashSearch;
+  const source    = state.filtered;
 
   const searchWrap = document.getElementById('search-results-wrap');
+  if (!searchWrap) return;
 
-  if (unifiedMode) {
-    if (searchWrap) searchWrap.style.display = '';
+  if (!hasFilter && !hasSearch) {
+    searchWrap.style.display = 'none';
+    return;
+  }
 
-    const titleEl = document.getElementById('search-results-title');
-    const cntEl   = document.getElementById('search-results-count');
-    const dotEl   = document.getElementById('search-dot');
-    if (titleEl) titleEl.textContent = hasSearch ? `「${state.dashSearch}」搜尋結果` : '中性幣種';
-    if (cntEl)   cntEl.textContent   = source.length;
-    if (dotEl)   dotEl.style.background = hasSearch ? 'var(--blue)' : 'var(--neutral)';
+  searchWrap.style.display = '';
 
-    const tbody = document.getElementById('all-tbody');
-    if (tbody) {
-      if (source.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:28px">找不到匹配的幣種</td></tr>`;
-      } else {
-        tbody.innerHTML = sortArr([...source], 'score', 'desc').map(row =>
-          buildDashRow(row)
-        ).join('');
-      }
-    }
+  const filterLabel = {
+    '強勢看漲': '強勢看漲幣種', '看漲': '看漲幣種',
+    '中性': '中性幣種', '看跌': '看跌幣種', '強勢看跌': '強勢看跌幣種',
+  };
+  const dotColors = {
+    '強勢看漲': 'var(--bull)', '看漲': 'var(--bull)',
+    '中性': 'var(--neutral)', '看跌': 'var(--bear)', '強勢看跌': 'var(--bear)',
+  };
+
+  const titleEl = document.getElementById('search-results-title');
+  const cntEl   = document.getElementById('search-results-count');
+  const dotEl   = document.getElementById('search-dot');
+  if (titleEl) titleEl.textContent = hasSearch
+    ? `「${state.dashSearch}」搜尋結果`
+    : (filterLabel[state.activeFilter] || '篩選結果');
+  if (cntEl) cntEl.textContent = source.length;
+  if (dotEl) dotEl.style.background = hasSearch
+    ? 'var(--blue)'
+    : (dotColors[state.activeFilter] || 'var(--text3)');
+
+  const tbody = document.getElementById('all-tbody');
+  if (!tbody) return;
+  if (source.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:28px">找不到匹配的幣種</td></tr>`;
   } else {
-    if (searchWrap) searchWrap.style.display = 'none';
+    tbody.innerHTML = sortArr([...source], 'score', 'desc').map(row => buildDashRow(row)).join('');
   }
 }
 
@@ -515,12 +524,13 @@ function whaleVPScore(row) {
   return dirStrength * trendPower * (0.5 + volNorm * 0.5);
 }
 
-function renderRankingTable(search) {
+function renderRankingTable() {
   const tbody = document.getElementById('ranking-tbody');
   if (!tbody) return;
 
   let rows = [...state.data];
-  if (search) rows = rows.filter(d => d.symbol.replace('/USDT','').includes(search));
+  if (state.activeFilter !== 'all') rows = rows.filter(d => d.trend === state.activeFilter);
+  if (state.dashSearch) rows = rows.filter(d => d.symbol.replace('/USDT','').includes(state.dashSearch));
 
   rows = rows
     .map(r => ({ ...r, _wv: whaleVPScore(r) }))
@@ -4790,7 +4800,7 @@ function sortTable(tblKey, sortKey, thEl) {
   if (thEl) thEl.classList.add(ss.dir === 'asc' ? 'sort-asc' : 'sort-desc');
 
   if (tblKey === 'ranking') {
-    renderRankingTable(document.getElementById('ranking-search')?.value?.trim()?.toUpperCase() || '');
+    renderRankingTable();
   } else {
     renderBullBearTables();
   }
