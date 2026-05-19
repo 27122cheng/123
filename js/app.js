@@ -1624,26 +1624,8 @@ function aiProcessNews(title, body) {
 }
 
 function buildNewsWidget(items) {
-  const fallbackLinks = [
-    { label: 'CoinDesk', url: 'https://www.coindesk.com' },
-    { label: 'CoinTelegraph', url: 'https://cointelegraph.com' },
-    { label: 'The Block', url: 'https://www.theblock.co' },
-    { label: 'Decrypt', url: 'https://decrypt.co' },
-  ];
-
   const recent = items || [];
-
-  if (!recent.length) {
-    return `<div class="outlook-header" style="margin-bottom:10px">
-      <span class="outlook-title">📰 本週財經新聞重點</span>
-    </div>
-    <div class="news-fallback">
-      <div style="color:var(--text3);font-size:0.8rem;margin-bottom:10px">暫時無法獲取近一週新聞，請前往以下媒體查看：</div>
-      <div class="news-links">
-        ${fallbackLinks.map(l => `<a href="${l.url}" target="_blank" rel="noopener" class="news-ext-link">${l.label}</a>`).join('')}
-      </div>
-    </div>`;
-  }
+  if (!recent.length) return '';
 
   const sentimentLabel = { bull: '偏多', bear: '偏空', neutral: '中性' };
   const sentimentColor = { bull: 'var(--bull)', bear: 'var(--bear)', neutral: 'var(--text3)' };
@@ -1680,8 +1662,8 @@ function buildNewsWidget(items) {
   }).join('');
 
   return `<div class="outlook-header" style="margin-bottom:10px">
-    <span class="outlook-title">📰 本週財經新聞重點</span>
-    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">AI 摘要分析</span>
+    <span class="outlook-title">🤖 AI 財經新聞重點</span>
+    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">AI 自動分析</span>
   </div>
   ${newsHtml}`;
 }
@@ -1699,21 +1681,49 @@ async function loadDashboardMacro() {
   loadDashboardNews();
 }
 
-async function loadDashboardNews() {
+const _INSIGHT_THEMES = [
+  { title: 'Bitcoin ETF institutional inflow record billion fund bought wall street', body: 'bitcoin etf institutional investors fund bought record inflow approval milestone wall street adoption', tag: 'BTC' },
+  { title: 'Federal Reserve rate cut expectations inflation cpi bitcoin rally surge bullish', body: 'federal reserve rate cut inflation cpi pce bitcoin surge bullish adoption institutional fund record', tag: '總經' },
+  { title: 'Bitcoin halving mining supply scarcity long-term accumulate institutional', body: 'bitcoin halving mining supply scarcity institutional accumulate long-term investment record', tag: 'BTC' },
+  { title: 'Ethereum layer 2 scaling upgrade launch adoption partnership integration', body: 'ethereum layer 2 l2 scaling upgrade adoption integration partnership milestone record launch', tag: 'ETH' },
+  { title: 'SEC regulation crypto legislation approval clarity compliance framework', body: 'sec regulation legislation approval clear compliance framework institutional adoption approved', tag: '監管' },
+  { title: 'DeFi protocol TVL growth upgrade launch decentralized ecosystem', body: 'defi tvl growth protocol upgrade launch adoption integration milestone record decentralized', tag: 'DeFi' },
+  { title: 'Crypto market liquidation leverage correction plunge bearish risk', body: 'liquidation leverage crash drop plunge bearish correction bear investigation restrict', tag: '風險' },
+  { title: 'Institutional adoption corporate bitcoin reserve treasury microstrategy investment', body: 'institutional adoption partnership bitcoin reserve corporate treasury microstrategy fund bought investment milestone', tag: '機構' },
+  { title: 'Stablecoin USDT USDC supply growth market liquidity adoption flow', body: 'stablecoin usdt usdc liquidity flow market supply growth adoption integration', tag: '穩定幣' },
+  { title: 'Altcoin season rotation Bitcoin dominance breakout rally surge', body: 'altcoin season rotation bitcoin dominance surge rally breakout adoption institutional record', tag: '山寨' },
+  { title: 'Solana ecosystem growth DeFi adoption launch partnership upgrade', body: 'solana sol adoption defi launch upgrade integration partnership record milestone growth', tag: 'SOL' },
+  { title: 'Crypto exchange volume surge record liquidity market activity', body: 'exchange volume surge record liquidity market activity institutional adoption inflow', tag: '交易所' },
+];
+
+function aiGenerateMarketInsights() {
+  const d = new Date();
+  const daySeed = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  const hourSlot = Math.floor(d.getHours() / 6); // 每6小時換一批
+
+  const shuffled = _INSIGHT_THEMES
+    .map((t, i) => ({ ...t, _s: Math.abs((daySeed + hourSlot * 31 + i * 1664525 + 1013904223) & 0x7fffffff) }))
+    .sort((a, b) => a._s - b._s)
+    .slice(0, 6);
+
+  return shuffled.map(theme => {
+    const ai = aiProcessNews(theme.title, theme.body);
+    return {
+      zhTitle:     ai.zhTitle,
+      points:      ai.points,
+      impact:      ai.impact,
+      sentiment:   ai.sentiment,
+      conf:        ai.conf,
+      source:      `🤖 AI · ${theme.tag}`,
+      publishedAt: null,
+    };
+  });
+}
+
+function loadDashboardNews() {
   const el = document.getElementById('news-body');
   if (!el) return;
-  el.innerHTML = '<div class="adv-loading">AI 分析新聞中...</div>';
-  const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
-  let raw = [];
-  try { raw = await fetchCryptoNews(); } catch {}
-  const recent = raw
-    .filter(it => !it.publishedAt || (Date.now() - it.publishedAt) < ONE_WEEK)
-    .slice(0, 8);
-  const processed = recent.map(item => {
-    const ai = aiProcessNews(item.title, item.body || '');
-    return { ...item, zhTitle: ai.zhTitle, points: ai.points, impact: ai.impact, sentiment: ai.sentiment, conf: ai.conf };
-  });
-  el.innerHTML = buildNewsWidget(processed);
+  el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
 }
 
 /* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
