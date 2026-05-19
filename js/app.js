@@ -51,6 +51,7 @@ async function init() {
   renderAll();
   loadDashboardMacro();
   startRefreshCycle();
+  startDailyBriefingCheck();
   bindEvents();
   checkApiStatus();
 }
@@ -878,15 +879,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   let direction = 'wait';
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
   const primaryBear = (m15?.signal?.includes('bear') ? 1 : 0) + (h1?.signal?.includes('bear') ? 1 : 0);
-  if (primaryBull >= 1 && totalBull >= 3 && totalBull > totalBear + 1) direction = 'long';
-  else if (primaryBear >= 1 && totalBear >= 3 && totalBear > totalBull + 1) direction = 'short';
+  // 頂級交易員思維：15m+1h 雙重確認 + 綜合評分差距更大（至少領先 2）
+  if (primaryBull >= 2 && totalBull >= 4 && totalBull > totalBear + 2) direction = 'long';
+  else if (primaryBear >= 2 && totalBear >= 4 && totalBear > totalBull + 2) direction = 'short';
+  // 單週期初步信號需更強的輔助條件（4h 也確認 + 大幅領先）
+  else if (primaryBull >= 1 && totalBull >= 5 && totalBull > totalBear + 3) direction = 'long';
+  else if (primaryBear >= 1 && totalBear >= 5 && totalBear > totalBull + 3) direction = 'short';
 
   if (direction === 'long'  && coin.score < 60) direction = 'wait';
   if (direction === 'short' && coin.score > 40) direction = 'wait';
-  // 信號強度未達 60% 一律觀望（多空通用）
+  // 信號強度未達 70%（頂級交易員只取高信心設置）一律觀望
   if (direction !== 'wait') {
     const prelimConf = Math.min(90, Math.max(40, 40 + (direction === 'long' ? totalBull : totalBear) * 7));
-    if (prelimConf < 60) direction = 'wait';
+    if (prelimConf < 70) direction = 'wait';
   }
 
   // ATR：優先使用 1h 真實 ATR
@@ -1099,7 +1104,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const rr1str = ((Math.abs(tp1 - entry) / risk)).toFixed(1);
   const rr2str = ((Math.abs(tp2 - entry) / risk)).toFixed(1);
   const activeFactors = isLong ? totalBull : totalBear;
-  const rawConf = Math.min(90, Math.max(40, 40 + activeFactors * 7));
+  // 頂級交易員標準：底線 40，每個確認條件 +6%，上限 92%
+  // 4h 方向確認額外加成（最重要的輔助確認）
+  const h4Conf   = h4?.signal?.includes(isLong ? 'bull' : 'bear') ? 2 : 0;
+  // R/R 加成：R/R >= 3:1 時高信心
+  const rrBonus  = parseFloat(rr1str) >= 3 ? 1 : 0;
+  const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus) * 6));
 
   // 計算入場時的額外背景資料（供 AI 學習使用）
   const entryMTFAlign = ['15m','1h','4h','1d'].filter(tf => {
@@ -1124,7 +1134,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   };
   const { penalty: learnPenalty, warnings: learnWarnings } = applyLearnAdjustment(direction, rsi, parseFloat(coin.adx) || 20, learnCtx);
   const conf = Math.max(0, rawConf - learnPenalty);
-  if (conf < 60) direction = 'wait'; // 學習後信心不足，改觀望
+  if (conf < 70) direction = 'wait'; // 學習後信心不足，改觀望（70+ 才出手）
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -2447,7 +2457,7 @@ function recordSignalsFromScan(data) {
     const direction = isLong ? 'long' : 'short';
     // conf：多頭用評分，空頭用反向評分（100 - score）
     const conf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (conf < 60) continue; // 信號強度不足，不記錄
+    if (conf < 70) continue; // 信號強度不足，不記錄（門檻 70）
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
@@ -2494,19 +2504,22 @@ function updateOpenTrades(data) {
       const isLong = trade.direction === 'long';
       const entry  = trade.entry;
 
-      // ── 進場前信號有效性檢查：若市場出現反轉或信心不足，取消掛單 ──
-      const nowScore   = parseFloat(coin.score) || 50;
-      const nowConf    = isLong ? nowScore : 100 - nowScore;
-      const reversed   = isLong
-        ? (coin.trend?.includes('看跌') || nowScore <= 40)
-        : (coin.trend?.includes('看漲') || nowScore >= 60);
-      const lowConf    = nowConf < 52;  // 信心大幅下滑
-      const goWait     = !reversed && !lowConf && nowScore > 40 && nowScore < 60;
-      if (reversed || lowConf || goWait) {
-        let cancelReason;
-        if (reversed)   cancelReason = `市場出現反轉（評分 ${nowScore}，趨勢 ${coin.trend}）`;
-        else if (lowConf) cancelReason = `信心度不足（${nowConf.toFixed(0)}%，低於進場門檻）`;
-        else             cancelReason = `信號轉為觀望（評分 ${nowScore} 落入中性區間）`;
+      // ── 進場前信號有效性檢查：趨勢反轉或評分跌破門檻則取消掛單 ──
+      const nowScore = parseFloat(coin.score) || 50;
+      // 趨勢反轉判斷
+      const trendReversed = isLong
+        ? coin.trend?.includes('看跌')
+        : coin.trend?.includes('看漲');
+      // 評分跌破取消門檻（進場需 ≥70 conf，score 類比：多頭 <63 / 空頭 >37 即取消）
+      const scoreFailed = isLong ? nowScore < 63 : nowScore > 37;
+      // 信號轉弱（未完全反轉但已不符合高信心條件）
+      const signalWeak = !trendReversed && !scoreFailed && (isLong ? nowScore < 68 : nowScore > 32);
+      if (trendReversed || scoreFailed || signalWeak) {
+        const reasons = [];
+        if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
+        if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
+        if (signalWeak)    reasons.push(`評分 ${nowScore} 轉弱，不符合高信心進場標準`);
+        const cancelReason = reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`;
         trade.status = 'cancelled';
         trade.cancelReason = cancelReason;
         trade.cancelTime   = Date.now();
@@ -2712,6 +2725,124 @@ function sendScaleInTelegramNotification(trade, scaleIn) {
     `🔔 共加倉 ${scaleIn.seqNum}/3 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+}
+
+/* ── 每日早晨市場簡報 ─────────────────────────────────────────── */
+const DAILY_BRIEF_KEY = 'csp_daily_brief_date';
+
+// 每週經濟日曆（靜態重點事件，0=週日 … 6=週六）
+const WEEKLY_ECON_EVENTS = {
+  0: ['無重大數據（週末效應，波動偏低）'],
+  1: ['美聯儲官員講話（可能）', '歐元區 PMI 製造業終值'],
+  2: ['美國 JOLTS 職位空缺（月初）', '美聯儲消費者信心指數'],
+  3: ['ADP 就業人數 20:15', 'ISM 非製造業 PMI', 'EIA 原油庫存 22:30', 'FOMC 紀要（隔週）'],
+  4: ['美國初請失業金人數 20:30', 'ECB 利率決議（隔月）', '美聯儲官員講話'],
+  5: ['非農就業報告 NFP 20:30（月初第一個週五）', 'Michigan 消費者信心指數 22:00', 'ISM 製造業 PMI（月初）'],
+  6: ['無重大數據（週末）'],
+};
+
+function startDailyBriefingCheck() {
+  // 每分鐘檢查一次，到早上 9 點時發送
+  setInterval(async () => {
+    const now   = new Date();
+    const hour  = now.getHours();
+    const today = now.toDateString();
+    if (hour !== 9) return;
+    const lastSent = localStorage.getItem(DAILY_BRIEF_KEY);
+    if (lastSent === today) return;
+    localStorage.setItem(DAILY_BRIEF_KEY, today);
+    await sendDailyBriefing();
+  }, 60 * 1000);
+}
+
+async function sendDailyBriefing() {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  try {
+    const [fg, globalMkt] = await Promise.allSettled([fetchFearGreed(), fetchGlobalMarket()]);
+    const fgData  = fg.status === 'fulfilled' ? fg.value : null;
+    const mktData = globalMkt.status === 'fulfilled' ? globalMkt.value : null;
+    const msg = buildDailyBriefingMsg(fgData, mktData);
+    sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+  } catch {}
+}
+
+function buildDailyBriefingMsg(fg, mkt) {
+  const now     = new Date();
+  const dateStr = now.toLocaleDateString('zh-TW', { year:'numeric', month:'2-digit', day:'2-digit', weekday:'short' });
+  const fgVal   = fg ? parseInt(fg.value) : null;
+  const fgZh    = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg?.value_classification] || '';
+  const fgPrev  = fg?.previous_close ? parseInt(fg.previous_close) : null;
+  const fgDiff  = (fgVal != null && fgPrev != null) ? (fgVal - fgPrev) : null;
+
+  const mktChg  = mkt?.marketCapChange != null ? mkt.marketCapChange.toFixed(2) : null;
+  const btcDom  = mkt?.btcDominance != null ? mkt.btcDominance.toFixed(1) : null;
+  const totalCap = mkt?.totalMarketCap != null ? (mkt.totalMarketCap / 1e12).toFixed(2) : null;
+
+  // 昨日回顧
+  const yesterdaySection = (() => {
+    const parts = [];
+    if (fgPrev != null) parts.push(`• 昨日恐貪指數：${fgPrev}（${fgDiff != null ? (fgDiff >= 0 ? `今日升至 ${fgVal} ▲${fgDiff}` : `今日降至 ${fgVal} ▼${Math.abs(fgDiff)}`) : ''}）`);
+    if (mktChg != null) parts.push(`• 加密市值 24h 變化：${parseFloat(mktChg) >= 0 ? '+' : ''}${mktChg}%`);
+    return parts.length ? parts.join('\n') : '• 數據獲取中…';
+  })();
+
+  // 今日市場看法（AI 分析）
+  const outlookSection = (() => {
+    const lines = [];
+    if (fgVal != null) {
+      if (fgVal <= 25)      lines.push('📉 情緒極度恐慌，歷史規律偏向中長線布局機會，短線仍有下行風險');
+      else if (fgVal <= 45) lines.push('😰 市場情緒偏恐慌，多頭謹慎，關注支撐區量能是否放大');
+      else if (fgVal <= 55) lines.push('😐 情緒中性，多空膠著，等待成交量與訂單流方向選擇突破');
+      else if (fgVal <= 75) lines.push('😊 市場樂觀，多頭佔優，注意頂部訊號（RSI 超買 + 成交量萎縮）');
+      else                  lines.push('🔥 極度貪婪，短線追高風險高，智慧資金可能分批出貨');
+    }
+    if (btcDom != null) {
+      const dom = parseFloat(btcDom);
+      if (dom > 58)       lines.push(`🔶 BTC 主導率 ${btcDom}%（偏高），山寨資金集中，注意 BTC 方向主導`);
+      else if (dom < 44)  lines.push(`🌈 BTC 主導率 ${btcDom}%（偏低），山寨季潛力，選幣比擇時更重要`);
+      else                lines.push(`⚖️ BTC 主導率 ${btcDom}%（中性），BTC 與山寨齊漲/跌格局`);
+    }
+    if (mktChg != null) {
+      const chg = parseFloat(mktChg);
+      if (chg > 3)        lines.push('🚀 昨日大盤強勢上漲，今日需注意短線回調壓力');
+      else if (chg > 1)   lines.push('📈 昨日溫和上漲，趨勢延續概率高，回踩可視為加倉機會');
+      else if (chg < -3)  lines.push('🔴 昨日大幅下跌，今日需確認是否出現量能縮量企穩訊號');
+      else if (chg < -1)  lines.push('📉 昨日小幅走弱，觀察今日早盤開盤量能決定短線方向');
+    }
+    return lines.length ? lines.join('\n') : '• 數據更新中，請稍後查看';
+  })();
+
+  // 今日重要數據公布
+  const dayOfWeek = now.getDay();
+  const events = WEEKLY_ECON_EVENTS[dayOfWeek] || [];
+  const eventSection = events.length
+    ? events.map(e => `⏰ ${e}`).join('\n')
+    : '⏰ 今日無重大預定數據';
+
+  // 今日關注幣種（從持倉 + 掃描結果挑選）
+  const watchSection = (() => {
+    const tlog  = loadTradeLog();
+    const open  = tlog.filter(t => t.status === 'open').slice(0, 3);
+    const pend  = tlog.filter(t => t.status === 'pending').slice(0, 2);
+    const parts = [];
+    open.forEach(t => {
+      const dir = t.direction === 'long' ? '▲多' : '▼空';
+      parts.push(`💎 ${t.symbol.replace('/USDT','')} ${dir} 持倉中 | 進場 $${parseFloat(t.entry).toPrecision(5).replace(/\.?0+$/,'')}`);
+    });
+    pend.forEach(t => {
+      const dir = t.direction === 'long' ? '▲多' : '▼空';
+      parts.push(`⏳ ${t.symbol.replace('/USDT','')} ${dir} 等待回踩 $${parseFloat(t.entry).toPrecision(5).replace(/\.?0+$/,'')}`);
+    });
+    return parts.length ? parts.join('\n') : '• 目前無持倉或等待進場訊號';
+  })();
+
+  return `📊 <b>每日市場簡報</b> ${dateStr}\n\n` +
+    `📅 <b>昨日市場回顧</b>\n${yesterdaySection}\n\n` +
+    `🔮 <b>今日盤面研判</b>\n${outlookSection}\n\n` +
+    `📆 <b>今日重要數據</b>\n${eventSection}\n\n` +
+    `💼 <b>今日關注倉位</b>\n${watchSection}\n\n` +
+    `<i>🤖 由 AI 自動分析生成 · 僅供參考，不構成投資建議</i>`;
 }
 
 /* ── AI 學習系統 ─────────────────────────────────────────────── */
@@ -3915,7 +4046,7 @@ async function checkAndSendAlerts(data) {
     const notifConf = _tradeSetupCache[coin.symbol]?.conf
       ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (notifConf < 60) continue;
+    if (notifConf < 70) continue;
 
     if (s.notifBrowser) {
       sendBrowserNotification(
