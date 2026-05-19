@@ -464,40 +464,60 @@ async function fetchNewsFromGemini(geminiKey) {
     `{"title":"15字內繁體中文標題","points":["重點一15~25字","重點二15~25字"],"impact":"對加密市場影響30~50字","sentiment":"bull或bear或neutral","conf":信心整數0到100}\n` +
     `請涵蓋：BTC/ETH動態、機構資金、監管、總經（Fed/通膨/匯率）、重大事件。直接輸出 JSON 陣列，不要其他文字。`;
 
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 25000);
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiKey}`,
-    {
-      method: 'POST', signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 2500 },
-      }),
+  // 依序嘗試不同模型名稱（某些地區或帳號可用的模型不同）
+  const MODELS = [
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-flash-latest',
+    'gemini-1.5-pro',
+    'gemini-pro',
+  ];
+
+  let lastErr = '';
+  for (const model of MODELS) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 25000);
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`,
+        {
+          method: 'POST', signal: ctrl.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { temperature: 0.3, maxOutputTokens: 2500 },
+          }),
+        }
+      );
+      clearTimeout(t);
+      if (res.status === 404) { lastErr = `404 (${model})`; continue; } // 換下個模型
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`Gemini ${res.status}: ${errText.slice(0, 150)}`);
+      }
+      const data  = await res.json();
+      const raw   = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+      const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      const arr   = JSON.parse(clean);
+      return arr.map(item => ({
+        title:       item.title,
+        url:         '',
+        publishedAt: Date.now(),
+        source:      `Gemini AI (${model})`,
+        body:        '',
+        zhTitle:     item.title,
+        points:      Array.isArray(item.points) ? item.points : [],
+        impact:      item.impact    || '',
+        sentiment:   item.sentiment || 'neutral',
+        conf:        typeof item.conf === 'number' ? item.conf : 60,
+      }));
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('Gemini 請求超時');
+      lastErr = e.message;
+      if (!e.message.includes('404')) throw e; // 非404錯誤直接拋出
     }
-  );
-  clearTimeout(t);
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Gemini ${res.status}: ${errText.slice(0, 120)}`);
   }
-  const data  = await res.json();
-  const raw   = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-  const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-  const arr   = JSON.parse(clean);
-  return arr.map(item => ({
-    title:       item.title,
-    url:         '',
-    publishedAt: Date.now(),
-    source:      'Gemini AI',
-    body:        '',
-    zhTitle:     item.title,
-    points:      Array.isArray(item.points) ? item.points : [],
-    impact:      item.impact    || '',
-    sentiment:   item.sentiment || 'neutral',
-    conf:        typeof item.conf === 'number' ? item.conf : 60,
-  }));
+  throw new Error(`所有模型均不可用（${lastErr}）`);
 }
 
 /* Gemini 1.5 Flash — 真實 AI 新聞摘要 (免費，需 Google AI Studio key) */
