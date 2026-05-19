@@ -4147,7 +4147,11 @@ function renderPositionsPage() {
 
 function filterPositionCards(query) {
   const q = query.trim().toLowerCase();
-  document.querySelectorAll('#pos-list-container .pos-card').forEach(card => {
+  const container = document.getElementById('pos-list-container');
+  if (!container) return;
+
+  const cards = [...container.querySelectorAll('.pos-card')];
+  cards.forEach(card => {
     const sym     = (card.getAttribute('data-symbol') || '').toLowerCase();
     const unrealR = parseFloat(card.getAttribute('data-unreal'));
     const matchSearch = !q || sym.includes(q);
@@ -4155,9 +4159,24 @@ function filterPositionCards(query) {
       _posTab === 'pending' ||
       _posTab === 'all' ||
       (_posTab === 'profit' && unrealR > 0) ||
-      (_posTab === 'loss'   && !(unrealR > 0));  // NaN、0、負數都算虧損中
+      (_posTab === 'loss'   && !(unrealR > 0));
     card.style.display = (matchSearch && matchTab) ? '' : 'none';
   });
+
+  // 虧損中：已虧損（unrealR < 0）排在無價格或平手（NaN/0）前面
+  if (_posTab === 'loss') {
+    const visible = cards.filter(c => c.style.display !== 'none');
+    visible.sort((a, b) => {
+      const ra = parseFloat(a.getAttribute('data-unreal'));
+      const rb = parseFloat(b.getAttribute('data-unreal'));
+      const isLossA = ra < 0, isLossB = rb < 0;
+      if (isLossA && !isLossB) return -1;
+      if (!isLossA && isLossB) return 1;
+      if (isLossA && isLossB) return ra - rb; // 虧最多的在最上面
+      return 0;
+    });
+    visible.forEach(card => container.appendChild(card));
+  }
 }
 
 /* ── 交易記錄頁面渲染 ─────────────────────────────────────────── */
