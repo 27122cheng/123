@@ -1536,33 +1536,91 @@ function buildTodayEconWidget() {
   </div>`;
 }
 
-function analyzeNewsImpact(title, body) {
+// AI 新聞處理：從英文標題+內容生成中文標題、重點摘要、市場影響
+function aiProcessNews(title, body) {
   const text = ((title || '') + ' ' + (body || '')).toLowerCase();
-  const bull = ['etf', 'institutional', 'approval', 'bullish', 'surge', 'rally', 'adoption',
-    'buy', 'inflow', 'halving', 'upgrade', 'partnership', 'launch', 'record', 'milestone',
-    'growth', 'breakout', 'accumulate', 'positive', 'bullrun', 'all-time', 'approved',
-    'investment', 'fund', 'spot etf', 'sec approved', 'bitcoin reserve'];
-  const bear = ['hack', 'ban', 'lawsuit', 'crash', 'bubble', 'scam', 'fraud', 'bearish',
-    'drop', 'fall', 'outflow', 'warning', 'liquidation', 'penalty', 'investigation',
-    'violation', 'concern', 'regulatory crackdown', 'exchange down', 'exploit', 'ponzi',
-    'rug pull', 'insolvency', 'bankrupt', 'seized', 'delisted'];
+
+  // 偵測主體
+  const subject =
+    (text.includes('bitcoin') || text.includes(' btc ') || text.startsWith('btc')) ? '比特幣' :
+    (text.includes('ethereum') || text.includes(' eth ')) ? '以太坊' :
+    (text.includes('solana') || text.includes(' sol ')) ? 'Solana' :
+    (text.includes('ripple') || text.includes(' xrp ')) ? 'XRP' :
+    (text.includes('bnb') || text.includes('binance')) ? 'BNB/Binance' :
+    (text.includes('dogecoin') || text.includes('doge')) ? 'Dogecoin' :
+    '加密市場';
+
+  // 生成中文標題
+  let zhTitle =
+    (text.includes('etf') && (text.includes('inflow') || text.includes('record') || text.includes('billion'))) ? `${subject} ETF 資金創新高，機構持續買入` :
+    (text.includes('etf') && (text.includes('outflow') || text.includes('exit'))) ? `${subject} ETF 出現資金流出，市場情緒轉謹慎` :
+    (text.includes('etf') && text.includes('approv')) ? `${subject} ETF 獲得監管批准，里程碑式進展` :
+    (text.includes('hack') || text.includes('exploit') || text.includes('stolen')) ? `⚠️ 加密協議遭受攻擊，安全事件警報` :
+    (text.includes('ban') || text.includes('prohibited') || text.includes('restrict')) ? `監管收緊：${subject}交易面臨新限制` :
+    (text.includes('sec') && (text.includes('lawsuit') || text.includes('charge'))) ? `SEC 對${subject}採取執法行動` :
+    (text.includes('sec') && (text.includes('approv') || text.includes('clear'))) ? `SEC 批准${subject}相關申請，監管明朗化` :
+    (text.includes('fed') || text.includes('federal reserve') || text.includes('rate cut')) ? `聯準會政策動向對${subject}市場影響` :
+    (text.includes('inflation') || text.includes('cpi') || text.includes('pce')) ? `通膨數據出爐，${subject}市場情緒受影響` :
+    (text.includes('institutional') || text.includes('microstrategy') || text.includes('fund bought')) ? `機構大戶加碼${subject}，籌碼持續集中` :
+    (text.includes('partnership') || text.includes('integration') || text.includes('adoption')) ? `${subject}迎來重要採用進展，生態持續擴張` :
+    (text.includes('surge') || text.includes('rally') || text.includes('all-time high')) ? `${subject}強勁突破，多頭動能顯著升溫` :
+    (text.includes('crash') || text.includes('plunge') || text.includes('collapse')) ? `${subject}急速下挫，市場信心受到衝擊` :
+    (text.includes('liquidation') || text.includes('liquidated')) ? `市場槓桿快速清算，${subject}短線劇烈波動` :
+    (text.includes('halving') || text.includes('mining')) ? `${subject}挖礦/減半機制出現新動態` :
+    (text.includes('stablecoin') || text.includes('usdt') || text.includes('usdc')) ? `穩定幣市場動態，流動性出現變化` :
+    (text.includes('layer 2') || text.includes('l2') || text.includes('scaling')) ? `${subject}擴容升級取得重要進展` :
+    (text.includes('defi') || text.includes('decentralized')) ? `DeFi 生態出現重要事件` :
+    (text.includes('nft') || text.includes('non-fungible')) ? `NFT 市場動態，交易量出現明顯變化` :
+    (title.length > 60 ? title.slice(0, 57) + '…' : title);
+
+  // 生成重點摘要（2條）
+  const points = [];
+  if (text.includes('etf')) points.push('ETF 相關資金流向動態值得密切追蹤');
+  if (text.includes('institutional') || text.includes('wall street')) points.push('傳統金融機構持續進場布局加密資產');
+  if (text.includes('regulation') || text.includes('sec') || text.includes('legislation')) points.push('監管環境變化將直接影響市場合規方向');
+  if (text.includes('fed') || text.includes('rate') || text.includes('inflation')) points.push('宏觀貨幣政策走向牽動整體風險資產情緒');
+  if (text.includes('hack') || text.includes('exploit')) points.push('安全事件引發市場恐慌，相關資金短線外流');
+  if (text.includes('adoption') || text.includes('partnership')) points.push('採用率提升有助於長線基本面支撐');
+  if (text.includes('liquidation')) points.push('高槓桿倉位被迫清算，價格波動幅度放大');
+  if (text.includes('upgrade') || text.includes('protocol')) points.push('技術升級提升網絡效能與用戶體驗');
+  if (text.includes('record') || text.includes('all-time')) points.push('歷史新高附近容易出現獲利了結賣壓');
+  if (text.includes('defi') || text.includes('tvl')) points.push('DeFi 總鎖倉量變化反映市場整體資金動向');
+
+  // 若關鍵詞不足，從 body 提取首句
+  if (points.length < 2 && body && body.length > 40) {
+    const firstSent = body.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+/).find(s => s.length > 30 && s.length < 160);
+    if (firstSent) points.push(firstSent.trim());
+  }
+  if (points.length === 0) points.push('加密市場持續受到宏觀環境與監管動態雙重影響');
+
+  // 市場影響分析
+  const bullKw = ['etf', 'institutional', 'approval', 'bullish', 'surge', 'rally', 'adoption',
+    'inflow', 'halving', 'upgrade', 'partnership', 'launch', 'record', 'milestone',
+    'breakout', 'accumulate', 'approved', 'investment', 'fund', 'all-time', 'bitcoin reserve', 'rate cut'];
+  const bearKw = ['hack', 'ban', 'lawsuit', 'crash', 'bubble', 'scam', 'fraud', 'bearish',
+    'drop', 'plunge', 'outflow', 'liquidation', 'penalty', 'investigation', 'exploit',
+    'rug pull', 'bankrupt', 'seized', 'delisted', 'restrict', 'charge', 'crackdown'];
   let bs = 0, rs = 0;
-  bull.forEach(k => { if (text.includes(k)) bs++; });
-  bear.forEach(k => { if (text.includes(k)) rs++; });
+  bullKw.forEach(k => { if (text.includes(k)) bs++; });
+  bearKw.forEach(k => { if (text.includes(k)) rs++; });
+
+  let sentiment, conf, label, color, impact;
   if (bs > rs) {
-    const conf = Math.min(84, 52 + bs * 8);
-    return { sentiment: 'bull', conf, label: '偏多', color: 'var(--bull)',
-      impact: bs >= 3 ? '強烈利多訊號，機構資金或大量湧入，加密市場情緒明顯轉多'
-        : '輕微利多，市場情緒小幅改善，短線上行動能增加' };
+    sentiment = 'bull'; conf = Math.min(84, 52 + bs * 7); label = '偏多'; color = 'var(--bull)';
+    impact = bs >= 3
+      ? `利多信號明確，機構情緒升溫，${subject}短線上行動能增強，可留意突破機會`
+      : `輕微利多，市場情緒小幅改善，${subject}短線受到支撐`;
+  } else if (rs > bs) {
+    sentiment = 'bear'; conf = Math.min(84, 52 + rs * 7); label = '偏空'; color = 'var(--bear)';
+    impact = rs >= 3
+      ? `利空壓力較重，風險情緒明顯下降，${subject}短線注意下行風險與止損位置`
+      : `輕微利空，市場情緒略顯謹慎，${subject}短線震盪機率上升`;
+  } else {
+    sentiment = 'neutral'; conf = 50; label = '中性'; color = 'var(--text3)';
+    impact = `消息面影響有限，市場等待更明確方向，${subject}短線維持盤整格局`;
   }
-  if (rs > bs) {
-    const conf = Math.min(84, 52 + rs * 8);
-    return { sentiment: 'bear', conf, label: '偏空', color: 'var(--bear)',
-      impact: rs >= 3 ? '強烈利空訊號，風險情緒下降，加密市場可能出現拋售壓力'
-        : '輕微利空，市場情緒略趨謹慎，注意短線回調風險' };
-  }
-  return { sentiment: 'neutral', conf: 50, label: '中性', color: 'var(--text3)',
-    impact: '市場觀望為主，消息面影響有限，等待更明確的方向性信號' };
+
+  return { zhTitle, points: points.slice(0, 2), sentiment, conf, label, color, impact };
 }
 
 function buildNewsWidget(items) {
@@ -1573,47 +1631,49 @@ function buildNewsWidget(items) {
     { label: 'Decrypt', url: 'https://decrypt.co' },
   ];
 
-  if (!items || !items.length) {
+  const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
+  const recent = (items || []).filter(it => !it.publishedAt || (Date.now() - it.publishedAt) < ONE_WEEK);
+
+  if (!recent.length) {
     return `<div class="outlook-header" style="margin-bottom:10px">
-      <span class="outlook-title">📰 財經新聞重點</span>
+      <span class="outlook-title">📰 本週財經新聞重點</span>
     </div>
     <div class="news-fallback">
-      <div style="color:var(--text3);font-size:0.8rem;margin-bottom:10px">即時新聞暫時無法獲取，請前往以下媒體查看：</div>
+      <div style="color:var(--text3);font-size:0.8rem;margin-bottom:10px">暫時無法獲取近一週新聞，請前往以下媒體查看：</div>
       <div class="news-links">
         ${fallbackLinks.map(l => `<a href="${l.url}" target="_blank" rel="noopener" class="news-ext-link">${l.label}</a>`).join('')}
       </div>
     </div>`;
   }
 
-  const newsHtml = items.slice(0, 8).map(item => {
-    const analysis = analyzeNewsImpact(item.title, item.body || '');
-    const sentClass = analysis.sentiment === 'bull' ? 'bullish' : analysis.sentiment === 'bear' ? 'bearish' : '';
-    const confColor = analysis.conf >= 70 ? 'var(--bull)' : analysis.conf >= 55 ? '#f0a500' : 'var(--text3)';
-    const srcName = item.source || '加密新聞';
+  const newsHtml = recent.slice(0, 8).map(item => {
+    const ai = aiProcessNews(item.title, item.body || '');
+    const sentClass = ai.sentiment === 'bull' ? 'bullish' : ai.sentiment === 'bear' ? 'bearish' : '';
+    const confColor = ai.conf >= 70 ? 'var(--bull)' : ai.conf >= 55 ? '#f0a500' : 'var(--text3)';
     const timeAgo = item.publishedAt ? (() => {
       const m = Math.round((Date.now() - item.publishedAt) / 60000);
-      return m < 60 ? `${m}分鐘前` : m < 1440 ? `${Math.round(m/60)}小時前` : `${Math.round(m/1440)}天前`;
+      return m < 60 ? `${m} 分鐘前` : m < 1440 ? `${Math.round(m/60)} 小時前` : `${Math.round(m/1440)} 天前`;
     })() : '';
-    const coinTags = (item.coins || []).map(c => `<span class="news-coin-tag">${c}</span>`).join('');
+    const pointsHtml = ai.points.map(p => `<div class="news-point">• ${p}</div>`).join('');
     return `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">
-      <div class="news-title">${item.title}</div>
+      <div class="news-ai-title">${ai.zhTitle}</div>
+      <div class="news-keypoints">${pointsHtml}</div>
       <div class="news-meta">
-        <span>${srcName}</span>
+        <span>${item.source || ''}</span>
         ${timeAgo ? `<span>${timeAgo}</span>` : ''}
-        ${coinTags}
-        <span class="news-sent ${sentClass}" style="margin-left:auto">${analysis.label}</span>
+        <span class="news-sent ${sentClass}" style="margin-left:auto">${ai.label}</span>
       </div>
       <div class="news-ai-analysis">
-        <span class="news-ai-label">🤖 AI 影響分析</span>
-        <span style="color:${analysis.color}">${analysis.impact}</span>
-        <span class="news-ai-conf" style="color:${confColor}">信心 ${analysis.conf}%</span>
+        <span class="news-ai-label">🤖 市場影響</span>
+        <span style="color:${ai.color}">${ai.impact}</span>
+        <span class="news-ai-conf" style="color:${confColor}">信心 ${ai.conf}%</span>
       </div>
     </a>`;
   }).join('');
 
   return `<div class="outlook-header" style="margin-bottom:10px">
-    <span class="outlook-title">📰 財經新聞重點</span>
-    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">AI 影響分析</span>
+    <span class="outlook-title">📰 本週財經新聞重點</span>
+    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">AI 摘要分析</span>
   </div>
   ${newsHtml}`;
 }

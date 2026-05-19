@@ -1438,6 +1438,9 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .econ-divider { border:none; border-top:1px solid rgba(255,255,255,0.05); margin:4px 0; }
 
 /* ── 新聞 AI 分析 ──────────────────────────────────────────── */
+.news-ai-title { font-size:0.88rem; font-weight:700; color:var(--text1); line-height:1.4; margin-bottom:6px; }
+.news-keypoints { margin-bottom:6px; }
+.news-point { font-size:0.76rem; color:var(--text2); line-height:1.5; padding-left:2px; }
 .news-ai-analysis { display:flex; align-items:flex-start; gap:6px; flex-wrap:wrap; font-size:0.72rem; margin-top:5px; padding:5px 8px; background:rgba(255,255,255,.03); border-radius:6px; line-height:1.4; }
 .news-ai-label { color:var(--text3); font-weight:600; white-space:nowrap; }
 .news-ai-conf { white-space:nowrap; font-weight:700; margin-left:auto; }
