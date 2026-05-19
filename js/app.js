@@ -1631,8 +1631,7 @@ function buildNewsWidget(items) {
     { label: 'Decrypt', url: 'https://decrypt.co' },
   ];
 
-  const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
-  const recent = (items || []).filter(it => !it.publishedAt || (Date.now() - it.publishedAt) < ONE_WEEK);
+  const recent = items || [];
 
   if (!recent.length) {
     return `<div class="outlook-header" style="margin-bottom:10px">
@@ -1646,28 +1645,34 @@ function buildNewsWidget(items) {
     </div>`;
   }
 
+  const sentimentLabel = { bull: '偏多', bear: '偏空', neutral: '中性' };
+  const sentimentColor = { bull: 'var(--bull)', bear: 'var(--bear)', neutral: 'var(--text3)' };
+
   const newsHtml = recent.slice(0, 8).map(item => {
-    const ai = aiProcessNews(item.title, item.body || '');
-    const sentClass = ai.sentiment === 'bull' ? 'bullish' : ai.sentiment === 'bear' ? 'bearish' : '';
-    const confColor = ai.conf >= 70 ? 'var(--bull)' : ai.conf >= 55 ? '#f0a500' : 'var(--text3)';
-    const timeAgo = item.publishedAt ? (() => {
+    const sent     = item.sentiment || 'neutral';
+    const sentClass = sent === 'bull' ? 'bullish' : sent === 'bear' ? 'bearish' : '';
+    const color    = sentimentColor[sent] || 'var(--text3)';
+    const label    = sentimentLabel[sent] || '中性';
+    const conf     = item.conf ?? 50;
+    const confColor = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
+    const timeAgo  = item.publishedAt ? (() => {
       const m = Math.round((Date.now() - item.publishedAt) / 60000);
       return m < 60 ? `${m} 分鐘前` : m < 1440 ? `${Math.round(m/60)} 小時前` : `${Math.round(m/1440)} 天前`;
     })() : '';
-    const pointsHtml = ai.points.map(p => `<div class="news-point">• ${p}</div>`).join('');
+    const pointsHtml = (item.points || []).map(p => `<div class="news-point">• ${p}</div>`).join('');
     return `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">
-      <div class="news-ai-title">${ai.zhTitle}</div>
-      <div class="news-keypoints">${pointsHtml}</div>
+      <div class="news-ai-title">${item.zhTitle || item.title}</div>
+      ${pointsHtml ? `<div class="news-keypoints">${pointsHtml}</div>` : ''}
       <div class="news-meta">
         <span>${item.source || ''}</span>
         ${timeAgo ? `<span>${timeAgo}</span>` : ''}
-        <span class="news-sent ${sentClass}" style="margin-left:auto">${ai.label}</span>
+        <span class="news-sent ${sentClass}" style="margin-left:auto">${label}</span>
       </div>
-      <div class="news-ai-analysis">
+      ${item.impact ? `<div class="news-ai-analysis">
         <span class="news-ai-label">🤖 市場影響</span>
-        <span style="color:${ai.color}">${ai.impact}</span>
-        <span class="news-ai-conf" style="color:${confColor}">信心 ${ai.conf}%</span>
-      </div>
+        <span style="color:${color}">${item.impact}</span>
+        <span class="news-ai-conf" style="color:${confColor}">信心 ${conf}%</span>
+      </div>` : ''}
     </a>`;
   }).join('');
 
@@ -1694,13 +1699,42 @@ async function loadDashboardMacro() {
 async function loadDashboardNews() {
   const el = document.getElementById('news-body');
   if (!el) return;
-  el.innerHTML = '<div class="adv-loading">載入財經新聞...</div>';
-  try {
-    const items = await fetchCryptoNews();
-    el.innerHTML = buildNewsWidget(items);
-  } catch {
-    el.innerHTML = buildNewsWidget([]);
+  const s = loadSettings();
+  el.innerHTML = `<div class="adv-loading">${s.geminiKey ? 'AI 分析新聞中...' : '載入財經新聞...'}</div>`;
+
+  const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
+  let raw = [];
+  try { raw = await fetchCryptoNews(); } catch {}
+  const recent = raw.filter(it => !it.publishedAt || (Date.now() - it.publishedAt) < ONE_WEEK).slice(0, 8);
+
+  // Gemini AI path
+  if (s.geminiKey && recent.length) {
+    try {
+      const aiArr = await fetchNewsWithGemini(recent, s.geminiKey);
+      const processed = recent.map((item, i) => {
+        const ai = aiArr[i] || {};
+        return {
+          ...item,
+          zhTitle:   ai.title     || item.title,
+          points:    Array.isArray(ai.points) ? ai.points : [],
+          impact:    ai.impact    || '',
+          sentiment: ai.sentiment || 'neutral',
+          conf:      typeof ai.conf === 'number' ? ai.conf : 50,
+        };
+      });
+      el.innerHTML = buildNewsWidget(processed);
+      return;
+    } catch(e) {
+      console.warn('Gemini news failed, falling back:', e.message);
+    }
   }
+
+  // Keyword-based fallback
+  const processed = recent.map(item => {
+    const ai = aiProcessNews(item.title, item.body || '');
+    return { ...item, zhTitle: ai.zhTitle, points: ai.points, impact: ai.impact, sentiment: ai.sentiment, conf: ai.conf };
+  });
+  el.innerHTML = buildNewsWidget(processed);
 }
 
 /* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
@@ -4679,6 +4713,8 @@ function populateSettingsPage() {
   const nBearThr = document.getElementById('s-notif-bear-thr');
   if (tgToken)  tgToken.value  = s.tgToken  || '';
   if (tgChatId) tgChatId.value = s.tgChatId || '';
+  const geminiEl = document.getElementById('s-gemini-key');
+  if (geminiEl) geminiEl.value = s.geminiKey || '';
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
@@ -4702,6 +4738,7 @@ function saveAllSettings() {
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
     notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
+    geminiKey:       document.getElementById('s-gemini-key')?.value.trim() || '',
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();

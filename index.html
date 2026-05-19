@@ -591,6 +591,14 @@
           <h3 class="settings-group-ttl">API 配置</h3>
 
           <div class="setting-row vertical">
+            <div class="setting-info">
+              <div class="setting-name">Gemini AI 金鑰 <span style="font-size:0.7rem;color:var(--accent);font-weight:400">（新聞 AI 分析用）</span></div>
+              <div class="setting-desc">填入後新聞將由真實 AI 摘要，免費取得：<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--accent)">aistudio.google.com</a></div>
+            </div>
+            <input id="s-gemini-key" type="password" class="setting-input" placeholder="AIza..." autocomplete="off" style="margin-top:6px" />
+          </div>
+
+          <div class="setting-row vertical">
             <div class="setting-name">API 端点</div>
             <input type="text" class="setting-input" id="s-api-url" value="http://127.0.0.1:8000/scan" />
           </div>

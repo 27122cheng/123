@@ -455,6 +455,41 @@ async function fetchCryptoNews() {
   return [];
 }
 
+/* Gemini 1.5 Flash — 真實 AI 新聞摘要 (免費，需 Google AI Studio key) */
+async function fetchNewsWithGemini(items, geminiKey) {
+  const newsList = items.map((it, i) =>
+    `[${i + 1}] Title: ${it.title}\nSummary: ${(it.body || '').slice(0, 300)}`
+  ).join('\n\n');
+
+  const prompt =
+    `你是專業加密貨幣分析師，請分析以下最近一週的加密貨幣新聞，用繁體中文輸出 JSON 陣列。\n` +
+    `每個物件格式（嚴格按照此結構）：\n` +
+    `{"title":"15字內中文摘要標題","points":["重點一（15~25字）","重點二（15~25字）"],"impact":"對加密市場的影響（30~50字）","sentiment":"bull或bear或neutral","conf":信心整數0到100}\n\n` +
+    `新聞列表：\n${newsList}\n\n` +
+    `直接輸出 JSON 陣列，不要任何額外文字或 markdown。`;
+
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiKey}`,
+    {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 2500 },
+      }),
+    }
+  );
+  clearTimeout(t);
+  if (!res.ok) throw new Error(`Gemini ${res.status}`);
+  const data = await res.json();
+  const raw  = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+  // Strip markdown code fences if Gemini wraps them
+  const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  return JSON.parse(clean);
+}
+
 /* ── 全球加密貨幣市場數據（CoinGecko 免費）──────────────────── */
 async function fetchGlobalMarket() {
   try {
@@ -665,6 +700,7 @@ const DEFAULT_SETTINGS = {
   tgChatId:        '',
   notifBullScore:  65,
   notifBearScore:  35,
+  geminiKey:       '',
 };
 
 function loadSettings() {
