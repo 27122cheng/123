@@ -3961,7 +3961,10 @@ function renderPositionsPage() {
       totalRisk    += risk;
       hasPrice++;
       if (unrealR > 0) { profitCount++; profitTotalR += unrealR; }
-      else if (unrealR < 0) { lossCount++; lossTotalR += unrealR; }
+      else             { lossCount++;   lossTotalR  += unrealR; }
+    } else {
+      // 無即時價格 → 歸入虧損中，確保分類加總 = 全部
+      lossCount++;
     }
 
     const conf      = t.conf || Math.min(90, t.score || 60);
@@ -4074,7 +4077,7 @@ function renderPositionsPage() {
     </div>
 
     <div class="pos-tabs">
-      <button class="pos-tab-btn${_posTab==='all'?' pos-tab-active':''}" data-tab="all" onclick="setPosTab('all')">全部 ${open.length}</button>
+      <button class="pos-tab-btn${_posTab==='all'?' pos-tab-active':''}" data-tab="all" onclick="setPosTab('all')">全部 ${open.length + pending.length}</button>
       <button class="pos-tab-btn${_posTab==='profit'?' pos-tab-active':''}" data-tab="profit" onclick="setPosTab('profit')">📈 盈利中 ${profitCount}</button>
       <button class="pos-tab-btn${_posTab==='loss'?' pos-tab-active':''}" data-tab="loss" onclick="setPosTab('loss')">📉 虧損中 ${lossCount}</button>
       <button class="pos-tab-btn${_posTab==='pending'?' pos-tab-active':''}" data-tab="pending" onclick="setPosTab('pending')">⏳ 未進場 ${pending.length}</button>
@@ -4085,7 +4088,7 @@ function renderPositionsPage() {
       data-profit-r="${profitTotalR.toFixed(2)}"
       data-loss-count="${lossCount}"
       data-loss-r="${lossTotalR.toFixed(2)}"
-      data-all-count="${open.length}"
+      data-all-count="${open.length + pending.length}"
       data-all-r="${totalUnrealR.toFixed(2)}"
       data-pending-count="${pending.length}">
     </div>
