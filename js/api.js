@@ -344,6 +344,7 @@ async function fetchMTFKlines(symbol) {
         orderFlow: analyzeOrderFlow(raw),
         volAI:     tf === '1h' ? analyzeVolumeAI(raw) : undefined,
         vp:        (tf === '1h' || tf === '4h') ? computeVolumeProfile(raw) : undefined,
+        traps:     (tf === '1h' || tf === '15m') ? detectTrapPatterns(raw) : undefined,
       };
     }
   }));

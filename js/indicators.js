@@ -471,3 +471,71 @@ function analyzeVolumeAI(raw) {
     priceChg5: parseFloat((priceChg5 * 100).toFixed(2)),
   };
 }
+
+/* ── 市場陷阱偵測 (PO3 / 2B / 流動性掃蕩) ────────────────────── */
+function detectTrapPatterns(klines) {
+  if (!klines || klines.length < 40) return null;
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const opens  = klines.map(k => parseFloat(k[1]));
+  const n = closes.length - 1;
+  const cur = closes[n];
+
+  const results = { po3Bull: null, po3Bear: null, twoB_Bull: null, twoB_Bear: null, sweepBull: null, sweepBear: null };
+
+  /* PO3（Power of 3）：假突破後回歸
+     看多 PO3：近 10 根 K 棒建立區間 → 下方假突破 → 現在回到區間上方 */
+  const range10High = Math.max(...highs.slice(-15, -5));
+  const range10Low  = Math.min(...lows.slice(-15, -5));
+  const rangeMid    = (range10High + range10Low) / 2;
+  const recentLow   = Math.min(...lows.slice(-5));
+  const recentHigh  = Math.max(...highs.slice(-5));
+
+  if (range10High > range10Low * 1.002) {
+    // PO3 看多：曾跌破區間低點，現在回收
+    if (recentLow < range10Low * 0.998 && cur > range10Low * 0.999) {
+      const sweepDepth = ((range10Low - recentLow) / range10Low * 100).toFixed(2);
+      results.po3Bull = { sweepLevel: range10Low, depth: parseFloat(sweepDepth), label: `PO3 看多陷阱：掃蕩低點 $${range10Low.toPrecision(5)} 後回收` };
+    }
+    // PO3 看空：曾突破區間高點，現在跌回
+    if (recentHigh > range10High * 1.002 && cur < range10High * 1.001) {
+      const sweepDepth = ((recentHigh - range10High) / range10High * 100).toFixed(2);
+      results.po3Bear = { sweepLevel: range10High, depth: parseFloat(sweepDepth), label: `PO3 看空陷阱：掃蕩高點 $${range10High.toPrecision(5)} 後回落` };
+    }
+  }
+
+  /* 2B Pattern：雙重頂底（第二次測試失敗）
+     2B 看多：第一個低點 → 第二個低點未能創新低 → 反轉 */
+  const half = Math.floor((klines.length - 5) / 2);
+  const low1  = Math.min(...lows.slice(0, half));
+  const low2  = Math.min(...lows.slice(half, -3));
+  const high1 = Math.max(...highs.slice(0, half));
+  const high2 = Math.max(...highs.slice(half, -3));
+
+  if (low2 > low1 * 1.003 && cur > low2 * 1.005) {
+    results.twoB_Bull = { firstLow: low1, secondLow: low2, label: `2B 看多型態：第二低點 $${low2.toPrecision(5)} 未破前低 $${low1.toPrecision(5)}，多頭反轉信號` };
+  }
+  if (high2 < high1 * 0.997 && cur < high2 * 0.995) {
+    results.twoB_Bear = { firstHigh: high1, secondHigh: high2, label: `2B 看空型態：第二高點 $${high2.toPrecision(5)} 未過前高 $${high1.toPrecision(5)}，空頭反轉信號` };
+  }
+
+  /* 流動性掃蕩（Stop Hunt）：長上/下影線掃蕩重要位後快速反轉 */
+  const lastCandle = { h: highs[n], l: lows[n], o: opens[n], c: closes[n] };
+  const prevSwingHigh = Math.max(...highs.slice(-20, -1));
+  const prevSwingLow  = Math.min(...lows.slice(-20, -1));
+
+  // 看多掃蕩：下影線掃過前低，收盤收回
+  if (lastCandle.l < prevSwingLow * 0.999 && lastCandle.c > prevSwingLow) {
+    const wickPct = ((prevSwingLow - lastCandle.l) / lastCandle.l * 100).toFixed(2);
+    results.sweepBull = { level: prevSwingLow, wickPct: parseFloat(wickPct), label: `流動性掃蕩（看多）：下影線掃蕩前低 $${prevSwingLow.toPrecision(5)}，空頭陷阱成立` };
+  }
+  // 看空掃蕩：上影線掃過前高，收盤跌回
+  if (lastCandle.h > prevSwingHigh * 1.001 && lastCandle.c < prevSwingHigh) {
+    const wickPct = ((lastCandle.h - prevSwingHigh) / prevSwingHigh * 100).toFixed(2);
+    results.sweepBear = { level: prevSwingHigh, wickPct: parseFloat(wickPct), label: `流動性掃蕩（看空）：上影線掃蕩前高 $${prevSwingHigh.toPrecision(5)}，多頭陷阱成立` };
+  }
+
+  const hasAny = Object.values(results).some(v => v !== null);
+  return hasAny ? results : null;
+}

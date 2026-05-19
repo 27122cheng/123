@@ -52,6 +52,7 @@ async function init() {
   loadDashboardMacro();
   startRefreshCycle();
   startDailyBriefingCheck();
+  startEconCalendarCheck();
   bindEvents();
   checkApiStatus();
 }
@@ -155,6 +156,7 @@ function startRefreshCycle() {
     checkAndSendAlerts(data);
     updateOpenTrades(data);
     recordSignalsFromScan(data);
+    checkPostDataReversal(data);
     if (state.currentPage === 'positions') renderPositionsPage();
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
@@ -185,6 +187,7 @@ async function manualRefresh() {
     checkAndSendAlerts(data);
     updateOpenTrades(data);
     recordSignalsFromScan(data);
+    checkPostDataReversal(data);
     if (state.currentPage === 'positions') renderPositionsPage();
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`手動刷新完成（${srcLabel}）`, 'success');
@@ -875,8 +878,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const d1Bull  = d1sig_?.signal?.includes('bull') ? 1 : 0;
   const d1Bear  = d1sig_?.signal?.includes('bear') ? 1 : 0;
 
-  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull;
-  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear;
+  // 陷阱型態加成（PO3 / 2B / 掃蕩後反轉 = 高信心進場點）
+  const traps1h__  = mtfData['1h']?.traps;
+  const trapBull   = traps1h__ ? ((traps1h__.po3Bull || traps1h__.twoB_Bull || traps1h__.sweepBull) ? 2 : 0) : 0;
+  const trapBear   = traps1h__ ? ((traps1h__.po3Bear || traps1h__.twoB_Bear || traps1h__.sweepBear) ? 2 : 0) : 0;
+
+  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull + trapBull;
+  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear + trapBear;
 
   let direction = 'wait';
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
@@ -1010,6 +1018,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (volAI1h.divergence === 'bullish_div')
         entryReasons.push('看漲背離（量跌價跌），下跌動能衰竭');
     }
+    // 市場陷阱偵測：PO3 / 2B / 流動性掃蕩
+    const traps1h = mtfData['1h']?.traps;
+    const traps15 = mtfData['15m']?.traps;
+    const bullTraps = [
+      traps1h?.po3Bull?.label, traps1h?.twoB_Bull?.label, traps1h?.sweepBull?.label,
+      traps15?.po3Bull?.label, traps15?.sweepBull?.label,
+    ].filter(Boolean);
+    bullTraps.forEach(t => entryReasons.push(`📌 ${t}`));
     if (!entryReasons.length)      entryReasons.push('15m/1h 多頭信號共振');
   } else {
     const nearRes = resists[0];
@@ -1042,6 +1058,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (volAI1hShort.divergence === 'bearish_div')
         entryReasons.push('看跌背離（量跌價漲），上漲動能不足');
     }
+    // 市場陷阱偵測
+    const traps1h_ = mtfData['1h']?.traps;
+    const traps15_ = mtfData['15m']?.traps;
+    const bearTraps = [
+      traps1h_?.po3Bear?.label, traps1h_?.twoB_Bear?.label, traps1h_?.sweepBear?.label,
+      traps15_?.po3Bear?.label, traps15_?.sweepBear?.label,
+    ].filter(Boolean);
+    bearTraps.forEach(t => entryReasons.push(`📌 ${t}`));
     if (!entryReasons.length)      entryReasons.push('15m/1h 空頭信號共振');
   }
 
@@ -1049,18 +1073,33 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   let sl, slReason;
   if (isLong) {
     const structSup = supps[0] || (price - atr * 2);
-    sl = Math.min(structSup - atr * 0.3, entry - atr * 1.3);
-    const slDistPct = ((entry - sl) / price * 100).toFixed(2);
-    slReason = supps[0]
-      ? `1h 支撐結構 ${fmtPrice(supps[0])} 下方緩衝，-${slDistPct}%，跌破結構反轉`
-      : `現價下方 ${slDistPct}%（ATR 止損），動能失效離場`;
+    // 動態止損：有 PO3/2B/掃蕩訊號時可設更緊的止損（在陷阱低點下方）
+    const trapLow = traps1h__?.po3Bull?.sweepLevel || traps1h__?.sweepBull?.level;
+    if (trapLow && trapLow < entry && trapLow > entry - atr * 2) {
+      sl = trapLow - atr * 0.2; // 陷阱止損：掃蕩低點下方一點點緩衝
+      const slDistPct = ((entry - sl) / price * 100).toFixed(2);
+      slReason = `PO3/掃蕩低點 ${fmtPrice(trapLow)} 下方止損，-${slDistPct}%（結構化止損）`;
+    } else {
+      sl = Math.min(structSup - atr * 0.3, entry - atr * 1.3);
+      const slDistPct = ((entry - sl) / price * 100).toFixed(2);
+      slReason = supps[0]
+        ? `1h 支撐結構 ${fmtPrice(supps[0])} 下方緩衝，-${slDistPct}%，跌破結構反轉`
+        : `現價下方 ${slDistPct}%（ATR 止損），動能失效離場`;
+    }
   } else {
     const structRes = resists[0] || (price + atr * 2);
-    sl = Math.max(structRes + atr * 0.3, entry + atr * 1.3);
-    const slDistPct = ((sl - entry) / price * 100).toFixed(2);
-    slReason = resists[0]
-      ? `1h 壓力結構 ${fmtPrice(resists[0])} 上方緩衝，+${slDistPct}%，突破結構反轉`
-      : `現價上方 ${slDistPct}%（ATR 止損），動能失效離場`;
+    const trapHigh = traps1h__?.po3Bear?.sweepLevel || traps1h__?.sweepBear?.level;
+    if (trapHigh && trapHigh > entry && trapHigh < entry + atr * 2) {
+      sl = trapHigh + atr * 0.2;
+      const slDistPct = ((sl - entry) / price * 100).toFixed(2);
+      slReason = `PO3/掃蕩高點 ${fmtPrice(trapHigh)} 上方止損，+${slDistPct}%（結構化止損）`;
+    } else {
+      sl = Math.max(structRes + atr * 0.3, entry + atr * 1.3);
+      const slDistPct = ((sl - entry) / price * 100).toFixed(2);
+      slReason = resists[0]
+        ? `1h 壓力結構 ${fmtPrice(resists[0])} 上方緩衝，+${slDistPct}%，突破結構反轉`
+        : `現價上方 ${slDistPct}%（ATR 止損），動能失效離場`;
+    }
   }
   const risk = Math.abs(entry - sl) || atr;
 
@@ -2846,6 +2885,178 @@ function buildDailyBriefingMsg(fg, mkt) {
     `📆 <b>今日重要數據</b>\n${eventSection}\n\n` +
     `💼 <b>今日關注倉位</b>\n${watchSection}\n\n` +
     `<i>🤖 由 AI 自動分析生成 · 僅供參考，不構成投資建議</i>`;
+}
+
+/* ── 台灣時間重要數據預警系統 ─────────────────────────────────── */
+// 每週固定時程（台灣時間 UTC+8）
+// 格式：{ name, dayOfWeek (0=日…6=六), twHour, twMin, prevKey, description, impact }
+const WEEKLY_DATA_SCHEDULE = [
+  { name: '美國初請失業金人數', dayOfWeek: 4, twHour: 20, twMin: 30, prevKey: 'usJobless',
+    description: '衡量每週新增失業人數，數字越低代表勞動市場越強勁', impact: 'medium',
+    bullIf: '< 預期（就業強勁 → 聯準會鷹派 → 美元走強，加密短線承壓）',
+    bearIf: '> 預期（就業疲軟 → 降息預期升溫 → 加密可能反應偏多）' },
+  { name: 'EIA 原油庫存', dayOfWeek: 3, twHour: 22, twMin: 30, prevKey: 'eiaOil',
+    description: '美國原油庫存週報，影響通膨預期與風險情緒', impact: 'low',
+    bullIf: '庫存大幅下降（通膨預期升溫，加密有時跟漲）',
+    bearIf: '庫存大幅增加（通縮壓力，風險情緒轉差）' },
+  { name: 'FOMC 紀要', dayOfWeek: 3, twHour: 2, twMin: 0, prevKey: 'fomc',
+    description: '聯準會政策會議紀要，揭示利率決策討論細節', impact: 'high',
+    bullIf: '鴿派傾向（降息預期升溫）→ 加密強烈看多',
+    bearIf: '鷹派傾向（維持高利率）→ 加密短線承壓' },
+];
+
+// 每月重要數據（以月份某一週某一天的方式描述）
+const MONTHLY_DATA_SCHEDULE = [
+  { name: '美國非農就業報告（NFP）', weekOfMonth: 1, dayOfWeek: 5, twHour: 20, twMin: 30,
+    prevKey: 'usNFP', impact: 'high',
+    description: '最重要的就業數據，直接影響聯準會利率決策',
+    bullIf: '< 預期（降息預期升） → 加密大幅上漲機率高',
+    bearIf: '> 預期（鷹派預期） → 美元走強，加密承壓' },
+  { name: '美國消費者物價指數（CPI）', weekOfMonth: 2, dayOfWeek: 2, twHour: 20, twMin: 30,
+    prevKey: 'usCPI', impact: 'high',
+    description: '通膨指標，聯準會最重視的數據之一',
+    bullIf: '< 預期（通膨降溫）→ 降息預期升溫，加密偏多',
+    bearIf: '> 預期（通膨持續）→ 高利率預期延續，加密偏空' },
+  { name: '美國生產者物價指數（PPI）', weekOfMonth: 2, dayOfWeek: 3, twHour: 20, twMin: 30,
+    prevKey: 'usPPI', impact: 'medium',
+    description: '生產端通膨先行指標',
+    bullIf: '< 預期（生產端通縮）→ CPI 後續下行空間大，偏多',
+    bearIf: '> 預期（成本壓力增）→ 通膨預期升，偏空' },
+  { name: '美國零售銷售', weekOfMonth: 3, dayOfWeek: 2, twHour: 20, twMin: 30,
+    prevKey: 'usRetail', impact: 'medium',
+    description: '消費支出指標，反映經濟成長動能',
+    bullIf: '< 預期（消費疲軟）→ 降息預期升，加密偏多',
+    bearIf: '> 預期（消費強勁）→ 高利率預期持續，加密承壓' },
+  { name: 'ADP 就業人數', weekOfMonth: 1, dayOfWeek: 3, twHour: 20, twMin: 15,
+    prevKey: 'usADP', impact: 'medium',
+    description: 'NFP 前瞻指標，為非農數據的早期信號',
+    bullIf: '< 預期 → 降息預期升，加密偏多',
+    bearIf: '> 預期 → 就業強勁，鷹派預期延續' },
+];
+
+const ECON_ALERT_KEY = 'csp_econ_alert_sent';
+
+function startEconCalendarCheck() {
+  // 每分鐘檢查一次即將公布的重要數據
+  setInterval(checkUpcomingEconEvents, 60 * 1000);
+}
+
+function getTodayEconEvents() {
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0=日…6=六
+  const weekOfMonth = Math.ceil(now.getDate() / 7);
+  const events = [];
+
+  // 每週固定事件
+  WEEKLY_DATA_SCHEDULE.forEach(ev => {
+    if (ev.dayOfWeek === dayOfWeek) {
+      const eventTime = new Date(now);
+      eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
+      events.push({ ...ev, eventTime, type: 'weekly' });
+    }
+  });
+
+  // 每月事件（近似匹配）
+  MONTHLY_DATA_SCHEDULE.forEach(ev => {
+    const weekMatch = Math.abs(weekOfMonth - ev.weekOfMonth) <= 1; // ±1 週容差
+    if (ev.dayOfWeek === dayOfWeek && weekMatch) {
+      const eventTime = new Date(now);
+      eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
+      events.push({ ...ev, eventTime, type: 'monthly' });
+    }
+  });
+
+  return events;
+}
+
+async function checkUpcomingEconEvents() {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+
+  const now = Date.now();
+  const events = getTodayEconEvents();
+  const sentToday = JSON.parse(localStorage.getItem(ECON_ALERT_KEY) || '{}');
+  const todayKey  = new Date().toDateString();
+
+  for (const ev of events) {
+    const eventTs  = ev.eventTime.getTime();
+    const alertKey = `${todayKey}_${ev.name}`;
+    // 距離公布時間 55~65 分鐘內發送（避免重複）
+    const minsUntil = (eventTs - now) / 60000;
+    if (minsUntil < 55 || minsUntil > 65) continue;
+    if (sentToday[alertKey]) continue;
+    sentToday[alertKey] = true;
+    localStorage.setItem(ECON_ALERT_KEY, JSON.stringify(sentToday));
+    sendEconEventAlert(ev, s);
+  }
+}
+
+function sendEconEventAlert(ev, s) {
+  const impactEmoji = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
+  const twTime = `${String(ev.twHour).padStart(2,'0')}:${String(ev.twMin).padStart(2,'0')} TW`;
+  const tlog   = loadTradeLog();
+  const openTrades = tlog.filter(t => t.status === 'open');
+  const tradeNote  = openTrades.length
+    ? `\n⚠️ 目前持有 ${openTrades.length} 筆倉位，數據公布前建議確認止損位置`
+    : '';
+
+  const msg =
+    `${impactEmoji} <b>重要數據即將公布（約1小時後）</b>\n\n` +
+    `📊 <b>${ev.name}</b>\n` +
+    `⏰ 台灣時間：<b>${twTime}</b>\n` +
+    `📝 說明：${ev.description}\n\n` +
+    `📈 若數據優於預期：${ev.bullIf}\n` +
+    `📉 若數據差於預期：${ev.bearIf}\n\n` +
+    `🎯 <b>盤面影響分析</b>\n` +
+    `• 數據公布前 30 分鐘通常出現方向性試探\n` +
+    `• 公布後 5~15 分鐘為高波動期，避免追入\n` +
+    `• 公布後 1 小時若延續方向可考慮跟進${tradeNote}`;
+  sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+}
+
+function checkPostDataReversal(data) {
+  const tlog = loadTradeLog();
+  const openTrades = tlog.filter(t => t.status === 'open');
+  if (!openTrades.length) return;
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+
+  const alertKey  = 'csp_reversal_alert';
+  const sentAlerts = JSON.parse(localStorage.getItem(alertKey) || '{}');
+  const now = Date.now();
+
+  for (const trade of openTrades) {
+    const coin = data.find(d => d.symbol === trade.symbol);
+    if (!coin) continue;
+    const cur   = parseFloat(coin.price) || 0;
+    const entry = trade.entry || 0;
+    if (!cur || !entry) continue;
+    const isLong = trade.direction === 'long';
+    // 計算從進場以來的不利波動
+    const adv = isLong ? (entry - cur) / entry : (cur - entry) / entry;
+    // 超過 1.5% 的快速不利移動 → 提醒
+    if (adv > 0.015) {
+      const alertId = `${trade.id}_${Math.floor(now / (30 * 60 * 1000))}`; // 每 30 分鐘最多一次
+      if (sentAlerts[alertId]) continue;
+      sentAlerts[alertId] = true;
+      localStorage.setItem(alertKey, JSON.stringify(sentAlerts));
+      const fmt = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+      const dir = isLong ? '▲ 多' : '▼ 空';
+      const pctStr = (adv * 100).toFixed(2);
+      const msg =
+        `⚡ <b>市場快速震盪警告</b>\n\n` +
+        `💎 <b>${trade.symbol}</b> ${dir}\n\n` +
+        `📍 進場：$${fmt(entry)}\n` +
+        `💰 現價：$${fmt(cur)}\n` +
+        `📉 不利移動：<b>-${pctStr}%</b>\n\n` +
+        `🔔 <b>建議檢視</b>\n` +
+        `• 確認止損位 $${fmt(trade.sl)} 是否需要調整\n` +
+        `• 若破位結構建議立即止損出場\n` +
+        `• 數據公布期間波動加劇屬正常，確認後再決策\n\n` +
+        `🔗 <a href="${window.location.origin + window.location.pathname}">查看 ${trade.symbol.replace('/USDT','')} 詳細分析 →</a>`;
+      sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+    }
+  }
 }
 
 /* ── AI 學習系統 ─────────────────────────────────────────────── */
