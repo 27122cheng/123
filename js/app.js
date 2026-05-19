@@ -1702,33 +1702,13 @@ async function loadDashboardMacro() {
 async function loadDashboardNews() {
   const el = document.getElementById('news-body');
   if (!el) return;
-  const s = loadSettings();
-  el.innerHTML = `<div class="adv-loading">${s.geminiKey ? 'AI 分析新聞中...' : '載入財經新聞...'}</div>`;
-
-  // 有 Gemini Key：直接讓 AI 生成新聞摘要，不依賴第三方新聞 API
-  if (s.geminiKey) {
-    try {
-      const items = await fetchNewsFromGemini(s.geminiKey);
-      el.innerHTML = buildNewsWidget(items);
-      return;
-    } catch (e) {
-      console.warn('Gemini direct news failed:', e.message);
-      el.innerHTML = `<div class="outlook-header" style="margin-bottom:8px">
-        <span class="outlook-title">📰 本週財經新聞重點</span>
-      </div>
-      <div style="color:var(--bear);font-size:0.8rem;padding:8px 0">
-        ⚠️ Gemini API 錯誤：${e.message.slice(0, 100)}<br>
-        <span style="color:var(--text3)">請確認 Settings 中 Gemini AI 金鑰是否正確儲存</span>
-      </div>`;
-      return;
-    }
-  }
-
-  // 無 Key：嘗試第三方新聞 API + 關鍵字分析
+  el.innerHTML = '<div class="adv-loading">AI 分析新聞中...</div>';
   const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
   let raw = [];
   try { raw = await fetchCryptoNews(); } catch {}
-  const recent = raw.filter(it => !it.publishedAt || (Date.now() - it.publishedAt) < ONE_WEEK).slice(0, 8);
+  const recent = raw
+    .filter(it => !it.publishedAt || (Date.now() - it.publishedAt) < ONE_WEEK)
+    .slice(0, 8);
   const processed = recent.map(item => {
     const ai = aiProcessNews(item.title, item.body || '');
     return { ...item, zhTitle: ai.zhTitle, points: ai.points, impact: ai.impact, sentiment: ai.sentiment, conf: ai.conf };
@@ -4712,8 +4692,6 @@ function populateSettingsPage() {
   const nBearThr = document.getElementById('s-notif-bear-thr');
   if (tgToken)  tgToken.value  = s.tgToken  || '';
   if (tgChatId) tgChatId.value = s.tgChatId || '';
-  const geminiEl = document.getElementById('s-gemini-key');
-  if (geminiEl) geminiEl.value = s.geminiKey || '';
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
@@ -4737,7 +4715,6 @@ function saveAllSettings() {
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
     notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
-    geminiKey:       document.getElementById('s-gemini-key')?.value.trim() || '',
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();
