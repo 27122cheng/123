@@ -495,16 +495,31 @@ function renderTableBody(tbodyId, rows) {
   tbody.innerHTML = rows.slice(0, 25).map(row => buildDashRow(row)).join('');
 }
 
-/* ── 市场排名表 ─────────────────────────────────────────────── */
+/* ── 市场排名表（巨鯨+籌碼聚集前20）─────────────────────────── */
+function whaleVPScore(row) {
+  const dirStrength = Math.abs((parseFloat(row.score) || 50) - 50);
+  const trendPower  = parseFloat(row.adx) || 20;
+  const volNorm     = Math.min(1, Math.log10((parseFloat(row.volume) || 1) + 1) / 10);
+  return dirStrength * trendPower * (0.5 + volNorm * 0.5);
+}
+
 function renderRankingTable(search) {
   const tbody = document.getElementById('ranking-tbody');
   if (!tbody) return;
 
-  const rs  = state.sortState.ranking;
-  let rows  = sortArr([...state.data], rs.key, rs.dir);
+  let rows = [...state.data];
   if (search) rows = rows.filter(d => d.symbol.replace('/USDT','').includes(search));
 
-  tbody.innerHTML = rows.map((row, i) => `
+  rows = rows
+    .map(r => ({ ...r, _wv: whaleVPScore(r) }))
+    .sort((a, b) => b._wv - a._wv)
+    .slice(0, 20);
+
+  tbody.innerHTML = rows.map((row, i) => {
+    const wvPct   = Math.min(100, (row._wv / 1250) * 100);
+    const wvColor = row.score >= 60 ? 'var(--bull)' : row.score <= 40 ? 'var(--bear)' : 'var(--neutral)';
+    const wvLabel = row.score >= 60 ? '看多集中' : row.score <= 40 ? '看空集中' : '中性';
+    return `
     <tr onclick="navigateTo('coin','${row.symbol}')">
       <td class="rank-cell">${i + 1}</td>
       <td class="sym-cell">
@@ -522,18 +537,20 @@ function renderRankingTable(search) {
       <td class="price-cell">${fmtPrice(row.price)}</td>
       <td><span class="trend-badge ${trendClass(row.trend)}">${trendArrow(row.trend)} ${row.trend}</span></td>
       <td>
-        <div class="score-wrap">
-          <span style="font-weight:700;color:${scoreColor(row.score)}">${row.score}</span>
-          <div class="score-mini-bar" style="min-width:50px">
-            <div class="score-mini-fill" style="width:${row.score}%;background:${scoreColor(row.score)}"></div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="flex:1;height:5px;background:rgba(255,255,255,0.06);border-radius:3px;min-width:60px">
+              <div style="height:100%;width:${wvPct}%;background:${wvColor};border-radius:3px;transition:width .3s"></div>
+            </div>
+            <span style="font-size:0.7rem;color:${wvColor};font-weight:600;min-width:44px">${wvLabel}</span>
           </div>
+          <div style="font-size:0.7rem;color:var(--text3)">ADX ${row.adx} · 評分 ${row.score}</div>
         </div>
       </td>
       <td style="color:${rsiColor(row.rsi)}">${row.rsi}</td>
       <td style="color:var(--text2);font-size:0.82rem">${fmtVolume(row.volume)}</td>
-      <td style="color:${adxColor(row.adx)}">${row.adx}</td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 /* ── 反转机会卡片 ───────────────────────────────────────────── */
@@ -824,8 +841,39 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (whale.buyPct < 30 && whale.bigSellCount >= 5)     whaleBearBonus++;
   }
 
-  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus;
-  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus;
+  // 訂單流加成（CVD 趨勢 + 主動買賣比）
+  const of15m_        = mtfData['15m']?.orderFlow;
+  const cvdTrend_     = of15m_?.cvdTrend || 'neutral';
+  const buyPct_       = of15m_?.buyPct   || 50;
+  const orderFlowBull = (cvdTrend_ === 'bull' ? 1 : 0) + (buyPct_ > 62 ? 1 : 0);
+  const orderFlowBear = (cvdTrend_ === 'bear' ? 1 : 0) + (buyPct_ < 38 ? 1 : 0);
+
+  // Volume AI 加成（放量突破 / 成交量背離）
+  const volAI1h_  = mtfData['1h']?.volAI;
+  const volAIBull = volAI1h_
+    ? ((volAI1h_.isBreakout && volAI1h_.bias === 'bull') || (volAI1h_.isSpike && volAI1h_.bias === 'bull') ? 1 : 0)
+      + (volAI1h_.divergence === 'bullish_div' ? 1 : 0)
+    : 0;
+  const volAIBear = volAI1h_
+    ? ((volAI1h_.isBreakout && volAI1h_.bias === 'bear') || (volAI1h_.isSpike && volAI1h_.bias === 'bear') ? 1 : 0)
+      + (volAI1h_.divergence === 'bearish_div' ? 1 : 0)
+    : 0;
+
+  // 籌碼分佈（VP）加成
+  const vp1h_  = mtfData['1h']?.vp;
+  const vpBull = vp1h_
+    ? ((vp1h_.priceAbovePOC && Math.abs(vp1h_.distToPOC) < 3) ? 1 : 0)
+      + (vp1h_.hvns?.some(h => Math.abs(h - price) / price < 0.01) ? 1 : 0)
+    : 0;
+  const vpBear = vp1h_ ? ((!vp1h_.priceAbovePOC && Math.abs(vp1h_.distToPOC) < 3) ? 1 : 0) : 0;
+
+  // 日線趨勢加成
+  const d1sig_  = mtfData['1d']?.signal;
+  const d1Bull  = d1sig_?.signal?.includes('bull') ? 1 : 0;
+  const d1Bear  = d1sig_?.signal?.includes('bear') ? 1 : 0;
+
+  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull;
+  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear;
 
   let direction = 'wait';
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
@@ -837,7 +885,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (direction === 'short' && coin.score > 40) direction = 'wait';
   // 信號強度未達 60% 一律觀望（多空通用）
   if (direction !== 'wait') {
-    const prelimConf = Math.min(90, (direction === 'long' ? totalBull : totalBear) * 12);
+    const prelimConf = Math.min(90, Math.max(40, 40 + (direction === 'long' ? totalBull : totalBear) * 7));
     if (prelimConf < 60) direction = 'wait';
   }
 
@@ -905,7 +953,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const ltTag  = ltBias === 'long'  ? ' <span class="lt-tag lt-bull">〔長線看多〕</span>'
                : ltBias === 'short' ? ' <span class="lt-tag lt-bear">〔長線看空〕</span>'
                : '';
-  const canScaleIn = ltBias === direction;
+  // 長線信心分：85+ 才允許加倉
+  let ltBullScore = 0, ltBearScore = 0;
+  ['4h','1d'].forEach(tf => {
+    const sig = mtfData[tf]?.signal;
+    if (!sig) return;
+    if (sig.signal?.includes('bull')) ltBullScore++;
+    if (sig.signal?.includes('bear')) ltBearScore++;
+    const rsi = sig.rsi || 50;
+    if (rsi < 45) ltBullScore += 0.5;
+    if (rsi > 55) ltBearScore += 0.5;
+  });
+  const ltRawScore = ltBias === 'long' ? ltBullScore : ltBias === 'short' ? ltBearScore : 0;
+  const ltConf     = ltBias !== 'neutral' ? Math.round(Math.min(95, 65 + ltRawScore * 15)) : 0;
+  const canScaleIn = ltBias === direction && ltConf >= 85;
 
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
@@ -1037,7 +1098,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   const rr1str = ((Math.abs(tp1 - entry) / risk)).toFixed(1);
   const rr2str = ((Math.abs(tp2 - entry) / risk)).toFixed(1);
-  const rawConf = Math.min(90, (isLong ? totalBull : totalBear) * 12);
+  const activeFactors = isLong ? totalBull : totalBear;
+  const rawConf = Math.min(90, Math.max(40, 40 + activeFactors * 7));
 
   // 計算入場時的額外背景資料（供 AI 學習使用）
   const entryMTFAlign = ['15m','1h','4h','1d'].filter(tf => {
@@ -1073,7 +1135,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     entryReason: entryReasons.join('，'),
     slReason, tp1Reason, tp2Reason,
     rr1: rr1str, rr2: rr2str, atr, conf,
-    longTermBias: ltBias, canScaleIn,
+    longTermBias: ltBias, canScaleIn, ltConf,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -1108,7 +1170,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
       refined: true,
-      longTermBias: ltBias, canScaleIn,
+      longTermBias: ltBias, canScaleIn, ltConf,
       scaleIns: [], peakPrice: null,
       ...tradeCtx,
     });
@@ -2431,6 +2493,28 @@ function updateOpenTrades(data) {
       const cur    = parseFloat(coin.price) || 0;
       const isLong = trade.direction === 'long';
       const entry  = trade.entry;
+
+      // ── 進場前信號有效性檢查：若市場出現反轉或信心不足，取消掛單 ──
+      const nowScore   = parseFloat(coin.score) || 50;
+      const nowConf    = isLong ? nowScore : 100 - nowScore;
+      const reversed   = isLong
+        ? (coin.trend?.includes('看跌') || nowScore <= 40)
+        : (coin.trend?.includes('看漲') || nowScore >= 60);
+      const lowConf    = nowConf < 52;  // 信心大幅下滑
+      const goWait     = !reversed && !lowConf && nowScore > 40 && nowScore < 60;
+      if (reversed || lowConf || goWait) {
+        let cancelReason;
+        if (reversed)   cancelReason = `市場出現反轉（評分 ${nowScore}，趨勢 ${coin.trend}）`;
+        else if (lowConf) cancelReason = `信心度不足（${nowConf.toFixed(0)}%，低於進場門檻）`;
+        else             cancelReason = `信號轉為觀望（評分 ${nowScore} 落入中性區間）`;
+        trade.status = 'cancelled';
+        trade.cancelReason = cancelReason;
+        trade.cancelTime   = Date.now();
+        changed = true;
+        sendCancelTelegramNotification(trade, cancelReason);
+        continue;
+      }
+
       // 多頭：現價降至進場價附近（0.5% 容差）
       // 空頭：現價升至進場價附近（0.5% 容差）
       const touched = isLong ? cur <= entry * 1.005 : cur >= entry * 0.995;
@@ -2591,6 +2675,23 @@ async function sendTP1Notifications(hits) {
       sendTelegramMessage(s.tgToken, s.tgChatId, msg);
     }
   }
+}
+
+function sendCancelTelegramNotification(trade, reason) {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+  const sym = trade.symbol.replace('/USDT', '');
+  const dir = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
+  const siteUrl = window.location.origin + window.location.pathname;
+  const msg =
+    `❌ <b>交易建議已取消</b>\n\n` +
+    `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
+    `📍 原進場位：$${fmt(trade.entry)}\n` +
+    `🛑 原止損位：$${fmt(trade.sl)}\n\n` +
+    `⚠️ 取消原因：${reason}\n\n` +
+    `🔗 <a href="${siteUrl}">查看 ${sym} 最新分析 →</a>`;
+  sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 
 function sendScaleInTelegramNotification(trade, scaleIn) {
@@ -3132,6 +3233,13 @@ function setPosTab(tab) {
   document.querySelectorAll('.pos-tab-btn').forEach(b => b.classList.toggle('pos-tab-active', b.dataset.tab === tab));
   filterPositionCards(document.getElementById('pos-search-input')?.value || '');
   updatePosTabSummary();
+  // 未進場分頁：顯示/隱藏
+  const pendingContainer = document.getElementById('pos-pending-container');
+  const mainList = document.getElementById('pos-list-container');
+  const posSearch = document.getElementById('pos-search-input');
+  if (pendingContainer) pendingContainer.style.display = tab === 'pending' ? '' : 'none';
+  if (mainList) mainList.style.display = tab === 'pending' ? 'none' : '';
+  if (posSearch) posSearch.style.display = tab === 'pending' ? 'none' : '';
 }
 
 function updatePosTabSummary() {
@@ -3156,6 +3264,11 @@ function updatePosTabSummary() {
            <span>合計未實現虧損 <strong>${r.toFixed(2)} R</strong></span>
          </div>`
       : `<div class="pos-tab-stat" style="color:var(--text3)">目前沒有虧損中的持倉</div>`;
+  } else if (_posTab === 'pending') {
+    const cnt = parseInt(d.pendingCount) || 0;
+    el.innerHTML = cnt > 0
+      ? `<div class="pos-tab-stat" style="color:var(--neutral)">⏳ 等待進場 <strong>${cnt} 筆</strong>，尚未計入持倉</div>`
+      : `<div class="pos-tab-stat" style="color:var(--text3)">目前沒有待確認的交易建議</div>`;
   } else {
     el.innerHTML = '';
   }
@@ -3165,8 +3278,10 @@ function renderPositionsPage() {
   const container = document.getElementById('positions-content');
   if (!container) return;
 
-  const open = loadTradeLog().filter(t => t.status === 'open' && t.entry);
-  if (open.length === 0) {
+  const tlog    = loadTradeLog();
+  const open    = tlog.filter(t => t.status === 'open' && t.entry);
+  const pending = tlog.filter(t => t.status === 'pending' && t.entry);
+  if (open.length === 0 && pending.length === 0) {
     container.innerHTML = `
       <div class="page-header"><div>
         <h1 class="page-title">持倉中</h1>
@@ -3314,6 +3429,7 @@ function renderPositionsPage() {
       <button class="pos-tab-btn${_posTab==='all'?' pos-tab-active':''}" data-tab="all" onclick="setPosTab('all')">全部 ${open.length}</button>
       <button class="pos-tab-btn${_posTab==='profit'?' pos-tab-active':''}" data-tab="profit" onclick="setPosTab('profit')">📈 營利中 ${profitCount}</button>
       <button class="pos-tab-btn${_posTab==='loss'?' pos-tab-active':''}" data-tab="loss" onclick="setPosTab('loss')">📉 虧損中 ${lossCount}</button>
+      <button class="pos-tab-btn${_posTab==='pending'?' pos-tab-active':''}" data-tab="pending" onclick="setPosTab('pending')">⏳ 未進場 ${pending.length}</button>
     </div>
 
     <div id="pos-tab-summary"
@@ -3322,19 +3438,60 @@ function renderPositionsPage() {
       data-loss-count="${lossCount}"
       data-loss-r="${lossTotalR.toFixed(2)}"
       data-all-count="${open.length}"
-      data-all-r="${totalUnrealR.toFixed(2)}">
+      data-all-r="${totalUnrealR.toFixed(2)}"
+      data-pending-count="${pending.length}">
     </div>
 
     <input class="pos-search" id="pos-search-input" placeholder="搜尋幣種..." oninput="filterPositionCards(this.value)">
     <div class="pos-list" id="pos-list-container">${cards}</div>
+    <div class="pos-list" id="pos-pending-container" style="display:none">
+      ${pending.length === 0
+        ? '<div class="pos-empty" style="margin-top:12px">目前沒有等待進場的交易建議</div>'
+        : pending.map(t => {
+            const isLong  = t.direction === 'long';
+            const dirClr  = isLong ? 'var(--bull)' : 'var(--bear)';
+            const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
+            const fmt     = v => v ? fmtPrice(v) : '—';
+            const expiry  = t.timestamp ? fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2) : '—';
+            const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
+            const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
+            const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
+            return `<div class="pos-card" data-symbol="${t.symbol}" data-unreal="" onclick="navigateTo('coin','${t.symbol}')">
+              <div class="pos-card-top">
+                <div class="pos-symbol">
+                  <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
+                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}</span>
+                </div>
+                <div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>
+              </div>
+              <div class="pos-grid">
+                <div class="pos-cell"><div class="pos-cell-lbl">目標進場</div><div class="pos-cell-val">${fmt(t.entry)}</div></div>
+                <div class="pos-cell"><div class="pos-cell-lbl">現價距進場</div><div class="pos-cell-val" style="color:${distClr}">${distPct !== null ? distPct + '%' : '—'}</div></div>
+                <div class="pos-cell"><div class="pos-cell-lbl">止損</div><div class="pos-cell-val" style="color:var(--bear)">${fmt(t.sl)}</div></div>
+                <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(t.tp1)}</div></div>
+              </div>
+              <div class="pos-footer">
+                <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
+                <span style="color:var(--text3);font-size:0.72rem">有效期至：${expiry}</span>
+              </div>
+            </div>`;
+          }).join('')}
+    </div>
 
     <div style="text-align:center;margin-top:16px;font-size:0.75rem;color:var(--text3)">
       點擊任一卡片查看幣種詳情 · 每次掃描自動更新未實現損益
     </div>`;
 
   // 維持當前分頁篩選狀態與摘要
-  if (_posTab !== 'all') filterPositionCards('');
+  if (_posTab !== 'all' && _posTab !== 'pending') filterPositionCards('');
   updatePosTabSummary();
+  // 初始化未進場分頁顯示狀態
+  const pendingContainer = document.getElementById('pos-pending-container');
+  const mainList = document.getElementById('pos-list-container');
+  const posSearch = document.getElementById('pos-search-input');
+  if (pendingContainer) pendingContainer.style.display = _posTab === 'pending' ? '' : 'none';
+  if (mainList) mainList.style.display = _posTab === 'pending' ? 'none' : '';
+  if (posSearch) posSearch.style.display = _posTab === 'pending' ? 'none' : '';
 }
 
 function filterPositionCards(query) {
@@ -3344,6 +3501,7 @@ function filterPositionCards(query) {
     const unrealR = parseFloat(card.getAttribute('data-unreal'));
     const matchSearch = !q || sym.includes(q);
     const matchTab =
+      _posTab === 'pending' ||   // pending tab shows separate container
       _posTab === 'all' ||
       (_posTab === 'profit' && unrealR > 0) ||
       (_posTab === 'loss'   && unrealR < 0);
@@ -3899,8 +4057,6 @@ function populateSettingsPage() {
   const apiUrl = document.getElementById('s-api-url');
   if (apiUrl) apiUrl.value = (s.apiUrl || 'http://127.0.0.1:8000') + '/scan';
 
-  const apiKey = document.getElementById('s-api-key');
-  if (apiKey) apiKey.value = s.apiKey || '';
 
   const bull = document.getElementById('s-bull-threshold');
   if (bull) { bull.value = s.bullThreshold || 60; document.getElementById('bull-thr-val').textContent = bull.value; }
@@ -3926,14 +4082,12 @@ function populateSettingsPage() {
 
 function saveAllSettings() {
   const apiRaw = document.getElementById('s-api-url')?.value || 'http://127.0.0.1:8000/scan';
-  const apiKey = document.getElementById('s-api-key')?.value?.trim() || '';
   const patch  = {
     timeframe:       document.getElementById('s-timeframe')?.value        || '15m',
     refreshInterval: parseInt(document.getElementById('s-refresh')?.value) || 60,
     darkMode:        document.getElementById('s-dark')?.checked            ?? true,
     reversals:       document.getElementById('s-reversals')?.checked       ?? true,
     apiUrl:          apiRaw.replace('/scan',''),
-    apiKey,
     bullThreshold:   parseInt(document.getElementById('s-bull-threshold')?.value) || 60,
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
     notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
@@ -3948,18 +4102,6 @@ function saveAllSettings() {
   showToast('设置已成功保存', 'success');
 }
 
-function toggleKeyVisibility() {
-  const input = document.getElementById('s-api-key');
-  const icon  = document.getElementById('key-eye-icon');
-  if (!input) return;
-  if (input.type === 'password') {
-    input.type = 'text';
-    icon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
-  } else {
-    input.type = 'password';
-    icon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
-  }
-}
 
 function resetAllSettings() {
   localStorage.removeItem('csp_settings');
@@ -3968,38 +4110,6 @@ function resetAllSettings() {
   showToast('设置已重置为默认值', 'info');
 }
 
-async function testApiConnection() {
-  const dot = document.getElementById('api-dot');
-  const txt = document.getElementById('api-status-txt');
-  if (!dot || !txt) return;
-
-  dot.className   = 'api-dot checking';
-  txt.textContent = '测试中...';
-
-  const url    = document.getElementById('s-api-url')?.value  || 'http://127.0.0.1:8000/scan';
-  const apiKey = document.getElementById('s-api-key')?.value  || '';
-  try {
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(url, {
-      signal:  controller.signal,
-      headers: buildHeaders(apiKey),
-    });
-    if (res.ok) {
-      dot.className   = 'api-dot online';
-      txt.textContent = '已连接';
-      showToast('API 连接成功，密钥验证通过', 'success');
-    } else if (res.status === 401 || res.status === 403) {
-      dot.className   = 'api-dot offline';
-      txt.textContent = '密钥无效';
-      showToast(`认证失败（HTTP ${res.status}），请检查 API 密钥`, 'error');
-    } else { throw new Error(`HTTP ${res.status}`); }
-  } catch(e) {
-    dot.className   = 'api-dot offline';
-    txt.textContent = '离线';
-    showToast(`API 不可用：${e.message}`, 'error');
-  }
-}
 
 function checkApiStatus() {
   const dot = document.getElementById('api-dot');

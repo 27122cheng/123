@@ -316,14 +316,13 @@
         <div class="tbl-scroll">
           <table class="data-tbl ranking-tbl" id="ranking-tbl">
             <thead><tr>
-              <th data-sort="rank"   data-tbl="ranking"># 排名</th>
-              <th data-sort="symbol" data-tbl="ranking">币种</th>
-              <th data-sort="price"  data-tbl="ranking">价格</th>
-              <th data-sort="trend"  data-tbl="ranking">趋势</th>
-              <th data-sort="score"  data-tbl="ranking">评分</th>
-              <th data-sort="rsi"    data-tbl="ranking">动量</th>
-              <th data-sort="volume" data-tbl="ranking">成交量</th>
-              <th data-sort="adx"    data-tbl="ranking">强度</th>
+              <th># 排名</th>
+              <th>币种</th>
+              <th>价格</th>
+              <th>趋势</th>
+              <th>巨鯨+籌碼集中度</th>
+              <th>动量 RSI</th>
+              <th>成交量</th>
             </tr></thead>
             <tbody id="ranking-tbody"></tbody>
           </table>
@@ -591,20 +590,6 @@
             <input type="text" class="setting-input" id="s-api-url" value="http://127.0.0.1:8000/scan" />
           </div>
 
-          <div class="setting-row vertical">
-            <div class="setting-name">API 密钥</div>
-            <div class="api-key-wrap">
-              <input type="password" class="setting-input" id="s-api-key"
-                     placeholder="输入 API 密钥..."
-                     value="6bD4UNcdb8wfkHVa3Zd2D4hfsEmcEwtqMBxr2GZe2XFQ2jvdCjT4vtg5cSD4BWcPtV" />
-              <button class="key-toggle-btn" id="key-toggle-btn" onclick="toggleKeyVisibility()" title="显示/隐藏密钥">
-                <svg id="key-eye-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                </svg>
-              </button>
-            </div>
-            <div class="api-key-hint">密钥将以请求头 <code>Authorization: Bearer</code> 及 <code>X-API-Key</code> 方式发送</div>
-          </div>
 
           <div class="setting-row">
             <div class="setting-info">
