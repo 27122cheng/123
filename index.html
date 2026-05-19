@@ -217,55 +217,6 @@
         <div id="news-body"><div class="adv-loading">載入財經新聞...</div></div>
       </div>
 
-      <!-- 排行榜 -->
-      <div class="tables-row">
-        <!-- 看涨表格 -->
-        <div class="tbl-card tbl-bull">
-          <div class="tbl-head">
-            <div class="tbl-title">
-              <span class="dot dot-bull"></span>
-              强势看涨排名
-            </div>
-            <span class="tbl-badge badge-bull" id="bull-count">0</span>
-          </div>
-          <div class="tbl-scroll">
-            <table class="data-tbl" id="bull-tbl">
-              <thead><tr>
-                <th data-sort="symbol"       data-tbl="bull">幣種</th>
-                <th data-sort="price"        data-tbl="bull">價格</th>
-                <th data-sort="trend"        data-tbl="bull">趨勢</th>
-                <th data-sort="volume"       data-tbl="bull">成交量</th>
-                <th data-sort="change24h"    data-tbl="bull">今日漲跌</th>
-              </tr></thead>
-              <tbody id="bull-tbody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- 看跌表格 -->
-        <div class="tbl-card tbl-bear">
-          <div class="tbl-head">
-            <div class="tbl-title">
-              <span class="dot dot-bear"></span>
-              强势看跌排名
-            </div>
-            <span class="tbl-badge badge-bear" id="bear-count">0</span>
-          </div>
-          <div class="tbl-scroll">
-            <table class="data-tbl" id="bear-tbl">
-              <thead><tr>
-                <th data-sort="symbol"       data-tbl="bear">幣種</th>
-                <th data-sort="price"        data-tbl="bear">價格</th>
-                <th data-sort="trend"        data-tbl="bear">趨勢</th>
-                <th data-sort="volume"       data-tbl="bear">成交量</th>
-                <th data-sort="change24h"    data-tbl="bear">今日漲跌</th>
-              </tr></thead>
-              <tbody id="bear-tbody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
       <!-- 搜尋結果 / 中性幣種（搜尋或選中性過濾器時顯示） -->
       <div id="search-results-wrap" style="display:none">
         <div class="tbl-card" style="width:100%;max-width:100%">
@@ -310,14 +261,62 @@
       <div class="page-header">
         <div>
           <h1 class="page-title">市场排名</h1>
-          <p class="page-subtitle">按趋势评分排列的前100种加密货币</p>
         </div>
         <div class="dash-search-wrap">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input type="text" id="ranking-search" placeholder="搜索币种..." autocomplete="off" />
         </div>
       </div>
-      <div class="tbl-card full-tbl">
+
+      <!-- 強勢看漲 / 強勢看跌排名 -->
+      <div class="tables-row">
+        <div class="tbl-card tbl-bull">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot dot-bull"></span>
+              强势看涨排名
+            </div>
+            <span class="tbl-badge badge-bull" id="bull-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl" id="bull-tbl">
+              <thead><tr>
+                <th data-sort="symbol"    data-tbl="bull">幣種</th>
+                <th data-sort="price"     data-tbl="bull">價格</th>
+                <th data-sort="trend"     data-tbl="bull">趨勢</th>
+                <th data-sort="volume"    data-tbl="bull">成交量</th>
+                <th data-sort="change24h" data-tbl="bull">今日漲跌</th>
+              </tr></thead>
+              <tbody id="bull-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="tbl-card tbl-bear">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot dot-bear"></span>
+              强势看跌排名
+            </div>
+            <span class="tbl-badge badge-bear" id="bear-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl" id="bear-tbl">
+              <thead><tr>
+                <th data-sort="symbol"    data-tbl="bear">幣種</th>
+                <th data-sort="price"     data-tbl="bear">價格</th>
+                <th data-sort="trend"     data-tbl="bear">趨勢</th>
+                <th data-sort="volume"    data-tbl="bear">成交量</th>
+                <th data-sort="change24h" data-tbl="bear">今日漲跌</th>
+              </tr></thead>
+              <tbody id="bear-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 巨鯨+籌碼集中度排名 -->
+      <div class="tbl-card full-tbl" style="margin-top:16px">
         <div class="tbl-scroll">
           <table class="data-tbl ranking-tbl" id="ranking-tbl">
             <thead><tr>

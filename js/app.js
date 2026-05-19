@@ -383,6 +383,7 @@ function renderAll() {
   applyFilters();
   updateOverviewCards();
   renderDashboardTables();
+  renderBullBearTables();
   renderReversalCards();
   const srcTag = state.dataSource === 'api' ? '本地API'
                : state.dataSource === 'binance' ? '币安实时'
@@ -418,7 +419,7 @@ function animateCount(id, target) {
   }, step);
 }
 
-/* ── 仪表板排行表 ───────────────────────────────────────────── */
+/* ── 仪表板搜尋結果 ─────────────────────────────────────────── */
 function renderDashboardTables() {
   const hasFilter   = state.activeFilter !== 'all';
   const hasSearch   = !!state.dashSearch;
@@ -426,10 +427,8 @@ function renderDashboardTables() {
   const unifiedMode = hasSearch || state.activeFilter === '中性';
 
   const searchWrap = document.getElementById('search-results-wrap');
-  const tablesRow  = document.querySelector('.tables-row');
 
   if (unifiedMode) {
-    if (tablesRow)  tablesRow.style.display  = 'none';
     if (searchWrap) searchWrap.style.display = '';
 
     const titleEl = document.getElementById('search-results-title');
@@ -450,19 +449,24 @@ function renderDashboardTables() {
       }
     }
   } else {
-    if (tablesRow)  tablesRow.style.display  = '';
     if (searchWrap) searchWrap.style.display = 'none';
-
-    let bullData = source.filter(d => d.trend === '強勢看漲' || d.trend === '看漲');
-    let bearData = source.filter(d => d.trend === '強勢看跌' || d.trend === '看跌');
-    bullData = sortArr(bullData, state.sortState.bull.key, state.sortState.bull.dir);
-    bearData = sortArr(bearData, state.sortState.bear.key, state.sortState.bear.dir);
-
-    document.getElementById('bull-count').textContent = bullData.length;
-    document.getElementById('bear-count').textContent = bearData.length;
-    renderTableBody('bull-tbody', bullData);
-    renderTableBody('bear-tbody', bearData);
   }
+}
+
+/* ── 看漲 / 看跌排名（市場排名頁）──────────────────────────── */
+function renderBullBearTables() {
+  const data     = state.data;
+  let bullData   = data.filter(d => d.trend === '強勢看漲' || d.trend === '看漲');
+  let bearData   = data.filter(d => d.trend === '強勢看跌' || d.trend === '看跌');
+  bullData = sortArr(bullData, state.sortState.bull.key, state.sortState.bull.dir);
+  bearData = sortArr(bearData, state.sortState.bear.key, state.sortState.bear.dir);
+
+  const bullCount = document.getElementById('bull-count');
+  const bearCount = document.getElementById('bear-count');
+  if (bullCount) bullCount.textContent = bullData.length;
+  if (bearCount) bearCount.textContent = bearData.length;
+  renderTableBody('bull-tbody', bullData);
+  renderTableBody('bear-tbody', bearData);
 }
 
 function buildDashRow(row) {
@@ -4784,7 +4788,7 @@ function sortTable(tblKey, sortKey, thEl) {
   if (tblKey === 'ranking') {
     renderRankingTable(document.getElementById('ranking-search')?.value?.trim()?.toUpperCase() || '');
   } else {
-    renderDashboardTables();
+    renderBullBearTables();
   }
 }
 
