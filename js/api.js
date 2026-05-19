@@ -475,12 +475,9 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
 
   let msg = `🚨 <b>加密掃描 Pro — 交易信號</b>\n\n`;
   msg += `${icon} <b>${dirTx}：${coin.symbol}</b>\n`;
-  msg += `📊 評分 <b>${coin.score}</b>/100 ｜ RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
+  msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   if (setup) {
-    if (setup.conf) {
-      msg += `📶 信號強度：<b>${setup.conf}%</b>\n\n`;
-    }
     const reasonLines = (setup.entryReason || '').split('，').filter(Boolean).map(r => `   • ${r}`).join('\n');
     msg += `📍 <b>進場：$${fmt(setup.entry)}</b>\n`;
     msg += `${reasonLines || '   • 多重信號共振'}\n\n`;

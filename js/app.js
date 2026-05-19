@@ -656,8 +656,10 @@ function buildOpenPositionSetup(t, currentPrice) {
   const conf     = t.conf || Math.min(90, t.score || 60);
   const confClr  = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
   const ltBias  = t.longTermBias;
-  const ltTag   = ltBias === 'long'  ? ' <span class="lt-tag lt-bull">〔長線看多〕</span>'
-                : ltBias === 'short' ? ' <span class="lt-tag lt-bear">〔長線看空〕</span>'
+  const isLong_ = t.direction === 'long';
+  // 長線與短線方向一致才標示〔長線單〕
+  const ltTag   = (ltBias === 'long' && isLong_) || (ltBias === 'short' && !isLong_)
+                ? ' <span class="lt-tag lt-bull">〔長線單〕</span>'
                 : '';
 
   // 即時未實現損益
@@ -955,8 +957,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // AI 長線分析（僅括號標注，不另開面板）
   const ltBias = computeLongTermBias(mtfData);
-  const ltTag  = ltBias === 'long'  ? ' <span class="lt-tag lt-bull">〔長線看多〕</span>'
-               : ltBias === 'short' ? ' <span class="lt-tag lt-bear">〔長線看空〕</span>'
+  // 方向一致才標示〔長線單〕（不需區分看多/看空，配對即可）
+  const ltTag  = (ltBias === 'long' && direction === 'long') || (ltBias === 'short' && direction === 'short')
+               ? ' <span class="lt-tag lt-bull">〔長線單〕</span>'
                : '';
   // 長線信心分：85+ 才允許加倉
   let ltBullScore = 0, ltBearScore = 0;
