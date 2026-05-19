@@ -4152,10 +4152,10 @@ function filterPositionCards(query) {
     const unrealR = parseFloat(card.getAttribute('data-unreal'));
     const matchSearch = !q || sym.includes(q);
     const matchTab =
-      _posTab === 'pending' ||   // pending tab shows separate container
+      _posTab === 'pending' ||
       _posTab === 'all' ||
       (_posTab === 'profit' && unrealR > 0) ||
-      (_posTab === 'loss'   && unrealR < 0);
+      (_posTab === 'loss'   && !(unrealR > 0));  // NaN、0、負數都算虧損中
     card.style.display = (matchSearch && matchTab) ? '' : 'none';
   });
 }
