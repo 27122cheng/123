@@ -215,8 +215,26 @@
         </div>
       </div>
 
+      <!-- 巨鯨+籌碼集中度排名 -->
+      <div class="tbl-card full-tbl">
+        <div class="tbl-scroll">
+          <table class="data-tbl ranking-tbl" id="ranking-tbl">
+            <thead><tr>
+              <th># 排名</th>
+              <th>币种</th>
+              <th>价格</th>
+              <th>趋势</th>
+              <th>巨鯨+籌碼集中度</th>
+              <th>动量 RSI</th>
+              <th>成交量</th>
+            </tr></thead>
+            <tbody id="ranking-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- 筛选 -->
-      <div class="toolbar">
+      <div class="toolbar" style="margin-top:16px">
         <div class="filter-chips">
           <button class="chip active" data-filter="all">全部</button>
           <button class="chip chip-sbull" data-filter="強勢看漲">強勢看漲</button>
@@ -309,24 +327,6 @@
       </div>
       <div class="reversal-grid" id="reversal-grid">
         <div class="rev-placeholder">正在扫描反转信号...</div>
-      </div>
-
-      <!-- 巨鯨+籌碼集中度排名 -->
-      <div class="tbl-card full-tbl" style="margin-top:16px">
-        <div class="tbl-scroll">
-          <table class="data-tbl ranking-tbl" id="ranking-tbl">
-            <thead><tr>
-              <th># 排名</th>
-              <th>币种</th>
-              <th>价格</th>
-              <th>趋势</th>
-              <th>巨鯨+籌碼集中度</th>
-              <th>动量 RSI</th>
-              <th>成交量</th>
-            </tr></thead>
-            <tbody id="ranking-tbody"></tbody>
-          </table>
-        </div>
       </div>
     </section>
 
