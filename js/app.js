@@ -1681,49 +1681,42 @@ async function loadDashboardMacro() {
   loadDashboardNews();
 }
 
-const _INSIGHT_THEMES = [
-  { title: 'Bitcoin ETF institutional inflow record billion fund bought wall street', body: 'bitcoin etf institutional investors fund bought record inflow approval milestone wall street adoption', tag: 'BTC' },
-  { title: 'Federal Reserve rate cut expectations inflation cpi bitcoin rally surge bullish', body: 'federal reserve rate cut inflation cpi pce bitcoin surge bullish adoption institutional fund record', tag: '總經' },
-  { title: 'Bitcoin halving mining supply scarcity long-term accumulate institutional', body: 'bitcoin halving mining supply scarcity institutional accumulate long-term investment record', tag: 'BTC' },
-  { title: 'Ethereum layer 2 scaling upgrade launch adoption partnership integration', body: 'ethereum layer 2 l2 scaling upgrade adoption integration partnership milestone record launch', tag: 'ETH' },
-  { title: 'SEC regulation crypto legislation approval clarity compliance framework', body: 'sec regulation legislation approval clear compliance framework institutional adoption approved', tag: '監管' },
-  { title: 'DeFi protocol TVL growth upgrade launch decentralized ecosystem', body: 'defi tvl growth protocol upgrade launch adoption integration milestone record decentralized', tag: 'DeFi' },
-  { title: 'Crypto market liquidation leverage correction plunge bearish risk', body: 'liquidation leverage crash drop plunge bearish correction bear investigation restrict', tag: '風險' },
-  { title: 'Institutional adoption corporate bitcoin reserve treasury microstrategy investment', body: 'institutional adoption partnership bitcoin reserve corporate treasury microstrategy fund bought investment milestone', tag: '機構' },
-  { title: 'Stablecoin USDT USDC supply growth market liquidity adoption flow', body: 'stablecoin usdt usdc liquidity flow market supply growth adoption integration', tag: '穩定幣' },
-  { title: 'Altcoin season rotation Bitcoin dominance breakout rally surge', body: 'altcoin season rotation bitcoin dominance surge rally breakout adoption institutional record', tag: '山寨' },
-  { title: 'Solana ecosystem growth DeFi adoption launch partnership upgrade', body: 'solana sol adoption defi launch upgrade integration partnership record milestone growth', tag: 'SOL' },
-  { title: 'Crypto exchange volume surge record liquidity market activity', body: 'exchange volume surge record liquidity market activity institutional adoption inflow', tag: '交易所' },
-];
+async function fetchAIGeneratedNews() {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const d = new Date();
+    const dateStr = `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日`;
+    const prompt = `你是加密貨幣市場資深分析師，今天是${dateStr}。請根據當前加密貨幣市場環境，生成6條真實且具體的市場重點新聞分析，涵蓋BTC、ETH、總體經濟、監管政策、機構動向、DeFi等不同面向，內容要有實質參考價值。每條使用此JSON格式：{"zhTitle":"中文標題30字內","points":["重點一25字內","重點二25字內"],"impact":"市場影響分析50字內","sentiment":"bull或bear或neutral","conf":整數50到85}。只輸出JSON陣列，不要markdown，不要任何其他文字。`;
 
-function aiGenerateMarketInsights() {
-  const d = new Date();
-  const daySeed = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-  const hourSlot = Math.floor(d.getHours() / 6); // 每6小時換一批
-
-  const shuffled = _INSIGHT_THEMES
-    .map((t, i) => ({ ...t, _s: Math.abs((daySeed + hourSlot * 31 + i * 1664525 + 1013904223) & 0x7fffffff) }))
-    .sort((a, b) => a._s - b._s)
-    .slice(0, 6);
-
-  return shuffled.map(theme => {
-    const ai = aiProcessNews(theme.title, theme.body);
-    return {
-      zhTitle:     ai.zhTitle,
-      points:      ai.points,
-      impact:      ai.impact,
-      sentiment:   ai.sentiment,
-      conf:        ai.conf,
-      source:      `🤖 AI · ${theme.tag}`,
+    const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let text = await res.text();
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    const arr = JSON.parse(text);
+    if (!Array.isArray(arr) || arr.length < 3) throw new Error('invalid');
+    return arr.slice(0, 8).map(item => ({
+      zhTitle:   String(item.zhTitle || '').slice(0, 60),
+      points:    Array.isArray(item.points) ? item.points.slice(0, 2).map(String) : [],
+      impact:    String(item.impact || ''),
+      sentiment: ['bull','bear','neutral'].includes(item.sentiment) ? item.sentiment : 'neutral',
+      conf:      Math.min(85, Math.max(50, parseInt(item.conf) || 65)),
+      source:    '🤖 AI 分析',
       publishedAt: null,
-    };
-  });
+    }));
+  } catch {
+    clearTimeout(t);
+    return null;
+  }
 }
 
-function loadDashboardNews() {
+async function loadDashboardNews() {
   const el = document.getElementById('news-body');
   if (!el) return;
-  el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
+  el.innerHTML = '<div class="adv-loading">AI 生成分析中...</div>';
+  const items = await fetchAIGeneratedNews();
+  el.innerHTML = buildNewsWidget(items || []);
 }
 
 /* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
