@@ -1660,7 +1660,10 @@ function buildNewsWidget(items) {
       return m < 60 ? `${m} 分鐘前` : m < 1440 ? `${Math.round(m/60)} 小時前` : `${Math.round(m/1440)} 天前`;
     })() : '';
     const pointsHtml = (item.points || []).map(p => `<div class="news-point">• ${p}</div>`).join('');
-    return `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">
+    const tag = item.url ? 'a' : 'div';
+    const tagOpen  = item.url ? `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">` : `<div class="news-item ${sentClass}">`;
+    const tagClose = item.url ? '</a>' : '</div>';
+    return `${tagOpen}
       <div class="news-ai-title">${item.zhTitle || item.title}</div>
       ${pointsHtml ? `<div class="news-keypoints">${pointsHtml}</div>` : ''}
       <div class="news-meta">
@@ -1673,7 +1676,7 @@ function buildNewsWidget(items) {
         <span style="color:${color}">${item.impact}</span>
         <span class="news-ai-conf" style="color:${confColor}">信心 ${conf}%</span>
       </div>` : ''}
-    </a>`;
+    ${tagClose}`;
   }).join('');
 
   return `<div class="outlook-header" style="margin-bottom:10px">
@@ -1702,34 +1705,30 @@ async function loadDashboardNews() {
   const s = loadSettings();
   el.innerHTML = `<div class="adv-loading">${s.geminiKey ? 'AI 分析新聞中...' : '載入財經新聞...'}</div>`;
 
+  // 有 Gemini Key：直接讓 AI 生成新聞摘要，不依賴第三方新聞 API
+  if (s.geminiKey) {
+    try {
+      const items = await fetchNewsFromGemini(s.geminiKey);
+      el.innerHTML = buildNewsWidget(items);
+      return;
+    } catch (e) {
+      console.warn('Gemini direct news failed:', e.message);
+      el.innerHTML = `<div class="outlook-header" style="margin-bottom:8px">
+        <span class="outlook-title">📰 本週財經新聞重點</span>
+      </div>
+      <div style="color:var(--bear);font-size:0.8rem;padding:8px 0">
+        ⚠️ Gemini API 錯誤：${e.message.slice(0, 100)}<br>
+        <span style="color:var(--text3)">請確認 Settings 中 Gemini AI 金鑰是否正確儲存</span>
+      </div>`;
+      return;
+    }
+  }
+
+  // 無 Key：嘗試第三方新聞 API + 關鍵字分析
   const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
   let raw = [];
   try { raw = await fetchCryptoNews(); } catch {}
   const recent = raw.filter(it => !it.publishedAt || (Date.now() - it.publishedAt) < ONE_WEEK).slice(0, 8);
-
-  // Gemini AI path
-  if (s.geminiKey && recent.length) {
-    try {
-      const aiArr = await fetchNewsWithGemini(recent, s.geminiKey);
-      const processed = recent.map((item, i) => {
-        const ai = aiArr[i] || {};
-        return {
-          ...item,
-          zhTitle:   ai.title     || item.title,
-          points:    Array.isArray(ai.points) ? ai.points : [],
-          impact:    ai.impact    || '',
-          sentiment: ai.sentiment || 'neutral',
-          conf:      typeof ai.conf === 'number' ? ai.conf : 50,
-        };
-      });
-      el.innerHTML = buildNewsWidget(processed);
-      return;
-    } catch(e) {
-      console.warn('Gemini news failed, falling back:', e.message);
-    }
-  }
-
-  // Keyword-based fallback
   const processed = recent.map(item => {
     const ai = aiProcessNews(item.title, item.body || '');
     return { ...item, zhTitle: ai.zhTitle, points: ai.points, impact: ai.impact, sentiment: ai.sentiment, conf: ai.conf };

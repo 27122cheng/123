@@ -455,6 +455,51 @@ async function fetchCryptoNews() {
   return [];
 }
 
+/* Gemini 直接產生新聞摘要（不依賴第三方新聞 API）*/
+async function fetchNewsFromGemini(geminiKey) {
+  const today = new Date().toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric' });
+  const prompt =
+    `今天是 ${today}。你是專業加密貨幣分析師，請提供最近一週最重要的 8 則加密貨幣與總體經濟新聞摘要。\n` +
+    `以 JSON 陣列輸出，每個物件格式：\n` +
+    `{"title":"15字內繁體中文標題","points":["重點一15~25字","重點二15~25字"],"impact":"對加密市場影響30~50字","sentiment":"bull或bear或neutral","conf":信心整數0到100}\n` +
+    `請涵蓋：BTC/ETH動態、機構資金、監管、總經（Fed/通膨/匯率）、重大事件。直接輸出 JSON 陣列，不要其他文字。`;
+
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 25000);
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${geminiKey}`,
+    {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: 2500 },
+      }),
+    }
+  );
+  clearTimeout(t);
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Gemini ${res.status}: ${errText.slice(0, 120)}`);
+  }
+  const data  = await res.json();
+  const raw   = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+  const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const arr   = JSON.parse(clean);
+  return arr.map(item => ({
+    title:       item.title,
+    url:         '',
+    publishedAt: Date.now(),
+    source:      'Gemini AI',
+    body:        '',
+    zhTitle:     item.title,
+    points:      Array.isArray(item.points) ? item.points : [],
+    impact:      item.impact    || '',
+    sentiment:   item.sentiment || 'neutral',
+    conf:        typeof item.conf === 'number' ? item.conf : 60,
+  }));
+}
+
 /* Gemini 1.5 Flash — 真實 AI 新聞摘要 (免費，需 Google AI Studio key) */
 async function fetchNewsWithGemini(items, geminiKey) {
   const newsList = items.map((it, i) =>
