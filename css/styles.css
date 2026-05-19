@@ -1410,6 +1410,11 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .outlook-event-date { font-weight:700; color:var(--accent); margin-right:2px; }
 .outlook-event-high .outlook-event-date { color:#fbbf24; }
 
+/* ── 今日重要數據面板 ───────────────────────────────────────── */
+.econ-event-row { display:flex; gap:14px; align-items:flex-start; padding:8px 0; }
+.econ-event-time { min-width:64px; text-align:center; flex-shrink:0; }
+.econ-event-info { flex:1; }
+
 /* ── 分析概覽（快速指標）───────────────────────────────────── */
 .quick-analysis-wrap { margin-bottom:16px; }
 .qa-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:4px 0; }

@@ -479,6 +479,7 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   if (setup) {
+    if (setup.conf) msg += `📶 信心度：<b>${setup.conf}%</b>\n\n`;
     const reasonLines = (setup.entryReason || '').split('，').filter(Boolean).map(r => `   • ${r}`).join('\n');
     msg += `📍 <b>進場：$${fmt(setup.entry)}</b>\n`;
     msg += `${reasonLines || '   • 多重信號共振'}\n\n`;

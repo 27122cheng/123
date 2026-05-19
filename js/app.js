@@ -1151,7 +1151,32 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const h4Conf   = h4?.signal?.includes(isLong ? 'bull' : 'bear') ? 2 : 0;
   // R/R 加成：R/R >= 3:1 時高信心
   const rrBonus  = parseFloat(rr1str) >= 3 ? 1 : 0;
-  const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus) * 6));
+  // 進場/止盈/止損位置質量加成（落在真實結構位 vs ATR 估算）
+  const tp1Quality = isLong
+    ? (tp1Reason.includes('前高壓力') ? 1 : 0)
+    : (tp1Reason.includes('前低支撐') ? 1 : 0);
+  const slQuality = (slReason.includes('支撐結構') || slReason.includes('壓力結構') || slReason.includes('PO3') || slReason.includes('掃蕩')) ? 1 : 0;
+  const levelQualityBonus = tp1Quality + slQuality;
+  const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus) * 6));
+
+  // 宏觀環境同步確認：宏觀強烈反向時下調信心度
+  const macroOpposePenalty = (() => {
+    if (!globalMkt && !fearGreed) return 0;
+    const fgNow  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+    const chgNow = globalMkt?.marketCapChange || 0;
+    const domNow = globalMkt?.btcDominance   || 50;
+    let against = 0;
+    if (isLong) {
+      if (chgNow < -2) against++;  // 市值下跌，多頭逆風
+      if (domNow > 58) against++;  // BTC主導偏高，山寨偏空
+      if (fgNow < 30)  against++;  // 極度恐慌，不宜追多
+    } else {
+      if (chgNow > 2)  against++;  // 市值上漲，空頭逆風
+      if (domNow < 44) against++;  // 山寨季，不宜追空
+      if (fgNow > 70)  against++;  // 極度貪婪，不宜追空
+    }
+    return against >= 2 ? 10 : against === 1 ? 4 : 0;
+  })();
 
   // 計算入場時的額外背景資料（供 AI 學習使用）
   const entryMTFAlign = ['15m','1h','4h','1d'].filter(tf => {
@@ -1175,7 +1200,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     mtfAlign: entryMTFAlign,
   };
   const { penalty: learnPenalty, warnings: learnWarnings } = applyLearnAdjustment(direction, rsi, parseFloat(coin.adx) || 20, learnCtx);
-  const conf = Math.max(0, rawConf - learnPenalty);
+  const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty);
   if (conf < 70) direction = 'wait'; // 學習後信心不足，改觀望（70+ 才出手）
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
@@ -1446,6 +1471,47 @@ function buildMarketOutlook(fg, global) {
     </div>`;
 }
 
+function buildTodayEconWidget() {
+  const events = getTodayEconEvents();
+  if (!events.length) {
+    return `<div class="outlook-header">
+      <span class="outlook-title">📅 今日重要數據（台灣時間）</span>
+    </div>
+    <div style="color:var(--text3);font-size:0.82rem;padding:4px 0">今日無重要經濟數據公布</div>`;
+  }
+  const now = Date.now();
+  const rows = events.map(ev => {
+    const impactColor = ev.impact === 'high' ? 'var(--bear)' : ev.impact === 'medium' ? '#f0a500' : 'var(--bull)';
+    const twTime = `${String(ev.twHour).padStart(2,'0')}:${String(ev.twMin).padStart(2,'0')}`;
+    const minsUntil = (ev.eventTime.getTime() - now) / 60000;
+    const timeStatus = minsUntil < 0
+      ? `<span style="color:var(--text3);font-size:0.72rem">已公布</span>`
+      : minsUntil < 60
+      ? `<span style="color:var(--bear);font-size:0.72rem">約 ${Math.round(minsUntil)} 分鐘後</span>`
+      : `<span style="color:var(--text2);font-size:0.72rem">約 ${Math.round(minsUntil / 60)} 小時後</span>`;
+    return `<div class="econ-event-row">
+      <div class="econ-event-time">
+        <span style="font-size:0.88rem;font-weight:600;color:var(--text1)">${twTime}</span><br>${timeStatus}
+      </div>
+      <div class="econ-event-info">
+        <div style="font-weight:600;font-size:0.85rem;color:var(--text1);margin-bottom:2px">
+          <span style="color:${impactColor};margin-right:4px">●</span>${ev.name}
+        </div>
+        <div style="font-size:0.75rem;color:var(--text2);margin-bottom:5px">${ev.description}</div>
+        <div style="font-size:0.73rem;line-height:1.55">
+          <span style="color:var(--bull)">📈 優於預期：</span><span style="color:var(--text2)">${ev.bullIf}</span><br>
+          <span style="color:var(--bear)">📉 差於預期：</span><span style="color:var(--text2)">${ev.bearIf}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('<hr style="border:none;border-top:1px solid rgba(255,255,255,0.06);margin:8px 0">');
+  return `<div class="outlook-header">
+    <span class="outlook-title">📅 今日重要數據（台灣時間）</span>
+    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">${events.length} 項</span>
+  </div>
+  <div style="padding:4px 0">${rows}</div>`;
+}
+
 async function loadDashboardMacro() {
   const el = document.getElementById('market-outlook-body');
   if (!el) return;
@@ -1455,6 +1521,8 @@ async function loadDashboardMacro() {
   } catch {
     el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
   }
+  const econEl = document.getElementById('today-econ-body');
+  if (econEl) econEl.innerHTML = buildTodayEconWidget();
 }
 
 /* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
@@ -3596,10 +3664,10 @@ function updatePosTabSummary() {
     const r   = parseFloat(d.profitR)   || 0;
     el.innerHTML = cnt > 0
       ? `<div class="pos-tab-stat pos-tab-stat-bull">
-           <span>📈 營利中 <strong>${cnt} 筆</strong></span>
+           <span>📈 盈利中 <strong>${cnt} 筆</strong></span>
            <span>合計未實現獲利 <strong>+${r.toFixed(2)} R</strong></span>
          </div>`
-      : `<div class="pos-tab-stat" style="color:var(--text3)">目前沒有營利中的持倉</div>`;
+      : `<div class="pos-tab-stat" style="color:var(--text3)">目前沒有盈利中的持倉</div>`;
   } else if (_posTab === 'loss') {
     const cnt = parseInt(d.lossCount) || 0;
     const r   = parseFloat(d.lossR)   || 0;
@@ -3772,7 +3840,7 @@ function renderPositionsPage() {
 
     <div class="pos-tabs">
       <button class="pos-tab-btn${_posTab==='all'?' pos-tab-active':''}" data-tab="all" onclick="setPosTab('all')">全部 ${open.length}</button>
-      <button class="pos-tab-btn${_posTab==='profit'?' pos-tab-active':''}" data-tab="profit" onclick="setPosTab('profit')">📈 營利中 ${profitCount}</button>
+      <button class="pos-tab-btn${_posTab==='profit'?' pos-tab-active':''}" data-tab="profit" onclick="setPosTab('profit')">📈 盈利中 ${profitCount}</button>
       <button class="pos-tab-btn${_posTab==='loss'?' pos-tab-active':''}" data-tab="loss" onclick="setPosTab('loss')">📉 虧損中 ${lossCount}</button>
       <button class="pos-tab-btn${_posTab==='pending'?' pos-tab-active':''}" data-tab="pending" onclick="setPosTab('pending')">⏳ 未進場 ${pending.length}</button>
     </div>
