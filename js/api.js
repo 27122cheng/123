@@ -393,7 +393,7 @@ async function fetchFearGreed() {
 
 /* 加密貨幣新聞 — 多源自動回退，統一格式 { title, url, publishedAt, source, body, coins } */
 async function fetchCryptoNews() {
-  const tryFetch = async (url, timeout = 7000) => {
+  const tryFetch = async (url, timeout = 8000) => {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeout);
     try {
@@ -404,7 +404,24 @@ async function fetchCryptoNews() {
     } catch(e) { clearTimeout(t); throw e; }
   };
 
-  // Source 1: CryptoCompare (no key required, reliable CORS)
+  const stripHtml = html => (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400);
+
+  // Source 1: CoinTelegraph RSS (via rss2json proxy — CORS-friendly)
+  try {
+    const data = await tryFetch('https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Fcointelegraph.com%2Frss&api_key=free&count=10');
+    if (data?.status === 'ok' && data?.items?.length) {
+      return data.items.slice(0, 8).map(item => ({
+        title:       item.title || '',
+        url:         item.link  || '',
+        publishedAt: item.pubDate ? new Date(item.pubDate).getTime() : Date.now(),
+        source:      'CoinTelegraph',
+        body:        stripHtml(item.description || item.content || ''),
+        coins:       (item.categories || []).slice(0, 3),
+      }));
+    }
+  } catch {}
+
+  // Source 2: CryptoCompare (no key required)
   try {
     const data = await tryFetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest&limit=10');
     if (data?.Data?.length) {
@@ -419,7 +436,7 @@ async function fetchCryptoNews() {
     }
   } catch {}
 
-  // Source 2: CoinGecko news
+  // Source 3: CoinGecko news
   try {
     const data = await tryFetch('https://api.coingecko.com/api/v3/news?page=1');
     if (data?.data?.length) {
@@ -437,7 +454,7 @@ async function fetchCryptoNews() {
     }
   } catch {}
 
-  // Source 3: CryptoPanic (free, sometimes CORS-blocked)
+  // Source 4: CryptoPanic (free, sometimes CORS-blocked)
   try {
     const data = await tryFetch('https://cryptopanic.com/api/free/v1/posts/?auth_token=free&kind=news&filter=hot&public=true');
     if (data?.results?.length) {
