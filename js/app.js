@@ -749,7 +749,7 @@ function buildOpenPositionSetup(t, currentPrice) {
         <div class="level-price-val">${fmt(sl)}${pctStr(entry, sl)}</div>
       </div>
     </div>
-    ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，建議移動止損至成本價保護利潤</div>' : ''}
+    ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，止損已自動移至成本價（保本）</div>' : ''}
     ${(() => {
       const sis = (t.scaleIns || []).filter(s => s.status === 'open' || s.status === 'pending');
       if (!sis.length) return '';
@@ -2989,7 +2989,7 @@ function updateOpenTrades(data) {
       if (cur >= tp2) {
         outcome = 'tp2';
       } else if (cur >= tp1 && !trade.tp1Hit) {
-        trade.tp1Hit = true; changed = true;
+        trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
         tp1Hits.push({ trade, coin, cur });
       } else if (trade.tp1Hit && cur <= entry) {
         // TP1已觸及後跌回成本 → 自動保本出場
@@ -3001,7 +3001,7 @@ function updateOpenTrades(data) {
       if (cur <= tp2) {
         outcome = 'tp2';
       } else if (cur <= tp1 && !trade.tp1Hit) {
-        trade.tp1Hit = true; changed = true;
+        trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
         tp1Hits.push({ trade, coin, cur });
       } else if (trade.tp1Hit && cur >= entry) {
         // TP1已觸及後漲回成本 → 自動保本出場
@@ -3112,20 +3112,20 @@ async function sendTP1Notifications(hits) {
     if (s.notifBrowser) {
       sendBrowserNotification(
         `🎯 止盈一達到：${trade.symbol}`,
-        `${dir} | 進場 $${trade.entry} → TP1 $${trade.tp1} | R/R ${rr}:1`,
+        `${dir} | 止損已自動移至成本 $${trade.entry}，等待止盈二`,
         `tp1-${trade.id}`
       );
     }
     if (s.notifTelegram && s.tgToken && s.tgChatId) {
       const fmt = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
       const msg =
-        `🎯 <b>止盈一已達到！</b>\n\n` +
+        `🎯 <b>止盈一已達到！止損已自動保本</b>\n\n` +
         `💎 <b>${trade.symbol}</b>  ${trade.direction === 'long' ? '▲ 做多' : '▼ 做空'}\n\n` +
         `✅ 止盈一：<b>$${fmt(trade.tp1)}</b>\n` +
         `📍 進場價：$${fmt(trade.entry)}\n` +
         `💰 現價：$${fmt(cur)}\n` +
         `📊 獲利幅度：<b>+${rr}R</b>\n\n` +
-        `🔔 建議：移動止損至成本價 <b>$${fmt(trade.entry)}</b>，持倉等待止盈二 $${fmt(trade.tp2)}`;
+        `🔒 止損已自動移至成本價 <b>$${fmt(trade.entry)}</b>，持倉等待止盈二 $${fmt(trade.tp2)}`;
       const siteUrl = window.location.origin + window.location.pathname;
       msg += `\n\n🔗 <a href="${siteUrl}">查看 ${trade.symbol.replace('/USDT','').replace('USDT','')} 詳細分析 →</a>`;
       sendTelegramMessage(s.tgToken, s.tgChatId, msg);
