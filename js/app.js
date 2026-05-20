@@ -3415,6 +3415,16 @@ async function checkUpcomingEconEvents() {
     if (sentToday[alertKey]) continue;
     sentToday[alertKey] = true;
     localStorage.setItem(ECON_ALERT_KEY, JSON.stringify(sentToday));
+    // 保存公布前的市場快照，用於公布後對比實際反應
+    if (_macroCache) {
+      const snapKey = `${todayKey}_snap_${ev.name}`;
+      localStorage.setItem(snapKey, JSON.stringify({
+        marketCapChange: _macroCache.marketCapChange ?? null,
+        btcDominance:    _macroCache.btcDominance ?? null,
+        fg: _macroCache.fg?.value ? parseInt(_macroCache.fg.value) : null,
+        savedAt: Date.now(),
+      }));
+    }
     sendEconEventAlert(ev, s);
   }
 }
@@ -3456,31 +3466,75 @@ async function checkPostEventAnalysis() {
   for (const ev of events) {
     const eventMs   = ev.eventTime.getTime();
     const minsAfter = (now - eventMs) / 60000;
-    // 公布後 25~50 分鐘內發送一次分析（給市場方向穩定後分析）
+    // 公布後 25~50 分鐘內發送一次分析（市場方向已初步穩定）
     if (minsAfter < 25 || minsAfter > 50) continue;
     const key = `${todayKey}_post_${ev.name}`;
     if (postSent[key]) continue;
     postSent[key] = true;
     localStorage.setItem(postKey, JSON.stringify(postSent));
-    sendPostEventAnalysis(ev, s);
+
+    // 讀取發送公布前快照（進場前保存）與當前數據，對比市場實際反應
+    const snapKey  = `${todayKey}_snap_${ev.name}`;
+    const snap     = JSON.parse(localStorage.getItem(snapKey) || 'null');
+    const [fgRes, mktRes] = await Promise.allSettled([fetchFearGreed(), fetchGlobalMarket()]);
+    const fgNow  = fgRes.status  === 'fulfilled' ? fgRes.value  : null;
+    const mktNow = mktRes.status === 'fulfilled' ? mktRes.value : null;
+
+    sendPostEventAnalysis(ev, s, snap, fgNow, mktNow);
   }
 }
 
-function sendPostEventAnalysis(ev, s) {
+function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
   const impactEmoji = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
-  const biasSummary = (ev.bullIf || ev.bearIf)
-    ? (ev.bullIf ? `📈 偏多條件：${ev.bullIf}\n` : '') +
-      (ev.bearIf ? `📉 偏空條件：${ev.bearIf}` : '')
+
+  // ── 判斷市場實際反應（偏多/偏空）──────────────────────────────
+  const mktChgNow  = mktNow?.marketCapChange ?? null;
+  const fgValNow   = fgNow  ? parseInt(fgNow.value) : null;
+
+  // 與快照比較（快照保存的是1小時前的24h市值變化率）
+  const snapChg    = snap?.marketCapChange ?? null;
+  const chgDelta   = (mktChgNow != null && snapChg != null) ? (mktChgNow - snapChg) : null;
+
+  // 用最近1小時的市值變化量作為方向指標
+  const reactionPct = chgDelta ?? mktChgNow ?? 0;
+
+  let biasIcon, biasLabel, biasDetail;
+  if (reactionPct > 1.5) {
+    biasIcon  = '🟢'; biasLabel = '偏多（Bullish）';
+    biasDetail = `市場在數據公布後上漲 +${reactionPct.toFixed(2)}%，反應正面，多頭佔優`;
+  } else if (reactionPct > 0.4) {
+    biasIcon  = '🟡'; biasLabel = '輕微偏多';
+    biasDetail = `市場小幅上漲 +${reactionPct.toFixed(2)}%，方向偏多但動能有限，等待確認`;
+  } else if (reactionPct < -1.5) {
+    biasIcon  = '🔴'; biasLabel = '偏空（Bearish）';
+    biasDetail = `市場在數據公布後下跌 ${reactionPct.toFixed(2)}%，反應負面，空頭佔優`;
+  } else if (reactionPct < -0.4) {
+    biasIcon  = '🟡'; biasLabel = '輕微偏空';
+    biasDetail = `市場小幅下跌 ${reactionPct.toFixed(2)}%，方向偏空但幅度有限，等待確認`;
+  } else {
+    biasIcon  = '⚪'; biasLabel = '中性（等待方向）';
+    biasDetail = `市場變動幅度小（${reactionPct.toFixed(2)}%），正在消化數據，尚無明確方向`;
+  }
+
+  // F&G 方向輔助佐證
+  const fgSupport = fgValNow != null
+    ? `\n💡 恐貪指數：${fgValNow}${biasLabel.includes('多') && fgValNow > 55 ? '，情緒同步偏多，多頭信號強化' : biasLabel.includes('空') && fgValNow < 45 ? '，情緒同步偏空，空頭信號強化' : '，情緒中性，方向信號待確認'}`
+    : '';
+
+  // 公布數值顯示（AI 預測值作為參考基準）
+  const valueRef = ev.aiPred
+    ? `📌 AI 預測數值（事前）：${ev.aiPred}（信心 ${ev.aiConf || '--'}%）`
     : '';
 
   const msg =
     `${impactEmoji} <b>數據公布後 AI 盤面影響分析</b>\n\n` +
     `📊 <b>${ev.name}</b>\n` +
-    `📌 AI 預測數值：${ev.aiPred || '—'}\n` +
-    `🎯 信心度：${ev.aiConf ? ev.aiConf + '%' : '—'}\n\n` +
-    `🤖 <b>AI 分析：對盤面的影響</b>\n${ev.aiMarketImpact || '高影響數據公布後市場通常在 30 分鐘內完成方向確認，注意首根大K棒收線後再操作。'}\n\n` +
-    (biasSummary ? biasSummary + '\n\n' : '') +
-    `⏱️ 公布後 45~90 分鐘，方向延續且量能配合可考慮入場`;
+    (valueRef ? valueRef + '\n' : '') +
+    `\n${biasIcon} <b>AI 判斷：${biasLabel}</b>\n` +
+    `${biasDetail}${fgSupport}\n\n` +
+    `🤖 <b>AI 分析</b>\n${ev.aiMarketImpact || '請依市場實際反應方向操作，等首根確認K棒收線後再決策。'}\n\n` +
+    (ev.bullIf ? `📈 偏多情境：${ev.bullIf}\n` : '') +
+    (ev.bearIf ? `📉 偏空情境：${ev.bearIf}` : '');
 
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
