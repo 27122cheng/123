@@ -2882,13 +2882,16 @@ function recordSignalsFromScan(data) {
     const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
     if (!isLong && !isShort) continue;
     const direction = isLong ? 'long' : 'short';
-    // conf：多頭用評分，空頭用反向評分（100 - score）
-    const conf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (conf < 70) continue; // 信號強度不足，不記錄（門檻 70）
+    // 快速預篩：原始評分不足直接跳過，省略學習計算
+    const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
+    if (rawConf < 70) continue;
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
     const setup = computeSimpleSetup(coin, isLong);
+    // AI 學習引擎調整後信心不足 → 不記錄
+    if (setup.conf < 70) continue;
+    const conf = setup.conf;
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -4993,9 +4996,26 @@ function computeSimpleSetup(coin, isLong) {
   const risk   = Math.abs(entry - sl);
   const tp1    = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
   const tp2    = isLong ? entry + risk * 2.5 : entry - risk * 2.5;
+  const direction = isLong ? 'long' : 'short';
+
+  // ── AI 學習引擎調整（同 buildTradeSetup 相同邏輯）──
+  const hardAdxPenalty = adx < 18 ? 28 : adx < 22 ? 14 : 0;
+  const { penalty: learnPenalty, warnings: learnWarn } = applyLearnAdjustment(direction, rsi, adx, {
+    slType: 'atr', // simple setup 預設使用 ATR 止損
+  });
+  const rawConf = Math.min(90, coin.score || 60);
+  const conf    = Math.max(0, rawConf - learnPenalty - hardAdxPenalty);
+
   const reasons = isLong
     ? [(rsi < 45 ? `RSI ${rsi} 偏低` : ''), '15m/1h 多頭信號確認'].filter(Boolean)
     : [(rsi > 55 ? `RSI ${rsi} 偏高` : ''), '15m/1h 空頭信號確認'].filter(Boolean);
+
+  // 把 AI 學習警告加入進場依據
+  learnWarn.forEach(w => reasons.push(`⚠️ ${w}`));
+  if (hardAdxPenalty > 0) {
+    reasons.push(`⚠️ ADX ${adx} 過低（${adx < 18 ? '< 18' : '< 22'}），震盪行情信心下調 ${hardAdxPenalty}%`);
+  }
+
   return {
     entry, sl, tp1, tp2,
     entryReason: reasons.join('，'),
@@ -5004,8 +5024,8 @@ function computeSimpleSetup(coin, isLong) {
     tp2Reason: `波段目標 R/R ${(Math.abs(tp2 - entry) / risk).toFixed(1)}:1，剩餘倉位移至成本`,
     rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
-    atr,
-    conf: Math.min(90, coin.score || 60),
+    atr, conf,
+    learnFiltered: conf < 70 && rawConf >= 70, // AI 學習引擎過濾掉（原始信心足夠但學習規則降低）
   };
 }
 
