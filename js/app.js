@@ -2991,8 +2991,11 @@ function updateOpenTrades(data) {
       } else if (cur >= tp1 && !trade.tp1Hit) {
         trade.tp1Hit = true; changed = true;
         tp1Hits.push({ trade, coin, cur });
+      } else if (trade.tp1Hit && cur <= entry) {
+        // TP1已觸及後跌回成本 → 自動保本出場
+        outcome = 'be';
       } else if (cur <= sl) {
-        outcome = trade.tp1Hit ? 'be' : 'sl';
+        outcome = 'sl';
       }
     } else {
       if (cur <= tp2) {
@@ -3000,8 +3003,11 @@ function updateOpenTrades(data) {
       } else if (cur <= tp1 && !trade.tp1Hit) {
         trade.tp1Hit = true; changed = true;
         tp1Hits.push({ trade, coin, cur });
+      } else if (trade.tp1Hit && cur >= entry) {
+        // TP1已觸及後漲回成本 → 自動保本出場
+        outcome = 'be';
       } else if (cur >= sl) {
-        outcome = trade.tp1Hit ? 'be' : 'sl';
+        outcome = 'sl';
       }
     }
     if (outcome) {
