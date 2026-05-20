@@ -154,10 +154,14 @@ function startRefreshCycle() {
     applyFilters();
     renderAll();
     checkAndSendAlerts(data);
-    updateOpenTrades(data);
+    const _cancelled1 = updateOpenTrades(data);
     recordSignalsFromScan(data);
     checkPostDataReversal(data);
     if (state.currentPage === 'positions') renderPositionsPage();
+    // 若幣種詳情頁正顯示已被取消的掛單 → 重渲染
+    if (state.currentPage === 'coin' && state.currentCoin && _cancelled1.has(state.currentCoin)) {
+      renderCoinDetail(state.currentCoin);
+    }
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
@@ -185,10 +189,13 @@ async function manualRefresh() {
     applyFilters();
     renderAll();
     checkAndSendAlerts(data);
-    updateOpenTrades(data);
+    const _cancelled2 = updateOpenTrades(data);
     recordSignalsFromScan(data);
     checkPostDataReversal(data);
     if (state.currentPage === 'positions') renderPositionsPage();
+    if (state.currentPage === 'coin' && state.currentCoin && _cancelled2.has(state.currentCoin)) {
+      renderCoinDetail(state.currentCoin);
+    }
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`手動刷新完成（${srcLabel}）`, 'success');
   } catch(e) {
@@ -818,9 +825,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
 
   // 若已有進行中的開倉或等待進場的掛單，優先顯示對應畫面
-  const existingActive = loadTradeLog().find(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
+  const tlogNow = loadTradeLog();
+  const existingActive = tlogNow.find(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
   if (existingActive?.status === 'open')    return buildOpenPositionSetup(existingActive, price);
   if (existingActive?.status === 'pending') return buildPendingPositionSetup(existingActive, price);
+
+  // 若冷卻期內有同方向取消記錄（含飛越止盈），顯示機會已過提示
+  const recentCancel = tlogNow
+    .filter(t => t.symbol === coin.symbol && t.status === 'cancelled' && (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN)
+    .sort((a, b) => (b.cancelTime || 0) - (a.cancelTime || 0))[0];
+  if (recentCancel) {
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const dirLabel = recentCancel.direction === 'long' ? '▲ 做多' : '▼ 做空';
+    const minsAgo = Math.round((Date.now() - (recentCancel.cancelTime || 0)) / 60000);
+    return `<div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:12px;padding:18px 20px;margin-top:8px">
+      <div style="font-size:1rem;font-weight:600;color:#ef4444;margin-bottom:10px">⚡ 本次機會已過（${minsAgo} 分鐘前取消）</div>
+      <div style="font-size:0.85rem;color:var(--text2);line-height:1.7">
+        <div>方向：<b>${dirLabel}</b> &nbsp;|&nbsp; 原進場位：<b>$${fmt(recentCancel.entry)}</b></div>
+        <div>止盈一：<b>$${fmt(recentCancel.tp1)}</b> &nbsp;|&nbsp; 止損：<b>$${fmt(recentCancel.sl)}</b></div>
+        <div style="margin-top:8px;color:#f59e0b">⚠️ ${recentCancel.cancelReason || '掛單已取消'}</div>
+      </div>
+      <div style="margin-top:14px;font-size:0.8rem;color:var(--text3)">冷卻期結束後（約 ${Math.round((SIGNAL_COOLDOWN - (Date.now() - (recentCancel.cancelTime||0)))/60000)} 分鐘）將重新評估新進場機會</div>
+    </div>`;
+  }
 
 
   const m15  = mtfData['15m']?.signal;
@@ -1302,7 +1329,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       t.direction !== direction &&
       (t.status === 'open' || t.status === 'pending')
     );
-    if (!hasActiveOpposite) {
+    // 若同幣種+方向在冷卻期內有取消記錄（含飛越止盈取消），不重複建立掛單
+    const recentlyCancelled = tlog.some(t =>
+      t.symbol === coin.symbol &&
+      t.direction === direction &&
+      t.status === 'cancelled' &&
+      (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN
+    );
+    if (!hasActiveOpposite && !recentlyCancelled) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -2921,6 +2955,7 @@ function recordSignalsFromScan(data) {
 function updateOpenTrades(data) {
   const tlog = loadTradeLog();
   let changed = false;
+  const cancelledSymbols = new Set(); // 本次週期被取消的幣種
   const tp1Hits = []; // trades that just reached TP1 this cycle
   for (const trade of tlog) {
     // ── 等待進場確認：現價觸及進場位後才轉為開倉 ──
@@ -2954,6 +2989,7 @@ function updateOpenTrades(data) {
         trade.cancelReason = cancelReason;
         trade.cancelTime   = Date.now();
         changed = true;
+        cancelledSymbols.add(trade.symbol);
         sendCancelTelegramNotification(trade, cancelReason);
         continue;
       }
@@ -2965,6 +3001,7 @@ function updateOpenTrades(data) {
         trade.cancelReason = `進場前價格已${isLong ? '跌破' : '突破'}止損位 $${sl}（現價 $${cur.toPrecision(6)}）`;
         trade.cancelTime   = Date.now();
         changed = true;
+        cancelledSymbols.add(trade.symbol);
         continue;
       }
 
@@ -2980,6 +3017,7 @@ function updateOpenTrades(data) {
         trade.cancelReason = cancelReason;
         trade.cancelTime   = Date.now();
         changed = true;
+        cancelledSymbols.add(trade.symbol);
         // 瀏覽器通知
         const s = loadSettings();
         if (s.notifBrowser) {
@@ -3129,6 +3167,7 @@ function updateOpenTrades(data) {
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
   if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
+  return cancelledSymbols;
 }
 
 async function sendTP1Notifications(hits) {
