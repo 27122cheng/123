@@ -2968,6 +2968,31 @@ function updateOpenTrades(data) {
         continue;
       }
 
+      // ── 未回踩進場，價格已飛越止盈位 → 取消並通知（機會已過）──
+      const { tp1, tp2 } = trade;
+      const missedTP = (isLong && cur >= tp1) || (!isLong && cur <= tp1);
+      if (missedTP) {
+        const hitTP2   = (isLong && cur >= tp2) || (!isLong && cur <= tp2);
+        const hitLevel = hitTP2 ? '止盈二' : '止盈一';
+        const fmt      = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+        const cancelReason = `價格未回踩進場直接飛越${hitLevel}（$${fmt(isLong ? tp1 : tp1)}），掛單失效`;
+        trade.status       = 'cancelled';
+        trade.cancelReason = cancelReason;
+        trade.cancelTime   = Date.now();
+        changed = true;
+        // 瀏覽器通知
+        const s = loadSettings();
+        if (s.notifBrowser) {
+          sendBrowserNotification(
+            `⚡ 未進場飛越${hitLevel}：${trade.symbol}`,
+            `${trade.direction === 'long' ? '做多' : '做空'} 進場 $${fmt(trade.entry)} → ${hitLevel} $${fmt(hitTP2 ? tp2 : tp1)} 已過`,
+            `missed-${trade.id}`
+          );
+        }
+        sendMissedEntryNotification(trade, hitLevel, hitTP2 ? tp2 : tp1);
+        continue;
+      }
+
       // 多頭：現價降至進場價附近（0.5% 容差）
       // 空頭：現價升至進場價附近（0.5% 容差）
       const touched = isLong ? cur <= entry * 1.005 : cur >= entry * 0.995;
@@ -3149,6 +3174,26 @@ function sendCancelTelegramNotification(trade, reason) {
     `📍 原進場位：$${fmt(trade.entry)}\n` +
     `🛑 原止損位：$${fmt(trade.sl)}\n\n` +
     `⚠️ 取消原因：${reason}\n\n` +
+    `🔗 <a href="${siteUrl}">查看 ${sym} 最新分析 →</a>`;
+  sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+}
+
+function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+  const sym  = trade.symbol.replace('/USDT', '').replace('USDT', '');
+  const dir  = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
+  const isLong = trade.direction === 'long';
+  const siteUrl = window.location.origin + window.location.pathname;
+  const msg =
+    `⚡ <b>未進場已飛越${hitLevel}！</b>\n\n` +
+    `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
+    `📍 原掛單進場：$${fmt(trade.entry)}\n` +
+    `🎯 ${hitLevel}：$${fmt(hitPrice)}\n` +
+    `💰 現價：$${fmt(isLong ? hitPrice : hitPrice)}\n\n` +
+    `ℹ️ 價格未回踩進場位，直接突破${hitLevel}，本次掛單已自動取消。\n` +
+    `若仍看好方向，可重新評估${isLong ? '追多' : '追空'}機會。\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 最新分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
