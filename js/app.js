@@ -1204,6 +1204,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const sig = mtfData[tf]?.signal;
     return sig && (isLong ? sig.signal?.includes('bull') : sig.signal?.includes('bear'));
   }).length;
+  const slType = slReason.includes('PO3') || slReason.includes('掃蕩') ? 'po3'
+              : slReason.includes('支撐結構') || slReason.includes('壓力結構') ? 'structural'
+              : 'atr';
+
   const tradeCtx = {
     entryAbovePOC:      vp1h?.priceAbovePOC ?? null,
     entryWhaleBias:     whale?.bias || null,
@@ -1211,6 +1215,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     entryVolBreakout:   mtfData['1h']?.volAI?.isBreakout || false,
     entryVolDivergence: mtfData['1h']?.volAI?.divergence || null,
     entryMTFAlign,
+    entrySlType:        slType,
   };
 
   // AI 學習調整：依歷史止損模式下調信心
@@ -1219,6 +1224,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     whaleBias: whale?.bias || null,
     volDivergence: mtfData['1h']?.volAI?.divergence || null,
     mtfAlign: entryMTFAlign,
+    slType,
   };
   const { penalty: learnPenalty, warnings: learnWarnings } = applyLearnAdjustment(direction, rsi, parseFloat(coin.adx) || 20, learnCtx);
   const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty);
@@ -3619,6 +3625,19 @@ function computeLearnProfile() {
       losses.filter(t => (t.entryMTFAlign || 0) <= 1),
       closed.filter(t => t.entryMTFAlign != null && t.entryMTFAlign <= 1),
       10, r => `僅1個週期對齊入場止損率 ${r}%，AI 建議等多週期共振`),
+    // 止損設置類型
+    check('po3_sl_type',
+      losses.filter(t => t.entrySlType === 'po3'),
+      closed.filter(t => t.entrySlType === 'po3'),
+      12, r => `PO3/掃蕩型止損歷史觸發率 ${r}%，AI 建議等掃蕩完成後再進場`),
+    check('structural_sl_breach',
+      losses.filter(t => t.entrySlType === 'structural'),
+      closed.filter(t => t.entrySlType === 'structural'),
+      10, r => `結構位止損歷史失守率 ${r}%，AI 建議在更低一層結構設止損`),
+    check('atr_sl_breach',
+      losses.filter(t => t.entrySlType === 'atr'),
+      closed.filter(t => t.entrySlType === 'atr'),
+      8, r => `ATR止損歷史觸發率 ${r}%，AI 建議在高波動期擴大ATR倍數`),
   ].filter(Boolean);
 
   // ── 最佳進場條件（從盈利交易學習）──
@@ -3712,7 +3731,10 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       (rule.condition === 'whale_against_long'   && direction === 'long'  && ctx.whaleBias === 'bear') ||
       (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
       (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
-      (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1);
+      (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
+      (rule.condition === 'po3_sl_type'          && ctx.slType === 'po3') ||
+      (rule.condition === 'structural_sl_breach' && ctx.slType === 'structural') ||
+      (rule.condition === 'atr_sl_breach'        && ctx.slType === 'atr');
     if (match) { penalty += rule.penaltyConf; warnings.push(rule.warning); }
   }
   return { penalty, warnings };
