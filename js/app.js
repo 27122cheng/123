@@ -3721,15 +3721,49 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
 /* ── 止損/保本交易學習分析 ────────────────────────────────────── */
 function generateTradeAnalysis(trade) {
   const issues = [], suggestions = [];
-  const isLong = trade.direction === 'long';
+  const isLong    = trade.direction === 'long';
+  const slReason  = trade.slReason  || '';
+  const entryReason = trade.entryReason || '';
+  const outcome   = trade.outcome;
+
+  // ── 止損原因分析（最直接的風控依據）──────────────────────────
+  if (outcome === 'sl' || outcome === 'be') {
+    // 結構性止損失守
+    if (slReason.includes('支撐結構') || slReason.includes('壓力結構')) {
+      const side = isLong ? '支撐結構' : '壓力結構';
+      issues.push(`止損設於${side}，${side}失守代表市場結構轉弱，此類止損本身設置合理但結構已被打破`);
+      suggestions.push(`${side}破位後應立即離場，不要等待反彈，下次可在${isLong ? '更低' : '更高'}一層結構設止損`);
+    }
+    // PO3 / 掃蕩型止損
+    if (slReason.includes('PO3') || slReason.includes('掃蕩')) {
+      issues.push('止損設於 PO3/掃蕩結構位，該位置被突破通常代表主力完成吸籌後反向洗盤，或信號本身為誘多/誘空');
+      suggestions.push('PO3 結構失守後需重新評估主力意圖，下次等掃蕩確認方向後再進場，避免在掃蕩前入場');
+    }
+    // ATR / 百分比止損
+    if (slReason.includes('ATR') || slReason.includes('%') || slReason.includes('結構止損')) {
+      issues.push(`止損以 ATR/百分比設置，觸發代表市場波動超出預期範圍（進場時 ATR 或波動估算可能不足）`);
+      suggestions.push('波動大時應使用更大的 ATR 倍數或調整倉位大小，避免被正常波動震出');
+    }
+    // 進場原因回顧（止損後的逆向分析）
+    if (entryReason.includes('RSI') && (isLong ? trade.rsi > 65 : trade.rsi < 35)) {
+      issues.push(`進場依據含 RSI ${trade.rsi}，${isLong ? '偏高進場' : '偏低進場'}後被止損，動能判斷失準`);
+      suggestions.push(`${isLong ? 'RSI > 65' : 'RSI < 35'} 時順勢追入風險較高，建議在 RSI ${isLong ? '回落至 50-55' : '回升至 45-50'} 後等確認再入場`);
+    }
+    if (entryReason.includes('多頭信號') || entryReason.includes('空頭信號')) {
+      issues.push(`進場依據為${isLong ? '多頭' : '空頭'}信號共振，止損觸發說明信號出現假突破或方向判斷錯誤`);
+      suggestions.push('信號共振後需等待 K 棒收線確認，不要在信號剛出現時立即入場');
+    }
+  }
+
+  // ── 技術指標問題 ────────────────────────────────────────────
   if (isLong) {
     if (trade.rsi > 60) {
       issues.push(`RSI 進場時 ${trade.rsi} 偏高，多頭追入有回調風險`);
       suggestions.push('下次等 RSI 回落至 50 以下再考慮多頭進場');
     }
     if (trade.adx < 20) {
-      issues.push(`ADX ${trade.adx} 過低，趨勢不明確`);
-      suggestions.push('確保 ADX > 20 再進場，避免震盪市追多');
+      issues.push(`ADX ${trade.adx} 過低，趨勢不明確，震盪盤容易觸發止損`);
+      suggestions.push('確保 ADX > 20 再進場，低 ADX 環境下縮小止損或不入場');
     }
     if (trade.score < 65) {
       issues.push(`評分 ${trade.score} 偏低，信號強度有限`);
@@ -3741,15 +3775,16 @@ function generateTradeAnalysis(trade) {
       suggestions.push('下次等 RSI 回升至 50 以上再考慮空頭進場');
     }
     if (trade.adx < 20) {
-      issues.push(`ADX ${trade.adx} 過低，趨勢不明確`);
-      suggestions.push('確保 ADX > 20 再進場，避免震盪市追空');
+      issues.push(`ADX ${trade.adx} 過低，趨勢不明確，震盪盤容易觸發止損`);
+      suggestions.push('確保 ADX > 20 再進場，低 ADX 環境下縮小止損或不入場');
     }
     if (trade.score > 35) {
       issues.push(`評分 ${trade.score} 偏高，空頭信號強度有限`);
       suggestions.push('空頭信號需評分 35 以下再操作');
     }
   }
-  // VP 位置問題
+
+  // ── 籌碼 / 巨鯨 / 成交量 ────────────────────────────────────
   if (trade.entryAbovePOC === false && isLong) {
     issues.push('做多入場在籌碼密集區(POC)下方，上方賣壓較重');
     suggestions.push('做多時確保現價突破 POC 站穩，等待籌碼轉換後再進場');
@@ -3758,28 +3793,26 @@ function generateTradeAnalysis(trade) {
     issues.push('做空入場在籌碼密集區(POC)上方，下方承接較強');
     suggestions.push('做空時確保現價跌破 POC 且無強力承接，再考慮入場');
   }
-  // 巨鯨方向問題
   if (trade.entryWhaleBias === 'bear' && isLong) {
-    issues.push('入場時巨鯨主力資金偏向賣出，與做多方向相反');
+    issues.push('入場時巨鯨主力資金偏向賣出，與做多方向相反，止損被主力行為推動');
     suggestions.push('機構資金方向比技術信號更優先，巨鯨看空時避免做多');
   }
   if (trade.entryWhaleBias === 'bull' && !isLong) {
-    issues.push('入場時巨鯨主力資金偏向買入，與做空方向相反');
+    issues.push('入場時巨鯨主力資金偏向買入，與做空方向相反，止損被主力行為推動');
     suggestions.push('機構資金方向比技術信號更優先，巨鯨看多時避免做空');
   }
-  // 成交量背離
   if (trade.entryVolDivergence === 'bearish_div' && isLong) {
-    issues.push('入場時出現成交量看跌背離（量跌價漲），上漲動能不足');
+    issues.push('入場時出現成交量看跌背離（量跌價漲），上漲動能不足，止損觸發印證背離有效');
     suggestions.push('量價背離時謹慎追多，等待量能重新放大再確認方向');
   }
-  // 多週期未共振
   if ((trade.entryMTFAlign || 0) <= 1 && trade.entryMTFAlign != null) {
-    issues.push(`僅 ${trade.entryMTFAlign} 個週期方向對齊，多空信號分歧較大`);
+    issues.push(`僅 ${trade.entryMTFAlign} 個週期方向對齊，多空信號分歧較大，止損觸發可能來自高週期反壓`);
     suggestions.push('等待至少 2-3 個週期（15m、1h、4h）信號一致再入場');
   }
+
   if (issues.length === 0) {
-    issues.push('技術指標條件尚可，可能受宏觀或突發新聞影響');
-    suggestions.push('建議同步確認宏觀市場環境再入場');
+    issues.push('技術指標條件尚可，止損可能受宏觀環境或突發事件影響');
+    suggestions.push('建議同步確認宏觀市場環境與重大新聞後再入場');
   }
   return { issues, suggestions };
 }
