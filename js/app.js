@@ -310,7 +310,10 @@ function navigateTo(page, coinSymbol) {
     renderReversalCards();
   }
   if (page === 'settings') populateSettingsPage();
-  if (page === 'positions') renderPositionsPage();
+  if (page === 'positions') {
+    if (state.data.length) updateOpenTrades(state.data); // 進頁前先用最新價格跑一次風控
+    renderPositionsPage();
+  }
   if (page === 'tradelog') renderTradeLogPage();
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2862,6 +2865,16 @@ function updateOpenTrades(data) {
         trade.cancelTime   = Date.now();
         changed = true;
         sendCancelTelegramNotification(trade, cancelReason);
+        continue;
+      }
+
+      // ── 進場前已突破止損位 → 立即取消（風控執行）──
+      const sl = trade.sl;
+      if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
+        trade.status     = 'cancelled';
+        trade.cancelReason = `進場前價格已${isLong ? '跌破' : '突破'}止損位 $${sl}（現價 $${cur.toPrecision(6)}）`;
+        trade.cancelTime   = Date.now();
+        changed = true;
         continue;
       }
 
