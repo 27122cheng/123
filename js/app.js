@@ -1180,23 +1180,50 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const levelQualityBonus = tp1Quality + slQuality;
   const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus) * 6));
 
-  // 宏觀環境同步確認：宏觀強烈反向時下調信心度
-  const macroOpposePenalty = (() => {
-    if (!globalMkt && !fearGreed) return 0;
-    const fgNow  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
-    const chgNow = globalMkt?.marketCapChange || 0;
-    const domNow = globalMkt?.btcDominance   || 50;
+  // 宏觀環境同步確認：宏觀訊號 + AI新聞 + 預測 + 今日數據事件 綜合評分
+  const { macroOpposePenalty, macroReasons } = (() => {
+    const reasons = [];
     let against = 0;
-    if (isLong) {
-      if (chgNow < -2) against++;  // 市值下跌，多頭逆風
-      if (domNow > 58) against++;  // BTC主導偏高，山寨偏空
-      if (fgNow < 30)  against++;  // 極度恐慌，不宜追多
-    } else {
-      if (chgNow > 2)  against++;  // 市值上漲，空頭逆風
-      if (domNow < 44) against++;  // 山寨季，不宜追空
-      if (fgNow > 70)  against++;  // 極度貪婪，不宜追空
+
+    // ① 宏觀訊號（F&G + 市值 + BTC 主導）
+    if (globalMkt || fearGreed) {
+      const fgNow  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+      const chgNow = globalMkt?.marketCapChange || 0;
+      const domNow = globalMkt?.btcDominance   || 50;
+      if (isLong) {
+        if (chgNow < -2) { against++;   reasons.push(`市值 ${chgNow.toFixed(1)}% 下跌，多頭逆風`); }
+        if (domNow > 58) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏高），山寨承壓`); }
+        if (fgNow < 30)  { against++;   reasons.push(`恐貪 ${fgNow}（極度恐慌），不宜追多`); }
+        if (fgNow > 75)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極度貪婪），短線追高風險`); }
+      } else {
+        if (chgNow > 2)  { against++;   reasons.push(`市值 +${chgNow.toFixed(1)}%，空頭逆風`); }
+        if (domNow < 44) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏低），山寨季偏多`); }
+        if (fgNow > 70)  { against++;   reasons.push(`恐貪 ${fgNow}（貪婪），不宜追空`); }
+        if (fgNow < 25)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極恐），逢低布局偏多`); }
+      }
     }
-    return against >= 2 ? 10 : against === 1 ? 4 : 0;
+
+    // ② AI 財經新聞偏向分析
+    const topInsight = aiGenerateMarketInsights()[0];
+    if (topInsight) {
+      const sentiment = topInsight.sentiment || '';
+      if (isLong  && sentiment === 'bearish') { against += 0.5; reasons.push(`AI新聞偏空：${topInsight.zhTitle?.slice(0,20)}`); }
+      if (!isLong && sentiment === 'bullish') { against += 0.5; reasons.push(`AI新聞偏多：${topInsight.zhTitle?.slice(0,20)}`); }
+    }
+
+    // ③ 今日重要數據事件（高影響 + 未公布且在1小時內）
+    const nearEvents = getTodayEconEvents().filter(ev => {
+      const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+      return ev.impact === 'high' && mins >= -15 && mins <= 75;
+    });
+    if (nearEvents.length > 0) {
+      against += 1;
+      reasons.push(`高影響數據即將/剛公布：${nearEvents.map(e => e.name).join('、')}，不確定性高`);
+    }
+
+    const total = against;
+    const penalty = total >= 3 ? 18 : total >= 2 ? 12 : total >= 1 ? 5 : 0;
+    return { macroOpposePenalty: penalty, macroReasons: reasons };
   })();
 
   // 計算入場時的額外背景資料（供 AI 學習使用）
@@ -1366,7 +1393,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       }).join('');
       // 宏觀預測摘要
       const predHtml = `<div class="setup-macro-pred">🤖 預測：${isLong ? 'BTC ETF 持續淨流入（信心78%），美聯儲維持利率（信心82%），全球流動性擴張有利多頭' : '美聯儲維持鷹派（信心65%），通脹未完全降溫，CPI > 2.7% 時空頭受益'}</div>`;
-      return newsHtml + (evHtml ? `<div class="setup-macro-events">${evHtml}</div>` : '') + predHtml;
+      // 宏觀風險警告（若有觸發懲罰）
+      const macroWarnHtml = macroReasons.length
+        ? `<div class="setup-macro-warns">${macroReasons.map(r => `<div class="setup-macro-warn-item">⚠️ ${r}</div>`).join('')}</div>`
+        : '';
+      return newsHtml + (evHtml ? `<div class="setup-macro-events">${evHtml}</div>` : '') + predHtml + macroWarnHtml;
     })()}
   </div>
 
@@ -2504,20 +2535,25 @@ function loadTradingViewChart(symbol, interval) {
   }
   container.innerHTML = '';
 
-  // 建立唯一 container id 避免 TradingView 複用 bug
-  const containerId = 'tv-chart-container';
-  const base = symbol.replace('/USDT','').replace('/','').toUpperCase();
-  // 嘗試多個交易所前綴；部分幣種在 Binance 上命名不同
+  const base     = symbol.replace('/USDT','').replace('/','').toUpperCase();
   const tvSymbol = 'BINANCE:' + base + 'USDT';
+  const ivl      = interval || '15';
+
+  // 4 秒後若 widget 未渲染 canvas，自動切換到 iframe 備援
+  const fallbackTimer = setTimeout(() => {
+    if (!container.querySelector('canvas,iframe')) {
+      renderFallbackChart(container, symbol, ivl);
+    }
+  }, 4000);
 
   if (typeof TradingView !== 'undefined') {
     try {
       state.tvWidget = new TradingView.widget({
-        container_id: containerId,
+        container_id: 'tv-chart-container',
         autosize:     true,
         height:       700,
         symbol:       tvSymbol,
-        interval:     interval || '15',
+        interval:     ivl,
         timezone:     'Asia/Taipei',
         theme:        'dark',
         style:        '1',
@@ -2531,37 +2567,42 @@ function loadTradingViewChart(symbol, interval) {
         save_image:          false,
         studies: ['RSI@tv-basicstudies', 'MACD@tv-basicstudies'],
         overrides: {
-          'paneProperties.background':                    '#0d1017',
-          'paneProperties.backgroundType':                'solid',
-          'scalesProperties.textColor':                   '#94a3b8',
-          'mainSeriesProperties.candleStyle.upColor':     '#00e676',
-          'mainSeriesProperties.candleStyle.downColor':   '#ff1744',
-          'mainSeriesProperties.candleStyle.borderUpColor':   '#00e676',
-          'mainSeriesProperties.candleStyle.borderDownColor': '#ff1744',
-          'mainSeriesProperties.candleStyle.wickUpColor':     '#00e676',
-          'mainSeriesProperties.candleStyle.wickDownColor':   '#ff1744',
+          'paneProperties.background':                '#0d1017',
+          'paneProperties.backgroundType':            'solid',
+          'scalesProperties.textColor':               '#94a3b8',
+          'mainSeriesProperties.candleStyle.upColor':          '#00e676',
+          'mainSeriesProperties.candleStyle.downColor':        '#ff1744',
+          'mainSeriesProperties.candleStyle.borderUpColor':    '#00e676',
+          'mainSeriesProperties.candleStyle.borderDownColor':  '#ff1744',
+          'mainSeriesProperties.candleStyle.wickUpColor':      '#00e676',
+          'mainSeriesProperties.candleStyle.wickDownColor':    '#ff1744',
         },
         loading_screen: { backgroundColor: '#0d1017', foregroundColor: '#00d4ff' },
+        onChartReady: () => clearTimeout(fallbackTimer),
       });
     } catch(e) {
-      console.warn('[TV] widget error:', e);
-      renderFallbackChart(container, symbol);
+      clearTimeout(fallbackTimer);
+      renderFallbackChart(container, symbol, ivl);
     }
   } else {
-    renderFallbackChart(container, symbol);
+    clearTimeout(fallbackTimer);
+    renderFallbackChart(container, symbol, ivl);
   }
 }
 
-function renderFallbackChart(container, symbol) {
+function renderFallbackChart(container, symbol, interval) {
   const base = symbol.replace('/USDT','').replace('/','').toUpperCase();
-  // 直接用 iframe 嵌入，不依賴 tv.js 腳本
+  const ivl  = interval || '15';
+  // s.tradingview.com/widgetembed 是官方 CDN 嵌入端點，比 www 更可靠
+  const src = `https://s.tradingview.com/widgetembed/?symbol=BINANCE%3A${base}USDT` +
+    `&interval=${ivl}&theme=dark&style=1&locale=zh_TW` +
+    `&hidesidetoolbar=0&hidetoptoolbar=0&saveimage=0&withdateranges=1` +
+    `&studies=RSI%40tv-basicstudies%2CMACD%40tv-basicstudies`;
   container.innerHTML = `
-    <iframe
-      src="https://www.tradingview.com/widgetembed/?frameElementId=tv_chart&symbol=BINANCE%3A${base}USDT&interval=15&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&theme=dark&style=1&timezone=Asia%2FTaipei&withdateranges=1&studies=RSI%40tv-basicstudies%2CMACD%40tv-basicstudies&locale=zh_TW"
+    <iframe src="${src}"
       style="width:100%;height:700px;border:none;border-radius:8px"
-      allowtransparency="true"
-      scrolling="no"
-      allowfullscreen></iframe>`;
+      frameborder="0" allowfullscreen scrolling="no"
+    ></iframe>`;
 }
 
 /* ── 分析内容构建 ───────────────────────────────────────────── */
@@ -3427,31 +3468,19 @@ async function checkPostEventAnalysis() {
 
 function sendPostEventAnalysis(ev, s) {
   const impactEmoji = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
-  const tlog        = loadTradeLog();
-  const openTrades  = tlog.filter(t => t.status === 'open');
-
-  // 對持倉的個別影響評估
-  const tradeImpact = openTrades.length
-    ? '\n\n📊 <b>持倉方向影響</b>\n' + openTrades.slice(0, 3).map(t => {
-        const sym  = t.symbol.replace('/USDT', '');
-        const dir  = t.direction === 'long' ? '▲多' : '▼空';
-        const note = t.direction === 'long'
-          ? `優於預期受益，差於預期請確認止損 $${parseFloat(t.sl).toPrecision(5).replace(/\.?0+$/, '')}`
-          : `差於預期受益，優於預期請確認止損 $${parseFloat(t.sl).toPrecision(5).replace(/\.?0+$/, '')}`;
-        return `• ${sym} ${dir}：${note}`;
-      }).join('\n')
+  const biasSummary = (ev.bullIf || ev.bearIf)
+    ? (ev.bullIf ? `📈 偏多條件：${ev.bullIf}\n` : '') +
+      (ev.bearIf ? `📉 偏空條件：${ev.bearIf}` : '')
     : '';
 
   const msg =
-    `${impactEmoji} <b>數據公布後 AI 市場影響分析</b>\n\n` +
-    `📊 <b>${ev.name}</b> — 數據已公布\n\n` +
-    `🤖 <b>AI 研判：市場影響</b>\n${ev.aiMarketImpact || '根據歷史規律，高影響數據公布後市場通常在30分鐘內完成方向確認。'}\n\n` +
-    `📈 <b>若結果優於預期</b>：${ev.bullIf}\n` +
-    `📉 <b>若結果差於預期</b>：${ev.bearIf}\n\n` +
-    `⏱️ <b>建議操作節奏</b>\n` +
-    `• 現在（公布後 ~30min）：等待波動收斂，觀察 K 棒方向\n` +
-    `• 公布後 45~90min：方向延續且量能配合可考慮順勢入場\n` +
-    `• 避免在首根大 K 棒後立即追入，假突破機率高${tradeImpact}`;
+    `${impactEmoji} <b>數據公布後 AI 盤面影響分析</b>\n\n` +
+    `📊 <b>${ev.name}</b>\n` +
+    `📌 AI 預測數值：${ev.aiPred || '—'}\n` +
+    `🎯 信心度：${ev.aiConf ? ev.aiConf + '%' : '—'}\n\n` +
+    `🤖 <b>AI 分析：對盤面的影響</b>\n${ev.aiMarketImpact || '高影響數據公布後市場通常在 30 分鐘內完成方向確認，注意首根大K棒收線後再操作。'}\n\n` +
+    (biasSummary ? biasSummary + '\n\n' : '') +
+    `⏱️ 公布後 45~90 分鐘，方向延續且量能配合可考慮入場`;
 
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
@@ -3863,27 +3892,55 @@ function getLearnProfile() {
 
 function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const profile = getLearnProfile();
-  if (!profile.ready || !profile.rules.length) return { penalty: 0, warnings: [] };
   let penalty = 0;
   const warnings = [];
-  for (const rule of profile.rules) {
-    const match =
-      (rule.condition === 'long_high_rsi'       && direction === 'long'  && rsi > 65) ||
-      (rule.condition === 'short_low_rsi'        && direction === 'short' && rsi < 35) ||
-      (rule.condition === 'low_adx'              && adx < 20) ||
-      (rule.condition === 'long_high_score_rsi'  && direction === 'long'  && rsi > 72) ||
-      (rule.condition === 'short_oversold'       && direction === 'short' && rsi < 28) ||
-      (rule.condition === 'long_below_poc'       && direction === 'long'  && ctx.abovePOC === false) ||
-      (rule.condition === 'short_above_poc'      && direction === 'short' && ctx.abovePOC === true) ||
-      (rule.condition === 'whale_against_long'   && direction === 'long'  && ctx.whaleBias === 'bear') ||
-      (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
-      (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
-      (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
-      (rule.condition === 'po3_sl_type'          && ctx.slType === 'po3') ||
-      (rule.condition === 'structural_sl_breach' && ctx.slType === 'structural') ||
-      (rule.condition === 'atr_sl_breach'        && ctx.slType === 'atr');
-    if (match) { penalty += rule.penaltyConf; warnings.push(rule.warning); }
+
+  // ① 結構化規則（需要足夠歷史樣本才激活）
+  if (profile.ready && profile.rules.length) {
+    for (const rule of profile.rules) {
+      const match =
+        (rule.condition === 'long_high_rsi'       && direction === 'long'  && rsi > 65) ||
+        (rule.condition === 'short_low_rsi'        && direction === 'short' && rsi < 35) ||
+        (rule.condition === 'low_adx'              && adx < 20) ||
+        (rule.condition === 'long_high_score_rsi'  && direction === 'long'  && rsi > 72) ||
+        (rule.condition === 'short_oversold'       && direction === 'short' && rsi < 28) ||
+        (rule.condition === 'long_below_poc'       && direction === 'long'  && ctx.abovePOC === false) ||
+        (rule.condition === 'short_above_poc'      && direction === 'short' && ctx.abovePOC === true) ||
+        (rule.condition === 'whale_against_long'   && direction === 'long'  && ctx.whaleBias === 'bear') ||
+        (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
+        (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
+        (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
+        (rule.condition === 'po3_sl_type'          && ctx.slType === 'po3') ||
+        (rule.condition === 'structural_sl_breach' && ctx.slType === 'structural') ||
+        (rule.condition === 'atr_sl_breach'        && ctx.slType === 'atr');
+      if (match) { penalty += rule.penaltyConf; warnings.push(rule.warning); }
+    }
   }
+
+  // ② 止損原因記憶（從 AI 記憶中的累積問題，即使尚無足夠結構化規則也生效）
+  const mem = (profile.mem) || loadAIMemory();
+  if (mem.issues) {
+    const highFreq = Object.values(mem.issues).filter(i => (i.count || 0) >= 3);
+    for (const issue of highFreq) {
+      const t = issue.text || '';
+      const matchesCurrent =
+        (t.includes('RSI') && t.includes('偏高') && direction === 'long'  && rsi > 65) ||
+        (t.includes('RSI') && t.includes('偏低') && direction === 'short' && rsi < 35) ||
+        (t.includes('ADX') && t.includes('過低') && adx < 20) ||
+        (t.includes('PO3') && ctx.slType === 'po3') ||
+        (t.includes('支撐結構') && ctx.slType === 'structural') ||
+        (t.includes('巨鯨') && t.includes('賣出') && direction === 'long'  && ctx.whaleBias === 'bear') ||
+        (t.includes('巨鯨') && t.includes('買入') && direction === 'short' && ctx.whaleBias === 'bull') ||
+        (t.includes('MTF') && (ctx.mtfAlign ?? 99) <= 1) ||
+        (t.includes('週期') && (ctx.mtfAlign ?? 99) <= 1);
+      if (matchesCurrent) {
+        const extraPenalty = Math.min(10, Math.ceil(issue.count / 2));
+        penalty  += extraPenalty;
+        warnings.push(`📚 止損記憶：「${t.slice(0, 35)}」已出現 ${issue.count} 次（+${extraPenalty}% 懲罰）`);
+      }
+    }
+  }
+
   return { penalty, warnings };
 }
 

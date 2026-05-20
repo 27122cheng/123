@@ -1567,6 +1567,8 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .setup-macro-ev-time { margin-left:8px; font-size:0.72rem; }
 .setup-macro-ev-impact { margin-top:2px; color:var(--text3); font-size:0.73rem; }
 .setup-macro-pred { margin-top:8px; padding:6px 8px; background:rgba(99,102,241,.08); border-radius:6px; font-size:0.76rem; color:var(--text3); line-height:1.4; border-left:2px solid rgba(99,102,241,.4); }
+.setup-macro-warns { margin-top:8px; display:flex; flex-direction:column; gap:3px; }
+.setup-macro-warn-item { font-size:0.75rem; color:#f59e0b; padding:3px 6px; background:rgba(245,158,11,.08); border-radius:4px; }
 
 /* ── 交易建議：AI 學習面板 ──────────────────────────────────────── */
 .setup-ai-panel { border:1px solid rgba(129,140,248,.25); border-radius:10px; padding:12px 14px; margin-top:12px; background:rgba(99,102,241,.06); }
