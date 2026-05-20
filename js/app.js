@@ -1251,26 +1251,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (!ex.scaleIns) ex.scaleIns = [];
     if (ex.peakPrice == null) ex.peakPrice = null;
     saveTradeLog(tlog);
-  } else if (!inCooldown(tlog, coin.symbol, direction)) {
-    tlog.unshift({
-      id: `${coin.symbol}-${Date.now()}`,
-      symbol: coin.symbol, direction,
-      timestamp: Date.now(),
-      entryPrice: price, entry, sl, tp1, tp2,
-      rsi: parseFloat(coin.rsi) || 50,
-      adx: parseFloat(coin.adx) || 20,
-      score: coin.score, trend: coin.trend, conf,
-      entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
-      status: 'pending', outcome: null, tp1Hit: false,
-      entryTime: null,
-      exitPrice: null, exitTime: null, pnlR: null, analysis: null,
-      refined: true,
-      longTermBias: ltBias, canScaleIn, ltConf,
-      scaleIns: [], peakPrice: null,
-      ...tradeCtx,
-    });
-    if (tlog.length > 500) tlog.splice(500);
-    saveTradeLog(tlog);
+  } else {
+    // 用戶查看詳情時只要沒有同方向活躍倉就記錄，不受冷卻期限制
+    const hasActiveOpposite = tlog.some(t =>
+      t.symbol === coin.symbol &&
+      t.direction !== direction &&
+      (t.status === 'open' || t.status === 'pending')
+    );
+    if (!hasActiveOpposite) {
+      tlog.unshift({
+        id: `${coin.symbol}-${Date.now()}`,
+        symbol: coin.symbol, direction,
+        timestamp: Date.now(),
+        entryPrice: price, entry, sl, tp1, tp2,
+        rsi: parseFloat(coin.rsi) || 50,
+        adx: parseFloat(coin.adx) || 20,
+        score: coin.score, trend: coin.trend, conf,
+        entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
+        status: 'pending', outcome: null, tp1Hit: false,
+        entryTime: null,
+        exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+        refined: true,
+        longTermBias: ltBias, canScaleIn, ltConf,
+        scaleIns: [], peakPrice: null,
+        ...tradeCtx,
+      });
+      if (tlog.length > 500) tlog.splice(500);
+      saveTradeLog(tlog);
+    }
   }
 
   // ── 宏觀經濟摘要 ──
