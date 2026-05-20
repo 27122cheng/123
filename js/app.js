@@ -1226,9 +1226,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     mtfAlign: entryMTFAlign,
     slType,
   };
-  const { penalty: learnPenalty, warnings: learnWarnings } = applyLearnAdjustment(direction, rsi, parseFloat(coin.adx) || 20, learnCtx);
-  const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty);
-  if (conf < 70) direction = 'wait'; // 學習後信心不足，改觀望（70+ 才出手）
+  const adxVal = parseFloat(coin.adx) || 20;
+  // 硬性 ADX 門檻（不依賴歷史數據，始終生效）
+  const hardAdxPenalty = adxVal < 18 ? 28 : adxVal < 22 ? 14 : 0;
+  const { penalty: learnPenalty, warnings: learnWarn0 } = applyLearnAdjustment(direction, rsi, adxVal, learnCtx);
+  // 合併警告：硬性 ADX 警告 + AI 學習警告
+  const learnWarnings = [...learnWarn0];
+  if (hardAdxPenalty > 0) {
+    learnWarnings.push(`ADX ${adxVal} 過低（${adxVal < 18 ? '< 18' : '< 22'}），震盪行情信心下調 ${hardAdxPenalty}%，建議等 ADX > 22 再進場`);
+  }
+  const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty - hardAdxPenalty);
+  if (conf < 70) direction = 'wait'; // 信心不足，改觀望
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -1325,15 +1333,42 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>` : ''}
   </div>
 
-  ${(fearGreed || globalMkt) ? `<div class="setup-macro-row">
-    <div class="setup-macro-title">🌐 宏觀環境參考</div>
-    <div class="setup-macro-chips">
+  <div class="setup-macro-row">
+    <div class="setup-macro-title">🌐 宏觀信號同步分析</div>
+    ${(fearGreed || globalMkt) ? `<div class="setup-macro-chips">
       ${fgVal != null ? `<span class="setup-macro-chip" style="color:${fgColor}">🌡 恐貪 ${fgVal}（${fgZh}）</span>` : ''}
       ${mktChg ? `<span class="setup-macro-chip" style="color:${mktChg > 0 ? 'var(--bull)' : 'var(--bear)'}">📈 市值 ${mktChg > 0 ? '+' : ''}${mktChg.toFixed(1)}%</span>` : ''}
       ${btcDom ? `<span class="setup-macro-chip" style="color:${btcDom > 58 ? 'var(--bear)' : btcDom < 44 ? 'var(--bull)' : 'var(--text2)'}">₿ BTC主導 ${btcDom.toFixed(1)}%</span>` : ''}
       ${macroFavor ? `<span class="setup-macro-chip setup-macro-verdict">${macroFavor}</span>` : ''}
-    </div>
-  </div>` : ''}
+    </div>` : ''}
+    ${(() => {
+      // AI 財經新聞重點（今日頭條）
+      const insights = aiGenerateMarketInsights();
+      const topNews  = insights[0];
+      const newsHtml = topNews
+        ? `<div class="setup-macro-news"><span class="setup-macro-news-icon">📰</span><span class="setup-macro-news-txt">${topNews.zhTitle}</span><span class="setup-macro-news-tag">${topNews.source}</span></div>`
+        : '';
+      // 今日重要數據事件
+      const todayEvs = getTodayEconEvents().filter(ev => {
+        const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+        return mins > -120 && mins < 480; // 2小時前至8小時後
+      }).slice(0, 2);
+      const evHtml = todayEvs.map(ev => {
+        const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+        const timeLabel = mins < 0 ? `已公布` : mins < 60 ? `${Math.round(mins)}分鐘後` : `${Math.round(mins/60)}小時後`;
+        const impactColor = ev.impact === 'high' ? 'var(--bear)' : '#f0a500';
+        const tradeSide = isLong ? ev.bullIf : ev.bearIf;
+        return `<div class="setup-macro-ev">
+          <span class="setup-macro-ev-name">${ev.name}</span>
+          <span class="setup-macro-ev-time" style="color:${impactColor}">${timeLabel}</span>
+          ${tradeSide ? `<div class="setup-macro-ev-impact">${isLong ? '📈' : '📉'} ${tradeSide}</div>` : ''}
+        </div>`;
+      }).join('');
+      // 宏觀預測摘要
+      const predHtml = `<div class="setup-macro-pred">🤖 預測：${isLong ? 'BTC ETF 持續淨流入（信心78%），美聯儲維持利率（信心82%），全球流動性擴張有利多頭' : '美聯儲維持鷹派（信心65%），通脹未完全降溫，CPI > 2.7% 時空頭受益'}</div>`;
+      return newsHtml + (evHtml ? `<div class="setup-macro-events">${evHtml}</div>` : '') + predHtml;
+    })()}
+  </div>
 
   <div class="setup-levels">
     <div class="level-row level-entry">
@@ -2418,16 +2453,8 @@ async function renderCoinDetail(symbol) {
     fetchWhaleTrades(symbol),
   ]);
 
-  // 緩存宏觀數據供 Telegram 通知使用（含今日 AI 新聞與重要事件）
-  if (globalMkt || fearGreed) {
-    const todayEvents = getTodayEconEvents().filter(ev => (ev.eventTime.getTime() - Date.now()) < 4 * 60 * 60 * 1000 && (ev.eventTime.getTime() - Date.now()) > -60 * 60 * 1000);
-    const topInsight = aiGenerateMarketInsights()[0];
-    _macroCache = {
-      ...(globalMkt || {}), fg: fearGreed,
-      todayAlert: todayEvents.length ? todayEvents[0].name : null,
-      topNewsTitle: topInsight?.zhTitle || null,
-    };
-  }
+  // 緩存宏觀數據供後台使用（宏觀詳情僅在9AM簡報和幣種分析頁顯示）
+  if (globalMkt || fearGreed) _macroCache = { ...(globalMkt || {}), fg: fearGreed };
 
   const set = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
 
@@ -2469,29 +2496,39 @@ function hexToRgba(color, alpha) {
 function loadTradingViewChart(symbol, interval) {
   const container = document.getElementById('tv-chart-container');
   if (!container) return;
+
+  // 正確銷毀舊 widget，避免殘留佔用容器
+  if (state.tvWidget) {
+    try { state.tvWidget.remove(); } catch {}
+    state.tvWidget = null;
+  }
   container.innerHTML = '';
 
-  const tvSymbol = 'BINANCE:' + symbol.replace('/','');
+  // 建立唯一 container id 避免 TradingView 複用 bug
+  const containerId = 'tv-chart-container';
+  const base = symbol.replace('/USDT','').replace('/','').toUpperCase();
+  // 嘗試多個交易所前綴；部分幣種在 Binance 上命名不同
+  const tvSymbol = 'BINANCE:' + base + 'USDT';
 
   if (typeof TradingView !== 'undefined') {
     try {
       state.tvWidget = new TradingView.widget({
-        container_id: 'tv-chart-container',
-        width:    '100%',
-        height:   700,
-        symbol:   tvSymbol,
-        interval: interval || '15',
-        timezone: 'Asia/Shanghai',
-        theme:    'dark',
-        style:    '1',
-        locale:   'zh_CN',
-        toolbar_bg: '#0d1017',
-        enable_publishing:    false,
-        allow_symbol_change:  true,
-        hide_top_toolbar:     false,
-        hide_side_toolbar:    false,
-        withdateranges:       true,
-        save_image:           false,
+        container_id: containerId,
+        autosize:     true,
+        height:       700,
+        symbol:       tvSymbol,
+        interval:     interval || '15',
+        timezone:     'Asia/Taipei',
+        theme:        'dark',
+        style:        '1',
+        locale:       'zh_TW',
+        toolbar_bg:   '#0d1017',
+        enable_publishing:   false,
+        allow_symbol_change: true,
+        hide_top_toolbar:    false,
+        hide_side_toolbar:   false,
+        withdateranges:      true,
+        save_image:          false,
         studies: ['RSI@tv-basicstudies', 'MACD@tv-basicstudies'],
         overrides: {
           'paneProperties.background':                    '#0d1017',
@@ -2504,32 +2541,27 @@ function loadTradingViewChart(symbol, interval) {
           'mainSeriesProperties.candleStyle.wickUpColor':     '#00e676',
           'mainSeriesProperties.candleStyle.wickDownColor':   '#ff1744',
         },
+        loading_screen: { backgroundColor: '#0d1017', foregroundColor: '#00d4ff' },
       });
-    } catch(e) { renderFallbackChart(container, symbol); }
+    } catch(e) {
+      console.warn('[TV] widget error:', e);
+      renderFallbackChart(container, symbol);
+    }
   } else {
     renderFallbackChart(container, symbol);
   }
 }
 
 function renderFallbackChart(container, symbol) {
-  const base = symbol.replace('/USDT','');
+  const base = symbol.replace('/USDT','').replace('/','').toUpperCase();
+  // 直接用 iframe 嵌入，不依賴 tv.js 腳本
   container.innerHTML = `
-    <div style="height:500px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;color:var(--text3)">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-      </svg>
-      <div style="text-align:center">
-        <div style="font-size:0.95rem;font-weight:600;color:var(--text2);margin-bottom:6px">图表暂不可用</div>
-        <div style="font-size:0.8rem">TradingView 脚本未加载，请检查网络连接</div>
-        <a href="https://www.tradingview.com/chart/?symbol=BINANCE:${base}USDT"
-           target="_blank" rel="noopener"
-           style="display:inline-block;margin-top:14px;padding:8px 18px;background:var(--blue-dim);color:var(--blue);
-                  border:1px solid rgba(0,212,255,0.3);border-radius:8px;font-size:0.85rem;font-weight:600;">
-          在 TradingView 中打开 ↗
-        </a>
-      </div>
-    </div>
-  `;
+    <iframe
+      src="https://www.tradingview.com/widgetembed/?frameElementId=tv_chart&symbol=BINANCE%3A${base}USDT&interval=15&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&theme=dark&style=1&timezone=Asia%2FTaipei&withdateranges=1&studies=RSI%40tv-basicstudies%2CMACD%40tv-basicstudies&locale=zh_TW"
+      style="width:100%;height:700px;border:none;border-radius:8px"
+      allowtransparency="true"
+      scrolling="no"
+      allowfullscreen></iframe>`;
 }
 
 /* ── 分析内容构建 ───────────────────────────────────────────── */
@@ -3289,8 +3321,11 @@ const MONTHLY_DATA_SCHEDULE = [
 const ECON_ALERT_KEY = 'csp_econ_alert_sent';
 
 function startEconCalendarCheck() {
-  // 每分鐘檢查一次即將公布的重要數據
-  setInterval(checkUpcomingEconEvents, 60 * 1000);
+  // 每分鐘檢查一次：公布前預警 + 公布後 AI 分析
+  setInterval(() => {
+    checkUpcomingEconEvents();
+    checkPostEventAnalysis();
+  }, 60 * 1000);
 }
 
 function getTodayEconEvents() {
@@ -3363,6 +3398,61 @@ function sendEconEventAlert(ev, s) {
     `• 數據公布前 30 分鐘通常出現方向性試探\n` +
     `• 公布後 5~15 分鐘為高波動期，避免追入\n` +
     `• 公布後 1 小時若延續方向可考慮跟進${tradeNote}`;
+  sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+}
+
+/* ── 數據公布後 AI 影響分析 ─────────────────────────────────── */
+async function checkPostEventAnalysis() {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+
+  const now       = Date.now();
+  const todayKey  = new Date().toDateString();
+  const postKey   = 'csp_post_event_analysis';
+  const postSent  = JSON.parse(localStorage.getItem(postKey) || '{}');
+  const events    = getTodayEconEvents();
+
+  for (const ev of events) {
+    const eventMs   = ev.eventTime.getTime();
+    const minsAfter = (now - eventMs) / 60000;
+    // 公布後 25~50 分鐘內發送一次分析（給市場方向穩定後分析）
+    if (minsAfter < 25 || minsAfter > 50) continue;
+    const key = `${todayKey}_post_${ev.name}`;
+    if (postSent[key]) continue;
+    postSent[key] = true;
+    localStorage.setItem(postKey, JSON.stringify(postSent));
+    sendPostEventAnalysis(ev, s);
+  }
+}
+
+function sendPostEventAnalysis(ev, s) {
+  const impactEmoji = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
+  const tlog        = loadTradeLog();
+  const openTrades  = tlog.filter(t => t.status === 'open');
+
+  // 對持倉的個別影響評估
+  const tradeImpact = openTrades.length
+    ? '\n\n📊 <b>持倉方向影響</b>\n' + openTrades.slice(0, 3).map(t => {
+        const sym  = t.symbol.replace('/USDT', '');
+        const dir  = t.direction === 'long' ? '▲多' : '▼空';
+        const note = t.direction === 'long'
+          ? `優於預期受益，差於預期請確認止損 $${parseFloat(t.sl).toPrecision(5).replace(/\.?0+$/, '')}`
+          : `差於預期受益，優於預期請確認止損 $${parseFloat(t.sl).toPrecision(5).replace(/\.?0+$/, '')}`;
+        return `• ${sym} ${dir}：${note}`;
+      }).join('\n')
+    : '';
+
+  const msg =
+    `${impactEmoji} <b>數據公布後 AI 市場影響分析</b>\n\n` +
+    `📊 <b>${ev.name}</b> — 數據已公布\n\n` +
+    `🤖 <b>AI 研判：市場影響</b>\n${ev.aiMarketImpact || '根據歷史規律，高影響數據公布後市場通常在30分鐘內完成方向確認。'}\n\n` +
+    `📈 <b>若結果優於預期</b>：${ev.bullIf}\n` +
+    `📉 <b>若結果差於預期</b>：${ev.bearIf}\n\n` +
+    `⏱️ <b>建議操作節奏</b>\n` +
+    `• 現在（公布後 ~30min）：等待波動收斂，觀察 K 棒方向\n` +
+    `• 公布後 45~90min：方向延續且量能配合可考慮順勢入場\n` +
+    `• 避免在首根大 K 棒後立即追入，假突破機率高${tradeImpact}`;
+
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 

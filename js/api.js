@@ -46,7 +46,7 @@ const DEFAULT_PAIRS = [
   { s: 'STX/USDT',      p: 1.85       }, { s: 'SUI/USDT',      p: 1.52       },
   { s: 'TAO/USDT',      p: 350        }, { s: 'THEA/USDT',     p: 0.5        },
   { s: 'THETA/USDT',    p: 1.65       }, { s: 'TRB/USDT',      p: 60         },
-  { s: 'TUSD/USDT',     p: 1          }, { s: 'UNI/USDT',      p: 10.2       },
+  { s: 'ONDO/USDT',     p: 1.4        }, { s: 'UNI/USDT',      p: 10.2       },
   { s: 'RUNE/USDT',     p: 8          }, { s: 'VET/USDT',      p: 0.035      },
   { s: 'WAVES/USDT',    p: 2.1        }, { s: 'MATIC/USDT',    p: 0.45       },
   { s: 'XEC/USDT',      p: 0.00003    }, { s: 'XLM/USDT',      p: 0.12       },
@@ -485,19 +485,7 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     msg += `💰 現價：<b>$${coin.price}</b>  ｜  趨勢：${coin.trend}\n\n`;
   }
 
-  if (macro) {
-    const parts = [];
-    if (macro.marketCapChange != null)
-      parts.push(`市值 ${macro.marketCapChange > 0 ? '+' : ''}${macro.marketCapChange}%`);
-    if (macro.btcDominance)
-      parts.push(`BTC 佔比 ${macro.btcDominance}%`);
-    if (macro.fg?.value)
-      parts.push(`F&G ${macro.fg.value}（${macro.fg.value_classification || ''}）`);
-    if (parts.length) msg += `🌐 宏觀：${parts.join(' ｜ ')}\n`;
-    if (macro.todayAlert) msg += `⚠️ 今日重要數據：${macro.todayAlert}\n`;
-    if (macro.topNewsTitle) msg += `📰 AI 新聞：${macro.topNewsTitle}\n`;
-    if (parts.length || macro.todayAlert || macro.topNewsTitle) msg += '\n';
-  }
+  // 宏觀數據僅在每日早9點盤面簡報發送，交易建議訊息不重複顯示
 
   msg += `⏰ ${time}\n`;
   msg += `#${sym} #crypto #${isLong ? 'long' : 'short'}`;
