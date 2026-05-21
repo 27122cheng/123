@@ -3048,13 +3048,15 @@ function updateOpenTrades(data) {
     const cur = parseFloat(coin.price) || 0;
     if (!cur) continue;
     const { entry, sl, tp1, tp2, direction } = trade;
-    const risk = Math.abs(entry - sl) || 1;
+    // baseSl：原始止損（止盈一後 sl 移至成本，用 baseSl 保持 R 計算正確）
+    const baseRisk = Math.abs(entry - (trade.baseSl ?? sl)) || Math.abs(entry - sl) || 1;
     const isLong = direction === 'long';
     let outcome = null;
     if (isLong) {
       if (cur >= tp2) {
         outcome = 'tp2';
       } else if (cur >= tp1 && !trade.tp1Hit) {
+        if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
         trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
         tp1Hits.push({ trade, coin, cur });
       } else if (trade.tp1Hit && cur <= entry) {
@@ -3067,6 +3069,7 @@ function updateOpenTrades(data) {
       if (cur <= tp2) {
         outcome = 'tp2';
       } else if (cur <= tp1 && !trade.tp1Hit) {
+        if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
         trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
         tp1Hits.push({ trade, coin, cur });
       } else if (trade.tp1Hit && cur >= entry) {
@@ -3082,10 +3085,10 @@ function updateOpenTrades(data) {
       trade.exitTime = Date.now();
       if (outcome === 'tp2') {
         trade.exitPrice = tp2;
-        trade.pnlR = ((Math.abs(tp2 - entry) / risk)).toFixed(2);
+        trade.pnlR = ((Math.abs(tp2 - entry) / baseRisk)).toFixed(2);
       } else if (outcome === 'tp1') {
         trade.exitPrice = tp1;
-        trade.pnlR = ((Math.abs(tp1 - entry) / risk)).toFixed(2);
+        trade.pnlR = ((Math.abs(tp1 - entry) / baseRisk)).toFixed(2);
       } else if (outcome === 'be') {
         trade.exitPrice = entry;
         trade.pnlR = '0.0';
