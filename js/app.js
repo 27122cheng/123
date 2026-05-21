@@ -1323,11 +1323,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (ex.peakPrice == null) ex.peakPrice = null;
     saveTradeLog(tlog);
   } else {
-    // 用戶查看詳情時只要沒有同方向活躍倉就記錄，不受冷卻期限制
-    const hasActiveOpposite = tlog.some(t =>
-      t.symbol === coin.symbol &&
-      t.direction !== direction &&
-      (t.status === 'open' || t.status === 'pending')
+    // 只在方向明確（非觀望）且該幣種完全沒有活躍交易時才建立新掛單
+    const hasAnyActive = tlog.some(t =>
+      t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending')
     );
     // 若同幣種+方向在冷卻期內有取消記錄（含飛越止盈取消），不重複建立掛單
     const recentlyCancelled = tlog.some(t =>
@@ -1336,7 +1334,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       t.status === 'cancelled' &&
       (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
-    if (!hasActiveOpposite && !recentlyCancelled) {
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -2900,10 +2898,15 @@ function inCooldown(tlog, symbol, direction) {
   const sameDir = tlog.some(t =>
     t.symbol === symbol &&
     t.direction === direction &&
+    (t.status === 'open' || t.status === 'pending' || t.status === 'cancelled') &&
     (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN
   );
-  // Prevent opposite-direction open or pending trades for same symbol
-  const anyOpen = tlog.some(t => t.symbol === symbol && (t.status === 'open' || t.status === 'pending'));
+  // 阻止同幣種有任何有效方向（非 wait）的活躍交易重複記錄
+  const anyOpen = tlog.some(t =>
+    t.symbol === symbol &&
+    t.direction !== 'wait' &&
+    (t.status === 'open' || t.status === 'pending')
+  );
   return sameDir || anyOpen;
 }
 
@@ -2957,6 +2960,17 @@ function updateOpenTrades(data) {
   let changed = false;
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
   const tp1Hits = []; // trades that just reached TP1 this cycle
+
+  // ── 清除殘留的 direction='wait' 無效掛單（不應出現在持倉中）──
+  for (const trade of tlog) {
+    if (trade.status === 'pending' && trade.direction === 'wait') {
+      trade.status = 'cancelled';
+      trade.cancelReason = '觀望方向無效掛單（自動清除）';
+      trade.cancelTime = Date.now();
+      changed = true;
+    }
+  }
+
   for (const trade of tlog) {
     // ── 等待進場確認：現價觸及進場位後才轉為開倉 ──
     if (trade.status === 'pending') {
