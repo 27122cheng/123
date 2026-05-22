@@ -1283,7 +1283,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const adxVal = parseFloat(coin.adx) || 20;
   // 硬性 ADX 門檻（不依賴歷史數據，始終生效）
   const hardAdxPenalty = adxVal < 18 ? 28 : adxVal < 22 ? 14 : 0;
-  const { penalty: learnPenalty, warnings: learnWarn0, hardBlocked, blockReasons } = applyLearnAdjustment(direction, rsi, adxVal, learnCtx);
+  const learnResult = applyLearnAdjustment(direction, rsi, adxVal, learnCtx);
+  const { penalty: learnPenalty, warnings: learnWarn0, hardBlocked, blockReasons } = learnResult;
   // 合併警告：硬性 ADX 警告 + AI 學習警告 + 最終防線
   const learnWarnings = [...learnWarn0];
   if (hardAdxPenalty > 0) {
@@ -1470,21 +1471,60 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
 
-  ${aiReady ? `<div class="setup-ai-panel">
-    <div class="setup-ai-header">
-      <span class="setup-ai-title">🤖 AI 歷史學習建議</span>
-      <span class="setup-ai-stats">勝率 <strong>${profile.winRate}%</strong>（${profile.wins}勝 / ${profile.losses}敗，共 ${profile.closed} 筆）</span>
-    </div>
-    ${learnWarnings.length ? `<div class="setup-ai-warns">
-      ${learnWarnings.map(w => `<div class="setup-ai-warn-item">⚠️ ${w}</div>`).join('')}
-    </div>` : `<div class="setup-ai-ok">✅ 當前條件符合歷史高勝率範圍</div>`}
-    ${profile.bestConditions.length ? `<div class="setup-ai-bests">
-      ${profile.bestConditions.map(c => `<div class="setup-ai-best-item">📈 ${c.label}：${c.value}</div>`).join('')}
-    </div>` : ''}
-    ${profile.rules.length ? `<div class="setup-ai-rules">
-      ${profile.rules.map(r => `<div class="setup-ai-rule">🔴 ${r.warning}</div>`).join('')}
-    </div>` : ''}
-  </div>` : ''}`;
+  ${(() => {
+    // ── AI 防線審查面板 ──
+    const { defenseChecks = [] } = learnResult || {};
+    const failChecks  = defenseChecks.filter(c => !c.pass);
+    const passChecks  = defenseChecks.filter(c =>  c.pass);
+    const totalChecks = defenseChecks.length;
+    const verdictColor = hardBlocked ? '#ef4444' : failChecks.length ? '#f59e0b' : '#22c55e';
+    const verdictIcon  = hardBlocked ? '🚫' : failChecks.length ? '⚠️' : '✅';
+    const verdictText  = hardBlocked
+      ? `AI 最終防線觸發：交易已攔截（${blockReasons.length} 項風控）`
+      : failChecks.length
+        ? `通過 ${passChecks.length} 項，${failChecks.length} 項風控警告`
+        : totalChecks > 0 ? `全部 ${totalChecks} 項防線審查通過` : '歷史數據不足，人工判斷為主';
+
+    const typeLabel = { rule: '規則', memory: '止損記憶', suggestion: '改進建議' };
+    const typeColor = { rule: '#818cf8', memory: '#f59e0b', suggestion: '#34d399' };
+
+    const checksHtml = defenseChecks.length ? `
+      <div class="ai-defense-list">
+        ${failChecks.map(c => `
+          <div class="ai-defense-item ai-defense-fail">
+            <span class="ai-defense-type" style="color:${typeColor[c.type] || '#aaa'}">${typeLabel[c.type] || c.type}</span>
+            <span class="ai-defense-text">${c.label}</span>
+            <span class="ai-defense-meta">${c.count}次 / -${c.penalty}%</span>
+          </div>`).join('')}
+        ${passChecks.slice(0, 4).map(c => `
+          <div class="ai-defense-item ai-defense-pass">
+            <span class="ai-defense-type" style="color:${typeColor[c.type] || '#aaa'}">${typeLabel[c.type] || c.type}</span>
+            <span class="ai-defense-text">${c.label}</span>
+            <span class="ai-defense-meta">${c.count}次 ✓</span>
+          </div>`).join('')}
+      </div>` : '';
+
+    const statsHtml = aiReady
+      ? `<span class="setup-ai-stats">勝率 <strong>${profile.winRate}%</strong>（${profile.wins}勝 / ${profile.losses}敗，共 ${profile.closed} 筆）</span>`
+      : `<span class="setup-ai-stats" style="color:var(--text3)">歷史數據不足（< 3 筆）</span>`;
+
+    const bestHtml = (aiReady && profile.bestConditions.length) ? `
+      <div class="setup-ai-bests">
+        ${profile.bestConditions.map(c => `<div class="setup-ai-best-item">📈 ${c.label}：${c.value}</div>`).join('')}
+      </div>` : '';
+
+    return `<div class="setup-ai-panel">
+      <div class="setup-ai-header">
+        <span class="setup-ai-title">🛡️ AI 防線審查（風控 + 止損記憶 + 改進建議）</span>
+        ${statsHtml}
+      </div>
+      <div class="ai-defense-verdict" style="border-color:${verdictColor};color:${verdictColor}">
+        ${verdictIcon} ${verdictText}
+      </div>
+      ${checksHtml}
+      ${bestHtml}
+    </div>`;
+  })()}`;
 }
 
 /* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
@@ -4064,9 +4104,24 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const profile = getLearnProfile();
   let penalty = 0;
   const warnings = [];
-  const blockReasons = []; // 100次以上的硬封鎖（AI最終防線）
+  const blockReasons = [];   // 100次以上硬封鎖
+  const defenseChecks = [];  // 所有防線審查項目（供 UI 顯示）
 
-  // ① 結構化規則（需要足夠歷史樣本才激活）
+  // ── 防線比對 helper ──
+  const addCheck = (type, label, count, fail, pen, block = false) => {
+    if (fail) {
+      penalty += pen;
+      if (type !== 'suggestion') warnings.push(label);
+      else warnings.push(`💡 改進建議未滿足：「${label.slice(0, 40)}」（歷史止損 ${count} 次，-${pen}%）`);
+      if (block) blockReasons.push(`🚫 AI最終防線：「${label.slice(0, 45)}」累計 ${count} 次/筆，已列入永久風控攔截`);
+    }
+    // 只收錄有足夠數據或有觸發的項目
+    if (fail || count >= 3) {
+      defenseChecks.push({ type, label: label.slice(0, 55), count, pass: !fail, penalty: fail ? pen : 0 });
+    }
+  };
+
+  // ① 結構化規則（歷史止損統計規則）
   if (profile.ready && profile.rules.length) {
     for (const rule of profile.rules) {
       const match =
@@ -4084,23 +4139,21 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'po3_sl_type'          && ctx.slType === 'po3') ||
         (rule.condition === 'structural_sl_breach' && ctx.slType === 'structural') ||
         (rule.condition === 'atr_sl_breach'        && ctx.slType === 'atr');
-      if (match) {
-        penalty += rule.penaltyConf;
-        warnings.push(rule.warning);
-        // 止損數據超過100次 + 止損率 ≥ 60% → AI最終防線硬封鎖
-        if ((rule.total || 0) >= 100 && (rule.rate || 0) >= 0.6) {
-          blockReasons.push(`🚫 AI最終防線：「${rule.warning.slice(0, 45)}」累計 ${rule.total} 筆樣本，止損率 ${Math.round(rule.rate * 100)}%，已超過風控上限`);
-        }
-      }
+      const isHardBlock = match && (rule.total || 0) >= 100 && (rule.rate || 0) >= 0.6;
+      addCheck('rule', rule.warning, rule.total || 0, match, rule.penaltyConf, isHardBlock);
     }
   }
 
-  // ② 止損原因記憶（從 AI 記憶中的累積問題，即使尚無足夠結構化規則也生效）
+  // ② 止損原因記憶（count >= 1 全部納入，依次數分級懲罰）
   const mem = (profile.mem) || loadAIMemory();
   if (mem.issues) {
-    const highFreq = Object.values(mem.issues).filter(i => (i.count || 0) >= 3);
-    for (const issue of highFreq) {
+    for (const issue of Object.values(mem.issues)) {
+      const cnt = issue.count || 0;
+      if (cnt < 1) continue;
       const t = issue.text || '';
+      const s = issue.suggestion || '';
+
+      // 比對止損原因是否在當前交易中重演
       const matchesCurrent =
         (t.includes('RSI') && t.includes('偏高') && direction === 'long'  && rsi > 65) ||
         (t.includes('RSI') && t.includes('偏低') && direction === 'short' && rsi < 35) ||
@@ -4111,20 +4164,38 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (t.includes('巨鯨') && t.includes('買入') && direction === 'short' && ctx.whaleBias === 'bull') ||
         (t.includes('MTF') && (ctx.mtfAlign ?? 99) <= 1) ||
         (t.includes('週期') && (ctx.mtfAlign ?? 99) <= 1);
+
       if (matchesCurrent) {
-        const extraPenalty = Math.min(10, Math.ceil(issue.count / 2));
-        penalty  += extraPenalty;
-        warnings.push(`📚 止損記憶：「${t.slice(0, 35)}」已出現 ${issue.count} 次（+${extraPenalty}% 懲罰）`);
-        // 止損記憶超過100次 → AI最終防線硬封鎖
-        if ((issue.count || 0) >= 100) {
-          blockReasons.push(`🚫 AI最終防線：「${t.slice(0, 40)}」止損記憶累計 ${issue.count} 次，已列入永久風控攔截`);
+        // 分級懲罰：次數越多懲罰越重
+        const pen = cnt >= 100 ? 15 : cnt >= 50 ? 12 : cnt >= 20 ? 9 : cnt >= 10 ? 7 : cnt >= 3 ? Math.min(10, Math.ceil(cnt / 2)) : 3;
+        addCheck('memory', `📚 止損記憶：「${t.slice(0, 35)}」已出現 ${cnt} 次（-${pen}%）`, cnt, true, pen, cnt >= 100);
+        continue; // 已納入，不再重複檢查建議
+      }
+
+      // ③ 改進建議比對（止損後的改進建議是否未被遵守）
+      if (cnt >= 2 && s) {
+        const suggViolated =
+          (s.includes('RSI') && (s.includes('50-55') || s.includes('回落')) && direction === 'long'  && rsi > 62) ||
+          (s.includes('RSI') && (s.includes('45-50') || s.includes('回升')) && direction === 'short' && rsi < 38) ||
+          (s.includes('ADX') && s.includes('22') && adx < 22) ||
+          (s.includes('掃蕩') && s.includes('確認') && ctx.slType === 'po3') ||
+          (s.includes('主力') && direction === 'long'  && ctx.whaleBias === 'bear') ||
+          (s.includes('主力') && direction === 'short' && ctx.whaleBias === 'bull') ||
+          (s.includes('多週期') && (ctx.mtfAlign ?? 99) <= 1) ||
+          (s.includes('更低一層') && ctx.slType === 'structural');
+        if (suggViolated) {
+          const pen = Math.min(8, Math.ceil(cnt / 3));
+          addCheck('suggestion', s, cnt, true, pen, false);
+        } else if (cnt >= 5) {
+          // 建議存在且本次未違反 → 通過
+          addCheck('suggestion', `✔ 已遵守：「${s.slice(0, 40)}」`, cnt, false, 0, false);
         }
       }
     }
   }
 
   const hardBlocked = blockReasons.length > 0;
-  return { penalty, warnings, hardBlocked, blockReasons };
+  return { penalty, warnings, hardBlocked, blockReasons, defenseChecks };
 }
 
 /* ── 止損/保本交易學習分析 ────────────────────────────────────── */

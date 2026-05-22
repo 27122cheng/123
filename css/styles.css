@@ -1583,6 +1583,24 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .setup-ai-rules { display:flex; flex-direction:column; gap:4px; border-top:1px solid rgba(255,255,255,.07); padding-top:7px; margin-top:4px; }
 .setup-ai-rule { font-size:0.74rem; color:var(--bear); opacity:.85; }
 
+/* ── AI 防線審查面板 ───────────────────────────────────────────── */
+.ai-defense-verdict {
+  font-size:0.8rem; font-weight:600; border:1px solid; border-radius:7px;
+  padding:6px 12px; margin-bottom:8px; background:rgba(255,255,255,.03);
+}
+.ai-defense-list { display:flex; flex-direction:column; gap:4px; margin-bottom:6px; }
+.ai-defense-item {
+  display:grid; grid-template-columns:52px 1fr auto; align-items:center; gap:6px;
+  font-size:0.73rem; border-radius:6px; padding:5px 9px;
+}
+.ai-defense-fail { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.2); }
+.ai-defense-pass { background:rgba(34,197,94,.05); border:1px solid rgba(34,197,94,.15); }
+.ai-defense-type { font-size:0.66rem; font-weight:700; white-space:nowrap; }
+.ai-defense-text { color:var(--text2); line-height:1.4; }
+.ai-defense-meta { font-size:0.68rem; color:var(--text3); white-space:nowrap; text-align:right; }
+.ai-defense-fail .ai-defense-text { color:#fca5a5; }
+.ai-defense-pass .ai-defense-text { color:#86efac; }
+
 /* ── AI 記憶標記 ───────────────────────────────────────────────── */
 .ai-mem-badge { display:inline-block; background:rgba(99,102,241,.2); border:1px solid rgba(99,102,241,.4); color:#a5b4fc; border-radius:10px; padding:1px 7px; font-size:0.68rem; font-weight:600; vertical-align:middle; margin-left:4px; }
 .ai-mem-date { font-size:0.68rem; color:var(--text3); margin-left:6px; }
