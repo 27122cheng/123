@@ -4958,7 +4958,7 @@ function showTradeDetail(id) {
       <button class="td-close-btn" onclick="closeTradeModal()">✕</button>
     </div>
     <div class="td-conf-row">
-      <span style="color:var(--text3);font-size:0.78rem">進場信心度</span>
+      <span style="color:var(--text3);font-size:0.78rem">信號強度</span>
       <div class="td-conf-bar"><div style="width:${conf}%;background:${confColor};height:100%;border-radius:4px;transition:width .3s"></div></div>
       <span style="color:${confColor};font-weight:700">${conf}%</span>
       ${conf >= 85 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 達標</span>' : conf >= 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">⚠ 偏低</span>' : '<span style="font-size:0.7rem;color:#ef4444;margin-left:4px">✗ 未達標</span>'}
@@ -4993,7 +4993,7 @@ function showTradeDetail(id) {
         <div class="td-cell-val" style="color:#22c55e">${fmt(trade.tp2)}<span class="td-pct">${trade.entry && trade.tp2 ? pctStr(trade.entry, trade.tp2) : ''}</span></div>
       </div>
       <div class="td-cell">
-        <div class="td-cell-lbl">進場信心度</div>
+        <div class="td-cell-lbl">信號強度</div>
         <div class="td-cell-val" style="color:${confColor};font-weight:700">${conf}%</div>
       </div>
       <div class="td-cell">
