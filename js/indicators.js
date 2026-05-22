@@ -360,6 +360,52 @@ function calcATR(highs, lows, closes, period = 14) {
   return atr;
 }
 
+/* ── 布林通道 Bollinger Bands ────────────────────────────── */
+function calcBollingerBands(closes, period = 20, mult = 2) {
+  if (!closes || closes.length < period) return null;
+  const slice  = closes.slice(-period);
+  const mean   = slice.reduce((a, b) => a + b, 0) / period;
+  const stdDev = Math.sqrt(slice.reduce((a, b) => a + (b - mean) ** 2, 0) / period);
+  const upper  = mean + mult * stdDev;
+  const lower  = mean - mult * stdDev;
+  const price  = closes[closes.length - 1];
+  const width  = mean > 0 ? (upper - lower) / mean : 0;  // 帶寬比
+  const pctB   = (upper - lower) > 0 ? (price - lower) / (upper - lower) : 0.5; // %B 位置
+  return { upper, middle: mean, lower, width, pctB, stdDev };
+}
+
+/* ── 布林通道信號分析 ─────────────────────────────────────── */
+function computeBBSignal(raw) {
+  if (!raw || raw.length < 20) return null;
+  const { closes } = parseKlines(raw);
+  const bb = calcBollingerBands(closes, 20, 2);
+  if (!bb) return null;
+  const { upper, middle, lower, pctB, width } = bb;
+  const price = closes[closes.length - 1];
+  let bullBonus = 0, bearBonus = 0;
+  const tags = [];
+
+  // 觸及下軌 → 超賣反彈多頭信號
+  if      (pctB <= 0.05) { bullBonus += 2; tags.push('BB下軌觸及'); }
+  else if (pctB <= 0.2)  { bullBonus += 1; tags.push('BB近下軌');   }
+
+  // 觸及上軌 → 超買壓回空頭信號
+  if      (pctB >= 0.95) { bearBonus += 2; tags.push('BB上軌觸及'); }
+  else if (pctB >= 0.8)  { bearBonus += 1; tags.push('BB近上軌');   }
+
+  // 站在中軌上方 → 多頭偏向；中軌下方 → 空頭偏向
+  if (price > middle) bullBonus += 1;
+  else                bearBonus += 1;
+
+  // 布林收窄（帶寬 < 3%）→ 蓄力突破，兩方加成
+  if (width < 0.03) {
+    bullBonus += 1; bearBonus += 1;
+    tags.push('BB收窄蓄力');
+  }
+
+  return { bullBonus, bearBonus, pctB, width, upper, middle, lower, tags };
+}
+
 /* ── 籌碼分佈（Volume Profile）─────────────────────────────── */
 function computeVolumeProfile(klines, numBuckets = 24) {
   if (!klines || klines.length < 10) return null;

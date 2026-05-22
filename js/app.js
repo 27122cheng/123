@@ -931,8 +931,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const trapBull   = traps1h__ ? ((traps1h__.po3Bull || traps1h__.twoB_Bull || traps1h__.sweepBull) ? 2 : 0) : 0;
   const trapBear   = traps1h__ ? ((traps1h__.po3Bear || traps1h__.twoB_Bear || traps1h__.sweepBear) ? 2 : 0) : 0;
 
-  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull + trapBull;
-  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear + trapBear;
+  // 布林通道加成（1h 主信號 + 15m 輔助確認）
+  const bb1h_  = mtfData['1h']?.bb;
+  const bb15m_ = mtfData['15m']?.bb;
+  const bbBull = (bb1h_?.bullBonus || 0) + (bb15m_ ? Math.min(1, bb15m_.bullBonus) : 0);
+  const bbBear = (bb1h_?.bearBonus || 0) + (bb15m_ ? Math.min(1, bb15m_.bearBonus) : 0);
+
+  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull + trapBull + bbBull;
+  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear + trapBear + bbBear;
 
   let direction = 'wait';
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
@@ -1292,8 +1298,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
   if (hardBlocked) blockReasons.forEach(r => learnWarnings.push(r));
   const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty - hardAdxPenalty);
-  // 最終防線：被AI風控硬封鎖 OR 信心低於85% → 觀望
-  if (conf < 85 || hardBlocked) direction = 'wait';
+  // 最終防線：被AI風控硬封鎖 OR 信心低於80% → 觀望
+  if (conf < 80 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -1385,6 +1391,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const profile = getLearnProfile();
   const aiReady = profile.ready && profile.closed >= 3;
 
+  // ── 布林通道狀態摘要 ──
+  const bbStatus1h  = bb1h_  || null;
+  const bbStatus15m = bb15m_ || null;
+  const bbChipsHtml = (() => {
+    const chips = [];
+    if (bbStatus1h) {
+      const pctB = bbStatus1h.pctB;
+      const pos  = pctB <= 0.1 ? '下軌觸及 ↑' : pctB <= 0.25 ? '近下軌' : pctB >= 0.9 ? '上軌觸及 ↓' : pctB >= 0.75 ? '近上軌' : '中軌區';
+      const clr  = pctB <= 0.25 ? 'var(--bull)' : pctB >= 0.75 ? 'var(--bear)' : 'var(--text2)';
+      chips.push(`<span class="setup-macro-chip" style="color:${clr}">📊 BB(1h) ${pos}${(bbStatus1h.tags||[]).includes('BB收窄蓄力') ? ' · 收窄' : ''}</span>`);
+    }
+    if (bbStatus15m) {
+      const pctB = bbStatus15m.pctB;
+      const pos  = pctB <= 0.1 ? '下軌' : pctB <= 0.25 ? '近下' : pctB >= 0.9 ? '上軌' : pctB >= 0.75 ? '近上' : '中軌';
+      const clr  = pctB <= 0.25 ? 'var(--bull)' : pctB >= 0.75 ? 'var(--bear)' : 'var(--text3)';
+      chips.push(`<span class="setup-macro-chip" style="color:${clr}">📊 BB(15m) ${pos}</span>`);
+    }
+    return chips.length ? `<div class="setup-macro-chips" style="margin-top:6px">${chips.join('')}</div>` : '';
+  })();
+
   return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
@@ -1397,6 +1423,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${dirColor}"></div></div>
       <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf}%</span>
     </div>` : ''}
+    ${bbChipsHtml}
   </div>
 
   <div class="setup-macro-row">
@@ -2967,13 +2994,13 @@ function recordSignalsFromScan(data) {
     const direction = isLong ? 'long' : 'short';
     // 快速預篩：原始評分不足直接跳過，省略學習計算
     const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (rawConf < 85) continue;
+    if (rawConf < 80) continue;
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
     const setup = computeSimpleSetup(coin, isLong);
-    // AI最終防線攔截 OR 信心不足85% → 不記錄
-    if (setup.conf < 85 || setup.hardBlocked) continue;
+    // AI最終防線攔截 OR 信心不足80% → 不記錄
+    if (setup.conf < 80 || setup.hardBlocked) continue;
     const conf = setup.conf;
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
@@ -4115,8 +4142,8 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       else warnings.push(`💡 改進建議未滿足：「${label.slice(0, 40)}」（歷史止損 ${count} 次，-${pen}%）`);
       if (block) blockReasons.push(`🚫 AI最終防線：「${label.slice(0, 45)}」累計 ${count} 次/筆，已列入永久風控攔截`);
     }
-    // 只收錄有足夠數據或有觸發的項目
-    if (fail || count >= 3) {
+    // 只收錄有足夠數據或有觸發的項目（止損記憶需 10 次以上才顯示）
+    if (fail || (type !== 'memory' && count >= 3) || (type === 'memory' && count >= 10)) {
       defenseChecks.push({ type, label: label.slice(0, 55), count, pass: !fail, penalty: fail ? pen : 0 });
     }
   };
@@ -4144,12 +4171,12 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
     }
   }
 
-  // ② 止損原因記憶（count >= 1 全部納入，依次數分級懲罰）
+  // ② 止損原因記憶（次數過多才納入風控防線，閾值 10 次以上）
   const mem = (profile.mem) || loadAIMemory();
   if (mem.issues) {
     for (const issue of Object.values(mem.issues)) {
       const cnt = issue.count || 0;
-      if (cnt < 1) continue;
+      if (cnt < 10) continue; // 低於10次不列入風控，避免過度干預
       const t = issue.text || '';
       const s = issue.suggestion || '';
 
@@ -5221,7 +5248,7 @@ function computeSimpleSetup(coin, isLong) {
     rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
     atr, conf,
-    learnFiltered: (conf < 85 || hardBlocked) && rawConf >= 85, // AI學習/最終防線過濾（原始信心足夠但被降低或攔截）
+    learnFiltered: (conf < 80 || hardBlocked) && rawConf >= 80, // AI學習/最終防線過濾（原始信心足夠但被降低或攔截）
     hardBlocked,
   };
 }
