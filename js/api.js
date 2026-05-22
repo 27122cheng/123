@@ -11,7 +11,7 @@ const DEFAULT_PAIRS = [
   { s: 'ATOM/USDT',      p: 8          }, { s: 'AVAX/USDT',      p: 38         },
   { s: 'AXS/USDT',       p: 7          }, { s: 'BCH/USDT',       p: 380        },
   { s: 'BEAMX/USDT',     p: 0.02       }, { s: 'BLUR/USDT',      p: 0.18       },
-  { s: 'BNB/USDT',       p: 580        }, { s: 'BONK/USDT',      p: 0.000025   },
+  { s: 'BNB/USDT',       p: 580        }, { s: 'TON/USDT',       p: 3.2        },
   { s: 'BTC/USDT',       p: 65000      }, { s: 'CAKE/USDT',      p: 2.6        },
   { s: 'CHZ/USDT',       p: 0.085      }, { s: 'COMP/USDT',      p: 55         },
   { s: 'COTI/USDT',      p: 0.08       }, { s: 'CRV/USDT',       p: 0.38       },
