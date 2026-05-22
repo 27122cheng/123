@@ -1283,16 +1283,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const adxVal = parseFloat(coin.adx) || 20;
   // 硬性 ADX 門檻（不依賴歷史數據，始終生效）
   const hardAdxPenalty = adxVal < 18 ? 28 : adxVal < 22 ? 14 : 0;
-  const { penalty: learnPenalty, warnings: learnWarn0 } = applyLearnAdjustment(direction, rsi, adxVal, learnCtx);
-  // 合併警告：硬性 ADX 警告 + AI 學習警告
+  const { penalty: learnPenalty, warnings: learnWarn0, hardBlocked, blockReasons } = applyLearnAdjustment(direction, rsi, adxVal, learnCtx);
+  // 合併警告：硬性 ADX 警告 + AI 學習警告 + 最終防線
   const learnWarnings = [...learnWarn0];
   if (hardAdxPenalty > 0) {
     learnWarnings.push(`ADX ${adxVal} 過低（${adxVal < 18 ? '< 18' : '< 22'}），震盪行情信心下調 ${hardAdxPenalty}%，建議等 ADX > 22 再進場`);
   }
+  if (hardBlocked) blockReasons.forEach(r => learnWarnings.push(r));
   const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty - hardAdxPenalty);
-  if (conf < 70) direction = 'wait'; // 信心不足，改觀望
+  // 最終防線：被AI風控硬封鎖 OR 信心低於85% → 觀望
+  if (conf < 85 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
+  }
+  // 即使是觀望，也記錄最終防線原因供顯示
+  if (hardBlocked && direction === 'wait') {
+    learnWarnings.forEach(w => entryReasons.push(w));
   }
 
   // 緩存完整設置供 Telegram 通知使用
@@ -2921,13 +2927,13 @@ function recordSignalsFromScan(data) {
     const direction = isLong ? 'long' : 'short';
     // 快速預篩：原始評分不足直接跳過，省略學習計算
     const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (rawConf < 70) continue;
+    if (rawConf < 85) continue;
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
     const setup = computeSimpleSetup(coin, isLong);
-    // AI 學習引擎調整後信心不足 → 不記錄
-    if (setup.conf < 70) continue;
+    // AI最終防線攔截 OR 信心不足85% → 不記錄
+    if (setup.conf < 85 || setup.hardBlocked) continue;
     const conf = setup.conf;
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
@@ -4058,6 +4064,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const profile = getLearnProfile();
   let penalty = 0;
   const warnings = [];
+  const blockReasons = []; // 100次以上的硬封鎖（AI最終防線）
 
   // ① 結構化規則（需要足夠歷史樣本才激活）
   if (profile.ready && profile.rules.length) {
@@ -4077,7 +4084,14 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'po3_sl_type'          && ctx.slType === 'po3') ||
         (rule.condition === 'structural_sl_breach' && ctx.slType === 'structural') ||
         (rule.condition === 'atr_sl_breach'        && ctx.slType === 'atr');
-      if (match) { penalty += rule.penaltyConf; warnings.push(rule.warning); }
+      if (match) {
+        penalty += rule.penaltyConf;
+        warnings.push(rule.warning);
+        // 止損數據超過100次 + 止損率 ≥ 60% → AI最終防線硬封鎖
+        if ((rule.total || 0) >= 100 && (rule.rate || 0) >= 0.6) {
+          blockReasons.push(`🚫 AI最終防線：「${rule.warning.slice(0, 45)}」累計 ${rule.total} 筆樣本，止損率 ${Math.round(rule.rate * 100)}%，已超過風控上限`);
+        }
+      }
     }
   }
 
@@ -4101,11 +4115,16 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         const extraPenalty = Math.min(10, Math.ceil(issue.count / 2));
         penalty  += extraPenalty;
         warnings.push(`📚 止損記憶：「${t.slice(0, 35)}」已出現 ${issue.count} 次（+${extraPenalty}% 懲罰）`);
+        // 止損記憶超過100次 → AI最終防線硬封鎖
+        if ((issue.count || 0) >= 100) {
+          blockReasons.push(`🚫 AI最終防線：「${t.slice(0, 40)}」止損記憶累計 ${issue.count} 次，已列入永久風控攔截`);
+        }
       }
     }
   }
 
-  return { penalty, warnings };
+  const hardBlocked = blockReasons.length > 0;
+  return { penalty, warnings, hardBlocked, blockReasons };
 }
 
 /* ── 止損/保本交易學習分析 ────────────────────────────────────── */
@@ -4939,9 +4958,10 @@ function showTradeDetail(id) {
       <button class="td-close-btn" onclick="closeTradeModal()">✕</button>
     </div>
     <div class="td-conf-row">
-      <span style="color:var(--text3);font-size:0.78rem">信號強度</span>
+      <span style="color:var(--text3);font-size:0.78rem">進場信心度</span>
       <div class="td-conf-bar"><div style="width:${conf}%;background:${confColor};height:100%;border-radius:4px;transition:width .3s"></div></div>
       <span style="color:${confColor};font-weight:700">${conf}%</span>
+      ${conf >= 85 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 達標</span>' : conf >= 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">⚠ 偏低</span>' : '<span style="font-size:0.7rem;color:#ef4444;margin-left:4px">✗ 未達標</span>'}
     </div>
     <div class="td-grid">
       <div class="td-cell" style="grid-column:span 2">
@@ -4971,6 +4991,10 @@ function showTradeDetail(id) {
       <div class="td-cell">
         <div class="td-cell-lbl">止盈二</div>
         <div class="td-cell-val" style="color:#22c55e">${fmt(trade.tp2)}<span class="td-pct">${trade.entry && trade.tp2 ? pctStr(trade.entry, trade.tp2) : ''}</span></div>
+      </div>
+      <div class="td-cell">
+        <div class="td-cell-lbl">進場信心度</div>
+        <div class="td-cell-val" style="color:${confColor};font-weight:700">${conf}%</div>
       </div>
       <div class="td-cell">
         <div class="td-cell-lbl">交易結果</div>
@@ -5059,7 +5083,7 @@ async function checkAndSendAlerts(data) {
     const notifConf = _tradeSetupCache[coin.symbol]?.conf
       ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (notifConf < 70) continue;
+    if (notifConf < 85) continue;
 
     if (s.notifBrowser) {
       sendBrowserNotification(
@@ -5101,7 +5125,7 @@ function computeSimpleSetup(coin, isLong) {
 
   // ── AI 學習引擎調整（同 buildTradeSetup 相同邏輯）──
   const hardAdxPenalty = adx < 18 ? 28 : adx < 22 ? 14 : 0;
-  const { penalty: learnPenalty, warnings: learnWarn } = applyLearnAdjustment(direction, rsi, adx, {
+  const { penalty: learnPenalty, warnings: learnWarn, hardBlocked, blockReasons } = applyLearnAdjustment(direction, rsi, adx, {
     slType: 'atr', // simple setup 預設使用 ATR 止損
   });
   const rawConf = Math.min(90, coin.score || 60);
@@ -5126,7 +5150,8 @@ function computeSimpleSetup(coin, isLong) {
     rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
     atr, conf,
-    learnFiltered: conf < 70 && rawConf >= 70, // AI 學習引擎過濾掉（原始信心足夠但學習規則降低）
+    learnFiltered: (conf < 85 || hardBlocked) && rawConf >= 85, // AI學習/最終防線過濾（原始信心足夠但被降低或攔截）
+    hardBlocked,
   };
 }
 
