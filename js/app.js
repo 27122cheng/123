@@ -958,6 +958,27 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (prelimConf < 70) direction = 'wait';
   }
 
+  // ── 大時間框架趨勢一致性強制篩選 ──────────────────────────────
+  // 規則：小方向（15m/1h）必須與大方向（4h/1d）同邊才允許進場
+  const bigBullSig = (h4?.signal?.includes('bull') ? 1 : 0) + (d1sig_?.signal?.includes('bull') ? 1 : 0);
+  const bigBearSig = (h4?.signal?.includes('bear') ? 1 : 0) + (d1sig_?.signal?.includes('bear') ? 1 : 0);
+  const bigTrend   = bigBullSig > bigBearSig ? 'bull'
+                   : bigBearSig > bigBullSig ? 'bear' : 'mixed';
+  const h4TrendLabel = h4?.signal?.includes('bull') ? '▲ 偏多'
+                     : h4?.signal?.includes('bear') ? '▼ 偏空' : '— 中性';
+  const d1TrendLabel = d1sig_?.signal?.includes('bull') ? '▲ 偏多'
+                     : d1sig_?.signal?.includes('bear') ? '▼ 偏空' : '— 中性';
+  let bigTrendBlocked = false, bigTrendBlockReason = '';
+  if (direction === 'long' && bigTrend === 'bear') {
+    direction = 'wait';
+    bigTrendBlocked = true;
+    bigTrendBlockReason = `大趨勢偏空（4h ${h4TrendLabel} / 日線 ${d1TrendLabel}），小週期做多訊號逆大趨勢，暫不進場`;
+  } else if (direction === 'short' && bigTrend === 'bull') {
+    direction = 'wait';
+    bigTrendBlocked = true;
+    bigTrendBlockReason = `大趨勢偏多（4h ${h4TrendLabel} / 日線 ${d1TrendLabel}），小週期做空訊號逆大趨勢，暫不進場`;
+  }
+
   // ATR：優先使用 1h 真實 ATR
   const atrPct = coin.adx > 35 ? 0.018 : coin.adx > 25 ? 0.013 : 0.009;
   const atr    = h1?.atr || price * atrPct;
@@ -990,25 +1011,41 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   if (direction === 'wait') {
     const reasons = [];
-    if (primaryBull === 0 && primaryBear === 0) reasons.push('15m/1h 尚未出現明確突破訊號');
-    if (coin.adx < 18) reasons.push(`ADX ${coin.adx} 過低，短線震盪不宜追`);
-    if (coin.rsi > 72) reasons.push(`RSI ${coin.rsi} 超買，短線追多風險高`);
-    if (coin.rsi < 28) reasons.push(`RSI ${coin.rsi} 超賣，短線追空風險高`);
-    if (totalBull === totalBear) reasons.push('多空積分相當，等待方向選擇');
-    if (coin.score >= 41 && coin.score <= 59) reasons.push(`評分 ${coin.score}，需達 60+ 才推薦做多，40 以下才推薦做空`);
+    // 大趨勢攔截說明優先顯示
+    if (bigTrendBlocked) reasons.push(`🚫 ${bigTrendBlockReason}`);
+    if (!bigTrendBlocked) {
+      if (primaryBull === 0 && primaryBear === 0) reasons.push('15m/1h 尚未出現明確突破訊號');
+      if (coin.adx < 18) reasons.push(`ADX ${coin.adx} 過低，短線震盪不宜追`);
+      if (coin.rsi > 72) reasons.push(`RSI ${coin.rsi} 超買，短線追多風險高`);
+      if (coin.rsi < 28) reasons.push(`RSI ${coin.rsi} 超賣，短線追空風險高`);
+      if (totalBull === totalBear) reasons.push('多空積分相當，等待方向選擇');
+      if (coin.score >= 41 && coin.score <= 59) reasons.push(`評分 ${coin.score}，需達 60+ 才推薦做多，40 以下才推薦做空`);
+    }
     const entryHigh = resists[0] || swHigh;
     const entryLow  = supps[0]  || swLow;
+    // 大時間框架趨勢狀態顯示
+    const h4Clr_w = h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
+    const d1Clr_w = d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
+    const bigTrendPanel = `<div style="margin-top:12px;padding:10px 12px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.2);border-radius:9px">
+      <div style="font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px">📐 大時間框架趨勢</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span style="font-size:0.73rem;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.05);color:${h4Clr_w};border:1px solid ${h4Clr_w}40">4H ${h4TrendLabel}${h4?.rsi != null ? ' RSI '+h4.rsi : ''}</span>
+        <span style="font-size:0.73rem;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.05);color:${d1Clr_w};border:1px solid ${d1Clr_w}40">日線 ${d1TrendLabel}${d1sig_?.rsi != null ? ' RSI '+d1sig_.rsi : ''}</span>
+        ${bigTrendBlocked ? `<span style="font-size:0.73rem;color:var(--bear);font-weight:600">❌ 大小方向衝突</span>` : `<span style="font-size:0.73rem;color:#f59e0b">⚠️ 等待大趨勢確認</span>`}
+      </div>
+    </div>`;
     return `<div class="setup-wait">
-      <div class="setup-wait-icon">⏳</div>
-      <div class="setup-wait-title">建議觀望，短線方向未明</div>
+      <div class="setup-wait-icon">${bigTrendBlocked ? '🚫' : '⏳'}</div>
+      <div class="setup-wait-title">${bigTrendBlocked ? '大小趨勢方向衝突，暫不進場' : '建議觀望，短線方向未明'}</div>
       <ul class="setup-wait-reasons">
         ${reasons.length ? reasons.map(r => `<li>${r}</li>`).join('') : '<li>短線訊號不足，耐心等待 15m/1h 有效突破</li>'}
       </ul>
-      <div class="setup-wait-cond">
+      ${bigTrendPanel}
+      ${!bigTrendBlocked ? `<div class="setup-wait-cond">
         <strong>等待條件：</strong>15m/1h 帶量實體K棒收破
         <span style="color:var(--bull)">${fmtPrice(entryHigh)}</span>（做多）
         或 <span style="color:var(--bear)">${fmtPrice(entryLow)}</span>（做空）
-      </div>
+      </div>` : ''}
     </div>`;
   }
 
@@ -1307,6 +1344,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (hardBlocked && direction === 'wait') {
     learnWarnings.forEach(w => entryReasons.push(w));
   }
+  // 大趨勢攔截說明
+  if (bigTrendBlocked) {
+    entryReasons.push(`🚫 ${bigTrendBlockReason}`);
+  }
 
   // 緩存完整設置供 Telegram 通知使用
   _tradeSetupCache[coin.symbol] = {
@@ -1425,6 +1466,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>` : ''}
     ${bbChipsHtml}
   </div>
+
+  ${(() => {
+    // ── 大時間框架趨勢確認面板 ──
+    const h4Clr = h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
+    const d1Clr = d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
+    const h4RsiTxt = h4?.rsi != null ? ` RSI ${h4.rsi}` : '';
+    const d1RsiTxt = d1sig_?.rsi != null ? ` RSI ${d1sig_.rsi}` : '';
+    const alignColor = bigTrendBlocked ? 'var(--bear)' : bigTrend === 'mixed' ? '#f59e0b' : !isLong && bigTrend === 'bear' ? 'var(--bull)' : isLong && bigTrend === 'bull' ? 'var(--bull)' : 'var(--text3)';
+    const alignIcon  = bigTrendBlocked ? '❌' : bigTrend === 'mixed' ? '⚠️' : (isLong && bigTrend === 'bull') || (!isLong && bigTrend === 'bear') ? '✅' : '—';
+    const alignText  = bigTrendBlocked ? '逆大趨勢已攔截' : bigTrend === 'mixed' ? '大趨勢中性，謹慎操作' : (isLong && bigTrend === 'bull') || (!isLong && bigTrend === 'bear') ? '大小趨勢一致，方向確認' : '大趨勢與方向不明確';
+    return `<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:12px 14px;margin-bottom:10px">
+      <div style="font-size:0.78rem;font-weight:600;color:var(--text2);margin-bottom:8px">📐 大時間框架趨勢確認</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:0.75rem;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,.05);color:${h4Clr};border:1px solid ${h4Clr}40">4H ${h4TrendLabel}${h4RsiTxt}</span>
+        <span style="font-size:0.75rem;padding:3px 10px;border-radius:20px;background:rgba(255,255,255,.05);color:${d1Clr};border:1px solid ${d1Clr}40">日線 ${d1TrendLabel}${d1RsiTxt}</span>
+        <span style="font-size:0.75rem;font-weight:600;color:${alignColor};margin-left:4px">${alignIcon} ${alignText}</span>
+      </div>
+      ${bigTrendBlocked ? `<div style="margin-top:8px;font-size:0.73rem;color:var(--bear);line-height:1.5">⚠️ ${bigTrendBlockReason}</div>` : ''}
+    </div>`;
+  })()}
 
   <div class="setup-macro-row">
     <div class="setup-macro-title">🌐 宏觀信號同步分析</div>
