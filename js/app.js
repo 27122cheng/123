@@ -1778,6 +1778,120 @@ function fmt12h(h, m) {
   return `${h12}:${String(m).padStart(2,'0')} ${period}`;
 }
 
+/* ── 本週 AI 走勢預測（整合所有可用數據）─────────────────────── */
+function buildWeeklyAIOutlook(fg, globalMkt) {
+  const fgVal  = fg ? parseInt(fg.value) : null;
+  const mktChg = globalMkt?.marketCapChange || 0;
+  const btcDom = globalMkt?.btcDominance   || 50;
+
+  // ── 1. 宏觀評分 ──────────────────────────────────────────────
+  let macroBull = 0, macroBear = 0;
+  const macroFactors = [];
+  if (fgVal != null) {
+    if (fgVal >= 65)      { macroBull += 2; macroFactors.push(`恐貪指數 ${fgVal}（極度貪婪），市場情緒強烈偏多`); }
+    else if (fgVal >= 55) { macroBull += 1; macroFactors.push(`恐貪指數 ${fgVal}（貪婪），情緒偏多`); }
+    else if (fgVal <= 35) { macroBear += 2; macroFactors.push(`恐貪指數 ${fgVal}（極度恐慌），情緒偏空`); }
+    else if (fgVal <= 45) { macroBear += 1; macroFactors.push(`恐貪指數 ${fgVal}（恐慌），情緒偏空`); }
+    else                  {                 macroFactors.push(`恐貪指數 ${fgVal}（中性），情緒均衡`); }
+  }
+  if (mktChg > 2)       { macroBull += 2; macroFactors.push(`加密市值 +${mktChg.toFixed(1)}%，資金積極流入`); }
+  else if (mktChg > 0)  { macroBull += 1; macroFactors.push(`加密市值 +${mktChg.toFixed(1)}%，小幅成長`); }
+  else if (mktChg < -2) { macroBear += 2; macroFactors.push(`加密市值 ${mktChg.toFixed(1)}%，資金明顯流出`); }
+  else if (mktChg < 0)  { macroBear += 1; macroFactors.push(`加密市值 ${mktChg.toFixed(1)}%，輕微回調`); }
+  if (btcDom > 58)      { macroBear += 1; macroFactors.push(`BTC 主導率 ${btcDom.toFixed(1)}%（高位），山寨資金分散受壓`); }
+  else if (btcDom < 44) { macroBull += 1; macroFactors.push(`BTC 主導率 ${btcDom.toFixed(1)}%（低位），山寨季動能升溫`); }
+
+  // ── 2. 本週重要事件風險 ──────────────────────────────────────
+  const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
+  const highRisk   = weekEvents.length >= 2;
+  const riskNote   = weekEvents.length
+    ? `本週 ${weekEvents.length} 項高影響數據（${weekEvents.map(e=>e.name.slice(0,10)).join('、')}），注意波動風險`
+    : '本週無重大高影響數據，行情以技術面為主';
+
+  // ── 3. 技術面掃描（從 state.data 提取）──────────────────────
+  const coins = (typeof state !== 'undefined' && state.data) ? state.data : [];
+  let techBull = 0, techBear = 0;
+  coins.forEach(c => {
+    if (c.score >= 70) techBull++;
+    else if (c.score <= 30) techBear++;
+  });
+  const techTotal = coins.length || 1;
+  const techBullPct = Math.round(techBull / techTotal * 100);
+  const techBearPct = Math.round(techBear / techTotal * 100);
+  let techFactor = '';
+  if (techBullPct > 40)       { macroBull += 2; techFactor = `技術面 ${techBullPct}% 幣種看漲，多頭動能佔優`; }
+  else if (techBullPct > 25)  { macroBull += 1; techFactor = `技術面 ${techBullPct}% 幣種偏強，多頭略佔優`; }
+  else if (techBearPct > 40)  { macroBear += 2; techFactor = `技術面 ${techBearPct}% 幣種看跌，空頭動能佔優`; }
+  else if (techBearPct > 25)  { macroBear += 1; techFactor = `技術面 ${techBearPct}% 幣種偏弱，空頭略佔優`; }
+  else                        { techFactor = `技術面多空均衡（看漲 ${techBullPct}% / 看跌 ${techBearPct}%）`; }
+
+  // ── 4. 訂單流 + 成交量加成（從掃描數據平均）──────────────────
+  let avgBuyPct = 50, avgFundingRate = 0, fundingCount = 0;
+  if (coins.length) {
+    const buyPcts = coins.filter(c => c.buyPct != null).map(c => c.buyPct);
+    if (buyPcts.length) avgBuyPct = buyPcts.reduce((a,b)=>a+b,0) / buyPcts.length;
+    const frs = coins.filter(c => c.fundingRate != null).map(c => c.fundingRate);
+    if (frs.length) { avgFundingRate = frs.reduce((a,b)=>a+b,0) / frs.length; fundingCount = frs.length; }
+  }
+  let flowFactor = '', fundingFactor = '';
+  if (avgBuyPct > 60)       { macroBull += 1; flowFactor = `主動買單佔比 ${avgBuyPct.toFixed(0)}%，訂單流偏多`; }
+  else if (avgBuyPct < 40)  { macroBear += 1; flowFactor = `主動買單佔比 ${avgBuyPct.toFixed(0)}%，訂單流偏空`; }
+  else                      { flowFactor = `訂單流多空均衡（主動買 ${avgBuyPct.toFixed(0)}%）`; }
+  if (fundingCount > 0) {
+    const frPct = avgFundingRate * 100;
+    if (frPct > 0.01)       { macroBear += 1; fundingFactor = `資金費率 +${frPct.toFixed(3)}%（偏高），多頭付費過熱`; }
+    else if (frPct < -0.01) { macroBull += 1; fundingFactor = `資金費率 ${frPct.toFixed(3)}%（偏負），空頭付費有利做多`; }
+    else                    { fundingFactor = `資金費率 ${frPct.toFixed(3)}%（中性）`; }
+  }
+
+  // ── 5. 本週 AI 綜合判斷 ────────────────────────────────────
+  const totalScore  = macroBull - macroBear;
+  const absScore    = Math.abs(totalScore);
+  const weekBias    = totalScore >= 3 ? 'strong_bull' : totalScore >= 1 ? 'bull'
+                    : totalScore <= -3 ? 'strong_bear' : totalScore <= -1 ? 'bear' : 'neutral';
+  const biasColor   = weekBias.includes('bull') ? 'var(--bull)' : weekBias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
+  const biasLabel   = weekBias === 'strong_bull' ? '▲▲ 強勢偏多' : weekBias === 'bull' ? '▲ 偏多'
+                    : weekBias === 'strong_bear' ? '▼▼ 強勢偏空' : weekBias === 'bear' ? '▼ 偏空' : '◆ 震盪中性';
+  const confScore   = Math.min(88, 50 + absScore * 8 + (fgVal != null ? 5 : 0));
+  const confColor   = confScore >= 70 ? 'var(--bull)' : confScore >= 55 ? '#f0a500' : 'var(--text3)';
+
+  // 收集所有判斷依據
+  const allFactors = [...macroFactors];
+  if (techFactor)   allFactors.push(techFactor);
+  if (flowFactor)   allFactors.push(flowFactor);
+  if (fundingFactor) allFactors.push(fundingFactor);
+
+  const factorsHtml = allFactors.slice(0, 6).map(f => {
+    const isBull = f.includes('偏多') || f.includes('看漲') || f.includes('淨流入') || f.includes('積極') || f.includes('動能升溫') || f.includes('多頭');
+    const isBear = f.includes('偏空') || f.includes('看跌') || f.includes('流出') || f.includes('空頭') || f.includes('過熱') || f.includes('受壓');
+    const clr    = isBull ? 'var(--bull)' : isBear ? 'var(--bear)' : 'var(--text2)';
+    return `<div style="font-size:0.73rem;color:${clr};padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)">${isBull ? '▲' : isBear ? '▼' : '—'} ${f}</div>`;
+  }).join('');
+
+  return `<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:12px;padding:14px 16px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <span style="font-size:0.82rem;font-weight:700;color:var(--text2)">🤖 AI 本週走勢預測</span>
+      <span style="font-size:0.72rem;color:var(--text3)">${new Date().toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'})} 更新</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
+      <div style="font-size:1.4rem;font-weight:800;color:${biasColor}">${biasLabel}</div>
+      <div>
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:3px">AI 信心度</div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <div style="width:80px;height:6px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden">
+            <div style="width:${confScore}%;height:100%;background:${confColor};border-radius:3px"></div>
+          </div>
+          <span style="font-size:0.8rem;font-weight:700;color:${confColor}">${confScore}%</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-bottom:10px">${factorsHtml}</div>
+    <div style="font-size:0.72rem;color:#f59e0b;background:rgba(245,158,11,.07);border-radius:7px;padding:6px 10px">
+      ⚠️ ${highRisk ? riskNote : riskNote}
+    </div>
+  </div>`;
+}
+
 function buildTodayEconWidget() {
   const allEvents = getWeeklyEconEvents();
   if (!allEvents.length) {
@@ -2021,13 +2135,16 @@ function buildNewsWidget(items) {
 }
 
 async function loadDashboardMacro() {
-  const el = document.getElementById('market-outlook-body');
-  if (el) {
+  const el      = document.getElementById('market-outlook-body');
+  const weekEl  = document.getElementById('weekly-ai-outlook-body');
+  if (el || weekEl) {
     try {
       const [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-      el.innerHTML = buildMarketOutlook(fg, global);
+      if (el)     el.innerHTML     = buildMarketOutlook(fg, global);
+      if (weekEl) weekEl.innerHTML = buildWeeklyAIOutlook(fg, global);
     } catch {
-      el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
+      if (el)     el.innerHTML     = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
+      if (weekEl) weekEl.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">AI 預測暫時無法獲取</div>';
     }
   }
   loadDashboardNews();
