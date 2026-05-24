@@ -1367,6 +1367,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
   if (hardBlocked) blockReasons.forEach(r => learnWarnings.push(r));
   const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty - hardAdxPenalty);
+  // 三層分析中間值（供 UI 展示決策流程用）
+  const baseConf  = Math.max(0, rawConf - hardAdxPenalty);          // 第①層：技術規則後
+  const macroConf = Math.max(0, baseConf - macroOpposePenalty);     // 第①層：宏觀分析後
+  const finalConf = conf;                                            // 第③層：AI 風控後（最終）
   // 最終防線：被AI風控硬封鎖 OR 信心低於80% → 觀望
   if (conf < 80 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
@@ -1593,57 +1597,149 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   </div>
 
   ${(() => {
-    // ── AI 防線審查面板 ──
+    // ── AI 交易決策三層邏輯面板 ──
     const { defenseChecks = [] } = learnResult || {};
     const failChecks  = defenseChecks.filter(c => !c.pass);
     const passChecks  = defenseChecks.filter(c =>  c.pass);
-    const totalChecks = defenseChecks.length;
-    const verdictColor = hardBlocked ? '#ef4444' : failChecks.length ? '#f59e0b' : '#22c55e';
-    const verdictIcon  = hardBlocked ? '🚫' : failChecks.length ? '⚠️' : '✅';
-    const verdictText  = hardBlocked
-      ? `AI 最終防線觸發：交易已攔截（${blockReasons.length} 項風控）`
-      : failChecks.length
-        ? `通過 ${passChecks.length} 項，${failChecks.length} 項風控警告`
-        : totalChecks > 0 ? `全部 ${totalChecks} 項防線審查通過` : '歷史數據不足，人工判斷為主';
-
     const typeLabel = { rule: '規則', memory: '止損記憶', suggestion: '改進建議' };
     const typeColor = { rule: '#818cf8', memory: '#f59e0b', suggestion: '#34d399' };
 
-    const checksHtml = defenseChecks.length ? `
-      <div class="ai-defense-list">
-        ${failChecks.map(c => `
-          <div class="ai-defense-item ai-defense-fail">
-            <span class="ai-defense-type" style="color:${typeColor[c.type] || '#aaa'}">${typeLabel[c.type] || c.type}</span>
-            <span class="ai-defense-text">${c.label}</span>
-            <span class="ai-defense-meta">${c.count}次 / -${c.penalty}%</span>
-          </div>`).join('')}
-        ${passChecks.slice(0, 4).map(c => `
-          <div class="ai-defense-item ai-defense-pass">
-            <span class="ai-defense-type" style="color:${typeColor[c.type] || '#aaa'}">${typeLabel[c.type] || c.type}</span>
-            <span class="ai-defense-text">${c.label}</span>
-            <span class="ai-defense-meta">${c.count}次 ✓</span>
-          </div>`).join('')}
-      </div>` : '';
+    // 各層狀態顏色
+    const l1Warn   = macroOpposePenalty > 0 || hardAdxPenalty > 0;
+    const l1Color  = l1Warn ? '#f59e0b' : '#22c55e';
+    const l1Icon   = l1Warn ? '⚠️' : '✅';
+    const l2Status = bigTrendBlocked ? 'block' : bigTrend === 'mixed' ? 'warn' : 'pass';
+    const l2Color  = l2Status === 'block' ? '#ef4444' : l2Status === 'warn' ? '#f59e0b' : '#22c55e';
+    const l2Icon   = l2Status === 'block' ? '🚫' : l2Status === 'warn' ? '⚠️' : '✅';
+    const l3Status = hardBlocked ? 'block' : learnPenalty > 0 ? 'warn' : 'pass';
+    const l3Color  = l3Status === 'block' ? '#ef4444' : l3Status === 'warn' ? '#f59e0b' : '#22c55e';
+    const l3Icon   = l3Status === 'block' ? '🚫' : l3Status === 'warn' ? '⚠️' : '✅';
+
+    // 信心分數顏色輔助
+    const cColor = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 70 ? '#f59e0b' : '#ef4444';
 
     const statsHtml = aiReady
       ? `<span class="setup-ai-stats">勝率 <strong>${profile.winRate}%</strong>（${profile.wins}勝 / ${profile.losses}敗，共 ${profile.closed} 筆）</span>`
       : `<span class="setup-ai-stats" style="color:var(--text3)">歷史數據不足（< 3 筆）</span>`;
 
-    const bestHtml = (aiReady && profile.bestConditions.length) ? `
-      <div class="setup-ai-bests">
-        ${profile.bestConditions.map(c => `<div class="setup-ai-best-item">📈 ${c.label}：${c.value}</div>`).join('')}
-      </div>` : '';
-
     return `<div class="setup-ai-panel">
       <div class="setup-ai-header">
-        <span class="setup-ai-title">🛡️ AI 防線審查（風控 + 止損記憶 + 改進建議）</span>
+        <span class="setup-ai-title">🤖 AI 交易決策三層邏輯</span>
         ${statsHtml}
       </div>
-      <div class="ai-defense-verdict" style="border-color:${verdictColor};color:${verdictColor}">
-        ${verdictIcon} ${verdictText}
+
+      <!-- 信心分數流程條 -->
+      <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.74rem;background:rgba(255,255,255,.03);border-radius:8px;padding:7px 10px;margin-bottom:10px">
+        <span style="color:var(--text3);font-size:0.7rem">原始訊號</span>
+        <span style="font-weight:700;color:${cColor(rawConf)}">${rawConf}%</span>
+        ${hardAdxPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">ADX -${hardAdxPenalty}</span>` : ''}
+        ${macroOpposePenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">宏觀 -${macroOpposePenalty}</span>` : ''}
+        <span style="color:var(--text3)">→</span>
+        <span style="color:var(--text3);font-size:0.7rem">① 後</span>
+        <span style="font-weight:700;color:${cColor(macroConf)}">${macroConf}%</span>
+        <span style="color:var(--text3)">→</span>
+        <span style="color:var(--text3);font-size:0.7rem">② 後</span>
+        <span style="font-weight:700;color:${l2Status === 'block' ? '#ef4444' : cColor(macroConf)}">${l2Status === 'block' ? '攔截' : macroConf + '%'}</span>
+        ${learnPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">風控 -${learnPenalty}</span>` : ''}
+        <span style="color:var(--text3)">→</span>
+        <span style="color:var(--text3);font-size:0.7rem">最終</span>
+        <span style="font-weight:700;font-size:0.85rem;color:${l2Status === 'block' ? '#ef4444' : cColor(finalConf)}">${l2Status === 'block' ? '❌' : finalConf + '%'}</span>
       </div>
-      ${checksHtml}
-      ${bestHtml}
+
+      <!-- 第①層：基本規則 + 宏觀分析 -->
+      <div style="border:1px solid rgba(255,255,255,.08);border-radius:8px;margin-bottom:7px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:rgba(255,255,255,.04)">
+          <span style="font-size:0.88rem">${l1Icon}</span>
+          <span style="font-size:0.78rem;font-weight:600;color:var(--text1);flex:1">① 基本規則 + 宏觀分析</span>
+          <span style="font-size:0.72rem;color:${l1Color}">
+            ${rawConf}% → <strong>${macroConf}%</strong>
+            ${(hardAdxPenalty + macroOpposePenalty) > 0 ? `（-${hardAdxPenalty + macroOpposePenalty}%）` : ''}
+          </span>
+        </div>
+        <div style="padding:7px 12px;font-size:0.73rem;line-height:1.6">
+          ${hardAdxPenalty > 0
+            ? `<div style="color:#f59e0b">⚡ ADX ${adxVal}${adxVal < 18 ? '（< 18，震盪過弱）' : '（< 22，趨勢偏弱）'}，技術信心 -${hardAdxPenalty}%</div>`
+            : `<div style="color:#22c55e">✓ ADX ${adxVal} 趨勢強度正常，無扣分</div>`
+          }
+          ${macroReasons.length
+            ? macroReasons.map(r => `<div style="color:#f59e0b;margin-top:2px">⚠️ ${r}</div>`).join('')
+            : `<div style="color:#22c55e;margin-top:2px">✓ 宏觀環境無明顯逆風，無扣分</div>`
+          }
+        </div>
+      </div>
+
+      <!-- 第②層：大時間框架一致性 -->
+      <div style="border:1px solid rgba(255,255,255,.08);border-radius:8px;margin-bottom:7px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:rgba(255,255,255,.04)">
+          <span style="font-size:0.88rem">${l2Icon}</span>
+          <span style="font-size:0.78rem;font-weight:600;color:var(--text1);flex:1">② 大時間框架一致性</span>
+          <span style="font-size:0.72rem;font-weight:600;color:${l2Color}">${
+            l2Status === 'block' ? '逆大趨勢 ❌ 已攔截'
+            : l2Status === 'warn' ? '趨勢中性 ⚠️'
+            : '方向一致 ✅'
+          }</span>
+        </div>
+        <div style="padding:7px 12px;font-size:0.73rem;line-height:1.6">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+            <span style="color:${h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)'}">
+              4H ${h4TrendLabel}${h4?.rsi != null ? ` RSI ${h4.rsi}` : ''}
+            </span>
+            <span style="color:${d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)'}">
+              日線 ${d1TrendLabel}${d1sig_?.rsi != null ? ` RSI ${d1sig_.rsi}` : ''}
+            </span>
+          </div>
+          ${bigTrendBlocked
+            ? `<div style="color:var(--bear)">🚫 ${bigTrendBlockReason}</div>`
+            : bigTrend === 'mixed'
+              ? `<div style="color:#f59e0b">⚠️ 大時間框架趨勢不一致（4h/1d 方向分歧），建議謹慎操作</div>`
+              : `<div style="color:#22c55e">✓ 大小時間框架方向一致（${isLong ? '多方向' : '空方向'}），同向確認</div>`
+          }
+        </div>
+      </div>
+
+      <!-- 第③層：AI 風控（止損歷史記憶） -->
+      <div style="border:1px solid rgba(255,255,255,.08);border-radius:8px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:rgba(255,255,255,.04)">
+          <span style="font-size:0.88rem">${l3Icon}</span>
+          <span style="font-size:0.78rem;font-weight:600;color:var(--text1);flex:1">③ AI 風控（止損歷史記憶）</span>
+          <span style="font-size:0.72rem;color:${l3Color}">${
+            hardBlocked ? `❌ 硬性攔截（${blockReasons.length}項觸發）`
+            : learnPenalty > 0 ? `扣分 -${learnPenalty}%`
+            : '✓ 無扣分'
+          }</span>
+        </div>
+        <div style="padding:7px 12px;font-size:0.73rem;line-height:1.6">
+          ${!aiReady
+            ? `<div style="color:var(--text3)">歷史交易 < 3 筆，AI 止損記憶風控暫不啟用，以人工判斷為主</div>`
+            : ''
+          }
+          ${hardBlocked
+            ? blockReasons.map(r => `<div style="color:var(--bear);margin-bottom:2px">🚫 ${r}</div>`).join('')
+            : ''
+          }
+          ${defenseChecks.length ? `
+            <div class="ai-defense-list" style="margin-top:${aiReady ? '0' : '4px'}">
+              ${failChecks.map(c => `
+                <div class="ai-defense-item ai-defense-fail">
+                  <span class="ai-defense-type" style="color:${typeColor[c.type] || '#aaa'}">${typeLabel[c.type] || c.type}</span>
+                  <span class="ai-defense-text">${c.label}</span>
+                  <span class="ai-defense-meta">${c.count}次 / -${c.penalty}%</span>
+                </div>`).join('')}
+              ${passChecks.slice(0, 3).map(c => `
+                <div class="ai-defense-item ai-defense-pass">
+                  <span class="ai-defense-type" style="color:${typeColor[c.type] || '#aaa'}">${typeLabel[c.type] || c.type}</span>
+                  <span class="ai-defense-text">${c.label}</span>
+                  <span class="ai-defense-meta">${c.count}次 ✓</span>
+                </div>`).join('')}
+            </div>`
+            : (aiReady ? `<div style="color:#22c55e">✓ 無歷史止損觸發警告，AI 風控通過</div>` : '')
+          }
+          ${(aiReady && profile.bestConditions?.length) ? `
+            <div class="setup-ai-bests" style="margin-top:6px">
+              ${profile.bestConditions.map(c => `<div class="setup-ai-best-item">📈 ${c.label}：${c.value}</div>`).join('')}
+            </div>` : ''}
+        </div>
+      </div>
     </div>`;
   })()}`;
 }
