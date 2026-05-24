@@ -1502,11 +1502,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const newsHtml = topNews
         ? `<div class="setup-macro-news"><span class="setup-macro-news-icon">📰</span><span class="setup-macro-news-txt">${topNews.zhTitle}</span><span class="setup-macro-news-tag">${topNews.source}</span></div>`
         : '';
-      // 今日重要數據事件
-      const todayEvs = getTodayEconEvents().filter(ev => {
+      // 即將公布重要數據事件（今日或本週，未來 48 小時內）
+      const todayEvs = getWeeklyEconEvents().filter(ev => {
         const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
-        return mins > -120 && mins < 480; // 2小時前至8小時後
-      }).slice(0, 2);
+        return mins > -120 && mins < 2880; // 2小時前至48小時後
+      }).slice(0, 3);
       const evHtml = todayEvs.map(ev => {
         const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
         const timeLabel = mins < 0 ? `已公布` : mins < 60 ? `${Math.round(mins)}分鐘後` : `${Math.round(mins/60)}小時後`;
@@ -1746,21 +1746,39 @@ function fmt12h(h, m) {
 }
 
 function buildTodayEconWidget() {
-  const events = getTodayEconEvents().sort((a, b) => a.eventTime - b.eventTime);
+  // 優先顯示今日，無今日事件則顯示本週即將到來的數據
+  const events = getWeeklyEconEvents();
   if (!events.length) {
-    return `<div class="econ-today-empty">今日無重要經濟數據公布</div>`;
+    return `<div class="econ-today-empty">本週無重要經濟數據公布</div>`;
   }
   const now = Date.now();
+  const dayNames = ['週日','週一','週二','週三','週四','週五','週六'];
+
+  // 按天分組，今天為優先
+  let currentDayGroup = -1;
   const rows = events.map(ev => {
     const impactColor = ev.impact === 'high' ? 'var(--bear)' : ev.impact === 'medium' ? '#f0a500' : 'var(--bull)';
     const impactLabel = ev.impact === 'high' ? '🔴 高影響' : ev.impact === 'medium' ? '🟡 中影響' : '🟢 低影響';
-    const timeStr = fmt12h(ev.twHour, ev.twMin);
-    const minsUntil = (ev.eventTime.getTime() - now) / 60000;
+    const timeStr    = fmt12h(ev.twHour, ev.twMin);
+    const minsUntil  = (ev.eventTime.getTime() - now) / 60000;
+    const daysAhead  = ev.daysAhead || 0;
+
+    // 天分隔標題（只在切換天時顯示）
+    let dayHeader = '';
+    if (daysAhead !== currentDayGroup) {
+      currentDayGroup = daysAhead;
+      const d = new Date(); d.setDate(d.getDate() + daysAhead);
+      const dayLabel = daysAhead === 0 ? '📅 今日' : daysAhead === 1 ? '📅 明日' : `📅 ${dayNames[d.getDay()]}（${d.getMonth()+1}/${d.getDate()}）`;
+      dayHeader = `<div style="font-size:0.72rem;font-weight:600;color:var(--text2);padding:6px 0 4px;margin-top:${daysAhead > 0 ? '10px' : '0'}">${dayLabel}</div>`;
+    }
+
     const timeStatus = minsUntil < 0
       ? `<span class="econ-status econ-status-done">已公布</span>`
       : minsUntil < 60
       ? `<span class="econ-status econ-status-soon">⚡ 約 ${Math.round(minsUntil)} 分鐘後</span>`
-      : `<span class="econ-status econ-status-later">約 ${Math.round(minsUntil / 60)} 小時後</span>`;
+      : minsUntil < 1440
+      ? `<span class="econ-status econ-status-later">約 ${Math.round(minsUntil / 60)} 小時後</span>`
+      : `<span class="econ-status econ-status-later">${daysAhead} 天後</span>`;
 
     const published = minsUntil < 0;
     const confColor = (ev.aiConf || 0) >= 70 ? 'var(--bull)' : (ev.aiConf || 0) >= 55 ? '#f0a500' : 'var(--text3)';
@@ -1777,7 +1795,7 @@ function buildTodayEconWidget() {
         <div class="econ-ai-impact">${ev.aiMarketImpact}</div>
       </div>` : '';
 
-    return `<div class="econ-event-row">
+    return `${dayHeader}<div class="econ-event-row">
       <div class="econ-event-time">
         <span class="econ-time-val">${timeStr}</span>${timeStatus}
         <span style="font-size:0.68rem;color:${impactColor};margin-top:2px;display:block">${impactLabel}</span>
@@ -1794,9 +1812,13 @@ function buildTodayEconWidget() {
     </div>`;
   }).join('<div class="econ-divider"></div>');
 
+  // 判斷是否有今日事件
+  const hasTodayEvents = events.some(ev => (ev.daysAhead || 0) === 0);
+  const titleText = hasTodayEvents ? '📋 今日重要數據' : '📋 本週即將公布數據';
+
   return `<div class="econ-today-section">
     <div class="econ-today-header">
-      <span class="econ-today-title">📋 今日重要數據</span>
+      <span class="econ-today-title">${titleText}</span>
       <span class="econ-today-count">${events.length} 項</span>
     </div>
     ${rows}
@@ -3613,32 +3635,53 @@ function startEconCalendarCheck() {
   }, 60 * 1000);
 }
 
+/* 取得「今日」或（無今日事件時）未來 7 天內的即將公布數據 */
 function getTodayEconEvents() {
-  const now = new Date();
-  const dayOfWeek = now.getDay(); // 0=日…6=六
-  const weekOfMonth = Math.ceil(now.getDate() / 7);
+  return getUpcomingEconEvents(0); // 今日優先
+}
+
+function getUpcomingEconEvents(extraDays = 0) {
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+  const targetDate = new Date(base);
+  targetDate.setDate(base.getDate() + extraDays);
+
+  const dayOfWeek   = targetDate.getDay();
+  const weekOfMonth = Math.ceil(targetDate.getDate() / 7);
   const events = [];
 
-  // 每週固定事件
   WEEKLY_DATA_SCHEDULE.forEach(ev => {
     if (ev.dayOfWeek === dayOfWeek) {
-      const eventTime = new Date(now);
+      const eventTime = new Date(targetDate);
       eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
-      events.push({ ...ev, eventTime, type: 'weekly' });
+      events.push({ ...ev, eventTime, type: 'weekly', daysAhead: extraDays });
     }
   });
 
-  // 每月事件（近似匹配）
   MONTHLY_DATA_SCHEDULE.forEach(ev => {
-    const weekMatch = Math.abs(weekOfMonth - ev.weekOfMonth) <= 1; // ±1 週容差
+    const weekMatch = Math.abs(weekOfMonth - ev.weekOfMonth) <= 1;
     if (ev.dayOfWeek === dayOfWeek && weekMatch) {
-      const eventTime = new Date(now);
+      const eventTime = new Date(targetDate);
       eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
-      events.push({ ...ev, eventTime, type: 'monthly' });
+      events.push({ ...ev, eventTime, type: 'monthly', daysAhead: extraDays });
     }
   });
 
   return events;
+}
+
+/* 取得未來 7 天的所有即將公布數據（今天若無事件則向後找） */
+function getWeeklyEconEvents() {
+  const allEvents = [];
+  for (let d = 0; d <= 6; d++) {
+    const evs = getUpcomingEconEvents(d);
+    evs.forEach(ev => allEvents.push(ev));
+  }
+  // 排除已公布超過 2 小時的今日事件
+  return allEvents.filter(ev => {
+    const minsAgo = (Date.now() - ev.eventTime.getTime()) / 60000;
+    return minsAgo < 120; // 未公布或剛公布 2 小時內
+  }).sort((a, b) => a.eventTime - b.eventTime);
 }
 
 async function checkUpcomingEconEvents() {
