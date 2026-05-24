@@ -827,8 +827,40 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 若已有進行中的開倉或等待進場的掛單，優先顯示對應畫面
   const tlogNow = loadTradeLog();
   const existingActive = tlogNow.find(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
-  if (existingActive?.status === 'open')    return buildOpenPositionSetup(existingActive, price);
-  if (existingActive?.status === 'pending') return buildPendingPositionSetup(existingActive, price);
+  if (existingActive) {
+    // 每次開啟幣種詳情都重新計算 AI 學習調整後的信心度，確保顯示值與警告一致
+    const rsiNow      = parseFloat(coin.rsi) || 50;
+    const adxNow      = parseFloat(coin.adx) || 20;
+    const hardAdxNow  = adxNow < 18 ? 28 : adxNow < 22 ? 14 : 0;
+    const vp1hNow     = mtfData['1h']?.vp;
+    const mtfAlignNow = ['15m','1h','4h','1d'].filter(tf => {
+      const sig = mtfData[tf]?.signal;
+      return sig && (existingActive.direction === 'long' ? sig.signal?.includes('bull') : sig.signal?.includes('bear'));
+    }).length;
+    const learnCtxNow = {
+      abovePOC:      vp1hNow?.priceAbovePOC ?? null,
+      whaleBias:     whale?.bias || null,
+      volDivergence: mtfData['1h']?.volAI?.divergence || null,
+      mtfAlign:      mtfAlignNow,
+      slType:        existingActive.entrySlType || 'atr',
+    };
+    const { penalty: learnPenNow } = applyLearnAdjustment(existingActive.direction, rsiNow, adxNow, learnCtxNow);
+    // rawConf：優先使用儲存值，否則從 coin.score 推算
+    const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
+    const freshConf  = Math.max(0, rawConfNow - learnPenNow - hardAdxNow);
+    if (Math.abs((existingActive.conf || 0) - freshConf) >= 1) {
+      const tlogEdit = loadTradeLog();
+      const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
+      if (editIdx >= 0) {
+        tlogEdit[editIdx].conf    = freshConf;
+        tlogEdit[editIdx].rawConf = rawConfNow;
+        existingActive.conf       = freshConf;
+        saveTradeLog(tlogEdit);
+      }
+    }
+    if (existingActive.status === 'open')    return buildOpenPositionSetup(existingActive, price);
+    if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price);
+  }
 
   // 若冷卻期內有同方向取消記錄（含飛越止盈），顯示機會已過提示
   const recentCancel = tlogNow
@@ -1367,10 +1399,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ex.entry = entry; ex.sl = sl; ex.tp1 = tp1; ex.tp2 = tp2;
       ex.entryReason = entryReasons.join('，');
       ex.slReason = slReason; ex.tp1Reason = tp1Reason; ex.tp2Reason = tp2Reason;
-      ex.conf = conf;
+      ex.conf = conf; ex.rawConf = rawConf;
       Object.assign(ex, tradeCtx);
       ex.refined = true;
     }
+    ex.conf = conf; ex.rawConf = rawConf;
     ex.longTermBias = ltBias;
     ex.canScaleIn   = canScaleIn;
     if (!ex.scaleIns) ex.scaleIns = [];
@@ -1396,7 +1429,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         entryPrice: price, entry, sl, tp1, tp2,
         rsi: parseFloat(coin.rsi) || 50,
         adx: parseFloat(coin.adx) || 20,
-        score: coin.score, trend: coin.trend, conf,
+        score: coin.score, trend: coin.trend, conf, rawConf,
         entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
@@ -3519,27 +3552,21 @@ function buildDailyBriefingMsg(fg, mkt) {
     return parts.length ? parts.join('\n') : '• 數據獲取中…';
   })();
 
-  // 昨日盈虧報告（昨日 00:00 ~ 23:59 結算的交易）
+  // 昨日盈虧報告（精簡版：勝率 + 止盈/止損筆數 + 總盈虧）
   const yesterdayPnlSection = (() => {
     const tlog = loadTradeLog();
     const yStart = new Date(now); yStart.setDate(yStart.getDate() - 1); yStart.setHours(0,0,0,0);
     const yEnd   = new Date(now); yEnd.setDate(yEnd.getDate() - 1);     yEnd.setHours(23,59,59,999);
     const yClosed = tlog.filter(t => t.status === 'closed' && t.exitTime >= yStart.getTime() && t.exitTime <= yEnd.getTime());
     if (!yClosed.length) return '• 昨日無結算交易';
-    const wins   = yClosed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
-    const losses = yClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
+    const tp  = yClosed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
+    const sl  = yClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be').length;
+    const wr  = yClosed.length > 0 ? Math.round(tp / yClosed.length * 100) : 0;
     const totalR = yClosed.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
-    const parts  = [`• 昨日結算 ${yClosed.length} 筆：盈利 ${wins.length} 筆 / 虧損 ${losses.length} 筆`];
-    parts.push(`• 昨日總盈虧：${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R`);
-    if (losses.length) {
-      const lossSymbols = losses.map(t => t.symbol.replace('/USDT','')).join('、');
-      parts.push(`• 止損幣種：${lossSymbols}`);
-    }
-    if (wins.length) {
-      const winSymbols = wins.map(t => t.symbol.replace('/USDT','')).join('、');
-      parts.push(`• 止盈幣種：${winSymbols}`);
-    }
-    return parts.join('\n');
+    return [
+      `• 勝率：${wr}%　止盈 ${tp} 筆　止損 ${sl} 筆`,
+      `• 總盈虧：${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R`,
+    ].join('\n');
   })();
 
   // 加密市場大方向（文字版）
@@ -3576,11 +3603,20 @@ function buildDailyBriefingMsg(fg, mkt) {
     '• 全球流動性擴張：信心 74%，M2 增長歷史上與加密牛市高度相關',
   ].join('\n');
 
-  // 今日重要數據公布
-  const dayOfWeek = now.getDay();
-  const events = WEEKLY_ECON_EVENTS[dayOfWeek] || [];
-  const eventSection = events.length
-    ? events.map(e => `⏰ ${e}`).join('\n')
+  // 今日重要數據公布（含 AI 預測多空方向 + 信心值）
+  const todayEconEvents = getTodayEconEvents();
+  const eventSection = todayEconEvents.length
+    ? todayEconEvents.map(ev => {
+        const timeStr = `${ev.twHour}:${String(ev.twMin).padStart(2,'0')}`;
+        const impactTag = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
+        const aiLine = ev.aiPred
+          ? `   🤖 AI 預測：${ev.aiPred}（信心 ${ev.aiConf}%）`
+          : '';
+        const dirLine = ev.bullIf
+          ? `   📈 偏多條件：${ev.bullIf.slice(0,60)}`
+          : '';
+        return `${impactTag} <b>${ev.name}</b>（台灣時間 ${timeStr}）${aiLine ? '\n'+aiLine : ''}${dirLine ? '\n'+dirLine : ''}`;
+      }).join('\n\n')
     : '⏰ 今日無重大預定數據';
 
   return `📊 <b>每日市場簡報</b> ${dateStr}\n\n` +
