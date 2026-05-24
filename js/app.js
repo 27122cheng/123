@@ -1746,56 +1746,58 @@ function fmt12h(h, m) {
 }
 
 function buildTodayEconWidget() {
-  // 優先顯示今日，無今日事件則顯示本週即將到來的數據
-  const events = getWeeklyEconEvents();
-  if (!events.length) {
+  const allEvents = getWeeklyEconEvents();
+  if (!allEvents.length) {
     return `<div class="econ-today-empty">本週無重要經濟數據公布</div>`;
   }
-  const now = Date.now();
-  const dayNames = ['週日','週一','週二','週三','週四','週五','週六'];
 
-  // 按天分組，今天為優先
-  let currentDayGroup = -1;
-  const rows = events.map(ev => {
+  const dayNames  = ['週日','週一','週二','週三','週四','週五','週六'];
+  const now       = Date.now();
+  const widgetId  = 'econTabs';   // unique enough for single instance
+
+  // ── 按天分組 ──────────────────────────────────────────────
+  const groups = {};   // daysAhead → { label, dateStr, events[] }
+  allEvents.forEach(ev => {
+    const d = ev.daysAhead || 0;
+    if (!groups[d]) {
+      const dt = new Date(); dt.setDate(dt.getDate() + d);
+      const dayLabel = d === 0 ? '今日' : d === 1 ? '明日' : dayNames[dt.getDay()];
+      const dateStr  = `${dt.getMonth()+1}/${dt.getDate()}`;
+      groups[d] = { label: dayLabel, dateStr, events: [] };
+    }
+    groups[d].events.push(ev);
+  });
+
+  const dayKeys = Object.keys(groups).map(Number).sort((a,b)=>a-b);
+
+  // 預設顯示今日，否則第一個有事件的天
+  const defaultDay = dayKeys.includes(0) ? 0 : dayKeys[0];
+
+  // ── 建立每個事件的 HTML ────────────────────────────────────
+  const buildEventHtml = (ev) => {
     const impactColor = ev.impact === 'high' ? 'var(--bear)' : ev.impact === 'medium' ? '#f0a500' : 'var(--bull)';
     const impactLabel = ev.impact === 'high' ? '🔴 高影響' : ev.impact === 'medium' ? '🟡 中影響' : '🟢 低影響';
-    const timeStr    = fmt12h(ev.twHour, ev.twMin);
-    const minsUntil  = (ev.eventTime.getTime() - now) / 60000;
-    const daysAhead  = ev.daysAhead || 0;
-
-    // 天分隔標題（只在切換天時顯示）
-    let dayHeader = '';
-    if (daysAhead !== currentDayGroup) {
-      currentDayGroup = daysAhead;
-      const d = new Date(); d.setDate(d.getDate() + daysAhead);
-      const dayLabel = daysAhead === 0 ? '📅 今日' : daysAhead === 1 ? '📅 明日' : `📅 ${dayNames[d.getDay()]}（${d.getMonth()+1}/${d.getDate()}）`;
-      dayHeader = `<div style="font-size:0.72rem;font-weight:600;color:var(--text2);padding:6px 0 4px;margin-top:${daysAhead > 0 ? '10px' : '0'}">${dayLabel}</div>`;
-    }
-
-    const timeStatus = minsUntil < 0
+    const timeStr     = fmt12h(ev.twHour, ev.twMin);
+    const minsUntil   = (ev.eventTime.getTime() - now) / 60000;
+    const published   = minsUntil < 0;
+    const timeStatus  = published
       ? `<span class="econ-status econ-status-done">已公布</span>`
       : minsUntil < 60
-      ? `<span class="econ-status econ-status-soon">⚡ 約 ${Math.round(minsUntil)} 分鐘後</span>`
+      ? `<span class="econ-status econ-status-soon">⚡ ${Math.round(minsUntil)}分後</span>`
       : minsUntil < 1440
-      ? `<span class="econ-status econ-status-later">約 ${Math.round(minsUntil / 60)} 小時後</span>`
-      : `<span class="econ-status econ-status-later">${daysAhead} 天後</span>`;
-
-    const published = minsUntil < 0;
-    const confColor = (ev.aiConf || 0) >= 70 ? 'var(--bull)' : (ev.aiConf || 0) >= 55 ? '#f0a500' : 'var(--text3)';
-    const aiSection = ev.aiMarketImpact ? `
+      ? `<span class="econ-status econ-status-later">${Math.round(minsUntil/60)}h後</span>`
+      : `<span class="econ-status econ-status-later">${(ev.daysAhead||0)}天後</span>`;
+    const confColor  = (ev.aiConf||0) >= 70 ? 'var(--bull)' : (ev.aiConf||0) >= 55 ? '#f0a500' : 'var(--text3)';
+    const aiSection  = ev.aiMarketImpact ? `
       <div class="econ-ai-block">
         ${!published && ev.aiPred ? `<div class="econ-ai-row">
-          <span class="econ-ai-label">🤖 AI 預測數值</span>
+          <span class="econ-ai-label">🤖 AI 預測</span>
           <span class="econ-ai-val">${ev.aiPred}</span>
           <span class="econ-ai-conf" style="color:${confColor}">信心 ${ev.aiConf}%</span>
         </div>` : ''}
-        <div class="econ-ai-row" style="margin-bottom:0">
-          <span class="econ-ai-label">${published ? '🔎 已公布 — AI 盤面影響' : '📊 盤面影響預測'}</span>
-        </div>
         <div class="econ-ai-impact">${ev.aiMarketImpact}</div>
       </div>` : '';
-
-    return `${dayHeader}<div class="econ-event-row">
+    return `<div class="econ-event-row">
       <div class="econ-event-time">
         <span class="econ-time-val">${timeStr}</span>${timeStatus}
         <span style="font-size:0.68rem;color:${impactColor};margin-top:2px;display:block">${impactLabel}</span>
@@ -1810,18 +1812,46 @@ function buildTodayEconWidget() {
         ${aiSection}
       </div>
     </div>`;
-  }).join('<div class="econ-divider"></div>');
+  };
 
-  // 判斷是否有今日事件
-  const hasTodayEvents = events.some(ev => (ev.daysAhead || 0) === 0);
-  const titleText = hasTodayEvents ? '📋 今日重要數據' : '📋 本週即將公布數據';
+  // ── Tab 按鈕 ────────────────────────────────────────────────
+  const tabsHtml = dayKeys.map(d => {
+    const g = groups[d];
+    const isActive  = d === defaultDay;
+    const hasSoon   = g.events.some(ev => {
+      const m = (ev.eventTime.getTime() - now) / 60000;
+      return m > 0 && m < 180;
+    });
+    const highCount = g.events.filter(ev => ev.impact === 'high').length;
+    const dot       = hasSoon ? '<span class="econ-tab-dot soon"></span>' : highCount ? '<span class="econ-tab-dot high"></span>' : '';
+    return `<button class="econ-day-tab${isActive ? ' active' : ''}"
+        onclick="(function(btn){
+          document.querySelectorAll('#${widgetId} .econ-day-tab').forEach(b=>b.classList.remove('active'));
+          document.querySelectorAll('#${widgetId} .econ-day-panel').forEach(p=>p.style.display='none');
+          btn.classList.add('active');
+          document.getElementById('${widgetId}-panel-${d}').style.display='block';
+        })(this)">
+      ${dot}${g.label}<span class="econ-tab-date">${g.dateStr}</span>
+      <span class="econ-tab-cnt">${g.events.length}</span>
+    </button>`;
+  }).join('');
 
-  return `<div class="econ-today-section">
+  // ── 每日內容面板 ────────────────────────────────────────────
+  const panelsHtml = dayKeys.map(d => {
+    const g = groups[d];
+    const content = g.events.map(buildEventHtml).join('<div class="econ-divider"></div>');
+    return `<div id="${widgetId}-panel-${d}" class="econ-day-panel" style="display:${d === defaultDay ? 'block' : 'none'}">${content}</div>`;
+  }).join('');
+
+  const totalEvents = allEvents.length;
+
+  return `<div id="${widgetId}" class="econ-today-section">
     <div class="econ-today-header">
-      <span class="econ-today-title">${titleText}</span>
-      <span class="econ-today-count">${events.length} 項</span>
+      <span class="econ-today-title">📋 本週重要數據</span>
+      <span class="econ-today-count">${totalEvents} 項</span>
     </div>
-    ${rows}
+    <div class="econ-day-tabs">${tabsHtml}</div>
+    ${panelsHtml}
   </div>`;
 }
 

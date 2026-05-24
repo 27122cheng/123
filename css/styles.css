@@ -1416,6 +1416,51 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .econ-today-title { font-size:0.82rem; font-weight:700; color:var(--text2); text-transform:uppercase; letter-spacing:.04em; }
 .econ-today-count { font-size:0.72rem; background:rgba(0,212,255,.12); color:var(--accent); border-radius:10px; padding:2px 8px; font-weight:600; }
 .econ-today-empty { font-size:0.8rem; color:var(--text3); padding:8px 0; border-top:1px solid var(--border); margin-top:4px; }
+
+/* ── 日期分頁 Tabs ──────────────────────────────────────────── */
+.econ-day-tabs {
+  display:flex; gap:6px; flex-wrap:wrap;
+  margin-bottom:12px; padding-bottom:10px;
+  border-bottom:1px solid var(--border);
+  overflow-x:auto; scrollbar-width:none;
+}
+.econ-day-tabs::-webkit-scrollbar { display:none; }
+.econ-day-tab {
+  position:relative;
+  display:flex; align-items:center; gap:4px;
+  padding:5px 10px; border-radius:8px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.03);
+  color:var(--text2); font-size:0.75rem; font-weight:500;
+  cursor:pointer; white-space:nowrap;
+  transition:all .18s ease;
+}
+.econ-day-tab:hover { background:rgba(255,255,255,.07); color:var(--text1); }
+.econ-day-tab.active {
+  background:rgba(0,212,255,.12);
+  border-color:rgba(0,212,255,.35);
+  color:var(--accent); font-weight:700;
+}
+.econ-tab-date { font-size:0.68rem; color:var(--text3); margin-left:1px; }
+.econ-day-tab.active .econ-tab-date { color:var(--accent); opacity:.75; }
+.econ-tab-cnt {
+  font-size:0.62rem; font-weight:700;
+  background:rgba(255,255,255,.1);
+  border-radius:9px; padding:0 5px; min-width:16px; text-align:center;
+}
+.econ-day-tab.active .econ-tab-cnt { background:rgba(0,212,255,.2); color:var(--accent); }
+/* 提示點（即將公布 / 高影響）*/
+.econ-tab-dot {
+  display:inline-block; width:6px; height:6px; border-radius:50%;
+  flex-shrink:0;
+}
+.econ-tab-dot.soon { background:var(--bear); animation:dotPulse 1.2s infinite; }
+.econ-tab-dot.high { background:#f59e0b; }
+@keyframes dotPulse {
+  0%,100% { opacity:1; } 50% { opacity:.3; }
+}
+.econ-day-panel { animation:fadeIn .18s ease; }
+
 .econ-event-row { display:flex; gap:14px; align-items:flex-start; padding:8px 0; }
 .econ-event-time { min-width:70px; text-align:center; flex-shrink:0; }
 .econ-time-val { font-size:0.88rem; font-weight:700; color:var(--text1); display:block; margin-bottom:3px; }
