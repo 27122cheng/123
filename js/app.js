@@ -1398,6 +1398,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     slReason, tp1Reason, tp2Reason,
     rr1: rr1str, rr2: rr2str, atr, conf,
     longTermBias: ltBias, canScaleIn, ltConf,
+    // 三層決策資料（供 Telegram 顯示 AI 邏輯摘要）
+    rawConf, macroConf, finalConf,
+    bigTrend, bigTrendBlocked, h4TrendLabel, d1TrendLabel,
+    learnPenalty, hardAdxPenalty, macroOpposePenalty,
+    macroReasons: macroReasons || [],
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）

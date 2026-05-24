@@ -466,8 +466,53 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   if (setup) {
-    if (setup.conf) msg += `📶 信心度：<b>${setup.conf}%</b>\n\n`;
-    const reasonLines = (setup.entryReason || '').split('，').filter(Boolean).map(r => `   • ${r}`).join('\n');
+    // ── 信心度（附三層決策摘要）──
+    if (setup.conf != null) {
+      const rawC   = setup.rawConf   || setup.conf;
+      const macroC = setup.macroConf || setup.conf;
+      const finalC = setup.conf;
+      if (rawC !== finalC) {
+        msg += `📶 信心度：<b>${finalC}%</b>  <i>(原始 ${rawC}%`;
+        if (setup.hardAdxPenalty > 0)       msg += ` → ADX-${setup.hardAdxPenalty}`;
+        if (setup.macroOpposePenalty > 0)   msg += ` → 宏觀-${setup.macroOpposePenalty}`;
+        if (setup.learnPenalty > 0)         msg += ` → 風控-${setup.learnPenalty}`;
+        msg += `)</i>\n`;
+      } else {
+        msg += `📶 信心度：<b>${finalC}%</b>\n`;
+      }
+    }
+
+    // ── AI 三層決策摘要 ──
+    const bt = setup.bigTrend;
+    const h4lbl = setup.h4TrendLabel || '';
+    const d1lbl = setup.d1TrendLabel || '';
+    if (bt) {
+      const l1ok = !setup.macroOpposePenalty && !setup.hardAdxPenalty;
+      const l2ok = bt === (isLong ? 'bull' : 'bear');
+      const l2mixed = bt === 'mixed';
+
+      msg += `\n🤖 <b>AI 三層決策</b>\n`;
+      // Layer ①
+      msg += `   ① 基本規則+宏觀：${l1ok ? '✅ 通過' : `⚠️ 扣分 -${(setup.hardAdxPenalty || 0) + (setup.macroOpposePenalty || 0)}%`}`;
+      if (setup.macroReasons?.length) {
+        msg += `（${setup.macroReasons[0]}${setup.macroReasons.length > 1 ? ` 等${setup.macroReasons.length}項` : ''}）`;
+      }
+      msg += `\n`;
+      // Layer ②
+      if (l2ok) {
+        msg += `   ② 大時框架：✅ 全部通過（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
+      } else if (l2mixed) {
+        msg += `   ② 大時框架：⚠️ 趨勢中性／分歧（4H ${h4lbl} ／ 日線 ${d1lbl}），謹慎操作\n`;
+      } else {
+        msg += `   ② 大時框架：🚫 嚴格攔截（4H ${h4lbl} ／ 日線 ${d1lbl}），逆大趨勢\n`;
+      }
+      // Layer ③
+      const lp = setup.learnPenalty || 0;
+      msg += `   ③ AI 風控：${lp > 0 ? `⚠️ 止損記憶扣分 -${lp}%` : '✅ 通過，無扣分'}\n`;
+      msg += `\n`;
+    }
+
+    const reasonLines = (setup.entryReason || '').split('，').filter(r => r && !r.startsWith('🚫')).map(r => `   • ${r}`).join('\n');
     msg += `📍 <b>進場：$${fmt(setup.entry)}</b>\n`;
     msg += `${reasonLines || '   • 多重信號共振'}\n\n`;
 
