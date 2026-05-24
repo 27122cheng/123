@@ -512,9 +512,18 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
       msg += `\n`;
     }
 
-    const reasonLines = (setup.entryReason || '').split('，').filter(r => r && !r.startsWith('🚫')).map(r => `   • ${r}`).join('\n');
+    // 優先用陣列版進場原因（避免中文逗號分割錯誤），過濾掉 🚫 攔截說明
+    const rawReasons = setup.entryReasons
+      ? setup.entryReasons.filter(r => r && !r.startsWith('🚫'))
+      : (setup.entryReason || '').split('，').filter(r => r && !r.startsWith('🚫'));
+    const signalReasons  = rawReasons.filter(r => !r.startsWith('⚠️'));
+    const warningReasons = rawReasons.filter(r => r.startsWith('⚠️'));
+    const reasonLines = signalReasons.map(r => `   • ${r}`).join('\n');
+    const warnLines   = warningReasons.map(r => `   ${r}`).join('\n');
     msg += `📍 <b>進場：$${fmt(setup.entry)}</b>\n`;
-    msg += `${reasonLines || '   • 多重信號共振'}\n\n`;
+    msg += `${reasonLines || '   • 多重信號共振'}\n`;
+    if (warnLines) msg += `${warnLines}\n`;
+    msg += `\n`;
 
     const tp1Pct = pct(setup.entry, setup.tp1);
     msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${setup.rr1}:1)\n`;

@@ -1395,6 +1395,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   _tradeSetupCache[coin.symbol] = {
     entry, sl, tp1, tp2,
     entryReason: entryReasons.join('，'),
+    entryReasons: [...entryReasons],   // 陣列原始版，避免逗號分割錯誤
     slReason, tp1Reason, tp2Reason,
     rr1: rr1str, rr2: rr2str, atr, conf,
     longTermBias: ltBias, canScaleIn, ltConf,
@@ -1833,6 +1834,7 @@ function buildMarketOutlook(fg, global) {
         ${bearArgs.map(a => `<div class="outlook-arg">• ${a}</div>`).join('')}
       </div>
     </div>
+    ${buildWeeklyAIOutlook(fg, global)}
     <div class="outlook-events">
       <div class="outlook-events-title">📅 即將公佈重要數據</div>
       <div class="outlook-events-list">
@@ -2247,16 +2249,14 @@ function buildNewsWidget(items) {
 }
 
 async function loadDashboardMacro() {
-  const el      = document.getElementById('market-outlook-body');
-  const weekEl  = document.getElementById('weekly-ai-outlook-body');
-  if (el || weekEl) {
+  const el = document.getElementById('market-outlook-body');
+  if (el) {
     try {
       const [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-      if (el)     el.innerHTML     = buildMarketOutlook(fg, global);
-      if (weekEl) weekEl.innerHTML = buildWeeklyAIOutlook(fg, global);
+      // buildMarketOutlook 已內嵌呼叫 buildWeeklyAIOutlook，不需再獨立更新
+      el.innerHTML = buildMarketOutlook(fg, global);
     } catch {
-      if (el)     el.innerHTML     = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
-      if (weekEl) weekEl.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">AI 預測暫時無法獲取</div>';
+      el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
     }
   }
   loadDashboardNews();
