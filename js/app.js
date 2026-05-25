@@ -4062,57 +4062,147 @@ function recordSignalsFromScan(data) {
     } catch(e) { /* 宏觀計算失敗 → 維持 0 扣分，允許記錄 */ }
   }
 
-  // ── 方向硬封鎖：本週 + 今日 AI 同時明確反向 → 不允許開倉 ──
-  const blockLong  = wBias.includes('bear') && tBias.includes('bear');
-  const blockShort = wBias.includes('bull') && tBias.includes('bull');
+  // ── 方向判斷（只有明確 bear/bull 才算定向，slight 與 neutral 不封鎖）──
+  const wClearBear = wBias === 'bear' || wBias === 'strong_bear';
+  const wClearBull = wBias === 'bull' || wBias === 'strong_bull';
+  const tClearBear = tBias === 'bear' || tBias === 'strong_bear';
+  const tClearBull = tBias === 'bull' || tBias === 'strong_bull';
 
-  for (const coin of data) {
-    const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
-    const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
-    if (!isLong && !isShort) continue;
-    const direction = isLong ? 'long' : 'short';
+  // 方向硬封鎖：本週 + 今日同時明確反向 → 不允許開倉
+  const blockLong  = wClearBear && tClearBear;
+  const blockShort = wClearBull && tClearBull;
 
-    // 方向封鎖：宏觀 + AI 均明確反向 → 跳過
-    if (isLong  && blockLong)  continue;
-    if (!isLong && blockShort) continue;
+  // 震盪模式：本週 + 今日均非明確定向（neutral / slight 均算震盪）
+  const isRangeMode = !wClearBear && !wClearBull && !tClearBear && !tClearBull;
 
-    // 快速預篩：原始評分不足直接跳過
-    const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (rawConf < 75) continue;
+  // ══════════════════════════════════════════════════
+  // 震盪行情路徑（RSI 極值做高低點反轉，ADX 必須低）
+  // ══════════════════════════════════════════════════
+  if (isRangeMode) {
+    for (const coin of data) {
+      const rsiR  = parseFloat(coin.rsi) || 50;
+      const adxR  = parseFloat(coin.adx) || 25;
+      const price = parseFloat(coin.price) || 0;
+      const atr   = parseFloat(coin.atr)   || price * 0.012;
 
-    const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
-    if (hasOpen) continue;
-    if (inCooldown(tlog, coin.symbol, direction)) continue;
+      // ADX < 28：確認非趨勢行情
+      if (adxR >= 28) continue;
 
-    const setup = computeSimpleSetup(coin, isLong);
+      // RSI 極值判斷方向：> 63 做空（超買），< 37 做多（超賣）
+      const rangeShort = rsiR > 63;
+      const rangeLong  = rsiR < 37;
+      if (!rangeShort && !rangeLong) continue;
 
-    // 套用宏觀 + AI 逆風扣分後重新計算最終信心
-    const macroPen = isLong ? macroPenLong : macroPenShort;
-    const finalConf = Math.max(0, setup.conf - macroPen);
+      const direction = rangeLong ? 'long' : 'short';
+      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+      if (hasOpen) continue;
+      if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-    // 最終信心 < 75% 或 AI 硬封鎖 → 不記錄
-    if (finalConf < 75 || setup.hardBlocked) continue;
+      // 震盪信心：以 RSI 偏離 50 程度換算基礎信心
+      const rsiDev  = Math.abs(rsiR - 50);             // 0~50
+      let   rawConfR = Math.min(85, 50 + rsiDev * 0.8); // 50~90 → 裁到 85
+      // ADX 越低越好（非趨勢），< 18 加分
+      if (adxR < 18) rawConfR = Math.min(85, rawConfR + 4);
 
-    tlog.unshift({
-      id: `${coin.symbol}-${Date.now()}`,
-      symbol: coin.symbol, direction,
-      timestamp: Date.now(),
-      entryPrice: parseFloat(coin.price) || 0,
-      entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
-      entryReason: setup.entryReason, slReason: setup.slReason,
-      tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
-      rsi: parseFloat(coin.rsi) || 50,
-      adx: parseFloat(coin.adx) || 20,
-      score: coin.score, trend: coin.trend,
-      conf: finalConf, rawConf: setup.rawConf,
-      status: 'pending', outcome: null, tp1Hit: false,
-      entryTime: null,
-      exitPrice: null, exitTime: null, pnlR: null, analysis: null,
-      refined: false,
-      longTermBias: null, canScaleIn: false,
-      scaleIns: [], peakPrice: null,
-    });
-    changed = true;
+      // 學習調整扣分
+      const { penalty: learnPen, hardBlocked: learnBlock } = applyLearnAdjustment(direction, rsiR, adxR, {});
+      const finalConfR = Math.max(0, rawConfR - learnPen);
+
+      // 震盪門檻 62%（比定向低，但需真正達到 RSI 極值）
+      if (finalConfR < 62 || learnBlock) continue;
+
+      // 震盪模式 TP/SL（緊縮：TP1=ATR×0.8, TP2=ATR×1.4, SL=ATR×0.9）
+      const entry = price;
+      const sl    = rangeLong ? price - atr * 0.9 : price + atr * 0.9;
+      const tp1   = rangeLong ? price + atr * 0.8 : price - atr * 0.8;
+      const tp2   = rangeLong ? price + atr * 1.4 : price - atr * 1.4;
+
+      const rDir  = rangeLong ? '多' : '空';
+      const rsiLbl = `RSI ${rsiR.toFixed(1)}`;
+      const entryReason = rangeLong
+        ? `震盪超賣（${rsiLbl} < 37），ADX ${adxR.toFixed(0)} 確認非趨勢，高低點反彈做多`
+        : `震盪超買（${rsiLbl} > 63），ADX ${adxR.toFixed(0)} 確認非趨勢，高低點回落做空`;
+      const slReason = `ATR×0.9 止損，震盪格局`;
+      const tp1Reason = `ATR×0.8 快速獲利（震盪格局優先鎖利）`;
+      const tp2Reason = `ATR×1.4 延伸目標`;
+
+      tlog.unshift({
+        id: `${coin.symbol}-${Date.now()}`,
+        symbol: coin.symbol, direction,
+        timestamp: Date.now(),
+        entryPrice: price,
+        entry, sl, tp1, tp2,
+        entryReason, slReason, tp1Reason, tp2Reason,
+        rr1: Math.abs(tp1 - entry) / Math.abs(entry - sl),
+        rr2: Math.abs(tp2 - entry) / Math.abs(entry - sl),
+        rsi: rsiR, adx: adxR,
+        score: coin.score, trend: coin.trend,
+        conf: Math.round(finalConfR), rawConf: Math.round(rawConfR),
+        status: 'pending', outcome: null, tp1Hit: false,
+        entryTime: null,
+        exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+        refined: false,
+        tradeType: 'range',
+        longTermBias: null, canScaleIn: false,
+        scaleIns: [], peakPrice: null,
+      });
+      changed = true;
+    }
+  }
+
+  // ══════════════════════════════════════════════════
+  // 定向行情路徑（趨勢交易，信心門檻 75%）
+  // ══════════════════════════════════════════════════
+  if (!isRangeMode) {
+    for (const coin of data) {
+      const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
+      const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
+      if (!isLong && !isShort) continue;
+      const direction = isLong ? 'long' : 'short';
+
+      // 方向封鎖：宏觀 + AI 均明確反向 → 跳過
+      if (isLong  && blockLong)  continue;
+      if (!isLong && blockShort) continue;
+
+      // 快速預篩：原始評分不足直接跳過
+      const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
+      if (rawConf < 75) continue;
+
+      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+      if (hasOpen) continue;
+      if (inCooldown(tlog, coin.symbol, direction)) continue;
+
+      const setup = computeSimpleSetup(coin, isLong);
+
+      // 套用宏觀 + AI 逆風扣分後重新計算最終信心
+      const macroPen = isLong ? macroPenLong : macroPenShort;
+      const finalConf = Math.max(0, setup.conf - macroPen);
+
+      // 最終信心 < 75% 或 AI 硬封鎖 → 不記錄
+      if (finalConf < 75 || setup.hardBlocked) continue;
+
+      tlog.unshift({
+        id: `${coin.symbol}-${Date.now()}`,
+        symbol: coin.symbol, direction,
+        timestamp: Date.now(),
+        entryPrice: parseFloat(coin.price) || 0,
+        entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
+        entryReason: setup.entryReason, slReason: setup.slReason,
+        tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
+        rsi: parseFloat(coin.rsi) || 50,
+        adx: parseFloat(coin.adx) || 20,
+        score: coin.score, trend: coin.trend,
+        conf: finalConf, rawConf: setup.rawConf,
+        status: 'pending', outcome: null, tp1Hit: false,
+        entryTime: null,
+        exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+        refined: false,
+        tradeType: 'directional',
+        longTermBias: null, canScaleIn: false,
+        scaleIns: [], peakPrice: null,
+      });
+      changed = true;
+    }
   }
   if (changed) {
     if (tlog.length > 500) tlog.splice(500);
@@ -4135,15 +4225,20 @@ function updateOpenTrades(data) {
     }
   }
 
-  // ── 宏觀方向反轉：本週 + 今日 AI 均明確反向的未入場掛單 → 取消 ──
+  // ── 宏觀方向反轉：本週 + 今日 AI 均明確反向的未入場定向掛單 → 取消 ──
+  // 注意：震盪單（tradeType='range'）不依賴方向，不在此取消
   if (_macroCache) {
     try {
       const wb = computeWeeklyAIBias(_macroCache.fg, _macroCache);
       const tb = computeTodayAIBias(_macroCache.fg, _macroCache);
-      const macroBearish = wb.bias.includes('bear') && tb.bias.includes('bear');
-      const macroBullish = wb.bias.includes('bull') && tb.bias.includes('bull');
+      // 只有明確 bear/bull 才算定向（slight 不觸發取消）
+      const macroBearish = (wb.bias === 'bear' || wb.bias === 'strong_bear')
+                        && (tb.bias === 'bear' || tb.bias === 'strong_bear');
+      const macroBullish = (wb.bias === 'bull' || wb.bias === 'strong_bull')
+                        && (tb.bias === 'bull' || tb.bias === 'strong_bull');
       for (const trade of tlog) {
         if (trade.status !== 'pending' || trade.entryTime) continue; // 已入場不干預
+        if (trade.tradeType === 'range') continue;                    // 震盪單不受方向取消
         const shouldCancel = (trade.direction === 'long'  && macroBearish)
                           || (trade.direction === 'short' && macroBullish);
         if (shouldCancel) {
@@ -5886,11 +5981,16 @@ function renderPositionsPage() {
             const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
             const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
+            const isRange   = t.tradeType === 'range';
+            const typeLabel = isRange
+              ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc;padding:2px 7px;border-radius:20px;margin-left:6px">🔄 震盪</span>`
+              : '';
+            const pendReasons = (t.entryReason || '').split('，').filter(Boolean);
             return `<div class="pos-card" data-symbol="${t.symbol}" data-unreal="" onclick="navigateTo('coin','${t.symbol}')">
               <div class="pos-card-top">
                 <div class="pos-symbol">
                   <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}</span>
+                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}</span>
                 </div>
                 <div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>
               </div>
@@ -5900,6 +6000,7 @@ function renderPositionsPage() {
                 <div class="pos-cell"><div class="pos-cell-lbl">止損</div><div class="pos-cell-val" style="color:var(--bear)">${fmt(t.sl)}</div></div>
                 <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(t.tp1)}</div></div>
               </div>
+              ${pendReasons.length ? `<div class="pos-reasons" style="margin-top:8px"><div class="pos-reasons-lbl">📍 進場理由</div>${pendReasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('')}</div>` : ''}
               <div class="pos-footer">
                 <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
                 <span style="color:var(--text3);font-size:0.72rem">有效期至：${expiry}</span>
