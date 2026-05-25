@@ -6035,15 +6035,30 @@ async function checkAndSendAlerts(data) {
       }
     }
 
-    // AI 風控攔截 或 方向=觀望 → 不通知
+    // AI 風控攔截 或 方向=觀望 → 完全不通知
     if (notifSetup.hardBlocked || notifSetup.direction === 'wait') continue;
 
-    // 信號強度未達 85% → 不通知（使用已扣完的 conf）
+    // 最終信心度（扣完所有項目後）
     const notifConf = notifSetup.conf
       ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (notifConf < 85) continue;
 
+    // 原始信心度（扣分前）
+    const rawConfVal = notifSetup.rawConf
+      ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
+
+    if (notifConf < 85) {
+      // 原始信號夠強（≥85%）但扣分後低於門檻 → 衰減通知
+      if (rawConfVal >= 85 && s.notifTelegram && s.tgToken && s.tgChatId) {
+        sendTelegramMessage(s.tgToken, s.tgChatId,
+          buildWeakenedSignalText(coin, dir, notifSetup,
+            window.location.origin + window.location.pathname));
+        next[coin.symbol] = { dir, sentAt: now, type: 'weakened' };
+      }
+      continue;
+    }
+
+    // 信心度達標 → 完整交易信號通知
     if (s.notifBrowser) {
       sendBrowserNotification(
         `${isLong ? '▲ 做多' : '▼ 做空'} 信號：${coin.symbol}`,

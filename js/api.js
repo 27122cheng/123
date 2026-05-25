@@ -630,6 +630,64 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   return msg;
 }
 
+/* ── 信號衰減通知（信號本來夠強，但扣分後低於推薦門檻）────────── */
+function buildWeakenedSignalText(coin, direction, setup, siteUrl = '') {
+  const isLong = direction === 'long';
+  const icon   = isLong ? '▲' : '▼';
+  const dirTx  = isLong ? '做多（Long）' : '做空（Short）';
+  const sym    = coin.symbol.replace('/USDT','').replace('USDT','');
+  const time   = new Date().toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+
+  const rawConf   = setup.rawConf ?? Math.min(90, coin.score ?? 60);
+  const finalConf = setup.conf    ?? 0;
+  const totalDrop = rawConf - finalConf;
+
+  let msg = `📉 <b>交易信號衰減通知</b>\n\n`;
+  msg += `${icon} <b>${dirTx}：${coin.symbol}</b>\n`;
+  msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
+  msg += `📶 信心度：<b>${rawConf}%</b> → 扣分後降至 <b>${finalConf}%</b>`;
+  msg += `（低於推薦門檻，共扣 -${totalDrop}%）\n\n`;
+
+  // 逐項列出扣分原因
+  const deducts = [];
+  if (setup.hardAdxPenalty > 0)
+    deducts.push(`ADX ${coin.adx} 過低，扣 -${setup.hardAdxPenalty}%`);
+  if (setup.macroOpposePenalty > 0) {
+    const detail = (setup.macroReasons || []).slice(0, 2).join('、');
+    deducts.push(`宏觀環境逆風，扣 -${setup.macroOpposePenalty}%${detail ? `（${detail}）` : ''}`);
+  }
+  if ((setup.aiTrendReasons || []).length) {
+    setup.aiTrendReasons.forEach(r => deducts.push(r));
+  } else if (setup.aiTrendPenalty > 0) {
+    deducts.push(`AI 趨勢預測逆向，扣 -${setup.aiTrendPenalty}%`);
+  }
+  if (setup.learnPenalty > 0) {
+    deducts.push(`止損歷史記憶觸發，扣 -${setup.learnPenalty}%`);
+    (setup.learnWarn || []).slice(0, 2).forEach(w => deducts.push(`↳ ${w.slice(0, 55)}`));
+  }
+
+  if (deducts.length) {
+    msg += `📋 <b>信心下降原因</b>\n`;
+    deducts.forEach(d => { msg += `   • ${d}\n`; });
+    msg += `\n`;
+  }
+
+  // 本週/今日 AI 預測（若有）
+  if (setup.weeklyBias || setup.todayBias) {
+    if (setup.weeklyBias) msg += `📈 本週走勢：<b>${setup.weeklyBias}</b>（信心 ${setup.weeklyConf}%）\n`;
+    if (setup.todayBias)  msg += `📅 今日走勢：<b>${setup.todayBias}</b>（信心 ${setup.todayConf}%）\n`;
+    msg += `\n`;
+  }
+
+  msg += `⚠️ 目前信心度未達推薦標準，建議觀望，等待市場條件改善\n`;
+  msg += `\n⏰ ${time}\n`;
+  msg += `#${sym} #crypto #${isLong ? 'long' : 'short'} #衰減`;
+  if (siteUrl) {
+    msg += `\n\n🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
+  }
+  return msg;
+}
+
 /* ── 巨鯨偵測（大額現貨成交，不顯示，僅用於多空分析）────────── */
 async function fetchWhaleTrades(symbol) {
   const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';
