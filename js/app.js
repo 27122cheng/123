@@ -161,29 +161,36 @@ function startRefreshCycle() {
     state.scanning = true;
     state.countdown = secs;
     updateScanProgress(0);
+    let data, source;
     try {
-      const { data, source } = await fetchMarketData(state.timeframe);
-      state.data       = data;
-      state.dataSource = source;
+      const result = await fetchMarketData(state.timeframe);
+      data   = result.data;
+      source = result.source;
+    } catch(e) {
+      console.error('[refresh] 自動刷新失敗:', e);
       hideScanBar();
-      applyFilters();
-      renderAll();
-      checkAndSendAlerts(data);
-      const _cancelled1 = updateOpenTrades(data);
-      recordSignalsFromScan(data);
-      checkPostDataReversal(data);
+      state.scanning = false;
+      return;
+    }
+    // 資料取得成功，後續渲染步驟各自保護
+    state.data       = data;
+    state.dataSource = source;
+    hideScanBar();
+    try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); }
+    let _cancelled1 = new Set();
+    try { checkAndSendAlerts(data); } catch(e) { console.error('[refresh] checkAndSendAlerts 錯誤:', e); }
+    try { _cancelled1 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[refresh] updateOpenTrades 錯誤:', e); }
+    try { recordSignalsFromScan(data); } catch(e) { console.error('[refresh] recordSignalsFromScan 錯誤:', e); }
+    try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
+    try {
       if (state.currentPage === 'positions') renderPositionsPage();
       if (state.currentPage === 'coin' && state.currentCoin && _cancelled1.has(state.currentCoin)) {
         renderCoinDetail(state.currentCoin);
       }
-      const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
-      showToast(`市場數據已刷新（${srcLabel}）`, 'info');
-    } catch(e) {
-      console.error('[refresh] 自動刷新失敗:', e);
-      hideScanBar();
-    } finally {
-      state.scanning = false;
-    }
+    } catch(e) { console.error('[refresh] 頁面渲染錯誤:', e); }
+    const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
+    showToast(`市場數據已刷新（${srcLabel}）`, 'info');
+    state.scanning = false;
   }, secs * 1000);
 }
 
@@ -200,31 +207,41 @@ async function manualRefresh() {
   const secs = state.settings.refreshInterval || 60;
   state.countdown = secs;
   updateCountdown();
+
+  let data, source;
   try {
-    const { data, source } = await fetchMarketData(state.timeframe);
-    state.data       = data;
-    state.dataSource = source;
+    const result = await fetchMarketData(state.timeframe);
+    data   = result.data;
+    source = result.source;
+  } catch(e) {
+    console.error('[manualRefresh] 資料取得失敗:', e);
     hideScanBar();
-    applyFilters();
-    renderAll();
-    checkAndSendAlerts(data);
-    const _cancelled2 = updateOpenTrades(data);
-    recordSignalsFromScan(data);
-    checkPostDataReversal(data);
+    showToast('刷新失敗，請重試', 'error');
+    state.scanning = false;
+    startRefreshCycle();
+    return;
+  }
+
+  // 資料取得成功，後續渲染步驟各自保護
+  state.data       = data;
+  state.dataSource = source;
+  hideScanBar();
+  try { applyFilters(); renderAll(); } catch(e) { console.error('[manualRefresh] renderAll 錯誤:', e); }
+  let _cancelled2 = new Set();
+  try { checkAndSendAlerts(data); } catch(e) { console.error('[manualRefresh] checkAndSendAlerts 錯誤:', e); }
+  try { _cancelled2 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[manualRefresh] updateOpenTrades 錯誤:', e); }
+  try { recordSignalsFromScan(data); } catch(e) { console.error('[manualRefresh] recordSignalsFromScan 錯誤:', e); }
+  try { checkPostDataReversal(data); } catch(e) { console.error('[manualRefresh] checkPostDataReversal 錯誤:', e); }
+  try {
     if (state.currentPage === 'positions') renderPositionsPage();
     if (state.currentPage === 'coin' && state.currentCoin && _cancelled2.has(state.currentCoin)) {
       renderCoinDetail(state.currentCoin);
     }
-    const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
-    showToast(`手動刷新完成（${srcLabel}）`, 'success');
-  } catch(e) {
-    console.error('[manualRefresh] 失敗:', e);
-    hideScanBar();
-    showToast('刷新失敗，請重試', 'error');
-  } finally {
-    state.scanning = false;
-    startRefreshCycle();
-  }
+  } catch(e) { console.error('[manualRefresh] 頁面渲染錯誤:', e); }
+  const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
+  showToast(`手動刷新完成（${srcLabel}）`, 'success');
+  state.scanning = false;
+  startRefreshCycle();
 }
 
 function computeLongTermBias(mtfData) {
@@ -422,8 +439,8 @@ function renderAll() {
   const srcTag = state.dataSource === 'api' ? '本地API'
                : state.dataSource === 'binance' ? '币安实时'
                : '演示数据';
-  document.getElementById('last-updated').textContent =
-    new Date().toLocaleTimeString('zh-CN') + ' · ' + srcTag;
+  const el = document.getElementById('last-updated');
+  if (el) el.textContent = new Date().toLocaleTimeString('zh-CN') + ' · ' + srcTag;
 }
 
 /* ── 概览卡片 ───────────────────────────────────────────────── */
