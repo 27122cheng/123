@@ -466,9 +466,23 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   if (setup) {
-    // ── 信心度（已扣除所有項目後的最終值）──
+    // ── 信心度（已扣除所有項目後的最終值）+ 扣分明細 ──
     if (setup.conf != null) {
       msg += `📶 信心度：<b>${setup.conf}%</b>\n`;
+      // 逐項顯示扣分原因（有扣才顯示）
+      if (setup.hardAdxPenalty > 0)
+        msg += `   ↳ ADX 過低 -${setup.hardAdxPenalty}%\n`;
+      if (setup.learnPenalty > 0)
+        msg += `   ↳ 止損記憶 -${setup.learnPenalty}%\n`;
+      if (setup.macroOpposePenalty > 0) {
+        const md = (setup.macroReasons || []).slice(0, 2).join('、');
+        msg += `   ↳ 宏觀逆風 -${setup.macroOpposePenalty}%${md ? `（${md}）` : ''}\n`;
+      }
+      if ((setup.aiTrendReasons || []).length) {
+        setup.aiTrendReasons.forEach(r => { msg += `   ↳ ${r}\n`; });
+      } else if (setup.aiTrendPenalty > 0) {
+        msg += `   ↳ AI趨勢逆向 -${setup.aiTrendPenalty}%\n`;
+      }
     }
 
     // ── 本週 / 今日 AI 走勢預測 ──

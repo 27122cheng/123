@@ -5885,27 +5885,38 @@ async function checkAndSendAlerts(data) {
           const todayAligned  = (isLong && tb.bias.includes('bull')) || (!isLong && tb.bias.includes('bear'));
           const todayOpposed  = !todayAligned && tb.bias !== 'neutral';
           let aiTrendPen = 0;
-          if (weeklyOpposed) aiTrendPen += wb.bias.includes('strong') ? 8 : 4;
-          if (todayOpposed)  aiTrendPen += 5;
+          const aiTrendReasons = [];
+          if (weeklyOpposed) {
+            const pen = wb.bias.includes('strong') ? 8 : 4;
+            aiTrendPen += pen;
+            aiTrendReasons.push(`本週AI預測 ${wb.biasLabel}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
+          }
+          if (todayOpposed) {
+            aiTrendPen += 5;
+            aiTrendReasons.push(`今日AI預測 ${tb.biasLabel}，${isLong ? '多頭' : '空頭'}今日逆風，扣 5%`);
+          }
           // 總體市場扣分（簡化版，與 buildTradeSetup 邏輯一致）
           const fgVal  = fg ? parseInt(fg.value || '50') : 50;
           const chgVal = gm?.marketCapChange || 0;
           const domVal = gm?.btcDominance   || 50;
           let against = 0;
+          const macroReasons = [];
           if (isLong) {
-            if (chgVal < -2)  against++;
-            if (domVal > 58)  against++;
-            if (fgVal  < 30)  against++;
-            if (fgVal  > 75)  against += 0.5;
+            if (chgVal < -2)  { against++;    macroReasons.push(`大盤下跌 ${chgVal.toFixed(1)}%`); }
+            if (domVal > 58)  { against++;    macroReasons.push(`BTC主導率偏高 ${domVal.toFixed(1)}%`); }
+            if (fgVal  < 30)  { against++;    macroReasons.push(`市場恐慌（F&G ${fgVal}）`); }
+            if (fgVal  > 75)  { against += 0.5; macroReasons.push(`市場過熱（F&G ${fgVal}）`); }
           } else {
-            if (chgVal > 2)   against++;
-            if (domVal < 44)  against++;
-            if (fgVal  > 70)  against++;
-            if (fgVal  < 25)  against += 0.5;
+            if (chgVal > 2)   { against++;    macroReasons.push(`大盤上漲 ${chgVal.toFixed(1)}%`); }
+            if (domVal < 44)  { against++;    macroReasons.push(`BTC主導率偏低 ${domVal.toFixed(1)}%`); }
+            if (fgVal  > 70)  { against++;    macroReasons.push(`市場貪婪（F&G ${fgVal}）`); }
+            if (fgVal  < 25)  { against += 0.5; macroReasons.push(`市場極度恐慌（F&G ${fgVal}）`); }
           }
           const macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
           notifSetup.macroOpposePenalty = macroPen;
           notifSetup.aiTrendPenalty     = aiTrendPen;
+          notifSetup.aiTrendReasons     = aiTrendReasons;
+          notifSetup.macroReasons       = macroReasons;
           notifSetup.conf = Math.max(0, notifSetup.conf - macroPen - aiTrendPen);
         } catch (e) { /* macro enrichment failed, keep simple conf */ }
       }
@@ -5979,8 +5990,8 @@ function computeSimpleSetup(coin, isLong) {
     tp2Reason: `波段目標 R/R ${(Math.abs(tp2 - entry) / risk).toFixed(1)}:1，剩餘倉位移至成本`,
     rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
-    atr, conf,
-    learnFiltered: (conf < 80 || hardBlocked) && rawConf >= 80, // AI學習/最終防線過濾（原始信心足夠但被降低或攔截）
+    atr, conf, rawConf, hardAdxPenalty, learnPenalty,
+    learnFiltered: (conf < 80 || hardBlocked) && rawConf >= 80,
     hardBlocked,
   };
 }
