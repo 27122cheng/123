@@ -5989,9 +5989,64 @@ function computeSimpleSetup(coin, isLong) {
   const rawConf = Math.min(90, coin.score || 60);
   const conf    = Math.max(0, rawConf - learnPenalty - hardAdxPenalty);
 
-  const reasons = isLong
-    ? [(rsi < 45 ? `RSI ${rsi} 偏低` : ''), '15m/1h 多頭信號確認'].filter(Boolean)
-    : [(rsi > 55 ? `RSI ${rsi} 偏高` : ''), '15m/1h 空頭信號確認'].filter(Boolean);
+  // ── 根據 scan 資料欄位動態生成進場理由 ──
+  const ema50  = parseFloat(coin.ema50)  || 0;
+  const ema200 = parseFloat(coin.ema200) || 0;
+  const macdH  = parseFloat(coin.macdHist) || 0;
+  const mom    = parseFloat(coin.momentum) || 0;
+  const volStr = coin.volumeStrength || '';
+  const score  = coin.score || 60;
+
+  const reasons = [];
+  if (isLong) {
+    // RSI
+    if      (rsi < 30) reasons.push(`RSI ${rsi} 超賣區，超賣反彈機會`);
+    else if (rsi < 45) reasons.push(`RSI ${rsi} 低位，多頭動能回升`);
+    else if (rsi >= 50 && rsi < 65) reasons.push(`RSI ${rsi} 積極偏多，動能尚未過熱`);
+    else if (rsi >= 65) reasons.push(`RSI ${rsi} 強勢偏多`);
+    // EMA 排列
+    if (ema50 > 0 && price > ema20 && ema20 > ema50) reasons.push(`EMA 多頭排列（20 > 50），趨勢向上`);
+    else if (price > ema20) reasons.push(`價格站上 EMA20，短線偏多`);
+    if (ema200 > 0 && price > ema200) reasons.push(`價格在 EMA200 上方，長線支撐`);
+    // MACD
+    if      (macdH > 0)  reasons.push(`MACD 柱狀線翻正，動能轉多`);
+    else if (macdH < 0 && macdH > -0.0001 * price) reasons.push(`MACD 接近轉正，空頭動能衰減`);
+    // 動量
+    if (mom > 0) reasons.push(`動量值正值（+${mom}），上行動能確認`);
+    // 成交量
+    if (volStr === '高') reasons.push(`高量突破，量價齊升確認`);
+    else if (volStr === '中') reasons.push(`成交量中等，走勢正常`);
+    // ADX
+    if      (adx > 35) reasons.push(`ADX ${adx} 強趨勢，追多有效`);
+    else if (adx > 22) reasons.push(`ADX ${adx} 趨勢成形`);
+    // 評分
+    if (score >= 85) reasons.push(`綜合評分 ${score}，強勢看漲信號`);
+    else reasons.push(`綜合評分 ${score}，多頭信號確認`);
+  } else {
+    // RSI
+    if      (rsi > 70) reasons.push(`RSI ${rsi} 超買區，超買回落機會`);
+    else if (rsi > 55) reasons.push(`RSI ${rsi} 偏高，空頭動能積累`);
+    else if (rsi <= 50 && rsi > 35) reasons.push(`RSI ${rsi} 偏弱，下行動能確認`);
+    else if (rsi <= 35) reasons.push(`RSI ${rsi} 弱勢偏空`);
+    // EMA 排列
+    if (ema50 > 0 && price < ema20 && ema20 < ema50) reasons.push(`EMA 空頭排列（20 < 50），趨勢向下`);
+    else if (price < ema20) reasons.push(`價格跌破 EMA20，短線偏空`);
+    if (ema200 > 0 && price < ema200) reasons.push(`價格在 EMA200 下方，長線壓力`);
+    // MACD
+    if      (macdH < 0)  reasons.push(`MACD 柱狀線負值，動能轉空`);
+    else if (macdH > 0 && macdH < 0.0001 * price) reasons.push(`MACD 接近轉負，多頭動能衰減`);
+    // 動量
+    if (mom < 0) reasons.push(`動量值負值（${mom}），下行動能確認`);
+    // 成交量
+    if (volStr === '高') reasons.push(`高量下跌，量價齊跌確認`);
+    else if (volStr === '中') reasons.push(`成交量中等，走勢正常`);
+    // ADX
+    if      (adx > 35) reasons.push(`ADX ${adx} 強趨勢，追空有效`);
+    else if (adx > 22) reasons.push(`ADX ${adx} 趨勢成形`);
+    // 評分
+    if (score <= 15) reasons.push(`綜合評分 ${score}，強勢看跌信號`);
+    else reasons.push(`綜合評分 ${score}，空頭信號確認`);
+  }
 
   // 把 AI 學習警告加入進場依據
   learnWarn.forEach(w => reasons.push(`⚠️ ${w}`));
@@ -6001,7 +6056,8 @@ function computeSimpleSetup(coin, isLong) {
 
   return {
     entry, sl, tp1, tp2,
-    entryReason: reasons.join('，'),
+    entryReasons: reasons,                // 陣列版（buildTelegramText 優先使用）
+    entryReason:  reasons.join('，'),     // 字串版（相容其他地方）
     slReason:  `現價${isLong ? '下' : '上'}方 ${((Math.abs(entry - sl) / price) * 100).toFixed(2)}%，結構止損`,
     tp1Reason: `短線目標 R/R ${(Math.abs(tp1 - entry) / risk).toFixed(1)}:1，到達後減倉 60%`,
     tp2Reason: `波段目標 R/R ${(Math.abs(tp2 - entry) / risk).toFixed(1)}:1，剩餘倉位移至成本`,
