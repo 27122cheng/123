@@ -524,6 +524,7 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
         msg += `   ② 大時框架：✅ 全部通過（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
       } else if (l2mixed) {
         msg += `   ② 大時框架：⚠️ 趨勢中性／分歧（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
+        msg += `      ↳ 大趨勢方向未明確，建議謹慎操作、縮減至半倉，待方向確立再加碼\n`;
       } else {
         msg += `   ② 大時框架：🚫 嚴格攔截（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
       }
@@ -531,6 +532,25 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
       const lp = setup.learnPenalty || 0;
       msg += `   ③ AI 風控：${lp > 0 ? `⚠️ 止損記憶扣分 -${lp}%` : '✅ 通過，無扣分'}\n`;
       msg += `\n`;
+    }
+
+    // ── 無大趨勢資料時，補中性行情謹慎提示 ──
+    if (!bt) {
+      const wIsNeutral = !setup.weeklyBias || setup.weeklyBias.includes('中性');
+      const tIsNeutral = !setup.todayBias  || setup.todayBias.includes('中性');
+      const wIsOpposed = setup.weeklyBias && (
+        (isLong  && setup.weeklyBias.includes('空')) ||
+        (!isLong && setup.weeklyBias.includes('多'))
+      );
+      const tIsOpposed = setup.todayBias && (
+        (isLong  && setup.todayBias.includes('空')) ||
+        (!isLong && setup.todayBias.includes('多'))
+      );
+      if (wIsOpposed || tIsOpposed) {
+        msg += `⚠️ <b>AI 走勢預警</b>：本週/今日預測與操作方向相反，請謹慎操作、縮小倉位\n\n`;
+      } else if (wIsNeutral || tIsNeutral) {
+        msg += `⚠️ <b>AI 走勢提示</b>：目前市場趨勢偏中性，訊號仍有效但建議謹慎操作、等待方向確立\n\n`;
+      }
     }
 
     // 優先用陣列版進場原因（避免中文逗號分割錯誤），過濾掉 🚫 攔截說明
