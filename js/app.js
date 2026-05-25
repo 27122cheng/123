@@ -2318,24 +2318,41 @@ function _adjustBiasWeights(weights, predBias, actualMktChg, factorVotes, prefix
   return newWeights;
 }
 
-/* ── 本週 AI 走勢預測資料層（供 widget 和 Telegram 共用）──────── */
+/* ── 本週 AI 走勢預測資料層（4小時快取，全站共用同一結果）──────── */
+const _WEEKLY_BIAS_CACHE_KEY = 'weekly_bias_cache_v2';
+const _WEEKLY_BIAS_TTL = 4 * 3600 * 1000; // 4 小時
+
 function computeWeeklyAIBias(fg, globalMkt) {
-  // ── Load learning state & evaluate previous prediction ──
-  const learn = _loadBiasLearning();
-  let weights = learn.weights || {};
-  const mktChg = globalMkt?.marketCapChange || 0;
+  const fgValNow  = fg ? parseInt(fg.value) : null;
+  const mktChgNow = globalMkt?.marketCapChange || 0;
+
+  // ── 快取命中：未超時且宏觀條件無重大變動 → 直接回傳 ──
   try {
-    const prev = learn.weeklyPred;
-    if (prev && prev.timestamp) {
-      const ageDays = (Date.now() - prev.timestamp) / 86400000;
-      if (ageDays >= 5) { // 5+ days old → evaluate weekly call
-        weights = _adjustBiasWeights(weights, prev.bias, mktChg, prev.factorVotes || {}, 'weekly');
+    const cached = JSON.parse(localStorage.getItem(_WEEKLY_BIAS_CACHE_KEY) || 'null');
+    if (cached && cached.result && cached.timestamp) {
+      const age = Date.now() - cached.timestamp;
+      const fgShift  = (fgValNow != null && cached.fgVal != null) ? Math.abs(fgValNow - cached.fgVal) : 0;
+      const mktFlipped = (mktChgNow > 2) !== (cached.mktChg > 2) || (mktChgNow < -2) !== (cached.mktChg < -2);
+      if (age < _WEEKLY_BIAS_TTL && fgShift < 10 && !mktFlipped) {
+        return cached.result;
       }
     }
   } catch(e) {}
 
-  const fgVal  = fg ? parseInt(fg.value) : null;
-  const btcDom = globalMkt?.btcDominance   || 50;
+  // ── 快取過期或宏觀條件有重大變動 → 重新計算 ──
+  const learn = _loadBiasLearning();
+  let weights = learn.weights || {};
+  try {
+    const prev = learn.weeklyPred;
+    if (prev && prev.timestamp) {
+      const ageDays = (Date.now() - prev.timestamp) / 86400000;
+      if (ageDays >= 5) {
+        weights = _adjustBiasWeights(weights, prev.bias, mktChgNow, prev.factorVotes || {}, 'weekly');
+      }
+    }
+  } catch(e) {}
+
+  const btcDom = globalMkt?.btcDominance || 50;
   let macroBull = 0, macroBear = 0;
   const factors = [];
   const factorVotes = {};
@@ -2345,42 +2362,46 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const wBtc  = _getBiasWeight(weights, 'weekly_btcDom');
   const wTech = _getBiasWeight(weights, 'weekly_techScan');
 
-  if (fgVal != null) {
+  // ① 恐慌貪婪
+  if (fgValNow != null) {
     let v = 0;
-    if (fgVal >= 65)      { v =  2; macroBull += 2 * wFg; factors.push(`恐貪 ${fgVal}（極度貪婪），本週情緒強多`); }
-    else if (fgVal >= 55) { v =  1; macroBull += 1 * wFg; factors.push(`恐貪 ${fgVal}（貪婪），情緒偏多`); }
-    else if (fgVal <= 35) { v = -2; macroBear += 2 * wFg; factors.push(`恐貪 ${fgVal}（極度恐慌），本週情緒偏空`); }
-    else if (fgVal <= 45) { v = -1; macroBear += 1 * wFg; factors.push(`恐貪 ${fgVal}（恐慌），情緒偏空`); }
-    else                  {                                factors.push(`恐貪 ${fgVal}（中性），情緒均衡`); }
+    if (fgValNow >= 65)      { v =  2; macroBull += 2 * wFg; factors.push(`恐貪 ${fgValNow}（極度貪婪），本週情緒強多`); }
+    else if (fgValNow >= 55) { v =  1; macroBull += 1 * wFg; factors.push(`恐貪 ${fgValNow}（貪婪），情緒偏多`); }
+    else if (fgValNow <= 35) { v = -2; macroBear += 2 * wFg; factors.push(`恐貪 ${fgValNow}（極度恐慌），本週情緒偏空`); }
+    else if (fgValNow <= 45) { v = -1; macroBear += 1 * wFg; factors.push(`恐貪 ${fgValNow}（恐慌），情緒偏空`); }
+    else                     {         factors.push(`恐貪 ${fgValNow}（中性），情緒均衡`); }
     factorVotes.fg = v;
   }
-  if (mktChg > 2)       { factorVotes.mktChg =  2; macroBull += 2 * wMkt; factors.push(`加密市值 +${mktChg.toFixed(1)}%，資金積極流入`); }
-  else if (mktChg > 0)  { factorVotes.mktChg =  1; macroBull += 1 * wMkt; factors.push(`加密市值 +${mktChg.toFixed(1)}%，小幅成長`); }
-  else if (mktChg < -2) { factorVotes.mktChg = -2; macroBear += 2 * wMkt; factors.push(`加密市值 ${mktChg.toFixed(1)}%，資金明顯流出`); }
-  else if (mktChg < 0)  { factorVotes.mktChg = -1; macroBear += 1 * wMkt; factors.push(`加密市值 ${mktChg.toFixed(1)}%，輕微回調`); }
-  else                  { factorVotes.mktChg =  0; }
-
+  // ② 市值變化（24h 趨勢，±2% 才計分）
+  if (mktChgNow > 2)       { factorVotes.mktChg =  2; macroBull += 2 * wMkt; factors.push(`加密市值 +${mktChgNow.toFixed(1)}%，資金積極流入`); }
+  else if (mktChgNow > 0)  { factorVotes.mktChg =  1; macroBull += 1 * wMkt; factors.push(`加密市值 +${mktChgNow.toFixed(1)}%，小幅成長`); }
+  else if (mktChgNow < -2) { factorVotes.mktChg = -2; macroBear += 2 * wMkt; factors.push(`加密市值 ${mktChgNow.toFixed(1)}%，資金明顯流出`); }
+  else if (mktChgNow < 0)  { factorVotes.mktChg = -1; macroBear += 1 * wMkt; factors.push(`加密市值 ${mktChgNow.toFixed(1)}%，輕微回調`); }
+  else                     { factorVotes.mktChg =  0; }
+  // ③ BTC 主導率
   if (btcDom > 58)      { factorVotes.btcDom = -1; macroBear += 1 * wBtc; factors.push(`BTC主導 ${btcDom.toFixed(1)}%（高位），山寨承壓`); }
   else if (btcDom < 44) { factorVotes.btcDom =  1; macroBull += 1 * wBtc; factors.push(`BTC主導 ${btcDom.toFixed(1)}%（低位），山寨季升溫`); }
   else                  { factorVotes.btcDom =  0; }
-
-  const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
-  const highRisk   = weekEvents.length >= 2;
-  const riskNote   = weekEvents.length
-    ? `本週 ${weekEvents.length} 項高影響數據（${weekEvents.map(e=>e.name.slice(0,10)).join('、')}），注意波動風險`
-    : '本週無重大高影響數據，行情以技術面為主';
+  // ④ 技術面掃描（分佈快照）
   const coins = (typeof state !== 'undefined' && state.data) ? state.data : [];
   if (coins.length) {
     const techBull    = coins.filter(c => c.score >= 70).length;
     const techBear    = coins.filter(c => c.score <= 30).length;
     const techBullPct = Math.round(techBull / coins.length * 100);
     const techBearPct = Math.round(techBear / coins.length * 100);
-    if (techBullPct > 40)      { factorVotes.techScan =  2; macroBull += 2 * wTech; factors.push(`技術面 ${techBullPct}% 幣種看漲，多頭佔優`); }
+    if      (techBullPct > 40) { factorVotes.techScan =  2; macroBull += 2 * wTech; factors.push(`技術面 ${techBullPct}% 幣種看漲，多頭佔優`); }
     else if (techBullPct > 25) { factorVotes.techScan =  1; macroBull += 1 * wTech; factors.push(`技術面 ${techBullPct}% 幣種偏強`); }
     else if (techBearPct > 40) { factorVotes.techScan = -2; macroBear += 2 * wTech; factors.push(`技術面 ${techBearPct}% 幣種看跌，空頭佔優`); }
     else if (techBearPct > 25) { factorVotes.techScan = -1; macroBear += 1 * wTech; factors.push(`技術面 ${techBearPct}% 幣種偏弱`); }
     else                       { factorVotes.techScan =  0; factors.push(`技術面多空均衡（看漲 ${techBullPct}% / 看跌 ${techBearPct}%）`); }
   }
+  // ⑤ 本週重大事件風險
+  const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
+  const highRisk   = weekEvents.length >= 2;
+  if (weekEvents.length >= 3) { macroBear += 1; }  // 多重高風險事件 → 輕微空方壓力
+  const riskNote = weekEvents.length
+    ? `本週 ${weekEvents.length} 項高影響數據（${weekEvents.map(e=>e.name.slice(0,10)).join('、')}），注意波動風險`
+    : '本週無重大高影響數據，行情以技術面為主';
 
   const totalScore = macroBull - macroBear;
   const absScore   = Math.abs(totalScore);
@@ -2388,101 +2409,33 @@ function computeWeeklyAIBias(fg, globalMkt) {
              : totalScore <= -3 ? 'strong_bear' : totalScore <= -1 ? 'bear' : 'neutral';
   const biasLabel = { strong_bull:'▲▲ 強勢偏多', bull:'▲ 偏多', strong_bear:'▼▼ 強勢偏空', bear:'▼ 偏空', neutral:'◆ 震盪中性' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
-  const conf = Math.min(88, 50 + absScore * 8 + (fgVal != null ? 5 : 0));
+  const conf = Math.min(88, 50 + absScore * 8 + (fgValNow != null ? 5 : 0));
   const confColor = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
 
-  // ── Persist current prediction for future self-evaluation ──
+  const result = { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents, rangeMode: bias === 'neutral' };
+
+  // ── 學習記錄 + 寫入快取 ──
   try {
-    learn.weeklyPred = { bias, factorVotes, mktChgAtTime: mktChg, timestamp: Date.now() };
+    learn.weeklyPred = { bias, factorVotes, mktChgAtTime: mktChgNow, timestamp: Date.now() };
     learn.weights = weights;
     _saveBiasLearning(learn);
+    localStorage.setItem(_WEEKLY_BIAS_CACHE_KEY, JSON.stringify({
+      result,
+      timestamp: Date.now(),
+      fgVal: fgValNow,
+      mktChg: mktChgNow,
+    }));
   } catch(e) {}
 
-  return { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents, rangeMode: bias === 'neutral' };
+  return result;
 }
 
-/* ── 本週 AI 走勢預測（整合所有可用數據）─────────────────────── */
+/* ── 本週 AI 走勢 UI Widget（使用 computeWeeklyAIBias 快取結果）── */
 function buildWeeklyAIOutlook(fg, globalMkt) {
-  const fgVal  = fg ? parseInt(fg.value) : null;
-  const mktChg = globalMkt?.marketCapChange || 0;
-  const btcDom = globalMkt?.btcDominance   || 50;
-
-  // ── 1. 宏觀評分 ──────────────────────────────────────────────
-  let macroBull = 0, macroBear = 0;
-  const macroFactors = [];
-  if (fgVal != null) {
-    if (fgVal >= 65)      { macroBull += 2; macroFactors.push(`恐貪指數 ${fgVal}（極度貪婪），市場情緒強烈偏多`); }
-    else if (fgVal >= 55) { macroBull += 1; macroFactors.push(`恐貪指數 ${fgVal}（貪婪），情緒偏多`); }
-    else if (fgVal <= 35) { macroBear += 2; macroFactors.push(`恐貪指數 ${fgVal}（極度恐慌），情緒偏空`); }
-    else if (fgVal <= 45) { macroBear += 1; macroFactors.push(`恐貪指數 ${fgVal}（恐慌），情緒偏空`); }
-    else                  {                 macroFactors.push(`恐貪指數 ${fgVal}（中性），情緒均衡`); }
-  }
-  if (mktChg > 2)       { macroBull += 2; macroFactors.push(`加密市值 +${mktChg.toFixed(1)}%，資金積極流入`); }
-  else if (mktChg > 0)  { macroBull += 1; macroFactors.push(`加密市值 +${mktChg.toFixed(1)}%，小幅成長`); }
-  else if (mktChg < -2) { macroBear += 2; macroFactors.push(`加密市值 ${mktChg.toFixed(1)}%，資金明顯流出`); }
-  else if (mktChg < 0)  { macroBear += 1; macroFactors.push(`加密市值 ${mktChg.toFixed(1)}%，輕微回調`); }
-  if (btcDom > 58)      { macroBear += 1; macroFactors.push(`BTC 主導率 ${btcDom.toFixed(1)}%（高位），山寨資金分散受壓`); }
-  else if (btcDom < 44) { macroBull += 1; macroFactors.push(`BTC 主導率 ${btcDom.toFixed(1)}%（低位），山寨季動能升溫`); }
-
-  // ── 2. 本週重要事件風險 ──────────────────────────────────────
-  const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
-  const highRisk   = weekEvents.length >= 2;
-  const riskNote   = weekEvents.length
-    ? `本週 ${weekEvents.length} 項高影響數據（${weekEvents.map(e=>e.name.slice(0,10)).join('、')}），注意波動風險`
-    : '本週無重大高影響數據，行情以技術面為主';
-
-  // ── 3. 技術面掃描（從 state.data 提取）──────────────────────
-  const coins = (typeof state !== 'undefined' && state.data) ? state.data : [];
-  let techBull = 0, techBear = 0;
-  coins.forEach(c => {
-    if (c.score >= 70) techBull++;
-    else if (c.score <= 30) techBear++;
-  });
-  const techTotal = coins.length || 1;
-  const techBullPct = Math.round(techBull / techTotal * 100);
-  const techBearPct = Math.round(techBear / techTotal * 100);
-  let techFactor = '';
-  if (techBullPct > 40)       { macroBull += 2; techFactor = `技術面 ${techBullPct}% 幣種看漲，多頭動能佔優`; }
-  else if (techBullPct > 25)  { macroBull += 1; techFactor = `技術面 ${techBullPct}% 幣種偏強，多頭略佔優`; }
-  else if (techBearPct > 40)  { macroBear += 2; techFactor = `技術面 ${techBearPct}% 幣種看跌，空頭動能佔優`; }
-  else if (techBearPct > 25)  { macroBear += 1; techFactor = `技術面 ${techBearPct}% 幣種偏弱，空頭略佔優`; }
-  else                        { techFactor = `技術面多空均衡（看漲 ${techBullPct}% / 看跌 ${techBearPct}%）`; }
-
-  // ── 4. 訂單流 + 成交量加成（從掃描數據平均）──────────────────
-  let avgBuyPct = 50, avgFundingRate = 0, fundingCount = 0;
-  if (coins.length) {
-    const buyPcts = coins.filter(c => c.buyPct != null).map(c => c.buyPct);
-    if (buyPcts.length) avgBuyPct = buyPcts.reduce((a,b)=>a+b,0) / buyPcts.length;
-    const frs = coins.filter(c => c.fundingRate != null).map(c => c.fundingRate);
-    if (frs.length) { avgFundingRate = frs.reduce((a,b)=>a+b,0) / frs.length; fundingCount = frs.length; }
-  }
-  let flowFactor = '', fundingFactor = '';
-  if (avgBuyPct > 60)       { macroBull += 1; flowFactor = `主動買單佔比 ${avgBuyPct.toFixed(0)}%，訂單流偏多`; }
-  else if (avgBuyPct < 40)  { macroBear += 1; flowFactor = `主動買單佔比 ${avgBuyPct.toFixed(0)}%，訂單流偏空`; }
-  else                      { flowFactor = `訂單流多空均衡（主動買 ${avgBuyPct.toFixed(0)}%）`; }
-  if (fundingCount > 0) {
-    const frPct = avgFundingRate * 100;
-    if (frPct > 0.01)       { macroBear += 1; fundingFactor = `資金費率 +${frPct.toFixed(3)}%（偏高），多頭付費過熱`; }
-    else if (frPct < -0.01) { macroBull += 1; fundingFactor = `資金費率 ${frPct.toFixed(3)}%（偏負），空頭付費有利做多`; }
-    else                    { fundingFactor = `資金費率 ${frPct.toFixed(3)}%（中性）`; }
-  }
-
-  // ── 5. 本週 AI 綜合判斷 ────────────────────────────────────
-  const totalScore  = macroBull - macroBear;
-  const absScore    = Math.abs(totalScore);
-  const weekBias    = totalScore >= 3 ? 'strong_bull' : totalScore >= 1 ? 'bull'
-                    : totalScore <= -3 ? 'strong_bear' : totalScore <= -1 ? 'bear' : 'neutral';
-  const biasColor   = weekBias.includes('bull') ? 'var(--bull)' : weekBias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
-  const biasLabel   = weekBias === 'strong_bull' ? '▲▲ 強勢偏多' : weekBias === 'bull' ? '▲ 偏多'
-                    : weekBias === 'strong_bear' ? '▼▼ 強勢偏空' : weekBias === 'bear' ? '▼ 偏空' : '◆ 震盪中性';
-  const confScore   = Math.min(88, 50 + absScore * 8 + (fgVal != null ? 5 : 0));
-  const confColor   = confScore >= 70 ? 'var(--bull)' : confScore >= 55 ? '#f0a500' : 'var(--text3)';
-
-  // 收集所有判斷依據
-  const allFactors = [...macroFactors];
-  if (techFactor)   allFactors.push(techFactor);
-  if (flowFactor)   allFactors.push(flowFactor);
-  if (fundingFactor) allFactors.push(fundingFactor);
+  // 直接使用已快取的統一計算結果，不重複計算
+  const d = computeWeeklyAIBias(fg, globalMkt);
+  const { biasLabel, biasColor, conf: confScore, confColor, factors, riskNote, highRisk } = d;
+  const allFactors = factors;
 
   const factorsHtml = allFactors.slice(0, 6).map(f => {
     const isBull = f.includes('偏多') || f.includes('看漲') || f.includes('淨流入') || f.includes('積極') || f.includes('動能升溫') || f.includes('多頭');
@@ -2491,10 +2444,17 @@ function buildWeeklyAIOutlook(fg, globalMkt) {
     return `<div style="font-size:0.73rem;color:${clr};padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)">${isBull ? '▲' : isBear ? '▼' : '—'} ${f}</div>`;
   }).join('');
 
+  // 顯示快取更新時間
+  let updatedAt = '—';
+  try {
+    const cached = JSON.parse(localStorage.getItem(_WEEKLY_BIAS_CACHE_KEY) || 'null');
+    if (cached?.timestamp) updatedAt = new Date(cached.timestamp).toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit' });
+  } catch(e) {}
+
   return `<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:12px;padding:14px 16px;margin-bottom:10px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <span style="font-size:0.82rem;font-weight:700;color:var(--text2)">🤖 AI 本週走勢預測</span>
-      <span style="font-size:0.72rem;color:var(--text3)">${new Date().toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'})} 更新</span>
+      <span style="font-size:0.72rem;color:var(--text3)" title="每4小時更新或宏觀條件重大變動時更新">🕒 ${updatedAt} 更新</span>
     </div>
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
       <div style="font-size:1.4rem;font-weight:800;color:${biasColor}">${biasLabel}</div>
