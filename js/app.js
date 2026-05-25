@@ -44,13 +44,14 @@ async function init() {
     state.data       = data;
     state.dataSource = source;
     state.filtered   = [...data];
-    updateOpenTrades(data);
-    recordSignalsFromScan(data);
   } catch (e) {
     console.error('[init] fetchMarketData 失敗，使用空數據', e);
     state.data     = [];
     state.filtered = [];
   }
+  // 後續處理獨立保護，不影響 state.data
+  try { updateOpenTrades(state.data); } catch(e) { console.error('[init] updateOpenTrades 錯誤:', e); }
+  try { recordSignalsFromScan(state.data); } catch(e) { console.error('[init] recordSignalsFromScan 錯誤:', e); }
 
   hideLoading();
   hideScanBar();
@@ -6547,7 +6548,7 @@ function computeSimpleSetup(coin, isLong) {
     atr, conf, rawConf, hardAdxPenalty, learnPenalty,
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
-    defenseChecks,    // 所有防線審查項目
+    defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
     learnFiltered: (conf < 75 || hardBlocked) && rawConf >= 75,
     hardBlocked,
   };
