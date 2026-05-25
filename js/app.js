@@ -1062,6 +1062,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const rsiSlope = h1?.rsiSlope    || 0;
   const rsi      = parseFloat(coin.rsi) || 50;
 
+  // ── 本週 / 今日 AI 走勢（提前計算，震盪模式判斷需在第一個 wait 之前）──
+  const weeklyBiasData = computeWeeklyAIBias(fearGreed, globalMkt);
+  const todayBiasData  = computeTodayAIBias(fearGreed, globalMkt);
+  const isRangeMode    = weeklyBiasData.rangeMode && todayBiasData.rangeMode;
+
   if (direction === 'wait') {
     const reasons = [];
     // 大趨勢攔截說明優先顯示
@@ -1102,10 +1107,128 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
+  // ── 震盪模式（宏觀+今日AI均為中性）→ 給出震盪交易建議 ──────────
+  if (isRangeMode && !bigTrendBlocked) {
+    const bb1hPctB  = bb1h_?.pctB ?? 0.5;
+    // 判斷震盪方向：BB%B 或 RSI 任一達到極值即可觸發
+    let rangeDir = null;
+    if      (bb1hPctB >= 0.76 || rsi > 63) rangeDir = 'short';
+    else if (bb1hPctB <= 0.24 || rsi < 37) rangeDir = 'long';
+
+    if (rangeDir) {
+      const rIsLong  = rangeDir === 'long';
+      const rIcon    = rIsLong ? '▲' : '▼';
+      const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
+      const rEntry   = rIsLong
+        ? Math.max(supps[0]   || price - atr * 1.2, price - atr * 1.5)
+        : Math.min(resists[0] || price + atr * 1.2, price + atr * 1.5);
+      const rSL      = rIsLong ? rEntry - atr * 0.9  : rEntry + atr * 0.9;
+      const rTP1     = rIsLong ? rEntry + atr * 0.8  : rEntry - atr * 0.8;
+      const rTP2     = rIsLong ? rEntry + atr * 1.5  : rEntry - atr * 1.5;
+      const rRisk    = Math.abs(rEntry - rSL) || atr;
+      const rRR1     = (Math.abs(rTP1 - rEntry) / rRisk).toFixed(1);
+      const rRR2     = (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1);
+      const rConf    = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
+      const rEntryReasons = [
+        `🔄 震盪交易模式（宏觀+今日AI中性）`,
+        rIsLong
+          ? `RSI ${rsi}（偏低）${bb1hPctB <= 0.24 ? `，BB%B ${bb1hPctB.toFixed(2)}（近下軌）` : ''}，震盪低點做多`
+          : `RSI ${rsi}（偏高）${bb1hPctB >= 0.76 ? `，BB%B ${bb1hPctB.toFixed(2)}（近上軌）` : ''}，震盪高點做空`,
+        `本週 ${weeklyBiasData.biasLabel} ／ 今日 ${todayBiasData.biasLabel}`,
+      ];
+
+      // 更新快取（供 Telegram 通知使用）
+      _tradeSetupCache[coin.symbol] = {
+        direction: rangeDir, tradeType: 'range',
+        entry: rEntry, sl: rSL, tp1: rTP1, tp2: rTP2,
+        entryReason: rEntryReasons.join('，'),
+        entryReasons: [...rEntryReasons],
+        slReason: `震盪範圍外緊湊止損（ATR×0.9，現價${rIsLong ? '下' : '上'}方）`,
+        tp1Reason: '震盪快速止盈（ATR×0.8）',
+        tp2Reason: '震盪延伸目標（ATR×1.5）',
+        rr1: rRR1, rr2: rRR2, atr, conf: rConf, rawConf: rConf,
+        weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
+        weeklyRangeMode: true,
+        todayBias: todayBiasData.biasLabel, todayConf: todayBiasData.conf,
+        todayRangeMode: true,
+        bigTrend: 'mixed', bigTrendBlocked: false, h4TrendLabel, d1TrendLabel,
+        hardBlocked: false, learnPenalty: 0, hardAdxPenalty: 0,
+        macroOpposePenalty: 0, aiTrendPenalty: 0,
+        flipRisks: [], macroReasons: [], aiTrendReasons: [],
+        blockReasons: [], learnWarnings: [], defenseChecks: [],
+      };
+
+      // 也寫入交易記錄（震盪掛單）
+      const tlogR = loadTradeLog();
+      const hasActiveR = tlogR.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+      if (!hasActiveR) {
+        tlogR.push({
+          id: `${coin.symbol}_${Date.now()}`,
+          symbol: coin.symbol, direction: rangeDir, tradeType: 'range',
+          entry: rEntry, sl: rSL, tp1: rTP1, tp2: rTP2,
+          entryReason: rEntryReasons[1],
+          slReason: `震盪範圍外緊湊止損（ATR×0.9）`,
+          tp1Reason: '震盪快速止盈（ATR×0.8）',
+          tp2Reason: '震盪延伸目標（ATR×1.5）',
+          conf: rConf, rawConf: rConf, atr,
+          status: 'pending', entryTime: null, timestamp: Date.now(),
+          score: coin.score, adx: coin.adx, rsi,
+          refined: false, scaleIns: [],
+        });
+        saveTradeLog(tlogR);
+      }
+
+      return `<div class="setup-verdict ${rIsLong ? 'verdict-long' : 'verdict-short'}">
+        <div class="verdict-dir">
+          <span class="verdict-arrow">${rIcon}</span>
+          <span class="verdict-label">${rIsLong ? '短線做多' : '短線做空'}</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">🔄 震盪交易</span>
+          <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">震盪高低點快進快出</span>
+        </div>
+        <div class="verdict-conf-wrap">
+          <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
+          <div class="conf-bar"><div class="conf-fill" style="width:${rConf}%;background:${rColor}"></div></div>
+          <span style="color:${rColor};font-weight:700;font-size:0.9rem">${rConf}%</span>
+        </div>
+        <div style="margin-top:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:10px 12px;font-size:0.8rem">
+          <div style="color:var(--text2);font-weight:600;margin-bottom:6px">🔄 震盪交易（宏觀中性）</div>
+          <div style="color:var(--text3);font-size:0.75rem;margin-bottom:4px">本週 <b style="color:var(--text2)">${weeklyBiasData.biasLabel}</b> ／ 今日 <b style="color:var(--text2)">${todayBiasData.biasLabel}</b></div>
+          <div style="color:var(--text3);font-size:0.75rem">${rEntryReasons[1]}</div>
+        </div>
+      </div>
+      <div class="setup-levels" style="margin-top:10px">
+        <div class="level-row level-entry">
+          <div class="level-tag">📍 進場位</div>
+          <div class="level-desc">${rIsLong ? '震盪低點附近' : '震盪高點附近'}</div>
+          <div class="level-price-val">${fmtPrice(rEntry)}</div>
+        </div>
+        <div class="level-row level-tp1">
+          <div class="level-tag">🎯 快速止盈</div>
+          <div class="level-desc">ATR×0.8（震盪快速獲利）R:R ${rRR1}:1</div>
+          <div class="level-price-val">${fmtPrice(rTP1)}</div>
+        </div>
+        <div class="level-row level-tp2">
+          <div class="level-tag">🚀 延伸目標</div>
+          <div class="level-desc">ATR×1.5（震盪波段）R:R ${rRR2}:1</div>
+          <div class="level-price-val">${fmtPrice(rTP2)}</div>
+        </div>
+        <div class="level-row level-sl">
+          <div class="level-tag">🛑 止損</div>
+          <div class="level-desc">ATR×0.9 緊湊止損（超出震盪範圍離場）</div>
+          <div class="level-price-val">${fmtPrice(rSL)}</div>
+        </div>
+      </div>`;
+    }
+  }
+
   const isLong   = direction === 'long';
   const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
-  const dirLabel = isLong ? '短線做多' : '短線做空';
+  let   dirLabel = isLong ? '短線做多' : '短線做空';
   const dirIcon  = isLong ? '▲' : '▼';
+  // 震盪模式標記：方向明確但宏觀+今日AI中性 → 標示為「震盪交易」
+  const rangeTagHtml = isRangeMode
+    ? `<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">🔄 震盪交易</span>`
+    : '';
 
   // AI 長線分析（僅括號標注，不另開面板）
   const ltBias = computeLongTermBias(mtfData);
@@ -1349,10 +1472,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return { macroOpposePenalty: penalty, macroReasons: reasons };
   })();
 
-  // ── 本週 / 今日 AI 預測方向對照（第①層宏觀擴展）──────────────
-  const weeklyBiasData = computeWeeklyAIBias(fearGreed, globalMkt);
-  const todayBiasData  = computeTodayAIBias(fearGreed, globalMkt);
-
+  // ── 本週 / 今日 AI 預測方向對照（第①層宏觀擴展；已在函式前段計算）──
   const weeklyAligned = (isLong && weeklyBiasData.bias.includes('bull')) || (!isLong && weeklyBiasData.bias.includes('bear'));
   const weeklyNeutral = weeklyBiasData.bias === 'neutral';
   const weeklyOpposed = !weeklyAligned && !weeklyNeutral;
@@ -1469,7 +1589,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     macroReasons: macroReasons || [],
     aiTrendReasons, flipRisks,
     weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
+    weeklyRangeMode: weeklyBiasData.rangeMode,
     todayBias:  todayBiasData.biasLabel,  todayConf:  todayBiasData.conf,
+    todayRangeMode: todayBiasData.rangeMode,
+    tradeType: isRangeMode ? 'range' : 'directional',
     // AI 風控資料（供 generateAIAnalysis 整合進分析文字）
     hardBlocked,
     blockReasons: blockReasons || [],
@@ -1605,8 +1728,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
       <span class="verdict-label">${dirLabel}</span>
-      ${ltTag}
-      <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">15m ~ 1h 時間框架</span>
+      ${ltTag}${rangeTagHtml}
+      <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">${isRangeMode ? '震盪高低點快進快出' : '15m ~ 1h 時間框架'}</span>
     </div>
     ${conf >= 60 ? `<div class="verdict-conf-wrap">
       <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>

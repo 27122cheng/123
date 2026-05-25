@@ -461,8 +461,13 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     return (d >= 0 ? '+' : '') + d.toFixed(2) + '%';
   };
 
-  let msg = `🚨 <b>加密掃描 Pro — 交易信號</b>\n\n`;
-  msg += `${icon} <b>${dirTx}：${coin.symbol}</b>\n`;
+  const isRange = setup?.tradeType === 'range';
+  let msg = isRange
+    ? `🔄 <b>加密掃描 Pro — 震盪交易信號</b>\n\n`
+    : `🚨 <b>加密掃描 Pro — 交易信號</b>\n\n`;
+  msg += `${icon} <b>${dirTx}：${coin.symbol}</b>`;
+  if (isRange) msg += `  <b>#震盪交易</b>`;
+  msg += `\n`;
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   if (setup) {
@@ -633,7 +638,7 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   // 宏觀數據僅在每日早9點盤面簡報發送，交易建議訊息不重複顯示
 
   msg += `⏰ ${time}\n`;
-  msg += `#${sym} #crypto #${isLong ? 'long' : 'short'}`;
+  msg += `#${sym} #crypto #${isLong ? 'long' : 'short'}${isRange ? ' #震盪' : ''}`;
   if (siteUrl) {
     const symClean = coin.symbol.replace('/USDT','').replace('USDT','');
     msg += `\n\n🔗 <a href="${siteUrl}">查看 ${symClean} 詳細分析 →</a>`;
