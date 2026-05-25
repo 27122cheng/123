@@ -475,6 +475,7 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
         msg += `📶 信心度：<b>${finalC}%</b>  <i>(原始 ${rawC}%`;
         if (setup.hardAdxPenalty > 0)       msg += ` → ADX-${setup.hardAdxPenalty}`;
         if (setup.macroOpposePenalty > 0)   msg += ` → 宏觀-${setup.macroOpposePenalty}`;
+        if (setup.aiTrendPenalty > 0)       msg += ` → 週日AI-${setup.aiTrendPenalty}`;
         if (setup.learnPenalty > 0)         msg += ` → 風控-${setup.learnPenalty}`;
         msg += `)</i>\n`;
       } else {
@@ -487,17 +488,30 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     const h4lbl = setup.h4TrendLabel || '';
     const d1lbl = setup.d1TrendLabel || '';
     if (bt) {
-      const l1ok = !setup.macroOpposePenalty && !setup.hardAdxPenalty;
+      const totalL1Pen = (setup.hardAdxPenalty || 0) + (setup.macroOpposePenalty || 0) + (setup.aiTrendPenalty || 0);
+      const l1ok = totalL1Pen === 0;
       const l2ok = bt === (isLong ? 'bull' : 'bear');
       const l2mixed = bt === 'mixed';
 
       msg += `\n🤖 <b>AI 三層決策</b>\n`;
       // Layer ①
-      msg += `   ① 基本規則+宏觀：${l1ok ? '✅ 通過' : `⚠️ 扣分 -${(setup.hardAdxPenalty || 0) + (setup.macroOpposePenalty || 0)}%`}`;
+      msg += `   ① 基本+宏觀+週日AI：${l1ok ? '✅ 通過' : `⚠️ 扣分 -${totalL1Pen}%`}`;
       if (setup.macroReasons?.length) {
         msg += `（${setup.macroReasons[0]}${setup.macroReasons.length > 1 ? ` 等${setup.macroReasons.length}項` : ''}）`;
       }
       msg += `\n`;
+      // 本週 / 今日 AI 趨勢對照
+      if (setup.weeklyBias) {
+        msg += `      📈 本週AI ${setup.weeklyBias}（${setup.weeklyConf}%）`;
+        msg += `  📅 今日AI ${setup.todayBias}（${setup.todayConf}%）\n`;
+      }
+      // 數據翻轉風險
+      if (setup.flipRisks?.length) {
+        setup.flipRisks.forEach(f => {
+          msg += `      ⚡ ${f.timeLabel} <b>${f.name}</b>：${f.riskDesc}\n`;
+          if (f.aiPred) msg += `         🤖 AI預測：${f.aiPred}（信心 ${f.aiConf}%）\n`;
+        });
+      }
       // Layer ②
       if (l2ok) {
         msg += `   ② 大時框架：✅ 全部通過（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
