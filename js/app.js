@@ -2118,14 +2118,31 @@ function buildMarketOutlook(fg, global) {
     else                  { bullArgs.push(`恐慌貪婪 ${fgVal}（中性），情緒平衡`); }
   }
   // 市值變化
-  if (chg > 2)       { bullPts += 2; bullArgs.push(`加密總市值 24h +${chg}%，資金積極流入`); }
-  else if (chg > 0)  { bullPts++;    bullArgs.push(`加密總市值 24h +${chg}%，小幅成長`); }
-  else if (chg < -2) { bearPts += 2; bearArgs.push(`加密總市值 24h ${chg}%，資金明顯流出`); }
-  else if (chg < 0)  { bearPts++;    bearArgs.push(`加密總市值 24h ${chg}%，輕微回調`); }
+  if (chg > 2)       { bullPts += 2; bullArgs.push(`加密總市值 24h +${chg.toFixed(2)}%，資金積極流入`); }
+  else if (chg > 0)  { bullPts++;    bullArgs.push(`加密總市值 24h +${chg.toFixed(2)}%，小幅成長`); }
+  else if (chg < -2) { bearPts += 2; bearArgs.push(`加密總市值 24h ${chg.toFixed(2)}%，資金明顯流出`); }
+  else if (chg < 0)  { bearPts++;    bearArgs.push(`加密總市值 24h ${chg.toFixed(2)}%，輕微回調`); }
   // BTC 主導
-  if (dom > 56)      { bearPts++; bearArgs.push(`BTC 主導 ${dom}%（偏高），山寨資金分散難度大`); }
-  else if (dom < 44) { bullPts++; bullArgs.push(`BTC 主導 ${dom}%（偏低），山寨季資金活躍`); }
-  else               { bullArgs.push(`BTC 主導 ${dom}%（均衡），多空資金分布合理`); }
+  if (dom > 56)      { bearPts++; bearArgs.push(`BTC 主導 ${dom.toFixed(1)}%（偏高），山寨資金分散難度大`); }
+  else if (dom < 44) { bullPts++; bullArgs.push(`BTC 主導 ${dom.toFixed(1)}%（偏低），山寨季資金活躍`); }
+  else               { bullArgs.push(`BTC 主導 ${dom.toFixed(1)}%（均衡），多空資金分布合理`); }
+
+  // ── 本週 / 今日 AI 走勢（納入大方向計分）──
+  const wbData = computeWeeklyAIBias(fg, global);
+  const tbData = computeTodayAIBias(fg, global);
+  if (wbData.bias === 'strong_bull') { bullPts += 2; bullArgs.push(`本週AI走勢：${wbData.biasLabel}（信心 ${wbData.conf}%）`); }
+  else if (wbData.bias === 'bull')   { bullPts++;    bullArgs.push(`本週AI走勢：${wbData.biasLabel}（信心 ${wbData.conf}%）`); }
+  else if (wbData.bias === 'slight_bull') { bullPts += 0.5; bullArgs.push(`本週AI走勢：${wbData.biasLabel}（信心 ${wbData.conf}%）`); }
+  else if (wbData.bias === 'strong_bear') { bearPts += 2; bearArgs.push(`本週AI走勢：${wbData.biasLabel}（信心 ${wbData.conf}%）`); }
+  else if (wbData.bias === 'bear')   { bearPts++;    bearArgs.push(`本週AI走勢：${wbData.biasLabel}（信心 ${wbData.conf}%）`); }
+  else if (wbData.bias === 'slight_bear') { bearPts += 0.5; bearArgs.push(`本週AI走勢：${wbData.biasLabel}（信心 ${wbData.conf}%）`); }
+
+  if (tbData.bias === 'strong_bull') { bullPts += 2; bullArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
+  else if (tbData.bias === 'bull')   { bullPts++;    bullArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
+  else if (tbData.bias === 'slight_bull') { bullPts += 0.5; bullArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
+  else if (tbData.bias === 'strong_bear') { bearPts += 2; bearArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
+  else if (tbData.bias === 'bear')   { bearPts++;    bearArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
+  else if (tbData.bias === 'slight_bear') { bearPts += 0.5; bearArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
 
   // 靜態宏觀背景（2026 Q2）
   bullArgs.push('比特幣現貨 ETF 持續吸引機構配置資金');
@@ -2147,9 +2164,11 @@ function buildMarketOutlook(fg, global) {
   const bullW = Math.round(bullPts / total * 100);
   const bearW = 100 - bullW;
   let bias, bColor, bIcon;
-  if (bullPts > bearPts + 1)      { bias = '偏多'; bColor = 'var(--bull)'; bIcon = '▲'; }
-  else if (bearPts > bullPts + 1) { bias = '偏空'; bColor = 'var(--bear)'; bIcon = '▼'; }
-  else                             { bias = '中性偏多';  bColor = 'var(--neutral)'; bIcon = '◆'; }
+  if      (bullPts > bearPts + 1)  { bias = '偏多';    bColor = 'var(--bull)';     bIcon = '▲'; }
+  else if (bearPts > bullPts + 1)  { bias = '偏空';    bColor = 'var(--bear)';     bIcon = '▼'; }
+  else if (bullPts > bearPts)      { bias = '中性偏多'; bColor = 'var(--neutral)';  bIcon = '◆'; }
+  else if (bearPts > bullPts)      { bias = '中性偏空'; bColor = 'var(--neutral)';  bIcon = '◆'; }
+  else                              { bias = '中性';    bColor = 'var(--neutral)';  bIcon = '◆'; }
 
   return `<div class="outlook-header">
       <span class="outlook-title">🌐 加密市場大方向</span>
