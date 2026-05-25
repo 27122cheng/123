@@ -55,6 +55,15 @@ async function init() {
   startEconCalendarCheck();
   bindEvents();
   checkApiStatus();
+  // 背景預載宏觀數據，讓首次通知就能帶入 AI 預測與扣分
+  _prefetchMacroCache();
+}
+
+async function _prefetchMacroCache() {
+  try {
+    const [fg, gm] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
+    if (fg || gm) _macroCache = { ...(gm || {}), fg };
+  } catch (e) {}
 }
 
 /* ── Service Worker 後台通知 ────────────────────────────────── */
@@ -5834,6 +5843,14 @@ const SIGNAL_CACHE_KEY = 'csp_signal_cache';
 async function checkAndSendAlerts(data) {
   const s = loadSettings();
   if (!s.notifBrowser && !s.notifTelegram) return;
+
+  // 宏觀快取不存在時自動補充（用戶未瀏覽幣種詳情頁時 _macroCache 為 null）
+  if (!_macroCache) {
+    try {
+      const [fg, gm] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
+      if (fg || gm) _macroCache = { ...(gm || {}), fg };
+    } catch (e) { /* 若 fetch 失敗繼續執行，後續用 null 處理 */ }
+  }
 
   const bullThr = s.notifBullScore || 65;
   const bearThr = s.notifBearScore || 35;
