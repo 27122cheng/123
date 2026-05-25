@@ -1449,6 +1449,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 緩存完整設置供 Telegram 通知 + AI 分析使用
   _tradeSetupCache[coin.symbol] = {
+    direction,
     entry, sl, tp1, tp2,
     entryReason: entryReasons.join('，'),
     entryReasons: [...entryReasons],   // 陣列原始版，避免逗號分割錯誤
@@ -1523,6 +1524,40 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (tlog.length > 500) tlog.splice(500);
       saveTradeLog(tlog);
     }
+  }
+
+  // ── 信心不足 / AI 風控攔截 → 返回觀望面板，不顯示交易推薦 ──
+  if (direction === 'wait') {
+    const cColor = v => v >= 80 ? '#22c55e' : v >= 60 ? '#f59e0b' : '#ef4444';
+    const waitReasons = [];
+    if (hardBlocked) {
+      blockReasons.slice(0, 3).forEach(r => waitReasons.push(r));
+    } else {
+      if (hardAdxPenalty > 0)     waitReasons.push(`⚡ ADX ${adxVal} 過低，扣 -${hardAdxPenalty}%`);
+      if (macroOpposePenalty > 0) waitReasons.push(`🌐 宏觀逆風，扣 -${macroOpposePenalty}%`);
+      if (aiTrendPenalty > 0)     waitReasons.push(`🤖 AI趨勢逆向，扣 -${aiTrendPenalty}%`);
+      if (learnPenalty > 0)       waitReasons.push(`📚 止損記憶觸發，扣 -${learnPenalty}%`);
+      waitReasons.push(`最終信心度 <strong>${conf}%</strong>（原始 ${rawConf}%），未達 80% 門檻`);
+    }
+    const confFlow = [
+      `<span style="color:var(--text3);font-size:0.75rem">原始</span> <span style="font-weight:700;color:${cColor(rawConf)}">${rawConf}%</span>`,
+      hardAdxPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.75rem">→ ADX -${hardAdxPenalty}</span>` : '',
+      macroOpposePenalty > 0 ? `<span style="color:#f59e0b;font-size:0.75rem">→ 宏觀 -${macroOpposePenalty}</span>` : '',
+      aiTrendPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.75rem">→ AI -${aiTrendPenalty}</span>` : '',
+      learnPenalty > 0       ? `<span style="color:#f59e0b;font-size:0.75rem">→ 風控 -${learnPenalty}</span>` : '',
+      `<span style="color:var(--text3);font-size:0.75rem">→ 最終</span> <span style="font-weight:700;font-size:0.85rem;color:${cColor(conf)}">${conf}%</span>`,
+    ].filter(Boolean).join(' ');
+    return `<div class="setup-wait">
+      <div class="setup-wait-icon">${hardBlocked ? '🚫' : '⚠️'}</div>
+      <div class="setup-wait-title">${hardBlocked ? 'AI 風控硬性攔截，本次不建議進場' : `信心度不足（${conf}%），暫不推薦交易`}</div>
+      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin:6px 0 8px;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:7px">${confFlow}</div>
+      <ul class="setup-wait-reasons">
+        ${waitReasons.map(r => `<li>${r}</li>`).join('')}
+      </ul>
+      <div style="margin-top:10px;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px;font-size:0.74rem;color:var(--text3)">
+        📐 大時框架：4H <strong style="color:${h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)'}">${h4TrendLabel}</strong>　日線 <strong style="color:${d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)'}">${d1TrendLabel}</strong>
+      </div>
+    </div>`;
   }
 
   // ── 宏觀經濟摘要 ──
@@ -5999,6 +6034,9 @@ async function checkAndSendAlerts(data) {
         } catch (e) { /* macro enrichment failed, keep simple conf */ }
       }
     }
+
+    // AI 風控攔截 或 方向=觀望 → 不通知
+    if (notifSetup.hardBlocked || notifSetup.direction === 'wait') continue;
 
     // 信號強度未達 85% → 不通知（使用已扣完的 conf）
     const notifConf = notifSetup.conf
