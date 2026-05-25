@@ -2187,7 +2187,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
     _saveBiasLearning(learn);
   } catch(e) {}
 
-  return { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents };
+  return { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents, rangeMode: bias === 'neutral' };
 }
 
 /* ── 本週 AI 走勢預測（整合所有可用數據）─────────────────────── */
@@ -2400,7 +2400,7 @@ function computeTodayAIBias(fg, globalMkt) {
     _saveBiasLearning(learn);
   } catch(e) {}
 
-  return { bias, biasLabel, biasColor, conf, confColor, reasons, highEvs, riskNote };
+  return { bias, biasLabel, biasColor, conf, confColor, reasons, highEvs, riskNote, rangeMode: bias === 'neutral' || bias === 'slight_bull' || bias === 'slight_bear' };
 }
 
 function buildTodayAIBiasHtml(fg, globalMkt) {
@@ -6107,10 +6107,12 @@ async function checkAndSendAlerts(data) {
           const gm = _macroCache;
           const wb = computeWeeklyAIBias(fg, gm);
           const tb = computeTodayAIBias(fg, gm);
-          notifSetup.weeklyBias = wb.biasLabel;
-          notifSetup.weeklyConf = wb.conf;
-          notifSetup.todayBias  = tb.biasLabel;
-          notifSetup.todayConf  = tb.conf;
+          notifSetup.weeklyBias    = wb.biasLabel;
+          notifSetup.weeklyConf    = wb.conf;
+          notifSetup.weeklyRangeMode = wb.rangeMode;
+          notifSetup.todayBias     = tb.biasLabel;
+          notifSetup.todayConf     = tb.conf;
+          notifSetup.todayRangeMode = tb.rangeMode;
           // flipRisks within 8h
           const nowMs = Date.now();
           notifSetup.flipRisks = (tb.highEvs || []).filter(ev => {
@@ -6180,12 +6182,37 @@ async function checkAndSendAlerts(data) {
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
     if (notifConf < 85) {
-      // 原始信號夠強（≥85%）但扣分後低於門檻 → 衰減通知
+      // 原始信號夠強（≥85%）但扣分後低於門檻 → 取消未入場交易建議
       if (rawConfVal >= 85 && s.notifTelegram && s.tgToken && s.tgChatId) {
+        // 只針對「尚未入場」的掛單：有 entryTime 的已入場交易不撤銷
+        const tlogNow = loadTradeLog();
+        const alreadyEntered = tlogNow.some(t =>
+          t.symbol === coin.symbol &&
+          (t.status === 'open' || t.status === 'pending') &&
+          t.direction === dir &&
+          t.entryTime != null
+        );
+        if (alreadyEntered) { continue; } // 已入場 → 不干預，跳過
+
+        // 標記未入場的交易建議為已取消
+        const pendingIdx = tlogNow.findIndex(t =>
+          t.symbol === coin.symbol &&
+          (t.status === 'open' || t.status === 'pending') &&
+          t.direction === dir &&
+          !t.entryTime
+        );
+        if (pendingIdx !== -1) {
+          tlogNow[pendingIdx].status     = 'cancelled';
+          tlogNow[pendingIdx].exitTime   = now;
+          tlogNow[pendingIdx].exitReason = 'signal_weakened';
+          saveTradeLog(tlogNow);
+          if (typeof renderAll === 'function') renderAll();
+        }
+
         sendTelegramMessage(s.tgToken, s.tgChatId,
           buildWeakenedSignalText(coin, dir, notifSetup,
             window.location.origin + window.location.pathname));
-        next[coin.symbol] = { dir, sentAt: now, type: 'weakened' };
+        next[coin.symbol] = { dir, sentAt: now, type: 'cancelled' };
       }
       continue;
     }

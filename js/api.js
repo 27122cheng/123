@@ -574,8 +574,8 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
         }
         msg += `\n`;
       }
-      const wIsNeutral = !setup.weeklyBias || setup.weeklyBias.includes('中性');
-      const tIsNeutral = !setup.todayBias  || setup.todayBias.includes('中性');
+      const wIsNeutral = !setup.weeklyBias || setup.weeklyBias.includes('中性') || setup.weeklyRangeMode;
+      const tIsNeutral = !setup.todayBias  || setup.todayBias.includes('中性')  || setup.todayRangeMode;
       const wIsOpposed = setup.weeklyBias && (
         (isLong  && setup.weeklyBias.includes('空')) ||
         (!isLong && setup.weeklyBias.includes('多'))
@@ -586,8 +586,19 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
       );
       if (wIsOpposed || tIsOpposed) {
         msg += `⚠️ <b>AI 走勢預警</b>：本週/今日預測與操作方向相反，請謹慎操作、縮小倉位\n\n`;
+      } else if (wIsNeutral && tIsNeutral) {
+        // 市場震盪中性 → 提示震盪高低點快進快出
+        const atr  = setup?.atr || parseFloat(coin.price) * 0.012;
+        const pr   = parseFloat(coin.price) || 1;
+        const dec  = pr >= 1000 ? 1 : pr >= 1 ? 3 : 6;
+        const hi   = (pr + atr * 1.5).toFixed(dec);
+        const lo   = (pr - atr * 1.5).toFixed(dec);
+        const tgt  = (atr * 0.8).toFixed(dec);
+        msg += `🔄 <b>震盪模式</b>：市場偏中性，不強求方向性交易\n`;
+        msg += `   ↳ 做空區：$${hi} 附近，快速止盈 ~$${tgt}\n`;
+        msg += `   ↳ 做多區：$${lo} 附近，快速止盈 ~$${tgt}\n\n`;
       } else if (wIsNeutral || tIsNeutral) {
-        msg += `⚠️ <b>AI 走勢提示</b>：目前市場趨勢偏中性，訊號仍有效但建議謹慎操作、等待方向確立\n\n`;
+        msg += `⚠️ <b>AI 走勢提示</b>：市場趨勢偏中性，可利用震盪高低點短進短出，不強求方向確立\n\n`;
       }
     }
 
@@ -630,58 +641,47 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   return msg;
 }
 
-/* ── 信號衰減通知（信號本來夠強，但扣分後低於推薦門檻）────────── */
+/* ── 交易建議取消通知（原始信號夠強，但扣分後低於推薦門檻，且尚未入場）── */
 function buildWeakenedSignalText(coin, direction, setup, siteUrl = '') {
-  const isLong = direction === 'long';
-  const icon   = isLong ? '▲' : '▼';
-  const dirTx  = isLong ? '做多（Long）' : '做空（Short）';
-  const sym    = coin.symbol.replace('/USDT','').replace('USDT','');
-  const time   = new Date().toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
-
-  const rawConf   = setup.rawConf ?? Math.min(90, coin.score ?? 60);
-  const finalConf = setup.conf    ?? 0;
+  const isLong  = direction === 'long';
+  const icon    = isLong ? '▲' : '▼';
+  const dirTx   = isLong ? '做多（Long）' : '做空（Short）';
+  const sym     = coin.symbol.replace('/USDT','').replace('USDT','');
+  const time    = new Date().toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+  const rawConf = setup.rawConf ?? Math.min(90, coin.score ?? 60);
+  const finalConf = setup.conf ?? 0;
   const totalDrop = rawConf - finalConf;
 
-  let msg = `📉 <b>交易信號衰減通知</b>\n\n`;
+  let msg = `🚫 <b>交易建議已取消</b>\n\n`;
   msg += `${icon} <b>${dirTx}：${coin.symbol}</b>\n`;
-  msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
-  msg += `📶 信心度：<b>${rawConf}%</b> → 扣分後降至 <b>${finalConf}%</b>`;
-  msg += `（低於推薦門檻，共扣 -${totalDrop}%）\n\n`;
+  msg += `📶 信心度：<b>${rawConf}%</b> → 降至 <b>${finalConf}%</b>（扣 -${totalDrop}%，未達推薦門檻）\n\n`;
 
-  // 逐項列出扣分原因
+  // 逐項取消原因
   const deducts = [];
   if (setup.hardAdxPenalty > 0)
-    deducts.push(`ADX ${coin.adx} 過低，扣 -${setup.hardAdxPenalty}%`);
+    deducts.push(`ADX 過低 -${setup.hardAdxPenalty}%`);
   if (setup.macroOpposePenalty > 0) {
     const detail = (setup.macroReasons || []).slice(0, 2).join('、');
-    deducts.push(`宏觀環境逆風，扣 -${setup.macroOpposePenalty}%${detail ? `（${detail}）` : ''}`);
+    deducts.push(`宏觀環境逆風 -${setup.macroOpposePenalty}%${detail ? `（${detail}）` : ''}`);
   }
   if ((setup.aiTrendReasons || []).length) {
     setup.aiTrendReasons.forEach(r => deducts.push(r));
   } else if (setup.aiTrendPenalty > 0) {
-    deducts.push(`AI 趨勢預測逆向，扣 -${setup.aiTrendPenalty}%`);
+    deducts.push(`AI 趨勢預測逆向 -${setup.aiTrendPenalty}%`);
   }
   if (setup.learnPenalty > 0) {
-    deducts.push(`止損歷史記憶觸發，扣 -${setup.learnPenalty}%`);
-    (setup.learnWarn || []).slice(0, 2).forEach(w => deducts.push(`↳ ${w.slice(0, 55)}`));
+    deducts.push(`止損歷史記憶觸發 -${setup.learnPenalty}%`);
+    (setup.learnWarn || []).slice(0, 2).forEach(w => deducts.push(`  ↳ ${w.slice(0, 55)}`));
   }
 
   if (deducts.length) {
-    msg += `📋 <b>信心下降原因</b>\n`;
-    deducts.forEach(d => { msg += `   • ${d}\n`; });
+    msg += `📋 <b>取消原因</b>\n`;
+    deducts.forEach(d => { msg += `  • ${d}\n`; });
     msg += `\n`;
   }
 
-  // 本週/今日 AI 預測（若有）
-  if (setup.weeklyBias || setup.todayBias) {
-    if (setup.weeklyBias) msg += `📈 本週走勢：<b>${setup.weeklyBias}</b>（信心 ${setup.weeklyConf}%）\n`;
-    if (setup.todayBias)  msg += `📅 今日走勢：<b>${setup.todayBias}</b>（信心 ${setup.todayConf}%）\n`;
-    msg += `\n`;
-  }
-
-  msg += `⚠️ 目前信心度未達推薦標準，建議觀望，等待市場條件改善\n`;
-  msg += `\n⏰ ${time}\n`;
-  msg += `#${sym} #crypto #${isLong ? 'long' : 'short'} #衰減`;
+  msg += `⏰ ${time}\n`;
+  msg += `#${sym} #${isLong ? 'long' : 'short'} #取消`;
   if (siteUrl) {
     msg += `\n\n🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   }
