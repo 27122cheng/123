@@ -158,27 +158,32 @@ function startRefreshCycle() {
 
   state.refreshTimer = setInterval(async () => {
     if (state.scanning) return; // 上次掃描還沒結束，跳過
+    state.scanning = true;
     state.countdown = secs;
-    state.scanning  = true;
     updateScanProgress(0);
-    const { data, source } = await fetchMarketData(state.timeframe);
-    state.data       = data;
-    state.dataSource = source;
-    state.scanning   = false;
-    hideScanBar();
-    applyFilters();
-    renderAll();
-    checkAndSendAlerts(data);
-    const _cancelled1 = updateOpenTrades(data);
-    recordSignalsFromScan(data);
-    checkPostDataReversal(data);
-    if (state.currentPage === 'positions') renderPositionsPage();
-    // 若幣種詳情頁正顯示已被取消的掛單 → 重渲染
-    if (state.currentPage === 'coin' && state.currentCoin && _cancelled1.has(state.currentCoin)) {
-      renderCoinDetail(state.currentCoin);
+    try {
+      const { data, source } = await fetchMarketData(state.timeframe);
+      state.data       = data;
+      state.dataSource = source;
+      hideScanBar();
+      applyFilters();
+      renderAll();
+      checkAndSendAlerts(data);
+      const _cancelled1 = updateOpenTrades(data);
+      recordSignalsFromScan(data);
+      checkPostDataReversal(data);
+      if (state.currentPage === 'positions') renderPositionsPage();
+      if (state.currentPage === 'coin' && state.currentCoin && _cancelled1.has(state.currentCoin)) {
+        renderCoinDetail(state.currentCoin);
+      }
+      const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
+      showToast(`市場數據已刷新（${srcLabel}）`, 'info');
+    } catch(e) {
+      console.error('[refresh] 自動刷新失敗:', e);
+      hideScanBar();
+    } finally {
+      state.scanning = false;
     }
-    const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
-    showToast(`市場數據已刷新（${srcLabel}）`, 'info');
   }, secs * 1000);
 }
 
@@ -199,7 +204,6 @@ async function manualRefresh() {
     const { data, source } = await fetchMarketData(state.timeframe);
     state.data       = data;
     state.dataSource = source;
-    state.scanning   = false;
     hideScanBar();
     applyFilters();
     renderAll();
@@ -214,10 +218,13 @@ async function manualRefresh() {
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`手動刷新完成（${srcLabel}）`, 'success');
   } catch(e) {
-    state.scanning = false;
+    console.error('[manualRefresh] 失敗:', e);
+    hideScanBar();
     showToast('刷新失敗，請重試', 'error');
+  } finally {
+    state.scanning = false;
+    startRefreshCycle();
   }
-  startRefreshCycle();
 }
 
 function computeLongTermBias(mtfData) {
@@ -5598,25 +5605,46 @@ function renderPositionsPage() {
     const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
     const dirColor  = isLong ? 'var(--bull)' : 'var(--bear)';
 
-    // 進度：距離 TP1 / TP2 / SL 的百分比
+    // 進度：SL → 進場 → TP1 → TP2 單一進度條
     let progressHtml = '';
-    if (cur && entry && tp1 && sl) {
-      const target  = isLong ? tp1 : tp1; // TP1 as first target
-      const total   = Math.abs(tp1 - entry);
-      const moved   = isLong ? cur - entry : entry - cur;
-      const pct     = total > 0 ? Math.max(-100, Math.min(100, moved / total * 100)) : 0;
-      const barClr  = pct >= 100 ? '#22c55e' : pct > 0 ? 'var(--bull)' : 'var(--bear)';
-      progressHtml = `
-        <div class="pos-progress-wrap">
-          <div class="pos-progress-labels">
-            <span style="color:var(--bear)">SL ${fmtPrice(sl)}</span>
-            <span style="color:var(--text3);font-size:0.72rem">進度至止盈一</span>
-            <span style="color:var(--bull)">TP1 ${fmtPrice(tp1)}</span>
-          </div>
-          <div class="pos-progress-bar">
-            <div class="pos-progress-fill" style="width:${Math.max(0,pct)}%;background:${barClr}"></div>
-          </div>
-        </div>`;
+    if (cur && entry && tp1 && sl && tp2) {
+      const rangeTotal = isLong ? (tp2 - sl) : (sl - tp2);
+      if (rangeTotal > 0) {
+        // 將各價位轉換為 0-100% 的 bar 位置（左=SL, 右=TP2）
+        const toBarPct = v => Math.max(0, Math.min(100,
+          (isLong ? (v - sl) : (sl - v)) / rangeTotal * 100
+        ));
+        const curPct   = toBarPct(cur);
+        const entryPct = toBarPct(entry);
+        const tp1Pct   = toBarPct(tp1);
+        // 填充顏色：低於進場=虧損紅；超過TP1=綠；其他=多頭藍
+        const fillClr  = curPct < entryPct ? 'var(--bear)'
+                       : curPct >= tp1Pct  ? '#22c55e' : 'var(--bull)';
+
+        progressHtml = `
+          <div class="pos-progress-wrap" style="margin:10px 0 6px">
+            <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:18px">
+              <!-- 填充至現價 -->
+              <div style="position:absolute;inset:0;width:${curPct}%;background:${fillClr};border-radius:4px;transition:width .4s;max-width:100%"></div>
+              <!-- 進場線 -->
+              <div style="position:absolute;top:-3px;bottom:-3px;left:${entryPct}%;width:2px;background:rgba(255,255,255,.45);border-radius:1px;transform:translateX(-50%)"></div>
+              <!-- TP1 標記線 -->
+              <div style="position:absolute;top:-4px;bottom:-4px;left:${tp1Pct}%;width:2px;background:#f59e0b;border-radius:1px;transform:translateX(-50%)"></div>
+              <!-- 下方標籤層 -->
+              <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none">
+                <span style="position:absolute;left:0;color:var(--bear);white-space:nowrap">SL</span>
+                <span style="position:absolute;left:${entryPct}%;transform:translateX(-50%);color:var(--text3);white-space:nowrap">進場</span>
+                <span style="position:absolute;left:${tp1Pct}%;transform:translateX(-50%);color:#f59e0b;white-space:nowrap">TP1</span>
+                <span style="position:absolute;right:0;color:#22c55e;white-space:nowrap">TP2</span>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
+              <span style="color:var(--bear)">${fmtPrice(sl)}</span>
+              <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(cur)}</b></span>
+              <span style="color:#22c55e">${fmtPrice(tp2)}</span>
+            </div>
+          </div>`;
+      }
     }
 
     const reasons = (t.entryReason || '').split('，').filter(Boolean);
