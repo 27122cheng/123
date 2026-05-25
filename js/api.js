@@ -466,21 +466,26 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   if (setup) {
-    // ── 信心度（附三層決策摘要）──
+    // ── 信心度（已扣除所有項目後的最終值）──
     if (setup.conf != null) {
-      const rawC   = setup.rawConf   || setup.conf;
-      const macroC = setup.macroConf || setup.conf;
-      const finalC = setup.conf;
-      if (rawC !== finalC) {
-        msg += `📶 信心度：<b>${finalC}%</b>  <i>(原始 ${rawC}%`;
-        if (setup.hardAdxPenalty > 0)       msg += ` → ADX-${setup.hardAdxPenalty}`;
-        if (setup.macroOpposePenalty > 0)   msg += ` → 宏觀-${setup.macroOpposePenalty}`;
-        if (setup.aiTrendPenalty > 0)       msg += ` → 週日AI-${setup.aiTrendPenalty}`;
-        if (setup.learnPenalty > 0)         msg += ` → 風控-${setup.learnPenalty}`;
-        msg += `)</i>\n`;
-      } else {
-        msg += `📶 信心度：<b>${finalC}%</b>\n`;
+      msg += `📶 信心度：<b>${setup.conf}%</b>\n`;
+    }
+
+    // ── 本週 / 今日 AI 走勢預測 ──
+    if (setup.weeklyBias || setup.todayBias) {
+      msg += `\n`;
+      if (setup.weeklyBias) msg += `📈 本週走勢：<b>${setup.weeklyBias}</b>（信心 ${setup.weeklyConf}%）\n`;
+      if (setup.todayBias)  msg += `📅 今日走勢：<b>${setup.todayBias}</b>（信心 ${setup.todayConf}%）\n`;
+      // 數據翻轉風險
+      if (setup.flipRisks?.length) {
+        msg += `\n`;
+        setup.flipRisks.forEach(f => {
+          msg += `⚡ <b>${f.timeLabel} ${f.name}</b>\n`;
+          if (f.aiPred) msg += `   🤖 AI預測：${f.aiPred}（信心 ${f.aiConf}%）\n`;
+          msg += `   ⚠️ ${f.riskDesc}\n`;
+        });
       }
+      msg += `\n`;
     }
 
     // ── AI 三層決策摘要 ──
@@ -493,32 +498,20 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
       const l2ok = bt === (isLong ? 'bull' : 'bear');
       const l2mixed = bt === 'mixed';
 
-      msg += `\n🤖 <b>AI 三層決策</b>\n`;
+      msg += `🤖 <b>AI 三層決策</b>\n`;
       // Layer ①
-      msg += `   ① 基本+宏觀+週日AI：${l1ok ? '✅ 通過' : `⚠️ 扣分 -${totalL1Pen}%`}`;
+      msg += `   ① 基本+宏觀+AI趨勢：${l1ok ? '✅ 通過' : `⚠️ 扣分 -${totalL1Pen}%`}`;
       if (setup.macroReasons?.length) {
         msg += `（${setup.macroReasons[0]}${setup.macroReasons.length > 1 ? ` 等${setup.macroReasons.length}項` : ''}）`;
       }
       msg += `\n`;
-      // 本週 / 今日 AI 趨勢對照
-      if (setup.weeklyBias) {
-        msg += `      📈 本週AI ${setup.weeklyBias}（${setup.weeklyConf}%）`;
-        msg += `  📅 今日AI ${setup.todayBias}（${setup.todayConf}%）\n`;
-      }
-      // 數據翻轉風險
-      if (setup.flipRisks?.length) {
-        setup.flipRisks.forEach(f => {
-          msg += `      ⚡ ${f.timeLabel} <b>${f.name}</b>：${f.riskDesc}\n`;
-          if (f.aiPred) msg += `         🤖 AI預測：${f.aiPred}（信心 ${f.aiConf}%）\n`;
-        });
-      }
       // Layer ②
       if (l2ok) {
         msg += `   ② 大時框架：✅ 全部通過（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
       } else if (l2mixed) {
-        msg += `   ② 大時框架：⚠️ 趨勢中性／分歧（4H ${h4lbl} ／ 日線 ${d1lbl}），謹慎操作\n`;
+        msg += `   ② 大時框架：⚠️ 趨勢中性／分歧（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
       } else {
-        msg += `   ② 大時框架：🚫 嚴格攔截（4H ${h4lbl} ／ 日線 ${d1lbl}），逆大趨勢\n`;
+        msg += `   ② 大時框架：🚫 嚴格攔截（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
       }
       // Layer ③
       const lp = setup.learnPenalty || 0;

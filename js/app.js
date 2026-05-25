@@ -4094,18 +4094,33 @@ function buildDailyBriefingMsg(fg, mkt) {
     : '⏰ 今日無重大預定數據';
 
   // ── 本週 AI 走勢預測（文字版）──
-  const weeklyBias = computeWeeklyAIBias(fg, mkt);
-  const weeklyAISection = (() => {
-    const topFactors = weeklyBias.factors.slice(0, 4).map(f => `   • ${f}`).join('\n');
-    return `${weeklyBias.biasLabel}（信心 ${weeklyBias.conf}%）\n${topFactors}\n   ⚠️ ${weeklyBias.riskNote}`;
-  })();
+  let weeklyAISection = '數據計算中…';
+  try {
+    const wb = computeWeeklyAIBias(fg, mkt);
+    const topFactors = (wb.factors || []).slice(0, 4).map(f => `   • ${f}`).join('\n');
+    weeklyAISection = `${wb.biasLabel}（信心 ${wb.conf}%）${topFactors ? '\n' + topFactors : ''}\n   ⚠️ ${wb.riskNote || ''}`;
+  } catch (e) { weeklyAISection = '（計算失敗）'; }
 
   // ── 今日 AI 多空預測（文字版）──
-  const todayBias = computeTodayAIBias(fg, mkt);
-  const todayAISection = (() => {
-    const topReasons = todayBias.reasons.slice(0, 4).map(r => `   • ${r}`).join('\n');
-    return `${todayBias.biasLabel}（信心 ${todayBias.conf}%）\n${topReasons}\n   ⚠️ ${todayBias.riskNote}`;
-  })();
+  let todayAISection = '數據計算中…';
+  try {
+    const tb = computeTodayAIBias(fg, mkt);
+    const topReasons = (tb.reasons || []).slice(0, 4).map(r => `   • ${r}`).join('\n');
+    todayAISection = `${tb.biasLabel}（信心 ${tb.conf}%）${topReasons ? '\n' + topReasons : ''}\n   ⚠️ ${tb.riskNote || ''}`;
+    // 數據翻轉風險
+    const nowMs = Date.now();
+    const flips = (tb.highEvs || []).filter(ev => {
+      const m = (ev.eventTime.getTime() - nowMs) / 60000;
+      return m > -60 && m < 720;
+    });
+    if (flips.length) {
+      todayAISection += '\n\n   ⚡ <b>數據翻轉風險</b>\n' + flips.map(ev => {
+        const m = (ev.eventTime.getTime() - nowMs) / 60000;
+        const tl = m < 0 ? '剛公布' : m < 60 ? `${Math.round(m)}分鐘後` : `${(m/60).toFixed(1)}小時後`;
+        return `   🕐 ${tl} ${ev.name}${ev.aiPred ? `：AI預測 ${ev.aiPred}（信心 ${ev.aiConf}%）` : ''}`;
+      }).join('\n');
+    }
+  } catch (e) { todayAISection = '（計算失敗）'; }
 
   return `📊 <b>每日市場簡報</b> ${dateStr}\n\n` +
     `📅 <b>昨日市場回顧</b>\n${yesterdaySection}\n\n` +
