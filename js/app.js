@@ -1629,7 +1629,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty);  // 含週/日 AI 趨勢對照
   const finalConf = conf;
   // 最終防線：被AI風控硬封鎖 OR 信心低於80% → 觀望
-  if (conf < 80 || hardBlocked) direction = 'wait';
+  if (conf < 75 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -4043,13 +4043,13 @@ function recordSignalsFromScan(data) {
     const direction = isLong ? 'long' : 'short';
     // 快速預篩：原始評分不足直接跳過，省略學習計算
     const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (rawConf < 80) continue;
+    if (rawConf < 75) continue;
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
     const setup = computeSimpleSetup(coin, isLong);
     // AI最終防線攔截 OR 信心不足80% → 不記錄
-    if (setup.conf < 80 || setup.hardBlocked) continue;
+    if (setup.conf < 75 || setup.hardBlocked) continue;
     const conf = setup.conf;
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
@@ -6394,9 +6394,9 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 80) {
+    if (notifConf < 75) {
       // 原始信號夠強（≥80%）但扣分後低於門檻 → 取消未入場交易建議
-      if (rawConfVal >= 80 && s.notifTelegram && s.tgToken && s.tgChatId) {
+      if (rawConfVal >= 75 && s.notifTelegram && s.tgToken && s.tgChatId) {
         // 只針對「尚未入場」的掛單：有 entryTime 的已入場交易不撤銷
         const tlogNow = loadTradeLog();
         const alreadyEntered = tlogNow.some(t =>
@@ -6569,7 +6569,7 @@ function computeSimpleSetup(coin, isLong) {
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks,    // 所有防線審查項目
-    learnFiltered: (conf < 80 || hardBlocked) && rawConf >= 80,
+    learnFiltered: (conf < 75 || hardBlocked) && rawConf >= 75,
     hardBlocked,
   };
 }
