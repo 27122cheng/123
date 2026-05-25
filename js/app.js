@@ -5852,8 +5852,67 @@ async function checkAndSendAlerts(data) {
     // 同一方向且在冷卻期內（2小時）→ 跳過，不重複通知
     if (cached && cached.dir === dir && (now - (cached.sentAt || 0)) < SIGNAL_COOLDOWN) continue;
 
-    // 信號強度未達 60% → 不通知
-    const notifConf = _tradeSetupCache[coin.symbol]?.conf
+    // 準備 setup（優先用快取，fallback 補上 macro+AI 扣分的完整版本）
+    let notifSetup = _tradeSetupCache[coin.symbol] || null;
+    if (!notifSetup) {
+      notifSetup = computeSimpleSetup(coin, isLong);
+      if (_macroCache) {
+        try {
+          const fg = _macroCache.fg;
+          const gm = _macroCache;
+          const wb = computeWeeklyAIBias(fg, gm);
+          const tb = computeTodayAIBias(fg, gm);
+          notifSetup.weeklyBias = wb.biasLabel;
+          notifSetup.weeklyConf = wb.conf;
+          notifSetup.todayBias  = tb.biasLabel;
+          notifSetup.todayConf  = tb.conf;
+          // flipRisks within 8h
+          const nowMs = Date.now();
+          notifSetup.flipRisks = (tb.highEvs || []).filter(ev => {
+            const m = (ev.eventTime.getTime() - nowMs) / 60000;
+            return m > -60 && m < 480;
+          }).map(ev => {
+            const m = (ev.eventTime.getTime() - nowMs) / 60000;
+            const tl = m < 0 ? '剛公布' : m < 60 ? `${Math.round(m)}分鐘後` : `${(m / 60).toFixed(1)}小時後`;
+            const riskDesc = isLong
+              ? (ev.bearIf ? `若 ${ev.bearIf.slice(0, 50)}，多頭可能轉空` : '高影響數據，方向待確認')
+              : (ev.bullIf ? `若 ${ev.bullIf.slice(0, 50)}，空頭可能轉多` : '高影響數據，方向待確認');
+            return { name: ev.name, timeLabel: tl, riskDesc, aiPred: ev.aiPred, aiConf: ev.aiConf };
+          });
+          // AI 趨勢扣分
+          const weeklyAligned = (isLong && wb.bias.includes('bull')) || (!isLong && wb.bias.includes('bear'));
+          const weeklyOpposed = !weeklyAligned && wb.bias !== 'neutral';
+          const todayAligned  = (isLong && tb.bias.includes('bull')) || (!isLong && tb.bias.includes('bear'));
+          const todayOpposed  = !todayAligned && tb.bias !== 'neutral';
+          let aiTrendPen = 0;
+          if (weeklyOpposed) aiTrendPen += wb.bias.includes('strong') ? 8 : 4;
+          if (todayOpposed)  aiTrendPen += 5;
+          // 總體市場扣分（簡化版，與 buildTradeSetup 邏輯一致）
+          const fgVal  = fg ? parseInt(fg.value || '50') : 50;
+          const chgVal = gm?.marketCapChange || 0;
+          const domVal = gm?.btcDominance   || 50;
+          let against = 0;
+          if (isLong) {
+            if (chgVal < -2)  against++;
+            if (domVal > 58)  against++;
+            if (fgVal  < 30)  against++;
+            if (fgVal  > 75)  against += 0.5;
+          } else {
+            if (chgVal > 2)   against++;
+            if (domVal < 44)  against++;
+            if (fgVal  > 70)  against++;
+            if (fgVal  < 25)  against += 0.5;
+          }
+          const macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+          notifSetup.macroOpposePenalty = macroPen;
+          notifSetup.aiTrendPenalty     = aiTrendPen;
+          notifSetup.conf = Math.max(0, notifSetup.conf - macroPen - aiTrendPen);
+        } catch (e) { /* macro enrichment failed, keep simple conf */ }
+      }
+    }
+
+    // 信號強度未達 85% → 不通知（使用已扣完的 conf）
+    const notifConf = notifSetup.conf
       ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
     if (notifConf < 85) continue;
@@ -5866,10 +5925,8 @@ async function checkAndSendAlerts(data) {
       );
     }
     if (s.notifTelegram && s.tgToken && s.tgChatId) {
-      const setup = _tradeSetupCache[coin.symbol] || computeSimpleSetup(coin, isLong);
-      setup.conf = notifConf; // 使用已解析的精確 conf
       sendTelegramMessage(s.tgToken, s.tgChatId,
-        buildTelegramText(coin, dir, setup, _macroCache, window.location.origin + window.location.pathname));
+        buildTelegramText(coin, dir, notifSetup, _macroCache, window.location.origin + window.location.pathname));
     }
 
     next[coin.symbol] = { dir, sentAt: now };
