@@ -528,14 +528,52 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
       } else {
         msg += `   ② 大時框架：🚫 嚴格攔截（4H ${h4lbl} ／ 日線 ${d1lbl}）\n`;
       }
-      // Layer ③
-      const lp = setup.learnPenalty || 0;
-      msg += `   ③ AI 風控：${lp > 0 ? `⚠️ 止損記憶扣分 -${lp}%` : '✅ 通過，無扣分'}\n`;
+      // Layer ③ — AI 風控（止損記憶 + 硬封鎖）
+      const lp3 = setup.learnPenalty || 0;
+      const hp3 = setup.hardAdxPenalty || 0;
+      if (setup.hardBlocked) {
+        msg += `   ③ AI 風控：🚫 硬性攔截\n`;
+        (setup.blockReasons || []).slice(0, 2).forEach(r => {
+          msg += `      ↳ ${r.slice(0, 65)}\n`;
+        });
+      } else if (lp3 > 0 || hp3 > 0) {
+        msg += `   ③ AI 風控：⚠️ 扣分 -${lp3 + hp3}%\n`;
+        if (hp3 > 0) msg += `      ↳ ADX 過低 -${hp3}%\n`;
+        if (lp3 > 0) {
+          msg += `      ↳ 止損記憶扣分 -${lp3}%\n`;
+          (setup.learnWarn || []).slice(0, 2).forEach(w => {
+            msg += `      ↳ ${w.slice(0, 60)}\n`;
+          });
+        }
+      } else {
+        msg += `   ③ AI 風控：✅ 通過，無扣分\n`;
+      }
       msg += `\n`;
     }
 
-    // ── 無大趨勢資料時，補中性行情謹慎提示 ──
+    // ── 無大趨勢資料時：獨立顯示 AI 風控審查 + 中性行情謹慎提示 ──
     if (!bt) {
+      const lp = setup.learnPenalty  || 0;
+      const hp = setup.hardAdxPenalty || 0;
+      if (setup.hardBlocked || lp > 0 || hp > 0) {
+        msg += `🤖 <b>AI 風控審查</b>\n`;
+        if (setup.hardBlocked) {
+          msg += `   ③ AI 風控：🚫 硬性攔截\n`;
+          (setup.blockReasons || []).slice(0, 2).forEach(r => {
+            msg += `      ↳ ${r.slice(0, 65)}\n`;
+          });
+        } else {
+          msg += `   ③ AI 風控：⚠️ 扣分 -${lp + hp}%\n`;
+          if (hp > 0) msg += `      ↳ ADX 過低 -${hp}%\n`;
+          if (lp > 0) {
+            msg += `      ↳ 止損記憶扣分 -${lp}%\n`;
+            (setup.learnWarn || []).slice(0, 2).forEach(w => {
+              msg += `      ↳ ${w.slice(0, 60)}\n`;
+            });
+          }
+        }
+        msg += `\n`;
+      }
       const wIsNeutral = !setup.weeklyBias || setup.weeklyBias.includes('中性');
       const tIsNeutral = !setup.todayBias  || setup.todayBias.includes('中性');
       const wIsOpposed = setup.weeklyBias && (

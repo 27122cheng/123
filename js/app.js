@@ -6054,16 +6054,35 @@ function computeSimpleSetup(coin, isLong) {
     reasons.push(`⚠️ ADX ${adx} 過低（${adx < 18 ? '< 18' : '< 22'}），震盪行情信心下調 ${hardAdxPenalty}%`);
   }
 
+  // ── 止損說明：說明 ATR 計算依據與市場狀態 ──
+  const slPct    = ((Math.abs(entry - sl) / price) * 100).toFixed(2);
+  const atrPctFmt = (atrPct * 100).toFixed(1);
+  let slReason;
+  if (adx > 30) {
+    slReason = `ATR × 1.8（現價 ${isLong ? '下' : '上'}方 ${slPct}%）；ADX ${adx} 趨勢強勁，動態止損跟隨波動幅度`;
+  } else if (adx > 22) {
+    slReason = `ATR × 1.8（現價 ${isLong ? '下' : '上'}方 ${slPct}%）；ADX ${adx} 趨勢成形，標準止損`;
+  } else {
+    slReason = `ATR × 1.8（現價 ${isLong ? '下' : '上'}方 ${slPct}%）；ADX ${adx} 偏弱，震盪區間寬鬆止損，避免假突破刮損`;
+  }
+  if (ema20 > 0) {
+    const emaGap = ((Math.abs(price - ema20) / price) * 100).toFixed(2);
+    slReason += `；EMA20 距現價 ${emaGap}% 作輔助結構參考`;
+  }
+
   return {
     entry, sl, tp1, tp2,
     entryReasons: reasons,                // 陣列版（buildTelegramText 優先使用）
     entryReason:  reasons.join('，'),     // 字串版（相容其他地方）
-    slReason:  `現價${isLong ? '下' : '上'}方 ${((Math.abs(entry - sl) / price) * 100).toFixed(2)}%，結構止損`,
+    slReason,
     tp1Reason: `短線目標 R/R ${(Math.abs(tp1 - entry) / risk).toFixed(1)}:1，到達後減倉 60%`,
     tp2Reason: `波段目標 R/R ${(Math.abs(tp2 - entry) / risk).toFixed(1)}:1，剩餘倉位移至成本`,
     rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
     atr, conf, rawConf, hardAdxPenalty, learnPenalty,
+    learnWarn,        // 警告字串陣列
+    blockReasons,     // 硬封鎖原因陣列
+    defenseChecks,    // 所有防線審查項目
     learnFiltered: (conf < 80 || hardBlocked) && rawConf >= 80,
     hardBlocked,
   };
