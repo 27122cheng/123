@@ -138,6 +138,103 @@ function parseKlines(raw) {
   };
 }
 
+/* ── 平均真實範圍 ATR（Wilder 平滑法）──────────────────── */
+function calcATR(highs, lows, closes, period = 14) {
+  const n = closes.length;
+  if (n < period + 1) return closes[n - 1] * 0.012;
+  const trs = [];
+  for (let i = 1; i < n; i++) {
+    trs.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i]  - closes[i - 1]),
+      Math.abs(lows[i]   - closes[i - 1])
+    ));
+  }
+  // Wilder 平滑
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
+  return atr;
+}
+
+/* ── 影線拒絕區偵測（震盪行情支撐壓力）───────────────────
+   在 lookback 根 K 棒中，找 pivot 高低點並統計：
+   每個 pivot 被「影線觸及 + 實體拒絕」的次數 ≥ 2 → 視為有效震盪區
+   ─────────────────────────────────────────────────────── */
+function findWickZones(highs, lows, opens, closes, atr, lookback = 150) {
+  const n   = Math.min(highs.length, lookback);
+  const h   = highs.slice(-n), l = lows.slice(-n);
+  const o   = opens.slice(-n), c = closes.slice(-n);
+  const price     = c[c.length - 1];
+  const tolerance = atr * 0.5;
+
+  // ── Pivot 高低點 ──
+  const pivotH = [], pivotL = [];
+  for (let i = 2; i < h.length - 2; i++) {
+    if (h[i] >= h[i-1] && h[i] >= h[i-2] && h[i] >= h[i+1] && h[i] >= h[i+2]) pivotH.push(h[i]);
+    if (l[i] <= l[i-1] && l[i] <= l[i-2] && l[i] <= l[i+1] && l[i] <= l[i+2]) pivotL.push(l[i]);
+  }
+
+  // ── 聚類：相差 < 0.8% 視為同一區域 ──
+  const clusterLevels = arr => {
+    if (!arr.length) return [];
+    const sorted = [...arr].sort((a, b) => a - b);
+    const out = [{ level: sorted[0], count: 1 }];
+    for (let i = 1; i < sorted.length; i++) {
+      const last = out[out.length - 1];
+      if (Math.abs(sorted[i] - last.level) / last.level < 0.008) {
+        // 加權平均更新 level
+        last.level = (last.level * last.count + sorted[i]) / (last.count + 1);
+        last.count++;
+      } else {
+        out.push({ level: sorted[i], count: 1 });
+      }
+    }
+    return out;
+  };
+
+  // ── 計算影線拒絕次數 ──
+  const countWickRejects = (level, isSup) => {
+    let rejects = 0;
+    for (let i = 0; i < h.length; i++) {
+      const body = Math.abs(c[i] - o[i]);
+      if (isSup) {
+        // 支撐：下影線觸及區域 且 收盤遠離（守住）
+        const touched  = l[i] <= level + tolerance;
+        const defended = c[i] > level - tolerance * 0.3;
+        const lowerWick = Math.min(o[i], c[i]) - l[i];
+        const hasWick  = lowerWick > body * 0.5 && lowerWick > atr * 0.05;
+        if (touched && defended && hasWick) rejects++;
+      } else {
+        // 壓力：上影線觸及區域 且 收盤遠離（守住）
+        const touched  = h[i] >= level - tolerance;
+        const defended = c[i] < level + tolerance * 0.3;
+        const upperWick = h[i] - Math.max(o[i], c[i]);
+        const hasWick  = upperWick > body * 0.5 && upperWick > atr * 0.05;
+        if (touched && defended && hasWick) rejects++;
+      }
+    }
+    return rejects;
+  };
+
+  // ── 組建支撐區（低於現價）──
+  const supClusters = clusterLevels(pivotL.filter(p => p < price * 0.999));
+  const wickSupports = supClusters
+    .map(z => ({ level: z.level, count: z.count, wicks: countWickRejects(z.level, true) }))
+    .filter(z => z.wicks >= 2)
+    .sort((a, b) => b.level - a.level)  // 最近的在前
+    .slice(0, 3);
+
+  // ── 組建壓力區（高於現價）──
+  const resClusters = clusterLevels(pivotH.filter(p => p > price * 1.001));
+  const wickResistances = resClusters
+    .map(z => ({ level: z.level, count: z.count, wicks: countWickRejects(z.level, false) }))
+    .filter(z => z.wicks >= 2)
+    .sort((a, b) => a.level - b.level)  // 最近的在前
+    .slice(0, 3);
+
+  return { wickSupports, wickResistances };
+}
+
 /* ── 格式化精度 ─────────────────────────────────────────── */
 function fmtDecimals(v) {
   if (v >= 10000) return parseFloat(v.toFixed(2));
@@ -152,11 +249,12 @@ function fmtDecimals(v) {
 function analyzeKlines(symbol, raw) {
   if (!raw || raw.length < 30) return null;
 
-  const { highs, lows, closes, quoteVols } = parseKlines(raw);
+  const { opens, highs, lows, closes, quoteVols } = parseKlines(raw);
   const price = closes[closes.length - 1];
 
   const rsi    = calcRSI(closes, 14);
   const adx    = calcADX(highs, lows, closes, 14);
+  const atr    = calcATR(highs, lows, closes, 14);
   const ema20  = calcEMA(closes, 20);
   const ema50  = calcEMA(closes, 50);
   const ema200 = calcEMA(closes, 200);
@@ -176,11 +274,15 @@ function analyzeKlines(symbol, raw) {
   const price24hAgo = parseFloat(raw[idx24h][4]) || price;
   const change24h   = parseFloat(((price - price24hAgo) / price24hAgo * 100).toFixed(2));
 
+  /* 影線拒絕區（震盪行情關鍵支撐壓力，lookback=150根K棒） */
+  const { wickSupports, wickResistances } = findWickZones(highs, lows, opens, closes, atr, 150);
+
   return {
     symbol,
     price:      fmtDecimals(price),
     rsi:        parseFloat(rsi.toFixed(1)),
     adx:        parseFloat(adx.toFixed(1)),
+    atr:        fmtDecimals(atr),
     ema20:      fmtDecimals(ema20),
     ema50:      fmtDecimals(ema50),
     ema200:     fmtDecimals(ema200),
@@ -190,6 +292,8 @@ function analyzeKlines(symbol, raw) {
     momentum:   parseFloat((rsi - 50).toFixed(1)),
     strength:   Math.round(adx),
     change24h,
+    wickSupports:    wickSupports.map(z => ({ level: fmtDecimals(z.level), wicks: z.wicks })),
+    wickResistances: wickResistances.map(z => ({ level: fmtDecimals(z.level), wicks: z.wicks })),
   };
 }
 

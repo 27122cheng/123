@@ -248,6 +248,9 @@ function enrichData(raw) {
       strength: item.strength ?? Math.round(adx),
       macdHist: item.macdHist ?? 0,
       change24h: item.change24h ?? 0,
+      atr:             item.atr             ?? null,
+      wickSupports:    item.wickSupports     ?? [],
+      wickResistances: item.wickResistances  ?? [],
     };
   });
 }
