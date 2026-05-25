@@ -4016,21 +4016,83 @@ function inCooldown(tlog, symbol, direction) {
 function recordSignalsFromScan(data) {
   const tlog = loadTradeLog();
   let changed = false;
+
+  // ── 預先計算宏觀方向（有快取時才執行，無快取則全放行）──
+  let wBias = 'neutral', tBias = 'neutral';
+  let macroPenLong = 0, macroPenShort = 0;
+  if (_macroCache) {
+    try {
+      const fg = _macroCache.fg;
+      const gm = _macroCache;
+      const wb = computeWeeklyAIBias(fg, gm);   // 4小時快取，幾乎無成本
+      const tb = computeTodayAIBias(fg, gm);
+      wBias = wb.bias;
+      tBias = tb.bias;
+
+      // 計算宏觀逆風扣分（與 checkAndSendAlerts 相同邏輯）
+      const fgVal  = fg ? parseInt(fg.value || '50') : 50;
+      const chgVal = gm?.marketCapChange || 0;
+      const domVal = gm?.btcDominance   || 50;
+
+      // 多頭宏觀扣分
+      let againstLong = 0;
+      if (chgVal < -2) againstLong++;
+      if (domVal > 58) againstLong++;
+      if (fgVal  < 30) againstLong++;
+      if (fgVal  > 75) againstLong += 0.5;
+      macroPenLong = againstLong >= 3 ? 18 : againstLong >= 2 ? 12 : againstLong >= 1 ? 5 : 0;
+
+      // 空頭宏觀扣分
+      let againstShort = 0;
+      if (chgVal > 2)  againstShort++;
+      if (domVal < 44) againstShort++;
+      if (fgVal  > 70) againstShort++;
+      if (fgVal  < 25) againstShort += 0.5;
+      macroPenShort = againstShort >= 3 ? 18 : againstShort >= 2 ? 12 : againstShort >= 1 ? 5 : 0;
+
+      // AI 走勢方向扣分
+      const wOppLong  = wBias.includes('bear');
+      const wOppShort = wBias.includes('bull');
+      const tOppLong  = tBias.includes('bear');
+      const tOppShort = tBias.includes('bull');
+      if (wOppLong)  macroPenLong  += wBias.includes('strong') ? 8 : 4;
+      if (tOppLong)  macroPenLong  += 5;
+      if (wOppShort) macroPenShort += wBias.includes('strong') ? 8 : 4;
+      if (tOppShort) macroPenShort += 5;
+    } catch(e) { /* 宏觀計算失敗 → 維持 0 扣分，允許記錄 */ }
+  }
+
+  // ── 方向硬封鎖：本週 + 今日 AI 同時明確反向 → 不允許開倉 ──
+  const blockLong  = wBias.includes('bear') && tBias.includes('bear');
+  const blockShort = wBias.includes('bull') && tBias.includes('bull');
+
   for (const coin of data) {
     const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
     const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
     if (!isLong && !isShort) continue;
     const direction = isLong ? 'long' : 'short';
-    // 快速預篩：原始評分不足直接跳過，省略學習計算
+
+    // 方向封鎖：宏觀 + AI 均明確反向 → 跳過
+    if (isLong  && blockLong)  continue;
+    if (!isLong && blockShort) continue;
+
+    // 快速預篩：原始評分不足直接跳過
     const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
     if (rawConf < 75) continue;
+
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
+
     const setup = computeSimpleSetup(coin, isLong);
-    // AI最終防線攔截 OR 信心不足80% → 不記錄
-    if (setup.conf < 75 || setup.hardBlocked) continue;
-    const conf = setup.conf;
+
+    // 套用宏觀 + AI 逆風扣分後重新計算最終信心
+    const macroPen = isLong ? macroPenLong : macroPenShort;
+    const finalConf = Math.max(0, setup.conf - macroPen);
+
+    // 最終信心 < 75% 或 AI 硬封鎖 → 不記錄
+    if (finalConf < 75 || setup.hardBlocked) continue;
+
     tlog.unshift({
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -4042,7 +4104,7 @@ function recordSignalsFromScan(data) {
       rsi: parseFloat(coin.rsi) || 50,
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
-      conf,
+      conf: finalConf, rawConf: setup.rawConf,
       status: 'pending', outcome: null, tp1Hit: false,
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -4071,6 +4133,27 @@ function updateOpenTrades(data) {
       trade.cancelTime = Date.now();
       changed = true;
     }
+  }
+
+  // ── 宏觀方向反轉：本週 + 今日 AI 均明確反向的未入場掛單 → 取消 ──
+  if (_macroCache) {
+    try {
+      const wb = computeWeeklyAIBias(_macroCache.fg, _macroCache);
+      const tb = computeTodayAIBias(_macroCache.fg, _macroCache);
+      const macroBearish = wb.bias.includes('bear') && tb.bias.includes('bear');
+      const macroBullish = wb.bias.includes('bull') && tb.bias.includes('bull');
+      for (const trade of tlog) {
+        if (trade.status !== 'pending' || trade.entryTime) continue; // 已入場不干預
+        const shouldCancel = (trade.direction === 'long'  && macroBearish)
+                          || (trade.direction === 'short' && macroBullish);
+        if (shouldCancel) {
+          trade.status = 'cancelled';
+          trade.cancelReason = '宏觀 + AI 走勢均明確反向，取消未入場掛單';
+          trade.cancelTime = Date.now();
+          changed = true;
+        }
+      }
+    } catch(e) {}
   }
 
   for (const trade of tlog) {
