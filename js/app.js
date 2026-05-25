@@ -1447,7 +1447,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     entryReasons.push(`🚫 ${bigTrendBlockReason}`);
   }
 
-  // 緩存完整設置供 Telegram 通知使用
+  // 緩存完整設置供 Telegram 通知 + AI 分析使用
   _tradeSetupCache[coin.symbol] = {
     entry, sl, tp1, tp2,
     entryReason: entryReasons.join('，'),
@@ -1463,6 +1463,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     aiTrendReasons, flipRisks,
     weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
     todayBias:  todayBiasData.biasLabel,  todayConf:  todayBiasData.conf,
+    // AI 風控資料（供 generateAIAnalysis 整合進分析文字）
+    hardBlocked,
+    blockReasons: blockReasons || [],
+    learnWarnings: learnWarnings || [],
+    defenseChecks: learnResult?.defenseChecks || [],
+    direction,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -3087,6 +3093,20 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   const breaks  = sigs.filter(x => x.d.bullBreak || x.d.bearBreak);
   const vBreaks = breaks.filter(x => x.d.isHighVol);
 
+  // ── 讀取 AI 風控快取（由 buildTradeSetup 計算後存入）──
+  const cached       = _tradeSetupCache[coin.symbol];
+  const riskBlocked  = cached?.hardBlocked     || false;
+  const blockReasons = cached?.blockReasons    || [];
+  const learnWarn    = cached?.learnWarnings   || [];
+  const defChecks    = cached?.defenseChecks   || [];
+  const learnPen     = cached?.learnPenalty    || 0;
+  const adxPen       = cached?.hardAdxPenalty  || 0;
+  const macroPen     = cached?.macroOpposePenalty || 0;
+  const aiPen        = cached?.aiTrendPenalty  || 0;
+  const finalConf    = cached?.finalConf       ?? cached?.conf;
+  const rawConf      = cached?.rawConf;
+  const tradeDir     = cached?.direction;      // 'long' | 'short' | 'wait'
+
   let p1;
   if (bullTFs.length >= bearTFs.length + 2)
     p1 = `📈 多週期分析顯示 <strong>${coin.symbol}</strong> 整體偏多。${bullTFs.length ? `在 <strong>${bullTFs.join('、')}</strong> 週期均呈現看漲信號` : ''}${bearTFs.length ? `，但 <strong>${bearTFs.join('、')}</strong> 存在偏空壓力，注意短線回調風險。` : '，多頭方向較一致。'}`;
@@ -3120,17 +3140,58 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   let p4;
   const h1Swing = mtfData['1h']?.signal?.swingHigh;
   const h1Low   = mtfData['1h']?.signal?.swingLow;
-  if (rsi > 70 && adx > 30)              p4 = `⚠️ <strong>操作建議</strong>：RSI 超買（${rsi}）且趨勢強勁（ADX ${adx}），不宜追高，等待回調至 EMA20（${fmtPrice(coin.ema20)}）附近再考慮介入，設置嚴格止損。`;
-  else if (rsi < 30 && adx > 25)         p4 = `💡 <strong>操作建議</strong>：RSI 超賣（${rsi}），若出現帶量反彈K棒可輕倉試多，止損設於近期低點下方。`;
-  else if (bullTFs.length > bearTFs.length && adx > 22) p4 = `✅ <strong>操作建議</strong>：多頭趨勢中（ADX ${adx}），可在回撤至 EMA20（${fmtPrice(coin.ema20)}）附近結合訂單流確認後介入，風險收益比較佳。`;
-  else if (bearTFs.length > bullTFs.length && adx > 22) p4 = `📉 <strong>操作建議</strong>：空頭趨勢中（ADX ${adx}），避免逆勢做多，等待 RSI 底部背離或帶量止跌K棒信號出現後再考慮布局。`;
-  else                                    p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。`;
+  // 整合 AI 風控狀態到操作建議
+  if (riskBlocked) {
+    p4 = `🚫 <strong>操作建議</strong>：AI 風控硬性攔截（${blockReasons[0]?.slice(0, 60) || '歷史止損條件觸發'}），本次不建議進場，等待市場條件改善。`;
+  } else if (tradeDir === 'wait') {
+    p4 = `⏸ <strong>操作建議</strong>：當前信號不足或條件受限（信心度 ${finalConf ?? '--'}%），建議觀望，等待更強確認信號。`;
+  } else if (rsi > 70 && adx > 30) {
+    p4 = `⚠️ <strong>操作建議</strong>：RSI 超買（${rsi}）且趨勢強勁（ADX ${adx}），不宜追高，等待回調至 EMA20（${fmtPrice(coin.ema20)}）附近再考慮介入，設置嚴格止損。`;
+  } else if (rsi < 30 && adx > 25) {
+    p4 = `💡 <strong>操作建議</strong>：RSI 超賣（${rsi}），若出現帶量反彈K棒可輕倉試多，止損設於近期低點下方。`;
+  } else if (bullTFs.length > bearTFs.length && adx > 22) {
+    p4 = `✅ <strong>操作建議</strong>：多頭趨勢中（ADX ${adx}），可在回撤至 EMA20（${fmtPrice(coin.ema20)}）附近結合訂單流確認後介入，風險收益比較佳。`;
+  } else if (bearTFs.length > bullTFs.length && adx > 22) {
+    p4 = `📉 <strong>操作建議</strong>：空頭趨勢中（ADX ${adx}），避免逆勢做多，等待 RSI 底部背離或帶量止跌K棒信號出現後再考慮布局。`;
+  } else {
+    p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。`;
+  }
+
+  // ── AI 風控整合段落（有資料才顯示）──
+  let p5 = '';
+  const totalPen = learnPen + adxPen + macroPen + aiPen;
+  if (riskBlocked) {
+    const brList = blockReasons.slice(0, 2).map(r => `<li>${r}</li>`).join('');
+    p5 = `<div style="background:rgba(239,68,68,.08);border-left:3px solid #ef4444;padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
+      <strong style="color:#ef4444">🚫 AI 風控：硬性攔截</strong>
+      <ul style="margin:4px 0 0 16px;font-size:0.82em;color:var(--text2)">${brList}</ul>
+    </div>`;
+  } else if (totalPen > 0 || learnWarn.length > 0) {
+    const penDetail = [
+      adxPen  > 0 ? `ADX 過低 -${adxPen}%` : '',
+      macroPen > 0 ? `宏觀逆風 -${macroPen}%` : '',
+      aiPen   > 0 ? `AI趨勢逆向 -${aiPen}%` : '',
+      learnPen > 0 ? `止損記憶 -${learnPen}%` : '',
+    ].filter(Boolean).join('　');
+    const warnList = learnWarn.slice(0, 3).map(w => `<li>${w}</li>`).join('');
+    const failChecksHtml = defChecks.filter(c => !c.pass).slice(0, 3)
+      .map(c => `<li><span style="color:#f59e0b">${c.label}</span>（歷史 ${c.count} 次，-${c.penalty}%）</li>`).join('');
+    p5 = `<div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
+      <strong style="color:#f59e0b">⚠️ AI 風控：信心扣分 -${totalPen}%</strong>
+      ${rawConf != null ? `<span style="color:var(--text3);font-size:0.8em;margin-left:6px">${rawConf}% → 最終 ${finalConf ?? '--'}%</span>` : ''}
+      <div style="font-size:0.8em;color:var(--text3);margin-top:2px">${penDetail}</div>
+      ${warnList || failChecksHtml ? `<ul style="margin:4px 0 0 16px;font-size:0.8em;color:var(--text2)">${warnList}${failChecksHtml}</ul>` : ''}
+    </div>`;
+  } else if (cached) {
+    p5 = `<div style="font-size:0.8em;color:#22c55e;margin-top:4px">✅ AI 風控通過：無歷史止損記憶觸發，信心度 ${finalConf ?? '--'}%（原始 ${rawConf ?? '--'}%，無扣分）</div>`;
+  }
 
   return `<div class="ai-analysis-body">
     <div class="ai-para">${p1}</div>
     ${p2 ? `<div class="ai-para">${p2}</div>` : ''}
     ${p3 ? `<div class="ai-para">${p3}</div>` : ''}
     <div class="ai-para">${p4}</div>
+    ${p5 ? `<div class="ai-para">${p5}</div>` : ''}
   </div>`;
 }
 
