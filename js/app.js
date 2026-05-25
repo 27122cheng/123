@@ -39,12 +39,18 @@ async function init() {
   registerSW();        // 後台通知 Service Worker
   monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
 
-  const { data, source } = await fetchMarketData(state.timeframe);
-  state.data       = data;
-  state.dataSource = source;
-  state.filtered   = [...data];
-  updateOpenTrades(data);
-  recordSignalsFromScan(data);
+  try {
+    const { data, source } = await fetchMarketData(state.timeframe);
+    state.data       = data;
+    state.dataSource = source;
+    state.filtered   = [...data];
+    updateOpenTrades(data);
+    recordSignalsFromScan(data);
+  } catch (e) {
+    console.error('[init] fetchMarketData 失敗，使用空數據', e);
+    state.data     = [];
+    state.filtered = [];
+  }
 
   hideLoading();
   hideScanBar();
@@ -1469,7 +1475,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     blockReasons: blockReasons || [],
     learnWarnings: learnWarnings || [],
     defenseChecks: learnResult?.defenseChecks || [],
-    direction,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -1526,37 +1531,32 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   }
 
-  // ── 信心不足 / AI 風控攔截 → 返回觀望面板，不顯示交易推薦 ──
+  // ── 信心不足 / AI 風控攔截 → 僅顯示扣分原因，不顯示任何交易推薦 ──
   if (direction === 'wait') {
     const cColor = v => v >= 80 ? '#22c55e' : v >= 60 ? '#f59e0b' : '#ef4444';
-    const waitReasons = [];
+    // 只列出有實際扣分的原因，攔截時列封鎖理由
+    const deductLines = [];
     if (hardBlocked) {
-      blockReasons.slice(0, 3).forEach(r => waitReasons.push(r));
+      blockReasons.slice(0, 3).forEach(r => deductLines.push(r));
     } else {
-      if (hardAdxPenalty > 0)     waitReasons.push(`⚡ ADX ${adxVal} 過低，扣 -${hardAdxPenalty}%`);
-      if (macroOpposePenalty > 0) waitReasons.push(`🌐 宏觀逆風，扣 -${macroOpposePenalty}%`);
-      if (aiTrendPenalty > 0)     waitReasons.push(`🤖 AI趨勢逆向，扣 -${aiTrendPenalty}%`);
-      if (learnPenalty > 0)       waitReasons.push(`📚 止損記憶觸發，扣 -${learnPenalty}%`);
-      waitReasons.push(`最終信心度 <strong>${conf}%</strong>（原始 ${rawConf}%），未達 80% 門檻`);
+      if (hardAdxPenalty > 0)     deductLines.push(`ADX ${adxVal} 過低（${adxVal < 18 ? '< 18' : '< 22'}），扣 -${hardAdxPenalty}%`);
+      if (macroOpposePenalty > 0) deductLines.push(`宏觀環境逆風，扣 -${macroOpposePenalty}%`);
+      if (aiTrendPenalty > 0)     deductLines.push(`AI 趨勢預測逆向（本週/今日），扣 -${aiTrendPenalty}%`);
+      if (learnPenalty > 0)       deductLines.push(`止損歷史記憶觸發，扣 -${learnPenalty}%`);
     }
     const confFlow = [
-      `<span style="color:var(--text3);font-size:0.75rem">原始</span> <span style="font-weight:700;color:${cColor(rawConf)}">${rawConf}%</span>`,
-      hardAdxPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.75rem">→ ADX -${hardAdxPenalty}</span>` : '',
-      macroOpposePenalty > 0 ? `<span style="color:#f59e0b;font-size:0.75rem">→ 宏觀 -${macroOpposePenalty}</span>` : '',
-      aiTrendPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.75rem">→ AI -${aiTrendPenalty}</span>` : '',
-      learnPenalty > 0       ? `<span style="color:#f59e0b;font-size:0.75rem">→ 風控 -${learnPenalty}</span>` : '',
-      `<span style="color:var(--text3);font-size:0.75rem">→ 最終</span> <span style="font-weight:700;font-size:0.85rem;color:${cColor(conf)}">${conf}%</span>`,
+      `<span style="color:var(--text3);font-size:0.73rem">原始 ${rawConf}%</span>`,
+      hardAdxPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.73rem">→ ADX -${hardAdxPenalty}</span>` : '',
+      macroOpposePenalty > 0 ? `<span style="color:#f59e0b;font-size:0.73rem">→ 宏觀 -${macroOpposePenalty}</span>` : '',
+      aiTrendPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.73rem">→ AI -${aiTrendPenalty}</span>` : '',
+      learnPenalty > 0       ? `<span style="color:#f59e0b;font-size:0.73rem">→ 風控 -${learnPenalty}</span>` : '',
+      `<span style="color:var(--text3);font-size:0.73rem">= 最終</span> <span style="font-weight:700;color:${cColor(conf)}">${conf}%</span>`,
     ].filter(Boolean).join(' ');
     return `<div class="setup-wait">
       <div class="setup-wait-icon">${hardBlocked ? '🚫' : '⚠️'}</div>
-      <div class="setup-wait-title">${hardBlocked ? 'AI 風控硬性攔截，本次不建議進場' : `信心度不足（${conf}%），暫不推薦交易`}</div>
-      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin:6px 0 8px;padding:6px 10px;background:rgba(255,255,255,.03);border-radius:7px">${confFlow}</div>
-      <ul class="setup-wait-reasons">
-        ${waitReasons.map(r => `<li>${r}</li>`).join('')}
-      </ul>
-      <div style="margin-top:10px;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px;font-size:0.74rem;color:var(--text3)">
-        📐 大時框架：4H <strong style="color:${h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)'}">${h4TrendLabel}</strong>　日線 <strong style="color:${d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)'}">${d1TrendLabel}</strong>
-      </div>
+      <div class="setup-wait-title">${hardBlocked ? '本次不進場（AI 風控封鎖）' : '本次不推薦交易'}</div>
+      ${!hardBlocked ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin:4px 0 6px;font-size:0.73rem">${confFlow}</div>` : ''}
+      ${deductLines.length ? `<ul class="setup-wait-reasons">${deductLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
     </div>`;
   }
 
