@@ -463,10 +463,10 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
 
   const isRange = setup?.tradeType === 'range';
   let msg = isRange
-    ? `🔄 <b>加密掃描 Pro — 交易信號（震盪）</b>\n\n`
+    ? `🔄 <b>加密掃描 Pro — 震盪交易信號</b>\n\n`
     : `🚨 <b>加密掃描 Pro — 交易信號</b>\n\n`;
   msg += `${icon} <b>${dirTx}：${coin.symbol}</b>`;
-  if (isRange) msg += `  <b>#震盪</b>`;
+  if (isRange) msg += `  <b>#震盪交易</b>`;
   msg += `\n`;
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
