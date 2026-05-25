@@ -1130,7 +1130,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const rRR2     = (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1);
       const rConf    = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
       const rEntryReasons = [
-        `🔄 震盪交易模式（宏觀+今日AI中性）`,
+        `震盪（宏觀+今日AI中性）`,
         rIsLong
           ? `RSI ${rsi}（偏低）${bb1hPctB <= 0.24 ? `，BB%B ${bb1hPctB.toFixed(2)}（近下軌）` : ''}，震盪低點做多`
           : `RSI ${rsi}（偏高）${bb1hPctB >= 0.76 ? `，BB%B ${bb1hPctB.toFixed(2)}（近上軌）` : ''}，震盪高點做空`,
@@ -1182,7 +1182,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         <div class="verdict-dir">
           <span class="verdict-arrow">${rIcon}</span>
           <span class="verdict-label">${rIsLong ? '短線做多' : '短線做空'}</span>
-          <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">🔄 震盪交易</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">震盪</span>
           <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">震盪高低點快進快出</span>
         </div>
         <div class="verdict-conf-wrap">
@@ -1191,7 +1191,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <span style="color:${rColor};font-weight:700;font-size:0.9rem">${rConf}%</span>
         </div>
         <div style="margin-top:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:10px 12px;font-size:0.8rem">
-          <div style="color:var(--text2);font-weight:600;margin-bottom:6px">🔄 震盪交易（宏觀中性）</div>
+          <div style="color:var(--text2);font-weight:600;margin-bottom:6px">🔄 震盪（宏觀中性）</div>
           <div style="color:var(--text3);font-size:0.75rem;margin-bottom:4px">本週 <b style="color:var(--text2)">${weeklyBiasData.biasLabel}</b> ／ 今日 <b style="color:var(--text2)">${todayBiasData.biasLabel}</b></div>
           <div style="color:var(--text3);font-size:0.75rem">${rEntryReasons[1]}</div>
         </div>
@@ -1225,9 +1225,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
   let   dirLabel = isLong ? '短線做多' : '短線做空';
   const dirIcon  = isLong ? '▲' : '▼';
-  // 震盪模式標記：方向明確但宏觀+今日AI中性 → 標示為「震盪交易」
+  // 震盪模式標記：方向明確但宏觀+今日AI中性 → 標示為「震盪」
   const rangeTagHtml = isRangeMode
-    ? `<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">🔄 震盪交易</span>`
+    ? `<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">震盪</span>`
     : '';
 
   // AI 長線分析（僅括號標注，不另開面板）
