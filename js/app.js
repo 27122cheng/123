@@ -1317,7 +1317,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       traps15?.po3Bull?.label, traps15?.sweepBull?.label,
     ].filter(Boolean);
     bullTraps.forEach(t => entryReasons.push(`📌 ${t}`));
-    if (!entryReasons.length)      entryReasons.push('15m/1h 多頭信號共振');
+    // 基礎技術指標（補充或作為主要進場依據）
+    const ema50L  = parseFloat(coin.ema50)  || 0;
+    const ema200L = parseFloat(coin.ema200) || 0;
+    const macdHL  = parseFloat(coin.macdHist) || 0;
+    const momL    = parseFloat(coin.momentum)  || 0;
+    const volStrL = coin.volumeStrength || '';
+    const adxL    = adx; // already defined above
+    if (rsi >= 45 && rsi < 65) entryReasons.push(`RSI ${rsi} 積極偏多，動能尚未過熱`);
+    else if (rsi >= 65)        entryReasons.push(`RSI ${rsi} 強勢偏多`);
+    if (ema50L > 0 && price > m15ema && m15ema > ema50L) entryReasons.push(`EMA 多頭排列（20 > 50），趨勢向上`);
+    else if (price > m15ema && !entryReasons.some(r => r.includes('EMA20'))) entryReasons.push(`價格站上 EMA20，短線偏多`);
+    if (ema200L > 0 && price > ema200L) entryReasons.push(`價格在 EMA200 上方，長線支撐`);
+    if (macdHL > 0)  entryReasons.push(`MACD 柱狀翻正，多頭動能確認`);
+    if (momL > 0)    entryReasons.push(`動量正值（+${momL}），上行動能持續`);
+    if (volStrL === '高') entryReasons.push(`高量配合，量價齊升確認`);
+    if (adxL > 35)   entryReasons.push(`ADX ${adxL} 強趨勢，追多有效`);
+    else if (adxL > 22) entryReasons.push(`ADX ${adxL} 趨勢成形`);
+    const scoreL = coin.score || 60;
+    if (!entryReasons.some(r => r.includes('評分'))) {
+      if (scoreL >= 85) entryReasons.push(`綜合評分 ${scoreL}，強勢看漲信號`);
+      else              entryReasons.push(`綜合評分 ${scoreL}，多頭信號確認`);
+    }
+    if (!entryReasons.length) entryReasons.push('15m/1h 多頭信號共振');
   } else {
     const nearRes = resists[0];
     if (nearRes && (nearRes - price) < atr * 0.8) {
@@ -1357,7 +1379,30 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       traps15_?.po3Bear?.label, traps15_?.sweepBear?.label,
     ].filter(Boolean);
     bearTraps.forEach(t => entryReasons.push(`📌 ${t}`));
-    if (!entryReasons.length)      entryReasons.push('15m/1h 空頭信號共振');
+    // 基礎技術指標（補充或作為主要進場依據）
+    const ema50S  = parseFloat(coin.ema50)  || 0;
+    const ema200S = parseFloat(coin.ema200) || 0;
+    const macdHS  = parseFloat(coin.macdHist) || 0;
+    const momS    = parseFloat(coin.momentum)  || 0;
+    const volStrS = coin.volumeStrength || '';
+    const adxS    = adx;
+    if (rsi <= 50 && rsi > 35) entryReasons.push(`RSI ${rsi} 偏弱，下行動能確認`);
+    else if (rsi <= 35)        entryReasons.push(`RSI ${rsi} 弱勢偏空`);
+    else if (rsi > 62)         entryReasons.push(`RSI ${rsi} 超買區，回落機會`);
+    if (ema50S > 0 && price < m15ema && m15ema < ema50S) entryReasons.push(`EMA 空頭排列（20 < 50），趨勢向下`);
+    else if (price < m15ema && !entryReasons.some(r => r.includes('EMA20'))) entryReasons.push(`價格跌破 EMA20，短線偏空`);
+    if (ema200S > 0 && price < ema200S) entryReasons.push(`價格在 EMA200 下方，長線壓力`);
+    if (macdHS < 0)  entryReasons.push(`MACD 柱狀負值，空頭動能確認`);
+    if (momS < 0)    entryReasons.push(`動量負值（${momS}），下行動能持續`);
+    if (volStrS === '高') entryReasons.push(`高量配合，量價齊跌確認`);
+    if (adxS > 35)   entryReasons.push(`ADX ${adxS} 強趨勢，追空有效`);
+    else if (adxS > 22) entryReasons.push(`ADX ${adxS} 趨勢成形`);
+    const scoreS = coin.score || 50;
+    if (!entryReasons.some(r => r.includes('評分'))) {
+      if (scoreS <= 15) entryReasons.push(`綜合評分 ${scoreS}，強勢看跌信號`);
+      else              entryReasons.push(`綜合評分 ${scoreS}，空頭信號確認`);
+    }
+    if (!entryReasons.length) entryReasons.push('15m/1h 空頭信號共振');
   }
 
   // ── 止損：結構位 + 緩衝 ──
@@ -6349,9 +6394,9 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 85) {
-      // 原始信號夠強（≥85%）但扣分後低於門檻 → 取消未入場交易建議
-      if (rawConfVal >= 85 && s.notifTelegram && s.tgToken && s.tgChatId) {
+    if (notifConf < 80) {
+      // 原始信號夠強（≥80%）但扣分後低於門檻 → 取消未入場交易建議
+      if (rawConfVal >= 80 && s.notifTelegram && s.tgToken && s.tgChatId) {
         // 只針對「尚未入場」的掛單：有 entryTime 的已入場交易不撤銷
         const tlogNow = loadTradeLog();
         const alreadyEntered = tlogNow.some(t =>
