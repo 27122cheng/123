@@ -2103,6 +2103,53 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
 /* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
 /* ── 儀表板市場大方向 ─────────────────────────────────────── */
+/* ── 宏觀綜合方向（與大方向進度條完全一致）──────────────────
+   返回 'bull' | 'slight_bull' | 'neutral' | 'slight_bear' | 'bear'
+   用於 recordSignalsFromScan 及 updateOpenTrades 的封鎖判斷，
+   確保持倉邏輯與 UI 顯示的大方向完全對齊。
+   ─────────────────────────────────────────────────────────── */
+function computeMacroNetDir(fg, gm) {
+  const fgVal = fg ? parseInt(fg.value) : null;
+  const chg   = gm?.marketCapChange || 0;
+  const dom   = gm?.btcDominance   || 50;
+  let bull = 0, bear = 0;
+
+  // 恐慌貪婪
+  if (fgVal !== null) {
+    if (fgVal >= 60) bull++;
+    else if (fgVal <= 40) bear++;
+  }
+  // 市值變化
+  if      (chg > 2)  bull += 2;
+  else if (chg > 0)  bull++;
+  else if (chg < -2) bear += 2;
+  else if (chg < 0)  bear++;
+  // BTC 主導
+  if      (dom > 56) bear++;
+  else if (dom < 44) bull++;
+
+  // 本週 / 今日 AI 走勢
+  const wb = computeWeeklyAIBias(fg, gm);
+  const tb = computeTodayAIBias(fg, gm);
+  const addBias = (bias, bullW, bearW) => {
+    if      (bias === 'strong_bull') bull += bullW;
+    else if (bias === 'bull')        bull += (bullW * 0.5);
+    else if (bias === 'slight_bull') bull += (bullW * 0.25);
+    else if (bias === 'strong_bear') bear += bearW;
+    else if (bias === 'bear')        bear += (bearW * 0.5);
+    else if (bias === 'slight_bear') bear += (bearW * 0.25);
+  };
+  addBias(wb.bias, 2, 2);
+  addBias(tb.bias, 2, 2);
+
+  // 與 buildMarketOutlook 相同的閾值：差距 > 1 才算定向
+  if      (bull > bear + 1)  return 'bull';
+  else if (bear > bull + 1)  return 'bear';
+  else if (bull > bear)      return 'slight_bull';
+  else if (bear > bull)      return 'slight_bear';
+  return 'neutral';
+}
+
 function buildMarketOutlook(fg, global) {
   const fgVal = fg ? parseInt(fg.value) : null;
   const fgZh  = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg?.value_classification] || '';
@@ -4017,24 +4064,25 @@ function recordSignalsFromScan(data) {
   const tlog = loadTradeLog();
   let changed = false;
 
-  // ── 預先計算宏觀方向（有快取時才執行，無快取則全放行）──
+  // ── 預先計算宏觀方向（使用與大方向進度條完全一致的多因子評分）──
+  let macroNetDir = 'neutral';  // 預設：無快取時全放行
   let wBias = 'neutral', tBias = 'neutral';
   let macroPenLong = 0, macroPenShort = 0;
   if (_macroCache) {
     try {
       const fg = _macroCache.fg;
       const gm = _macroCache;
-      const wb = computeWeeklyAIBias(fg, gm);   // 4小時快取，幾乎無成本
+      macroNetDir = computeMacroNetDir(fg, gm);  // 與 UI 大方向完全對齊
+      const wb = computeWeeklyAIBias(fg, gm);
       const tb = computeTodayAIBias(fg, gm);
       wBias = wb.bias;
       tBias = tb.bias;
 
-      // 計算宏觀逆風扣分（與 checkAndSendAlerts 相同邏輯）
+      // 計算宏觀逆風扣分
       const fgVal  = fg ? parseInt(fg.value || '50') : 50;
       const chgVal = gm?.marketCapChange || 0;
       const domVal = gm?.btcDominance   || 50;
 
-      // 多頭宏觀扣分
       let againstLong = 0;
       if (chgVal < -2) againstLong++;
       if (domVal > 58) againstLong++;
@@ -4042,7 +4090,6 @@ function recordSignalsFromScan(data) {
       if (fgVal  > 75) againstLong += 0.5;
       macroPenLong = againstLong >= 3 ? 18 : againstLong >= 2 ? 12 : againstLong >= 1 ? 5 : 0;
 
-      // 空頭宏觀扣分
       let againstShort = 0;
       if (chgVal > 2)  againstShort++;
       if (domVal < 44) againstShort++;
@@ -4050,30 +4097,20 @@ function recordSignalsFromScan(data) {
       if (fgVal  < 25) againstShort += 0.5;
       macroPenShort = againstShort >= 3 ? 18 : againstShort >= 2 ? 12 : againstShort >= 1 ? 5 : 0;
 
-      // AI 走勢方向扣分
-      const wOppLong  = wBias.includes('bear');
-      const wOppShort = wBias.includes('bull');
-      const tOppLong  = tBias.includes('bear');
-      const tOppShort = tBias.includes('bull');
-      if (wOppLong)  macroPenLong  += wBias.includes('strong') ? 8 : 4;
-      if (tOppLong)  macroPenLong  += 5;
-      if (wOppShort) macroPenShort += wBias.includes('strong') ? 8 : 4;
-      if (tOppShort) macroPenShort += 5;
-    } catch(e) { /* 宏觀計算失敗 → 維持 0 扣分，允許記錄 */ }
+      // AI 走勢方向扣分（附加於宏觀扣分之上）
+      if (wBias.includes('bear')) macroPenLong  += wBias.includes('strong') ? 8 : 4;
+      if (tBias.includes('bear')) macroPenLong  += 5;
+      if (wBias.includes('bull')) macroPenShort += wBias.includes('strong') ? 8 : 4;
+      if (tBias.includes('bull')) macroPenShort += 5;
+    } catch(e) { /* 宏觀計算失敗 → 維持 neutral，允許記錄 */ }
   }
 
-  // ── 方向判斷（只有明確 bear/bull 才算定向，slight 與 neutral 不封鎖）──
-  const wClearBear = wBias === 'bear' || wBias === 'strong_bear';
-  const wClearBull = wBias === 'bull' || wBias === 'strong_bull';
-  const tClearBear = tBias === 'bear' || tBias === 'strong_bear';
-  const tClearBull = tBias === 'bull' || tBias === 'strong_bull';
-
-  // 方向硬封鎖：本週 + 今日同時明確反向 → 不允許開倉
-  const blockLong  = wClearBear && tClearBear;
-  const blockShort = wClearBull && tClearBull;
-
-  // 震盪模式：本週 + 今日均非明確定向（neutral / slight 均算震盪）
-  const isRangeMode = !wClearBear && !wClearBull && !tClearBear && !tClearBull;
+  // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
+  // 大方向「偏空」(bear) → 不開多；「偏多」(bull) → 不開空
+  // 「中性偏空/偏多/中性」→ 震盪模式，用影線區域做反轉
+  const blockLong  = macroNetDir === 'bear';
+  const blockShort = macroNetDir === 'bull';
+  const isRangeMode = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
 
   // ══════════════════════════════════════════════════
   // 震盪行情路徑（大時區多次觸碰+收引線的區域做反轉）
@@ -4290,25 +4327,21 @@ function updateOpenTrades(data) {
     }
   }
 
-  // ── 宏觀方向反轉：本週 + 今日 AI 均明確反向的未入場定向掛單 → 取消 ──
-  // 注意：震盪單（tradeType='range'）不依賴方向，不在此取消
+  // ── 宏觀大方向反轉：與 UI 進度條一致的方向封鎖 → 取消未入場掛單 ──
+  // 震盪單（tradeType='range'）不依賴大方向，不在此取消
   if (_macroCache) {
     try {
-      const wb = computeWeeklyAIBias(_macroCache.fg, _macroCache);
-      const tb = computeTodayAIBias(_macroCache.fg, _macroCache);
-      // 只有明確 bear/bull 才算定向（slight 不觸發取消）
-      const macroBearish = (wb.bias === 'bear' || wb.bias === 'strong_bear')
-                        && (tb.bias === 'bear' || tb.bias === 'strong_bear');
-      const macroBullish = (wb.bias === 'bull' || wb.bias === 'strong_bull')
-                        && (tb.bias === 'bull' || tb.bias === 'strong_bull');
+      const netDir = computeMacroNetDir(_macroCache.fg, _macroCache);
+      const macroBearish = netDir === 'bear';   // 大方向偏空
+      const macroBullish = netDir === 'bull';   // 大方向偏多
       for (const trade of tlog) {
         if (trade.status !== 'pending' || trade.entryTime) continue; // 已入場不干預
-        if (trade.tradeType === 'range') continue;                    // 震盪單不受方向取消
+        if (trade.tradeType === 'range') continue;                    // 震盪單豁免
         const shouldCancel = (trade.direction === 'long'  && macroBearish)
                           || (trade.direction === 'short' && macroBullish);
         if (shouldCancel) {
           trade.status = 'cancelled';
-          trade.cancelReason = '宏觀 + AI 走勢均明確反向，取消未入場掛單';
+          trade.cancelReason = '大方向明確反向（與 UI 方向一致），取消未入場掛單';
           trade.cancelTime = Date.now();
           changed = true;
         }
