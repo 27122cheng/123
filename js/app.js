@@ -1618,32 +1618,35 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── 本週 / 今日 AI 預測方向對照（第①層宏觀擴展；已在函式前段計算）──
-  const weeklyAligned = (isLong && weeklyBiasData.bias.includes('bull')) || (!isLong && weeklyBiasData.bias.includes('bear'));
-  const weeklyNeutral = weeklyBiasData.bias === 'neutral';
+  // 防禦：bias 可能因舊版快取為 undefined → 用 || '' 確保 .includes() 不 throw
+  const _wBias = weeklyBiasData.bias || '';
+  const _tBias = todayBiasData.bias  || '';
+  const weeklyAligned = (isLong && _wBias.includes('bull')) || (!isLong && _wBias.includes('bear'));
+  const weeklyNeutral = _wBias === 'neutral' || _wBias === '';
   const weeklyOpposed = !weeklyAligned && !weeklyNeutral;
-  const todayAligned  = (isLong && todayBiasData.bias.includes('bull')) || (!isLong && todayBiasData.bias.includes('bear'));
-  const todayNeutral  = todayBiasData.bias === 'neutral';
+  const todayAligned  = (isLong && _tBias.includes('bull')) || (!isLong && _tBias.includes('bear'));
+  const todayNeutral  = _tBias === 'neutral' || _tBias === '';
   const todayOpposed  = !todayAligned && !todayNeutral;
 
   // AI 趨勢對照懲罰（避免與 macroOpposePenalty 重複，只計非宏觀因子的差距）
   let aiTrendPenalty = 0;
   const aiTrendReasons = [];
   if (weeklyOpposed) {
-    const pen = weeklyBiasData.bias.includes('strong') ? 8 : 4;
+    const pen = _wBias.includes('strong') ? 8 : 4;
     aiTrendPenalty += pen;
-    aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
+    aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
   } else if (weeklyNeutral) {
-    aiTrendReasons.push(`本週AI預測震盪中性（信心 ${weeklyBiasData.conf}%），無方向加成`);
+    aiTrendReasons.push(`本週AI預測震盪中性（信心 ${weeklyBiasData.conf || 50}%），無方向加成`);
   } else {
-    aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel}（信心 ${weeklyBiasData.conf}%），與${isLong ? '多' : '空'}方向一致`);
+    aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}（信心 ${weeklyBiasData.conf || 50}%），與${isLong ? '多' : '空'}方向一致`);
   }
   if (todayOpposed) {
     aiTrendPenalty += 5;
-    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel}，${isLong ? '多頭' : '空頭'}今日逆風，扣 5%`);
+    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}，${isLong ? '多頭' : '空頭'}今日逆風，扣 5%`);
   } else if (todayNeutral) {
-    aiTrendReasons.push(`今日AI預測中性觀望（信心 ${todayBiasData.conf}%），謹慎操作`);
+    aiTrendReasons.push(`今日AI預測中性觀望（信心 ${todayBiasData.conf || 50}%），謹慎操作`);
   } else {
-    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel}（信心 ${todayBiasData.conf}%），今日方向一致`);
+    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}（信心 ${todayBiasData.conf || 50}%），今日方向一致`);
   }
 
   // 數據公布風險：掃描近 8 小時內的高影響事件，標記可能令方向逆轉的節點
@@ -1844,7 +1847,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const mktChg = globalMkt?.marketCapChange || 0;
   const btcDom = globalMkt?.btcDominance   || 0;
   const fgColor = fgVal != null ? (fgVal < 35 ? 'var(--bear)' : fgVal > 65 ? 'var(--bull)' : 'var(--text2)') : '';
-  const macroFavor = (() => {
+  const macroFavor = (() => { try {
     if (!fearGreed && !globalMkt) return null;
     let bull = 0, bear = 0;
     if (fgVal != null) { if (fgVal < 35) bull++; else if (fgVal > 65) bear++; }
@@ -1853,7 +1856,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (bull > bear) return `宏觀偏多，${isLong ? '順勢' : '逆勢'}`;
     if (bear > bull) return `宏觀偏空，${isLong ? '逆勢需謹慎' : '順勢'}`;
     return '宏觀中性';
-  })();
+  } catch(e) { return null; } })();
 
   // ── AI 學習摘要 ──
   const profile = getLearnProfile();
@@ -1862,7 +1865,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // ── 布林通道狀態摘要 ──
   const bbStatus1h  = bb1h_  || null;
   const bbStatus15m = bb15m_ || null;
-  const bbChipsHtml = (() => {
+  const bbChipsHtml = (() => { try {
     const chips = [];
     if (bbStatus1h) {
       const pctB = bbStatus1h.pctB;
@@ -1877,7 +1880,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       chips.push(`<span class="setup-macro-chip" style="color:${clr}">📊 BB(15m) ${pos}</span>`);
     }
     return chips.length ? `<div class="setup-macro-chips" style="margin-top:6px">${chips.join('')}</div>` : '';
-  })();
+  } catch(e) { return ''; } })();
 
   return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
@@ -1894,7 +1897,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ${bbChipsHtml}
   </div>
 
-  ${(() => {
+  ${(() => { try {
     // ── 大時間框架趨勢確認面板 ──
     const h4Clr = h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
     const d1Clr = d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
@@ -1917,7 +1920,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       </div>
       ${bigTrendBlocked ? `<div style="margin-top:8px;font-size:0.73rem;color:var(--bear);line-height:1.5">🚫 ${bigTrendBlockReason}，嚴格執行不進場</div>` : ''}
     </div>`;
-  })()}
+  } catch(e) { return ''; } })()}
 
   <div class="setup-macro-row">
     <div class="setup-macro-title">🌐 宏觀信號同步分析</div>
@@ -1927,7 +1930,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ${btcDom ? `<span class="setup-macro-chip" style="color:${btcDom > 58 ? 'var(--bear)' : btcDom < 44 ? 'var(--bull)' : 'var(--text2)'}">₿ BTC主導 ${btcDom.toFixed(1)}%</span>` : ''}
       ${macroFavor ? `<span class="setup-macro-chip setup-macro-verdict">${macroFavor}</span>` : ''}
     </div>` : ''}
-    ${(() => {
+    ${(() => { try {
       // AI 財經新聞重點（今日頭條）
       const insights = aiGenerateMarketInsights();
       const topNews  = insights[0];
@@ -1957,26 +1960,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ? `<div class="setup-macro-warns">${macroReasons.map(r => `<div class="setup-macro-warn-item">⚠️ ${r}</div>`).join('')}</div>`
         : '';
       return newsHtml + (evHtml ? `<div class="setup-macro-events">${evHtml}</div>` : '') + predHtml + macroWarnHtml;
-    })()}
+    } catch(e) { return ''; } })()}
   </div>
 
   <!-- 本週 / 今日 AI 方向對照 + 數據翻轉風險 -->
   <div style="background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.18);border-radius:10px;padding:11px 14px;margin-bottom:10px">
     <div style="font-size:0.78rem;font-weight:600;color:var(--text2);margin-bottom:8px">🤖 AI 趨勢對照（本週 · 今日）</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-      ${(() => {
+      ${(() => { try {
         const wClr  = weeklyOpposed ? 'var(--bear)' : weeklyNeutral ? '#f59e0b' : 'var(--bull)';
         const wIcon = weeklyOpposed ? '↔' : weeklyNeutral ? '—' : '✓';
         const tClr  = todayOpposed  ? 'var(--bear)' : todayNeutral  ? '#f59e0b' : 'var(--bull)';
         const tIcon = todayOpposed  ? '↔' : todayNeutral  ? '—' : '✓';
         return `
           <span style="font-size:0.74rem;padding:3px 10px;border-radius:16px;border:1px solid ${wClr}40;color:${wClr}">
-            📈 本週 ${weeklyBiasData.biasLabel}（${weeklyBiasData.conf}%）${wIcon}
+            📈 本週 ${weeklyBiasData.biasLabel || '—'}（${weeklyBiasData.conf || 50}%）${wIcon}
           </span>
           <span style="font-size:0.74rem;padding:3px 10px;border-radius:16px;border:1px solid ${tClr}40;color:${tClr}">
-            📅 今日 ${todayBiasData.biasLabel}（${todayBiasData.conf}%）${tIcon}
+            📅 今日 ${todayBiasData.biasLabel || '—'}（${todayBiasData.conf || 50}%）${tIcon}
           </span>`;
-      })()}
+      } catch(e) { return ''; } })()}
     </div>
     ${aiTrendReasons.length ? `
       <div style="font-size:0.73rem;color:var(--text2);line-height:1.7">
@@ -2029,7 +2032,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
 
-  ${(() => {
+  ${(() => { try {
     // ── AI 交易決策三層邏輯面板 ──
     const { defenseChecks = [] } = learnResult || {};
     const failChecks  = defenseChecks.filter(c => !c.pass);
@@ -2183,7 +2186,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
       </div>
     </div>`;
-  })()}`;
+  } catch(e) { console.warn('[buildTradeSetup] AI panel render error:', e); return ''; } })()}`;
 }
 
 /* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
@@ -3767,7 +3770,11 @@ async function renderCoinDetail(symbol) {
         : '<div class="adv-loading">⚠️ 無資料可顯示</div>';
     } catch (err) {
       console.error(`[renderCoinDetail] ${id} 渲染失敗:`, err);
-      e.innerHTML = '<div class="adv-loading" style="color:var(--bear)">⚠️ 載入失敗，請重新整理</div>';
+      // 顯示錯誤類型幫助除錯（不顯示完整 stack，避免資安問題）
+      const errMsg = err instanceof TypeError ? `TypeError: ${String(err.message).slice(0,80)}`
+                   : err instanceof ReferenceError ? `ReferenceError: ${String(err.message).slice(0,80)}`
+                   : `Error: ${String(err.message || err).slice(0, 80)}`;
+      e.innerHTML = `<div class="adv-loading" style="color:var(--bear)">⚠️ 載入失敗，請重新整理<br><span style="font-size:0.72rem;color:var(--text3);word-break:break-all">${errMsg}</span></div>`;
     }
   };
 
@@ -5643,15 +5650,16 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   // ── 防線比對 helper ──
   const addCheck = (type, label, count, fail, pen, block = false) => {
     const safeLabel = (label != null ? String(label) : '');  // 防止 undefined/null 導致 .slice() throw
+    const safePen   = (typeof pen === 'number' && isFinite(pen)) ? pen : 0;  // 防止 undefined/NaN 導致 penalty = NaN
     if (fail) {
-      penalty += pen;
-      if (type !== 'suggestion') warnings.push(safeLabel || label);
-      else warnings.push(`💡 改進建議未滿足：「${safeLabel.slice(0, 40)}」（歷史止損 ${count} 次，-${pen}%）`);
+      penalty += safePen;
+      if (type !== 'suggestion') warnings.push(safeLabel || String(label));
+      else warnings.push(`💡 改進建議未滿足：「${safeLabel.slice(0, 40)}」（歷史止損 ${count} 次，-${safePen}%）`);
       if (block) blockReasons.push(`🚫 AI最終防線：「${safeLabel.slice(0, 45)}」累計 ${count} 次/筆，已列入永久風控攔截`);
     }
     // 只收錄有足夠數據或有觸發的項目（止損記憶需 10 次以上才顯示）
     if (fail || (type !== 'memory' && count >= 3) || (type === 'memory' && count >= 10)) {
-      defenseChecks.push({ type, label: safeLabel.slice(0, 55), count, pass: !fail, penalty: fail ? pen : 0 });
+      defenseChecks.push({ type, label: safeLabel.slice(0, 55), count, pass: !fail, penalty: fail ? safePen : 0 });
     }
   };
 
