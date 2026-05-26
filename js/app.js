@@ -1197,6 +1197,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         weeklyRangeMode: true,
         todayBias: todayBiasData.biasLabel, todayConf: todayBiasData.conf,
         todayRangeMode: true,
+        rangeMacroDir: _btsNetDir,   // 供 Telegram 判斷是否顯示「謹慎操作」
         bigTrend: 'mixed', bigTrendBlocked: false, h4TrendLabel, d1TrendLabel,
         hardBlocked: false, learnPenalty: 0, hardAdxPenalty: 0,
         macroOpposePenalty: 0, aiTrendPenalty: 0,
@@ -6658,6 +6659,7 @@ async function checkAndSendAlerts(data) {
           notifSetup.todayBias     = tb.biasLabel;
           notifSetup.todayConf     = tb.conf;
           notifSetup.todayRangeMode = tb.rangeMode;
+          notifSetup.rangeMacroDir = computeMacroNetDir(fg, gm);  // 給 Telegram 判斷謹慎操作
           // flipRisks within 8h
           const nowMs = Date.now();
           notifSetup.flipRisks = (tb.highEvs || []).filter(ev => {

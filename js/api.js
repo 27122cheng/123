@@ -473,6 +473,17 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   msg += `\n`;
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
+  // ── 震盪交易：宏觀有方向偏向時加入謹慎操作提示 ──────────
+  if (isRange && setup) {
+    const rmd = setup.rangeMacroDir;
+    if (rmd === 'slight_bear') {
+      msg += `⚠️ <b>謹慎操作</b>：宏觀大方向中性偏空，此為震盪做空信號。縮小倉位（半倉以內），嚴守止損\n\n`;
+    } else if (rmd === 'slight_bull') {
+      msg += `⚠️ <b>謹慎操作</b>：宏觀大方向中性偏多，此為震盪做多信號。縮小倉位（半倉以內），嚴守止損\n\n`;
+    }
+    // neutral → 不需謹慎提示，正常顯示
+  }
+
   if (setup) {
     // ── 信心度（已扣除所有項目後的最終值）+ 扣分明細 ──
     if (setup.conf != null) {
