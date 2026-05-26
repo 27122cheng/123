@@ -1701,7 +1701,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       t.status === 'cancelled' &&
       (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
+    // ── 宏觀大方向封鎖（與 recordSignalsFromScan 一致）──
+    // 大方向「偏空」時不建立多單掛單，「偏多」時不建立空單掛單
+    let macroBlocked = false;
+    if (_macroCache) {
+      try {
+        const macroDir = computeMacroNetDir(_macroCache.fg, _macroCache);
+        if (direction === 'long'  && macroDir === 'bear') macroBlocked = true;
+        if (direction === 'short' && macroDir === 'bull') macroBlocked = true;
+      } catch(e) {}
+    }
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && !macroBlocked) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -4106,11 +4116,14 @@ function recordSignalsFromScan(data) {
   }
 
   // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
-  // 大方向「偏空」(bear) → 不開多；「偏多」(bull) → 不開空
-  // 「中性偏空/偏多/中性」→ 震盪模式，用影線區域做反轉
+  // 大方向「偏空」(bear) → 完全不開多；「偏多」(bull) → 完全不開空
+  // 「中性偏空」→ 震盪模式但只開空（壓力區做空）；「中性偏多」→ 只開多（支撐區做多）；「中性」→ 兩邊皆可
   const blockLong  = macroNetDir === 'bear';
   const blockShort = macroNetDir === 'bull';
   const isRangeMode = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
+  // 震盪模式下的方向限制：中性偏空只允許做空；中性偏多只允許做多
+  const rangeBlockLong  = macroNetDir === 'slight_bear';  // 中性偏空 → 震盪也不做多
+  const rangeBlockShort = macroNetDir === 'slight_bull';  // 中性偏多 → 震盪也不做空
 
   // ══════════════════════════════════════════════════
   // 震盪行情路徑（大時區多次觸碰+收引線的區域做反轉）
@@ -4160,6 +4173,9 @@ function recordSignalsFromScan(data) {
         if (rsiR > 65 && adxR < 22) rangeShort = true;
       }
 
+      // 宏觀方向限制：中性偏空不做多，中性偏多不做空
+      if (rangeLong  && rangeBlockLong)  continue;
+      if (rangeShort && rangeBlockShort) continue;
       if (!rangeLong && !rangeShort) continue;
 
       const direction = rangeLong ? 'long' : 'short';
