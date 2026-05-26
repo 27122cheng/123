@@ -4327,21 +4327,25 @@ function updateOpenTrades(data) {
     }
   }
 
-  // ── 宏觀大方向反轉：與 UI 進度條一致的方向封鎖 → 取消未入場掛單 ──
-  // 震盪單（tradeType='range'）不依賴大方向，不在此取消
+  // ── 宏觀方向反轉：本週 + 今日 AI 均明確反向才取消未入場掛單 ──
+  // 取消門檻比開單封鎖更嚴格：需要兩個 AI 都明確，避免 slight 誤殺
+  // 震盪單（tradeType='range'）不依賴方向，豁免
   if (_macroCache) {
     try {
-      const netDir = computeMacroNetDir(_macroCache.fg, _macroCache);
-      const macroBearish = netDir === 'bear';   // 大方向偏空
-      const macroBullish = netDir === 'bull';   // 大方向偏多
+      const wb2 = computeWeeklyAIBias(_macroCache.fg, _macroCache);
+      const tb2 = computeTodayAIBias(_macroCache.fg, _macroCache);
+      const bothClearBear = (wb2.bias === 'bear' || wb2.bias === 'strong_bear')
+                         && (tb2.bias === 'bear' || tb2.bias === 'strong_bear');
+      const bothClearBull = (wb2.bias === 'bull' || wb2.bias === 'strong_bull')
+                         && (tb2.bias === 'bull' || tb2.bias === 'strong_bull');
       for (const trade of tlog) {
-        if (trade.status !== 'pending' || trade.entryTime) continue; // 已入場不干預
-        if (trade.tradeType === 'range') continue;                    // 震盪單豁免
-        const shouldCancel = (trade.direction === 'long'  && macroBearish)
-                          || (trade.direction === 'short' && macroBullish);
+        if (trade.status !== 'pending' || trade.entryTime) continue;
+        if (trade.tradeType === 'range') continue;
+        const shouldCancel = (trade.direction === 'long'  && bothClearBear)
+                          || (trade.direction === 'short' && bothClearBull);
         if (shouldCancel) {
           trade.status = 'cancelled';
-          trade.cancelReason = '大方向明確反向（與 UI 方向一致），取消未入場掛單';
+          trade.cancelReason = '本週 + 今日 AI 均明確反向，取消未入場掛單';
           trade.cancelTime = Date.now();
           changed = true;
         }
