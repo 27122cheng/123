@@ -5943,8 +5943,12 @@ function renderPositionsPage() {
 
     const conf      = t.conf || Math.min(90, t.score || 60);
     const confClr   = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
+    const isRange   = t.tradeType === 'range';
     const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
     const dirColor  = isLong ? 'var(--bull)' : 'var(--bear)';
+    const rangeBadge = isRange
+      ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.4);color:#a5b4fc;vertical-align:middle">🔄 震盪</span>`
+      : '';
 
     // 進度：SL → 進場 → TP1 → TP2 單一進度條
     let progressHtml = '';
@@ -5994,7 +5998,7 @@ function renderPositionsPage() {
       <div class="pos-card-top">
         <div class="pos-symbol">
           <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-          <span class="pos-dir" style="color:${dirColor}">${dirLabel}</span>
+          <span class="pos-dir" style="color:${dirColor}">${dirLabel}${rangeBadge}</span>
         </div>
         <div class="pos-unreal ${unrealR !== null ? (unrealR > 0 ? 'pos-unreal-pos' : unrealR < 0 ? 'pos-unreal-neg' : '') : ''}">
           ${unrealR !== null
@@ -6254,9 +6258,12 @@ function renderTradeLogPage() {
     tableHtml = `<div class="tl-empty">暫無已結束的交易記錄。系統正在追蹤中，待交易觸及止盈或止損後會自動顯示在此。</div>`;
   } else {
     const rows = display.map(t => {
+      const tlRangeBadge = t.tradeType === 'range'
+        ? `<span style="font-size:0.65rem;font-weight:700;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.4);color:#a5b4fc;padding:1px 5px;border-radius:10px;margin-left:4px;vertical-align:middle">🔄</span>`
+        : '';
       const dirHtml = t.direction === 'long'
-        ? `<span class="tl-dir-long">▲ 多</span>`
-        : `<span class="tl-dir-short">▼ 空</span>`;
+        ? `<span class="tl-dir-long">▲ 多${tlRangeBadge}</span>`
+        : `<span class="tl-dir-short">▼ 空${tlRangeBadge}</span>`;
 
       let statusHtml;
       if (t.status === 'open') {
