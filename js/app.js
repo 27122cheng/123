@@ -4200,19 +4200,19 @@ function recordSignalsFromScan(data) {
         ? (nearSupp ? nearSupp.level - atr * 0.8 : price - atr * 0.9)
         : (nearRes  ? nearRes.level  + atr * 0.8 : price + atr * 0.9);
 
-      // ── 信心計算 ──
+      // ── 信心計算（門檻同定向交易：75%）──
       // 基礎：影線觸碰次數越多越可靠（每多1次 wicks ≈ +5%，最多+20%）
       const zoneWicks = rangeLong ? (nearSupp?.wicks || 0) : (nearRes?.wicks || 0);
-      let rawConfR = 58 + Math.min(20, (zoneWicks - 2) * 5);
-      // RSI 確認加成：距離 50 越遠越強
-      rawConfR += Math.min(8, Math.abs(rsiR - 50) * 0.3);
-      // ADX 越低加成
+      let rawConfR = 68 + Math.min(17, (zoneWicks - 2) * 5);   // 基礎提高至 68，≥3次觸碰才接近 75%
+      // RSI 確認加成：距離 50 越遠越強（最多 +10）
+      rawConfR += Math.min(10, Math.abs(rsiR - 50) * 0.4);
+      // ADX 越低加成（非趨勢確認）
       if (adxR < 18) rawConfR += 5;
       rawConfR = Math.min(85, rawConfR);
 
       const { penalty: learnPen, hardBlocked: learnBlock } = applyLearnAdjustment(direction, rsiR, adxR, {});
       const finalConfR = Math.max(0, rawConfR - learnPen);
-      if (finalConfR < 60 || learnBlock) continue;
+      if (finalConfR < 75 || learnBlock) continue;
 
       // ── 進場理由 ──
       const zoneDesc = rangeLong
