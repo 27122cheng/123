@@ -1090,10 +1090,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // ── 本週 / 今日 AI 走勢（提前計算，震盪模式判斷需在第一個 wait 之前）──
   const weeklyBiasData = computeWeeklyAIBias(fearGreed, globalMkt);
   const todayBiasData  = computeTodayAIBias(fearGreed, globalMkt);
-  // isRangeMode 與 UI 大方向條保持一致：使用 computeMacroNetDir（整合 F&G + 市值 + BTC主導 + AI偏向）
-  // 不能只看 AI 個別 rangeMode，否則宏觀偏空時仍可能錯判為震盪
-  const _btsNetDir  = computeMacroNetDir(fearGreed, globalMkt);
-  const isRangeMode = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
+  // isRangeMode：大方向 / 本週預測 / 今日預測 三者中 ≥2 個為中性/震盪時進入震盪模式
+  const _btsNetDir       = computeMacroNetDir(fearGreed, globalMkt);
+  const _macroIsNeutral  = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
+  const _rangeNeutralCnt = (_macroIsNeutral ? 1 : 0) + (weeklyBiasData.rangeMode ? 1 : 0) + (todayBiasData.rangeMode ? 1 : 0);
+  const isRangeMode      = _rangeNeutralCnt >= 2;  // 三個指標中至少兩個中性/震盪 → 震盪模式
 
   if (direction === 'wait') {
     const reasons = [];
@@ -1143,9 +1144,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if      (bb1hPctB >= 0.76 || rsi > 63) rangeDir = 'short';
     else if (bb1hPctB <= 0.24 || rsi < 37) rangeDir = 'long';
 
-    // 中性偏空：震盪只允許做空；中性偏多：震盪只允許做多（與 recordSignalsFromScan 一致）
-    if (_btsNetDir === 'slight_bear' && rangeDir === 'long')  rangeDir = null;
-    if (_btsNetDir === 'slight_bull' && rangeDir === 'short') rangeDir = null;
+    // 方向封鎖：三指標中 2+ 個偏空 → 禁止震盪做多；2+ 個偏多 → 禁止震盪做空
+    const _rMBear = (_btsNetDir === 'bear' || _btsNetDir === 'slight_bear') ? 1 : 0;
+    const _rWBear = weeklyBiasData.bias?.includes('bear') ? 1 : 0;
+    const _rTBear = todayBiasData.bias?.includes('bear')  ? 1 : 0;
+    const _rMBull = (_btsNetDir === 'bull' || _btsNetDir === 'slight_bull') ? 1 : 0;
+    const _rWBull = weeklyBiasData.bias?.includes('bull') ? 1 : 0;
+    const _rTBull = todayBiasData.bias?.includes('bull')  ? 1 : 0;
+    if (_rMBear + _rWBear + _rTBear >= 2 && rangeDir === 'long')  rangeDir = null;
+    if (_rMBull + _rWBull + _rTBull >= 2 && rangeDir === 'short') rangeDir = null;
 
     if (rangeDir) {
       // ── 先計算完整信心（扣完所有分）再決定是否顯示與記錄 ──
@@ -4092,6 +4099,7 @@ function recordSignalsFromScan(data) {
   // ── 預先計算宏觀方向（使用與大方向進度條完全一致的多因子評分）──
   let macroNetDir = 'neutral';  // 預設：無快取時全放行
   let wBias = 'neutral', tBias = 'neutral';
+  let wbRangeMode = false, tbRangeMode = false;  // 本週/今日預測是否為中性/震盪
   let macroPenLong = 0, macroPenShort = 0;
   if (_macroCache) {
     try {
@@ -4102,6 +4110,8 @@ function recordSignalsFromScan(data) {
       const tb = computeTodayAIBias(fg, gm);
       wBias = wb.bias;
       tBias = tb.bias;
+      wbRangeMode = wb.rangeMode || false;
+      tbRangeMode = tb.rangeMode || false;
 
       // 計算宏觀逆風扣分
       const fgVal  = fg ? parseInt(fg.value || '50') : 50;
@@ -4135,10 +4145,21 @@ function recordSignalsFromScan(data) {
   // 「中性偏空」→ 震盪模式但只開空（壓力區做空）；「中性偏多」→ 只開多（支撐區做多）；「中性」→ 兩邊皆可
   const blockLong  = macroNetDir === 'bear';
   const blockShort = macroNetDir === 'bull';
-  const isRangeMode = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
-  // 震盪模式下的方向限制：中性偏空只允許做空；中性偏多只允許做多
-  const rangeBlockLong  = macroNetDir === 'slight_bear';  // 中性偏空 → 震盪也不做多
-  const rangeBlockShort = macroNetDir === 'slight_bull';  // 中性偏多 → 震盪也不做空
+  // 震盪模式：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪時觸發
+  const _rsMacroNeutral  = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
+  const _rsWeeklyNeutral = wbRangeMode;
+  const _rsTodayNeutral  = tbRangeMode;
+  const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
+  const isRangeMode      = _rsNeutralCnt >= 2;
+  // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
+  const _rsMBear = (macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
+  const _rsWBear = wBias.includes('bear') ? 1 : 0;
+  const _rsTBear = tBias.includes('bear') ? 1 : 0;
+  const _rsMBull = (macroNetDir === 'bull' || macroNetDir === 'slight_bull') ? 1 : 0;
+  const _rsWBull = wBias.includes('bull') ? 1 : 0;
+  const _rsTBull = tBias.includes('bull') ? 1 : 0;
+  const rangeBlockLong  = (_rsMBear + _rsWBear + _rsTBear) >= 2;  // 2+ 偏空 → 禁震盪多
+  const rangeBlockShort = (_rsMBull + _rsWBull + _rsTBull) >= 2;  // 2+ 偏多 → 禁震盪空
 
   // ══════════════════════════════════════════════════
   // 震盪行情路徑（大時區多次觸碰+收引線的區域做反轉）
