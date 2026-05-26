@@ -1145,10 +1145,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else if (bb1hPctB <= 0.24 || rsi < 37) rangeDir = 'long';
 
     // 方向封鎖：三指標中 2+ 個偏空 → 禁止震盪做多；2+ 個偏多 → 禁止震盪做空
-    const _rMBear = (_btsNetDir === 'bear' || _btsNetDir === 'slight_bear') ? 1 : 0;
+    const _rMBear = (_btsNetDir === 'strong_bear' || _btsNetDir === 'bear' || _btsNetDir === 'slight_bear') ? 1 : 0;
     const _rWBear = weeklyBiasData.bias?.includes('bear') ? 1 : 0;
     const _rTBear = todayBiasData.bias?.includes('bear')  ? 1 : 0;
-    const _rMBull = (_btsNetDir === 'bull' || _btsNetDir === 'slight_bull') ? 1 : 0;
+    const _rMBull = (_btsNetDir === 'strong_bull' || _btsNetDir === 'bull' || _btsNetDir === 'slight_bull') ? 1 : 0;
     const _rWBull = weeklyBiasData.bias?.includes('bull') ? 1 : 0;
     const _rTBull = todayBiasData.bias?.includes('bull')  ? 1 : 0;
     if (_rMBear + _rWBear + _rTBear >= 2 && rangeDir === 'long')  rangeDir = null;
@@ -1729,8 +1729,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_macroCache) {
       try {
         const macroDir = computeMacroNetDir(_macroCache.fg, _macroCache);
-        if (direction === 'long'  && macroDir === 'bear') macroBlocked = true;
-        if (direction === 'short' && macroDir === 'bull') macroBlocked = true;
+        if (direction === 'long'  && (macroDir === 'bear' || macroDir === 'strong_bear')) macroBlocked = true;
+        if (direction === 'short' && (macroDir === 'bull' || macroDir === 'strong_bull')) macroBlocked = true;
       } catch(e) {}
     }
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && !macroBlocked) {
@@ -2174,8 +2174,10 @@ function computeMacroNetDir(fg, gm) {
   addBias(wb.bias, 2, 2);
   addBias(tb.bias, 2, 2);
 
-  // 與 buildMarketOutlook 相同的閾值：差距 > 1 才算定向
-  if      (bull > bear + 1)  return 'bull';
+  // 與 buildMarketOutlook 相同的閾值（含強烈層級）
+  if      (bull > bear + 3)  return 'strong_bull';
+  else if (bull > bear + 1)  return 'bull';
+  else if (bear > bull + 3)  return 'strong_bear';
   else if (bear > bull + 1)  return 'bear';
   else if (bull > bear)      return 'slight_bull';
   else if (bear > bull)      return 'slight_bear';
@@ -2244,7 +2246,9 @@ function buildMarketOutlook(fg, global) {
   const bullW = Math.round(bullPts / total * 100);
   const bearW = 100 - bullW;
   let bias, bColor, bIcon;
-  if      (bullPts > bearPts + 1)  { bias = '偏多';    bColor = 'var(--bull)';     bIcon = '▲'; }
+  if      (bullPts > bearPts + 3)  { bias = '強烈看多'; bColor = 'var(--bull)';     bIcon = '▲▲'; }
+  else if (bullPts > bearPts + 1)  { bias = '偏多';    bColor = 'var(--bull)';     bIcon = '▲'; }
+  else if (bearPts > bullPts + 3)  { bias = '強烈看空'; bColor = 'var(--bear)';     bIcon = '▼▼'; }
   else if (bearPts > bullPts + 1)  { bias = '偏空';    bColor = 'var(--bear)';     bIcon = '▼'; }
   else if (bullPts > bearPts)      { bias = '中性偏多'; bColor = 'var(--neutral)';  bIcon = '◆'; }
   else if (bearPts > bullPts)      { bias = '中性偏空'; bColor = 'var(--neutral)';  bIcon = '◆'; }
@@ -4143,8 +4147,8 @@ function recordSignalsFromScan(data) {
   // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
   // 大方向「偏空」(bear) → 完全不開多；「偏多」(bull) → 完全不開空
   // 「中性偏空」→ 震盪模式但只開空（壓力區做空）；「中性偏多」→ 只開多（支撐區做多）；「中性」→ 兩邊皆可
-  const blockLong  = macroNetDir === 'bear';
-  const blockShort = macroNetDir === 'bull';
+  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
+  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
   // 震盪模式：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪時觸發
   const _rsMacroNeutral  = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
   const _rsWeeklyNeutral = wbRangeMode;
@@ -4152,10 +4156,10 @@ function recordSignalsFromScan(data) {
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
   const isRangeMode      = _rsNeutralCnt >= 2;
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
-  const _rsMBear = (macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
+  const _rsMBear = (macroNetDir === 'strong_bear' || macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
   const _rsWBear = wBias.includes('bear') ? 1 : 0;
   const _rsTBear = tBias.includes('bear') ? 1 : 0;
-  const _rsMBull = (macroNetDir === 'bull' || macroNetDir === 'slight_bull') ? 1 : 0;
+  const _rsMBull = (macroNetDir === 'strong_bull' || macroNetDir === 'bull' || macroNetDir === 'slight_bull') ? 1 : 0;
   const _rsWBull = wBias.includes('bull') ? 1 : 0;
   const _rsTBull = tBias.includes('bull') ? 1 : 0;
   const rangeBlockLong  = (_rsMBear + _rsWBear + _rsTBear) >= 2;  // 2+ 偏空 → 禁震盪多
