@@ -1088,10 +1088,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const rsi      = parseFloat(coin.rsi) || 50;
 
   // ── 本週 / 今日 AI 走勢（提前計算，震盪模式判斷需在第一個 wait 之前）──
-  const weeklyBiasData = computeWeeklyAIBias(fearGreed, globalMkt);
-  const todayBiasData  = computeTodayAIBias(fearGreed, globalMkt);
+  let weeklyBiasData, todayBiasData, _btsNetDir;
+  try {
+    weeklyBiasData = computeWeeklyAIBias(fearGreed, globalMkt);
+    todayBiasData  = computeTodayAIBias(fearGreed, globalMkt);
+    _btsNetDir     = computeMacroNetDir(fearGreed, globalMkt);
+  } catch(e) {
+    console.warn('[buildTradeSetup] AI bias 計算失敗，降級為中性:', e);
+    weeklyBiasData = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true };
+    todayBiasData  = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true };
+    _btsNetDir     = 'neutral';
+  }
   // isRangeMode：大方向 / 本週預測 / 今日預測 三者中 ≥2 個為中性/震盪時進入震盪模式
-  const _btsNetDir       = computeMacroNetDir(fearGreed, globalMkt);
   const _macroIsNeutral  = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
   const _rangeNeutralCnt = (_macroIsNeutral ? 1 : 0) + (weeklyBiasData.rangeMode ? 1 : 0) + (todayBiasData.rangeMode ? 1 : 0);
   const isRangeMode      = _rangeNeutralCnt >= 2;  // 三個指標中至少兩個中性/震盪 → 震盪模式
@@ -3705,16 +3713,28 @@ async function renderCoinDetail(symbol) {
   // 緩存宏觀數據供後台使用（宏觀詳情僅在9AM簡報和幣種分析頁顯示）
   if (globalMkt || fearGreed) _macroCache = { ...(globalMkt || {}), fg: fearGreed };
 
-  const set = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
+  // 各區塊獨立渲染：每個區塊用自己的 try-catch，確保一個出錯不影響其他
+  const setSafe = (id, buildFn) => {
+    const e = document.getElementById(id);
+    if (!e) return;
+    try {
+      const html = buildFn();
+      e.innerHTML = (html != null && html !== '') ? html
+        : '<div class="adv-loading">⚠️ 無資料可顯示</div>';
+    } catch (err) {
+      console.error(`[renderCoinDetail] ${id} 渲染失敗:`, err);
+      e.innerHTML = '<div class="adv-loading" style="color:var(--bear)">⚠️ 載入失敗，請重新整理</div>';
+    }
+  };
 
-  set('macro-body',     buildMacroPanel(globalMkt, halving, fearGreed));
-  set('deriv-body',     buildDerivativesPanel(deriv));
-  set('setup-body',     buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed));
-  set('mtf-body',       buildMTFTable(mtfData));
-  set('of-body',        buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
-  set('ai-body',        generateAIAnalysis(coin, mtfData, fearGreed));
-  set('vp-body',        buildVPPanel(coin, mtfData, whale));
-  set('situation-body', buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
+  setSafe('macro-body',     () => buildMacroPanel(globalMkt, halving, fearGreed));
+  setSafe('deriv-body',     () => buildDerivativesPanel(deriv));
+  setSafe('setup-body',     () => buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed));
+  setSafe('mtf-body',       () => buildMTFTable(mtfData));
+  setSafe('of-body',        () => buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
+  setSafe('ai-body',        () => generateAIAnalysis(coin, mtfData, fearGreed));
+  setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
+  setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
 }
 
 function setTag(id, text, color) {
