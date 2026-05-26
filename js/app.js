@@ -1141,6 +1141,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else if (bb1hPctB <= 0.24 || rsi < 37) rangeDir = 'long';
 
     if (rangeDir) {
+      // ── 先計算完整信心（扣完所有分）再決定是否顯示與記錄 ──
+      const rRawConf = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
+      const { penalty: rLearnPen, hardBlocked: rHardBlocked } = applyLearnAdjustment(rangeDir, rsi, coin.adx || 20, {});
+      let rMacroPen = 0;
+      if (_macroCache) {
+        try {
+          const rNetDir = computeMacroNetDir(_macroCache.fg, _macroCache);
+          if (rNetDir === 'slight_bear' && rangeDir === 'long')  rMacroPen = 8;
+          if (rNetDir === 'slight_bull' && rangeDir === 'short') rMacroPen = 8;
+        } catch(e) {}
+      }
+      const rConf = Math.max(0, rRawConf - rLearnPen - rMacroPen);
+
+      // 門檻檢查：扣完分後 < 75% 或 AI 硬封鎖 → 不顯示也不記錄，交由後續正常分析
+      if (rConf >= 75 && !rHardBlocked) {
       const rIsLong  = rangeDir === 'long';
       const rIcon    = rIsLong ? '▲' : '▼';
       const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
@@ -1153,7 +1168,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const rRisk    = Math.abs(rEntry - rSL) || atr;
       const rRR1     = (Math.abs(rTP1 - rEntry) / rRisk).toFixed(1);
       const rRR2     = (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1);
-      const rConf    = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
       const rEntryReasons = [
         `🔄 震盪交易模式（宏觀+今日AI中性）`,
         rIsLong
@@ -1243,6 +1257,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <div class="level-price-val">${fmtPrice(rSL)}</div>
         </div>
       </div>`;
+      } // ─── end if (rConf >= 75 && !rHardBlocked) ───
     }
   }
 
