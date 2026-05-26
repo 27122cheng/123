@@ -868,38 +868,71 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const tlogNow = loadTradeLog();
   const existingActive = tlogNow.find(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
   if (existingActive) {
-    // 每次開啟幣種詳情都重新計算 AI 學習調整後的信心度，確保顯示值與警告一致
-    const rsiNow      = parseFloat(coin.rsi) || 50;
-    const adxNow      = parseFloat(coin.adx) || 20;
-    const hardAdxNow  = adxNow < 18 ? 28 : adxNow < 22 ? 14 : 0;
-    const vp1hNow     = mtfData['1h']?.vp;
-    const mtfAlignNow = ['15m','1h','4h','1d'].filter(tf => {
-      const sig = mtfData[tf]?.signal;
-      return sig && (existingActive.direction === 'long' ? sig.signal?.includes('bull') : sig.signal?.includes('bear'));
-    }).length;
-    const learnCtxNow = {
-      abovePOC:      vp1hNow?.priceAbovePOC ?? null,
-      whaleBias:     whale?.bias || null,
-      volDivergence: mtfData['1h']?.volAI?.divergence || null,
-      mtfAlign:      mtfAlignNow,
-      slType:        existingActive.entrySlType || 'atr',
-    };
-    const { penalty: learnPenNow } = applyLearnAdjustment(existingActive.direction, rsiNow, adxNow, learnCtxNow);
-    // rawConf：優先使用儲存值，否則從 coin.score 推算
-    const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-    const freshConf  = Math.max(0, rawConfNow - learnPenNow - hardAdxNow);
-    if (Math.abs((existingActive.conf || 0) - freshConf) >= 1) {
-      const tlogEdit = loadTradeLog();
-      const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
-      if (editIdx >= 0) {
-        tlogEdit[editIdx].conf    = freshConf;
-        tlogEdit[editIdx].rawConf = rawConfNow;
-        existingActive.conf       = freshConf;
-        saveTradeLog(tlogEdit);
-      }
+    // ── 即時宏觀攔截：pending 方向與宏觀大方向衝突 → 立即取消並重新分析 ──
+    let pendingCancelledByMacro = false;
+    if (existingActive.status === 'pending' && !existingActive.entryTime) {
+      try {
+        const fgChk = fearGreed || _macroCache?.fg;
+        const gmChk = globalMkt  || _macroCache;
+        if (fgChk || gmChk) {
+          const macroNow = computeMacroNetDir(fgChk, gmChk);
+          const isBlocked =
+            (existingActive.direction === 'long'  && (macroNow === 'bear' || macroNow === 'strong_bear')) ||
+            (existingActive.direction === 'short' && (macroNow === 'bull' || macroNow === 'strong_bull'));
+          if (isBlocked) {
+            const macroLabel = { strong_bear:'強烈看空', bear:'偏空', strong_bull:'強烈看多', bull:'偏多' }[macroNow] || macroNow;
+            const reason = `宏觀大方向${macroLabel}，取消逆勢${existingActive.direction === 'long' ? '多' : '空'}單掛單`;
+            const tlogC = loadTradeLog();
+            const ci = tlogC.findIndex(t => t.id === existingActive.id);
+            if (ci >= 0) {
+              tlogC[ci].status = 'cancelled';
+              tlogC[ci].cancelReason = reason;
+              tlogC[ci].cancelTime = Date.now();
+              saveTradeLog(tlogC);
+            }
+            try { sendCancelTelegramNotification(existingActive, reason); } catch(e) {}
+            pendingCancelledByMacro = true;
+          }
+        }
+      } catch(e) {}
     }
-    if (existingActive.status === 'open')    return buildOpenPositionSetup(existingActive, price);
-    if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price);
+
+    if (!pendingCancelledByMacro) {
+      // 每次開啟幣種詳情都重新計算 AI 學習調整後的信心度，確保顯示值與警告一致
+      const rsiNow      = parseFloat(coin.rsi) || 50;
+      const adxNow      = parseFloat(coin.adx) || 20;
+      const hardAdxNow  = adxNow < 18 ? 28 : adxNow < 22 ? 14 : 0;
+      const vp1hNow     = mtfData['1h']?.vp;
+      const mtfAlignNow = ['15m','1h','4h','1d'].filter(tf => {
+        const sig = mtfData[tf]?.signal;
+        return sig && (existingActive.direction === 'long' ? sig.signal?.includes('bull') : sig.signal?.includes('bear'));
+      }).length;
+      const learnCtxNow = {
+        abovePOC:      vp1hNow?.priceAbovePOC ?? null,
+        whaleBias:     whale?.bias || null,
+        volDivergence: mtfData['1h']?.volAI?.divergence || null,
+        mtfAlign:      mtfAlignNow,
+        slType:        existingActive.entrySlType || 'atr',
+      };
+      try {
+        const { penalty: learnPenNow } = applyLearnAdjustment(existingActive.direction, rsiNow, adxNow, learnCtxNow);
+        const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
+        const freshConf  = Math.max(0, rawConfNow - learnPenNow - hardAdxNow);
+        if (Math.abs((existingActive.conf || 0) - freshConf) >= 1) {
+          const tlogEdit = loadTradeLog();
+          const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
+          if (editIdx >= 0) {
+            tlogEdit[editIdx].conf    = freshConf;
+            tlogEdit[editIdx].rawConf = rawConfNow;
+            existingActive.conf       = freshConf;
+            saveTradeLog(tlogEdit);
+          }
+        }
+      } catch(e) {}
+      if (existingActive.status === 'open')    return buildOpenPositionSetup(existingActive, price);
+      if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price);
+    }
+    // 若 pendingCancelledByMacro = true，繼續往下執行新的交易分析
   }
 
   // 若冷卻期內有同方向取消記錄（含飛越止盈），顯示機會已過提示
@@ -1528,50 +1561,61 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus) * 6));
 
   // 宏觀環境同步確認：宏觀訊號 + AI新聞 + 預測 + 今日數據事件 綜合評分
-  const { macroOpposePenalty, macroReasons } = (() => {
-    const reasons = [];
-    let against = 0;
+  let macroOpposePenalty = 0, macroReasons = [];
+  try {
+    const _macroResult = (() => {
+      const reasons = [];
+      let against = 0;
 
-    // ① 宏觀訊號（F&G + 市值 + BTC 主導）
-    if (globalMkt || fearGreed) {
-      const fgNow  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
-      const chgNow = globalMkt?.marketCapChange || 0;
-      const domNow = globalMkt?.btcDominance   || 50;
-      if (isLong) {
-        if (chgNow < -2) { against++;   reasons.push(`市值 ${chgNow.toFixed(1)}% 下跌，多頭逆風`); }
-        if (domNow > 58) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏高），山寨承壓`); }
-        if (fgNow < 30)  { against++;   reasons.push(`恐貪 ${fgNow}（極度恐慌），不宜追多`); }
-        if (fgNow > 75)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極度貪婪），短線追高風險`); }
-      } else {
-        if (chgNow > 2)  { against++;   reasons.push(`市值 +${chgNow.toFixed(1)}%，空頭逆風`); }
-        if (domNow < 44) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏低），山寨季偏多`); }
-        if (fgNow > 70)  { against++;   reasons.push(`恐貪 ${fgNow}（貪婪），不宜追空`); }
-        if (fgNow < 25)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極恐），逢低布局偏多`); }
+      // ① 宏觀訊號（F&G + 市值 + BTC 主導）
+      if (globalMkt || fearGreed) {
+        const fgNow  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+        const chgNow = globalMkt?.marketCapChange || 0;
+        const domNow = globalMkt?.btcDominance   || 50;
+        if (isLong) {
+          if (chgNow < -2) { against++;   reasons.push(`市值 ${chgNow.toFixed(1)}% 下跌，多頭逆風`); }
+          if (domNow > 58) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏高），山寨承壓`); }
+          if (fgNow < 30)  { against++;   reasons.push(`恐貪 ${fgNow}（極度恐慌），不宜追多`); }
+          if (fgNow > 75)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極度貪婪），短線追高風險`); }
+        } else {
+          if (chgNow > 2)  { against++;   reasons.push(`市值 +${chgNow.toFixed(1)}%，空頭逆風`); }
+          if (domNow < 44) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏低），山寨季偏多`); }
+          if (fgNow > 70)  { against++;   reasons.push(`恐貪 ${fgNow}（貪婪），不宜追空`); }
+          if (fgNow < 25)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極恐），逢低布局偏多`); }
+        }
       }
-    }
 
-    // ② AI 財經新聞偏向分析
-    const topInsight = aiGenerateMarketInsights()[0];
-    if (topInsight) {
-      const sentiment = topInsight.sentiment || '';
-      if (isLong  && sentiment === 'bearish') { against += 0.5; reasons.push(`AI新聞偏空：${topInsight.zhTitle?.slice(0,20)}`); }
-      if (!isLong && sentiment === 'bullish') { against += 0.5; reasons.push(`AI新聞偏多：${topInsight.zhTitle?.slice(0,20)}`); }
-    }
+      // ② AI 財經新聞偏向分析
+      try {
+        const topInsight = aiGenerateMarketInsights()[0];
+        if (topInsight) {
+          const sentiment = topInsight.sentiment || '';
+          if (isLong  && (sentiment === 'bearish' || sentiment === 'bear')) { against += 0.5; reasons.push(`AI新聞偏空：${(topInsight.zhTitle||'').slice(0,20)}`); }
+          if (!isLong && (sentiment === 'bullish' || sentiment === 'bull')) { against += 0.5; reasons.push(`AI新聞偏多：${(topInsight.zhTitle||'').slice(0,20)}`); }
+        }
+      } catch(e) {}
 
-    // ③ 今日重要數據事件（高影響 + 未公布且在1小時內）
-    const nearEvents = getTodayEconEvents().filter(ev => {
-      const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
-      return ev.impact === 'high' && mins >= -15 && mins <= 75;
-    });
-    if (nearEvents.length > 0) {
-      against += 1;
-      reasons.push(`高影響數據即將/剛公布：${nearEvents.map(e => e.name).join('、')}，不確定性高`);
-    }
+      // ③ 今日重要數據事件（高影響 + 未公布且在1小時內）
+      try {
+        const nearEvents = getTodayEconEvents().filter(ev => {
+          const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+          return ev.impact === 'high' && mins >= -15 && mins <= 75;
+        });
+        if (nearEvents.length > 0) {
+          against += 1;
+          reasons.push(`高影響數據即將/剛公布：${nearEvents.map(e => e.name).join('、')}，不確定性高`);
+        }
+      } catch(e) {}
 
-    const total = against;
-    const penalty = total >= 3 ? 18 : total >= 2 ? 12 : total >= 1 ? 5 : 0;
-    return { macroOpposePenalty: penalty, macroReasons: reasons };
-  })();
+      const total = against;
+      const penalty = total >= 3 ? 18 : total >= 2 ? 12 : total >= 1 ? 5 : 0;
+      return { macroOpposePenalty: penalty, macroReasons: reasons };
+    })();
+    macroOpposePenalty = _macroResult.macroOpposePenalty;
+    macroReasons       = _macroResult.macroReasons;
+  } catch(e) {
+    console.warn('[buildTradeSetup] macroOpposePenalty 計算失敗:', e);
+  }
 
   // ── 本週 / 今日 AI 預測方向對照（第①層宏觀擴展；已在函式前段計算）──
   const weeklyAligned = (isLong && weeklyBiasData.bias.includes('bull')) || (!isLong && weeklyBiasData.bias.includes('bear'));
@@ -4095,7 +4139,7 @@ function triggerRescan() {
 const TRADE_LOG_KEY     = 'csp_trade_log';
 const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內不重複記錄
 
-function loadTradeLog() { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); }
+function loadTradeLog() { try { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); } catch(e) { return []; } }
 function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
 
 /* 判斷是否在冷卻期（防止同一進場機會被重複記錄）*/
@@ -5569,17 +5613,24 @@ function computeLearnProfile() {
 
 function getLearnProfile() {
   if (!_learnCache) {
-    _learnCache = computeLearnProfile();
+    try {
+      _learnCache = computeLearnProfile();
+    } catch(e) {
+      console.warn('[getLearnProfile] computeLearnProfile 失敗，使用空白 profile:', e);
+      _learnCache = { ready: false, closed: 0, rules: [], winRate: 50, wins: 0, losses: 0, bestConditions: [] };
+    }
     // 若現有交易不足，仍嘗試載入記憶中的規則
-    if (!_learnCache.ready) {
-      const mem = loadAIMemory();
-      const memRules = Object.values(mem.rules).filter(r => (r.active || r.occurrences >= 2) && (r.total || 0) >= 3);
-      if (memRules.length > 0) {
-        _learnCache = { ..._learnCache, ready: true, fromMemory: true, rules: memRules, mem, bestConditions: mem.bestConditions || [] };
-      }
+    if (_learnCache && !_learnCache.ready) {
+      try {
+        const mem = loadAIMemory();
+        const memRules = Object.values(mem.rules || {}).filter(r => (r.active || r.occurrences >= 2) && (r.total || 0) >= 3 && r.warning != null);
+        if (memRules.length > 0) {
+          _learnCache = { ..._learnCache, ready: true, fromMemory: true, rules: memRules, mem, bestConditions: mem.bestConditions || [] };
+        }
+      } catch(e) {}
     }
   }
-  return _learnCache;
+  return _learnCache || { ready: false, closed: 0, rules: [], winRate: 50, wins: 0, losses: 0, bestConditions: [] };
 }
 
 function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
@@ -5591,15 +5642,16 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
 
   // ── 防線比對 helper ──
   const addCheck = (type, label, count, fail, pen, block = false) => {
+    const safeLabel = (label != null ? String(label) : '');  // 防止 undefined/null 導致 .slice() throw
     if (fail) {
       penalty += pen;
-      if (type !== 'suggestion') warnings.push(label);
-      else warnings.push(`💡 改進建議未滿足：「${label.slice(0, 40)}」（歷史止損 ${count} 次，-${pen}%）`);
-      if (block) blockReasons.push(`🚫 AI最終防線：「${label.slice(0, 45)}」累計 ${count} 次/筆，已列入永久風控攔截`);
+      if (type !== 'suggestion') warnings.push(safeLabel || label);
+      else warnings.push(`💡 改進建議未滿足：「${safeLabel.slice(0, 40)}」（歷史止損 ${count} 次，-${pen}%）`);
+      if (block) blockReasons.push(`🚫 AI最終防線：「${safeLabel.slice(0, 45)}」累計 ${count} 次/筆，已列入永久風控攔截`);
     }
     // 只收錄有足夠數據或有觸發的項目（止損記憶需 10 次以上才顯示）
     if (fail || (type !== 'memory' && count >= 3) || (type === 'memory' && count >= 10)) {
-      defenseChecks.push({ type, label: label.slice(0, 55), count, pass: !fail, penalty: fail ? pen : 0 });
+      defenseChecks.push({ type, label: safeLabel.slice(0, 55), count, pass: !fail, penalty: fail ? pen : 0 });
     }
   };
 
