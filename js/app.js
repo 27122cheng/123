@@ -1090,7 +1090,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // ── 本週 / 今日 AI 走勢（提前計算，震盪模式判斷需在第一個 wait 之前）──
   const weeklyBiasData = computeWeeklyAIBias(fearGreed, globalMkt);
   const todayBiasData  = computeTodayAIBias(fearGreed, globalMkt);
-  const isRangeMode    = weeklyBiasData.rangeMode && todayBiasData.rangeMode;
+  // isRangeMode 與 UI 大方向條保持一致：使用 computeMacroNetDir（整合 F&G + 市值 + BTC主導 + AI偏向）
+  // 不能只看 AI 個別 rangeMode，否則宏觀偏空時仍可能錯判為震盪
+  const _btsNetDir  = computeMacroNetDir(fearGreed, globalMkt);
+  const isRangeMode = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
 
   if (direction === 'wait') {
     const reasons = [];
@@ -1140,19 +1143,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if      (bb1hPctB >= 0.76 || rsi > 63) rangeDir = 'short';
     else if (bb1hPctB <= 0.24 || rsi < 37) rangeDir = 'long';
 
+    // 中性偏空：震盪只允許做空；中性偏多：震盪只允許做多（與 recordSignalsFromScan 一致）
+    if (_btsNetDir === 'slight_bear' && rangeDir === 'long')  rangeDir = null;
+    if (_btsNetDir === 'slight_bull' && rangeDir === 'short') rangeDir = null;
+
     if (rangeDir) {
       // ── 先計算完整信心（扣完所有分）再決定是否顯示與記錄 ──
       const rRawConf = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
       const { penalty: rLearnPen, hardBlocked: rHardBlocked } = applyLearnAdjustment(rangeDir, rsi, coin.adx || 20, {});
-      let rMacroPen = 0;
-      if (_macroCache) {
-        try {
-          const rNetDir = computeMacroNetDir(_macroCache.fg, _macroCache);
-          if (rNetDir === 'slight_bear' && rangeDir === 'long')  rMacroPen = 8;
-          if (rNetDir === 'slight_bull' && rangeDir === 'short') rMacroPen = 8;
-        } catch(e) {}
-      }
-      const rConf = Math.max(0, rRawConf - rLearnPen - rMacroPen);
+      // slight_bear 做空不再額外懲罰（已是允許方向）; slight_bull 做多同理
+      const rConf = Math.max(0, rRawConf - rLearnPen);
 
       // 門檻檢查：扣完分後 < 75% 或 AI 硬封鎖 → 不顯示也不記錄，交由後續正常分析
       if (rConf >= 75 && !rHardBlocked) {
