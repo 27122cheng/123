@@ -6728,41 +6728,7 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 75) {
-      // 原始信號夠強（≥80%）但扣分後低於門檻 → 取消未入場交易建議
-      if (rawConfVal >= 75 && s.notifTelegram && s.tgToken && s.tgChatId) {
-        // 只針對「尚未入場」的掛單：有 entryTime 的已入場交易不撤銷
-        const tlogNow = loadTradeLog();
-        const alreadyEntered = tlogNow.some(t =>
-          t.symbol === coin.symbol &&
-          (t.status === 'open' || t.status === 'pending') &&
-          t.direction === dir &&
-          t.entryTime != null
-        );
-        if (alreadyEntered) { continue; } // 已入場 → 不干預，跳過
-
-        // 標記未入場的交易建議為已取消
-        const pendingIdx = tlogNow.findIndex(t =>
-          t.symbol === coin.symbol &&
-          (t.status === 'open' || t.status === 'pending') &&
-          t.direction === dir &&
-          !t.entryTime
-        );
-        if (pendingIdx !== -1) {
-          tlogNow[pendingIdx].status     = 'cancelled';
-          tlogNow[pendingIdx].exitTime   = now;
-          tlogNow[pendingIdx].exitReason = 'signal_weakened';
-          saveTradeLog(tlogNow);
-          if (typeof renderAll === 'function') renderAll();
-        }
-
-        sendTelegramMessage(s.tgToken, s.tgChatId,
-          buildWeakenedSignalText(coin, dir, notifSetup,
-            window.location.origin + window.location.pathname));
-        next[coin.symbol] = { dir, sentAt: now, type: 'cancelled' };
-      }
-      continue;
-    }
+    if (notifConf < 75) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
 
     // 信心度達標 → 完整交易信號通知
     if (s.notifBrowser) {
