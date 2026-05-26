@@ -1095,8 +1095,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     _btsNetDir     = computeMacroNetDir(fearGreed, globalMkt);
   } catch(e) {
     console.warn('[buildTradeSetup] AI bias 計算失敗，降級為中性:', e);
-    weeklyBiasData = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true };
-    todayBiasData  = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true };
+    weeklyBiasData = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true, highEvs: [] };
+    todayBiasData  = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true, highEvs: [] };
     _btsNetDir     = 'neutral';
   }
   // isRangeMode：大方向 / 本週預測 / 今日預測 三者中 ≥2 個為中性/震盪時進入震盪模式
@@ -1604,7 +1604,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 數據公布風險：掃描近 8 小時內的高影響事件，標記可能令方向逆轉的節點
   const nowForFlip = Date.now();
-  const flipRisks = todayBiasData.highEvs
+  const flipRisks = (todayBiasData.highEvs || [])
     .map(ev => ({ ev, mins: (ev.eventTime.getTime() - nowForFlip) / 60000 }))
     .filter(({ mins }) => mins > -60 && mins < 480)
     .map(({ ev, mins }) => {
@@ -4404,8 +4404,9 @@ function updateOpenTrades(data) {
     }
   }
 
-  // ── 宏觀方向反轉：本週 + 今日 AI 均明確反向才取消未入場掛單 ──
-  // 取消門檻比開單封鎖更嚴格：需要兩個 AI 都明確，避免 slight 誤殺
+  // ── 宏觀方向反轉：取消方向衝突的未入場掛單 ──
+  // 條件 A：本週 + 今日 AI 均明確反向（嚴格雙確認）
+  // 條件 B：綜合宏觀方向（computeMacroNetDir）明確反向（bear/strong_bear 取消多單；bull/strong_bull 取消空單）
   // 震盪單（tradeType='range'）不依賴方向，豁免
   if (_macroCache) {
     try {
@@ -4415,16 +4416,26 @@ function updateOpenTrades(data) {
                          && (tb2.bias === 'bear' || tb2.bias === 'strong_bear');
       const bothClearBull = (wb2.bias === 'bull' || wb2.bias === 'strong_bull')
                          && (tb2.bias === 'bull' || tb2.bias === 'strong_bull');
+      // 條件 B：綜合大方向封鎖（與開單封鎖邏輯一致）
+      const macroNetDir2 = computeMacroNetDir(_macroCache.fg, _macroCache);
+      const macroClearBear = macroNetDir2 === 'bear' || macroNetDir2 === 'strong_bear';
+      const macroClearBull = macroNetDir2 === 'bull' || macroNetDir2 === 'strong_bull';
       for (const trade of tlog) {
         if (trade.status !== 'pending' || trade.entryTime) continue;
         if (trade.tradeType === 'range') continue;
-        const shouldCancel = (trade.direction === 'long'  && bothClearBear)
-                          || (trade.direction === 'short' && bothClearBull);
-        if (shouldCancel) {
+        const cancelLong  = trade.direction === 'long'  && (bothClearBear || macroClearBear);
+        const cancelShort = trade.direction === 'short' && (bothClearBull || macroClearBull);
+        if (cancelLong || cancelShort) {
+          const macroLabel = { strong_bear:'強烈看空', bear:'偏空', strong_bull:'強烈看多', bull:'偏多' }[macroNetDir2] || macroNetDir2;
+          const reason = (cancelLong && macroClearBear) || (cancelShort && macroClearBull)
+            ? `宏觀大方向${macroLabel}，取消逆勢${trade.direction === 'long' ? '多' : '空'}單掛單`
+            : '本週 + 今日 AI 均明確反向，取消未入場掛單';
           trade.status = 'cancelled';
-          trade.cancelReason = '本週 + 今日 AI 均明確反向，取消未入場掛單';
+          trade.cancelReason = reason;
           trade.cancelTime = Date.now();
           changed = true;
+          cancelledSymbols.add(trade.symbol);
+          sendCancelTelegramNotification(trade, reason);
         }
       }
     } catch(e) {}
@@ -5916,13 +5927,20 @@ function setPosTab(tab) {
   document.querySelectorAll('.pos-tab-btn').forEach(b => b.classList.toggle('pos-tab-active', b.dataset.tab === tab));
   filterPositionCards(document.getElementById('pos-search-input')?.value || '');
   updatePosTabSummary();
-  // 未進場分頁：顯示/隱藏
+  // 未進場分頁：顯示/隱藏（全部分頁同樣顯示等待進場區塊）
   const pendingContainer = document.getElementById('pos-pending-container');
+  const pendingHdr       = document.getElementById('pos-pending-section-hdr');
   const mainList = document.getElementById('pos-list-container');
   const posSearch = document.getElementById('pos-search-input');
-  if (pendingContainer) pendingContainer.style.display = tab === 'pending' ? '' : 'none';
-  if (mainList) mainList.style.display = tab === 'pending' ? 'none' : '';
-  if (posSearch) posSearch.style.display = tab === 'pending' ? 'none' : '';
+  // 讀取 pending 數量（從 data attribute 取得，不需重新查詢 tlog）
+  const summaryEl = document.getElementById('pos-tab-summary');
+  const pendingCnt = parseInt(summaryEl?.dataset?.pendingCount || '0');
+  const showPendingTab = tab === 'pending';
+  const showPendingInAll = tab === 'all' && pendingCnt > 0;
+  if (pendingContainer) pendingContainer.style.display = (showPendingTab || showPendingInAll) ? '' : 'none';
+  if (pendingHdr)       pendingHdr.style.display       = showPendingInAll ? '' : 'none';
+  if (mainList)  mainList.style.display  = showPendingTab ? 'none' : '';
+  if (posSearch) posSearch.style.display = showPendingTab ? 'none' : '';
 }
 
 function updatePosTabSummary() {
@@ -6155,6 +6173,7 @@ function renderPositionsPage() {
 
     <input class="pos-search" id="pos-search-input" placeholder="搜尋幣種..." oninput="filterPositionCards(this.value)">
     <div class="pos-list" id="pos-list-container">${cards}</div>
+    ${pending.length > 0 ? `<div id="pos-pending-section-hdr" style="display:none;margin:16px 0 6px;padding:8px 12px;border-radius:8px;background:rgba(255,215,64,0.07);border:1px solid rgba(255,215,64,0.18);font-size:0.8rem;font-weight:600;color:#f0a500">⏳ 等待進場（${pending.length} 筆）— 等待現價回踩確認後自動開倉</div>` : ''}
     <div class="pos-list" id="pos-pending-container" style="display:none">
       ${pending.length === 0
         ? '<div class="pos-empty" style="margin-top:12px">目前沒有等待進場的交易建議</div>'
@@ -6204,11 +6223,15 @@ function renderPositionsPage() {
   updatePosTabSummary();
   // 初始化未進場分頁顯示狀態
   const pendingContainer = document.getElementById('pos-pending-container');
+  const pendingHdr       = document.getElementById('pos-pending-section-hdr');
   const mainList = document.getElementById('pos-list-container');
   const posSearch = document.getElementById('pos-search-input');
-  if (pendingContainer) pendingContainer.style.display = _posTab === 'pending' ? '' : 'none';
-  if (mainList) mainList.style.display = _posTab === 'pending' ? 'none' : '';
-  if (posSearch) posSearch.style.display = _posTab === 'pending' ? 'none' : '';
+  const showPendingTab = _posTab === 'pending';
+  const showPendingInAll = _posTab === 'all' && pending.length > 0;
+  if (pendingContainer) pendingContainer.style.display = (showPendingTab || showPendingInAll) ? '' : 'none';
+  if (pendingHdr)       pendingHdr.style.display       = showPendingInAll ? '' : 'none';
+  if (mainList)  mainList.style.display  = showPendingTab ? 'none' : '';
+  if (posSearch) posSearch.style.display = showPendingTab ? 'none' : '';
 }
 
 function filterPositionCards(query) {
