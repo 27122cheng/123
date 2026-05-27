@@ -4402,20 +4402,23 @@ function recordSignalsFromScan(data) {
       if (domVal > 58) againstLong++;
       if (fgVal  < 30) againstLong++;
       if (fgVal  > 75) againstLong += 0.5;
-      macroPenLong = againstLong >= 3 ? 18 : againstLong >= 2 ? 12 : againstLong >= 1 ? 5 : 0;
+      macroPenLong = againstLong >= 3 ? 12 : againstLong >= 2 ? 8 : againstLong >= 1 ? 3 : 0;
 
       let againstShort = 0;
       if (chgVal > 2)  againstShort++;
       if (domVal < 44) againstShort++;
       if (fgVal  > 70) againstShort++;
       if (fgVal  < 25) againstShort += 0.5;
-      macroPenShort = againstShort >= 3 ? 18 : againstShort >= 2 ? 12 : againstShort >= 1 ? 5 : 0;
+      macroPenShort = againstShort >= 3 ? 12 : againstShort >= 2 ? 8 : againstShort >= 1 ? 3 : 0;
 
-      // AI 走勢方向扣分（附加於宏觀扣分之上）
-      if (wBias.includes('bear')) macroPenLong  += wBias.includes('strong') ? 8 : 4;
-      if (tBias.includes('bear')) macroPenLong  += 5;
-      if (wBias.includes('bull')) macroPenShort += wBias.includes('strong') ? 8 : 4;
-      if (tBias.includes('bull')) macroPenShort += 5;
+      // AI 走勢方向扣分（附加於宏觀扣分之上，上限 15 避免全面封鎖）
+      if (wBias.includes('bear')) macroPenLong  += wBias.includes('strong') ? 6 : 3;
+      if (tBias.includes('bear')) macroPenLong  += 4;
+      if (wBias.includes('bull')) macroPenShort += wBias.includes('strong') ? 6 : 3;
+      if (tBias.includes('bull')) macroPenShort += 4;
+      // 總扣分上限：不超過 18，確保強信號（score ≥ 80）在逆風中仍可通過
+      macroPenLong  = Math.min(18, macroPenLong);
+      macroPenShort = Math.min(18, macroPenShort);
     } catch(e) { /* 宏觀計算失敗 → 維持 neutral，允許記錄 */ }
   }
 
@@ -4514,19 +4517,22 @@ function recordSignalsFromScan(data) {
         ? (nearSupp ? nearSupp.level - atr * 0.8 : price - atr * 0.9)
         : (nearRes  ? nearRes.level  + atr * 0.8 : price + atr * 0.9);
 
-      // ── 信心計算（門檻同定向交易：75%）──
-      // 基礎：影線觸碰次數越多越可靠（每多1次 wicks ≈ +5%，最多+20%）
+      // ── 信心計算（震盪單門檻降至 68%，因為沒有多時框共振加成）──
+      // 基礎：有影線區 70，無影線區（備用路徑）65，wicks 只加分不扣分
       const zoneWicks = rangeLong ? (nearSupp?.wicks || 0) : (nearRes?.wicks || 0);
-      let rawConfR = 68 + Math.min(17, (zoneWicks - 2) * 5);   // 基礎提高至 68，≥3次觸碰才接近 75%
+      const hasNearZone = rangeLong ? !!nearSupp : !!nearRes;
+      let rawConfR = hasNearZone ? 70 : 65;
+      // wicks 次數加成（≥1 次起算，每次 +4，最多 +16）
+      rawConfR += Math.min(16, Math.max(0, zoneWicks) * 4);
       // RSI 確認加成：距離 50 越遠越強（最多 +10）
-      rawConfR += Math.min(10, Math.abs(rsiR - 50) * 0.4);
+      rawConfR += Math.min(10, Math.abs(rsiR - 50) * 0.5);
       // ADX 越低加成（非趨勢確認）
       if (adxR < 18) rawConfR += 5;
-      rawConfR = Math.min(85, rawConfR);
+      rawConfR = Math.min(88, rawConfR);
 
       const { penalty: learnPen, hardBlocked: learnBlock } = applyLearnAdjustment(direction, rsiR, adxR, {});
       const finalConfR = Math.max(0, rawConfR - learnPen);
-      if (finalConfR < 75 || learnBlock) continue;
+      if (finalConfR < 68 || learnBlock) continue;  // 震盪單門檻 68（低於定向 75，因無多時框共振）
 
       // ── 進場理由 ──
       const zoneDesc = rangeLong
@@ -4725,13 +4731,13 @@ function updateOpenTrades(data) {
       const scoreFailed = !isRangeTrade && (isLong
         ? (isLongTermTrade ? nowScore < 50 : nowScore < 63)
         : (isLongTermTrade ? nowScore > 50 : nowScore > 37));
-      // 信號轉弱（長線單跳過此項，短期信號弱化不影響長線邏輯）
-      const signalWeak = !isRangeTrade && !isLongTermTrade && !trendReversed && !scoreFailed && (isLong ? nowScore < 68 : nowScore > 32);
+      // 信號轉弱（長線單跳過；短線單以 scoreFailed 為主，避免評分短暫波動觸發過早取消）
+      // 注意：signalWeak 門檻從 68 移除，改為只在 trendReversed 或 scoreFailed 時才取消
+      const signalWeak = false; // 已廢棄：原 nowScore < 68 會讓剛建立的掛單立即被取消（建立門檻75 vs 取消門檻68）
       if (trendReversed || scoreFailed || signalWeak) {
         const reasons = [];
         if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
-        if (signalWeak)    reasons.push(`評分 ${nowScore} 轉弱，不符合高信心進場標準`);
         const cancelReason = reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`;
         trade.status = 'cancelled';
         trade.cancelReason = cancelReason;
@@ -6275,7 +6281,7 @@ function renderPositionsPage() {
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
       </div></div>
-      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到評分 60 以上（做多）或 40 以下（做空）的訊號時會自動出現</span></div>`;
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 75%（定向）或 ≥ 68%（震盪）的訊號時會自動出現</span></div>`;
     return;
   }
 
