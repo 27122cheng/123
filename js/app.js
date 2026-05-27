@@ -4616,8 +4616,12 @@ function updateOpenTrades(data) {
     // ── 等待進場確認：現價觸及進場位後才轉為開倉 ──
     if (trade.status === 'pending') {
       const coin = data.find(d => d.symbol === trade.symbol);
-      // 震盪單：影線區域失效快（2小時）；定向單：4小時等待回踩
-      const expiryMs = trade.tradeType === 'range' ? SIGNAL_COOLDOWN : SIGNAL_COOLDOWN * 2;
+      // 震盪單：影線區域失效快（2小時）；定向單：4小時等待回踩；長線單：24小時有效
+      const isRangeTrade = trade.tradeType === 'range';
+      // 長線單（canScaleIn=true 或 longTermBias 與方向一致）→ 基於4H/1D，不受短期信號影響，使用寬鬆門檻
+      const isLongTermTrade = !isRangeTrade && (trade.canScaleIn === true ||
+        (trade.longTermBias && trade.longTermBias === trade.direction));
+      const expiryMs = isRangeTrade ? SIGNAL_COOLDOWN : (isLongTermTrade ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2);
       if (!coin || Date.now() - (trade.timestamp || 0) > expiryMs) {
         trade.status = 'expired'; changed = true; continue;
       }
@@ -4627,16 +4631,18 @@ function updateOpenTrades(data) {
 
       // ── 進場前信號有效性檢查：趨勢反轉或評分跌破門檻則取消掛單 ──
       // 震盪單（tradeType='range'）以影線區域為依據，不以趨勢/評分取消
-      const isRangeTrade = trade.tradeType === 'range';
+      // （isRangeTrade / isLongTermTrade 已於上方計算）
       const nowScore = parseFloat(coin.score) || 50;
-      // 趨勢反轉判斷（震盪單跳過）
-      const trendReversed = !isRangeTrade && (isLong
+      // 趨勢反轉判斷（震盪單和長線單均跳過）
+      const trendReversed = !isRangeTrade && !isLongTermTrade && (isLong
         ? coin.trend?.includes('看跌')
         : coin.trend?.includes('看漲'));
-      // 評分跌破取消門檻（震盪單跳過）
-      const scoreFailed = !isRangeTrade && (isLong ? nowScore < 63 : nowScore > 37);
-      // 信號轉弱（震盪單跳過）
-      const signalWeak = !isRangeTrade && !trendReversed && !scoreFailed && (isLong ? nowScore < 68 : nowScore > 32);
+      // 評分跌破取消門檻（長線單寬鬆：多頭<50 / 空頭>50；普通：多頭<63 / 空頭>37）
+      const scoreFailed = !isRangeTrade && (isLong
+        ? (isLongTermTrade ? nowScore < 50 : nowScore < 63)
+        : (isLongTermTrade ? nowScore > 50 : nowScore > 37));
+      // 信號轉弱（長線單跳過此項，短期信號弱化不影響長線邏輯）
+      const signalWeak = !isRangeTrade && !isLongTermTrade && !trendReversed && !scoreFailed && (isLong ? nowScore < 68 : nowScore > 32);
       if (trendReversed || scoreFailed || signalWeak) {
         const reasons = [];
         if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
@@ -6203,10 +6209,14 @@ function renderPositionsPage() {
     const conf      = t.conf || Math.min(90, t.score || 60);
     const confClr   = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
     const isRange   = t.tradeType === 'range';
+    const isLongTermOpen = !isRange && (t.canScaleIn === true || (t.longTermBias && t.longTermBias === t.direction));
     const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
     const dirColor  = isLong ? 'var(--bull)' : 'var(--bear)';
     const rangeBadge = isRange
       ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.4);color:#a5b4fc;vertical-align:middle">🔄 震盪</span>`
+      : '';
+    const ltBadgeOpen = isLongTermOpen
+      ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.4);color:#4ade80;vertical-align:middle">〔長線單〕</span>`
       : '';
 
     // 進度：SL → 進場 → TP1 → TP2 單一進度條
@@ -6257,7 +6267,7 @@ function renderPositionsPage() {
       <div class="pos-card-top">
         <div class="pos-symbol">
           <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-          <span class="pos-dir" style="color:${dirColor}">${dirLabel}${rangeBadge}</span>
+          <span class="pos-dir" style="color:${dirColor}">${dirLabel}${rangeBadge}${ltBadgeOpen}</span>
         </div>
         <div class="pos-unreal ${unrealR !== null ? (unrealR > 0 ? 'pos-unreal-pos' : unrealR < 0 ? 'pos-unreal-neg' : '') : ''}">
           ${unrealR !== null
@@ -6362,20 +6372,24 @@ function renderPositionsPage() {
             const dirClr  = isLong ? 'var(--bull)' : 'var(--bear)';
             const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
             const fmt     = v => v ? fmtPrice(v) : '—';
-            const expiry  = t.timestamp ? fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2) : '—';
+            const expiry  = t.timestamp ? fmtDateTime(t.timestamp + (isLongTermCard ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2)) : '—';
             const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
             const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
             const isRange   = t.tradeType === 'range';
+            const isLongTermCard = !isRange && (t.canScaleIn === true || (t.longTermBias && t.longTermBias === t.direction));
             const typeLabel = isRange
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc;padding:2px 7px;border-radius:20px;margin-left:6px">🔄 震盪</span>`
+              : '';
+            const ltBadgePend = isLongTermCard
+              ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.35);color:#4ade80;padding:2px 7px;border-radius:20px;margin-left:6px">〔長線單〕</span>`
               : '';
             const pendReasons = (t.entryReason || '').split('，').filter(Boolean);
             return `<div class="pos-card" data-symbol="${t.symbol}" data-unreal="" onclick="navigateTo('coin','${t.symbol}')">
               <div class="pos-card-top">
                 <div class="pos-symbol">
                   <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}</span>
+                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}${ltBadgePend}</span>
                 </div>
                 <div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>
               </div>
