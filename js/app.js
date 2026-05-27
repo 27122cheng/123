@@ -1766,6 +1766,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (direction === 'short' && (macroDir === 'bull' || macroDir === 'strong_bull')) macroBlockedForRecord = true;
     } catch(e) {}
   }
+  // 封鎖原因追蹤（供模板顯示說明橫幅）
+  let _recordBlockedByActive = false;   // 已有開倉中的交易
+  let _recordBlockedByCooldown = false; // 相同方向在冷卻期內
 
   if (existIdx >= 0) {
     const ex = tlog[existIdx];
@@ -1785,11 +1788,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (ex.peakPrice == null) ex.peakPrice = null;
     saveTradeLog(tlog);
   } else {
-    // 只在方向明確（非觀望）且該幣種完全沒有活躍交易時才建立新掛單
-    // 注意：hasAnyActive 同樣要求 t.entry，避免舊版無 entry 的掛單封鎖新掛單建立
-    const hasAnyActive = tlog.some(t =>
-      t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry
+    // ── 反方向未入場掛單自動取消（方向改變時更新方向）──
+    // 例：之前是空單 pending，現在訊號改為多方 → 自動取消舊空單，建立新多單
+    const oppIdx = tlog.findIndex(t =>
+      t.symbol === coin.symbol && t.status === 'pending' && t.direction !== direction && !t.entryTime
     );
+    if (oppIdx >= 0) {
+      const oppDir = tlog[oppIdx].direction;
+      tlog[oppIdx].status = 'cancelled';
+      tlog[oppIdx].cancelReason = `技術訊號方向由${oppDir === 'long' ? '多' : '空'}轉${direction === 'long' ? '多' : '空'}，幣種詳情頁自動更新掛單方向`;
+      tlog[oppIdx].cancelTime = Date.now();
+    }
+
+    // hasAnyActive：反方向掛單已於上方取消；只有「已入場（open）」的交易才真正封鎖
+    // 相同方向 pending 已由 existIdx 處理，這裡不會再出現
+    const hasAnyActive = tlog.some(t => t.symbol === coin.symbol && t.status === 'open');
+
     // 若同幣種+方向在冷卻期內有取消記錄（含飛越止盈取消），不重複建立掛單
     const recentlyCancelled = tlog.some(t =>
       t.symbol === coin.symbol &&
@@ -1797,6 +1811,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       t.status === 'cancelled' &&
       (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
+
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && !macroBlockedForRecord) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
@@ -1817,6 +1832,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       });
       if (tlog.length > 500) tlog.splice(500);
       saveTradeLog(tlog);
+    } else {
+      // 即使未建立新掛單，反方向取消仍需儲存
+      if (oppIdx >= 0) saveTradeLog(tlog);
+      // 記錄封鎖原因供模板顯示
+      if (hasAnyActive)      _recordBlockedByActive = true;
+      if (recentlyCancelled) _recordBlockedByCooldown = true;
     }
   }
 
@@ -2010,6 +2031,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   </div>
 
   ${macroBlockedForRecord ? `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#ef4444">⚠️ 宏觀大方向${isLong ? '偏空' : '偏多'}，本次技術訊號僅供參考，<strong>未計入掛單記錄</strong>（不會出現在「未進場」）</div>` : ''}
+  ${_recordBlockedByCooldown ? (() => { const cancelledT = loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === direction && t.status === 'cancelled'); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
+  ${_recordBlockedByActive ? `<div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#818cf8">📌 此幣種已有持倉進行中，<strong>未計入掛單記錄</strong>（不重複開倉）</div>` : ''}
 
   <div class="setup-levels">
     <div class="level-row level-entry">
@@ -4176,10 +4199,12 @@ function inCooldown(tlog, symbol, direction) {
     (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN
   );
   // 阻止同幣種有任何有效方向（非 wait）的活躍交易重複記錄
+  // 注意：需要 t.entry，避免舊版無 entry 的掛單誤觸發冷卻
   const anyOpen = tlog.some(t =>
     t.symbol === symbol &&
     t.direction !== 'wait' &&
-    (t.status === 'open' || t.status === 'pending')
+    (t.status === 'open' || t.status === 'pending') &&
+    t.entry
   );
   return sameDir || anyOpen;
 }
@@ -4308,7 +4333,7 @@ function recordSignalsFromScan(data) {
       if (!rangeLong && !rangeShort) continue;
 
       const direction = rangeLong ? 'long' : 'short';
-      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
@@ -4408,7 +4433,7 @@ function recordSignalsFromScan(data) {
       const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
       if (rawConf < 75) continue;
 
-      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
