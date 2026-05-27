@@ -1825,6 +1825,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ex.canScaleIn   = canScaleIn;
     if (!ex.scaleIns) ex.scaleIns = [];
     if (ex.peakPrice == null) ex.peakPrice = null;
+    // 補齊長線加倉計劃（若之前未儲存）
+    if (canScaleIn && scaleInLevels.length && !ex.scaleInTargets?.length) {
+      ex.scaleInTargets = scaleInLevels.map(s => s.level);
+      ex.ltTP = ltTP || null;
+    }
     saveTradeLog(tlog);
   } else {
     // ── 反方向未入場掛單自動取消（方向改變時更新方向）──
@@ -1866,6 +1871,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
         refined: true,
         longTermBias: ltBias, canScaleIn, ltConf,
+        scaleInTargets: canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.level) : [],
+        ltTP: (canScaleIn && ltTP) ? ltTP : null,
         scaleIns: [], peakPrice: null,
         ...tradeCtx,
       });
@@ -4781,12 +4788,26 @@ function updateOpenTrades(data) {
       } else {
         const siTouched = isLong ? cur <= pendingSI.entryLevel * 1.005 : cur >= pendingSI.entryLevel * 0.995;
         if (siTouched) {
-          pendingSI.status    = 'open';
-          pendingSI.entryTime = Date.now();
+          pendingSI.status     = 'open';
+          pendingSI.entryTime  = Date.now();
           pendingSI.entryPrice = cur;
           changed = true;
-          sendScaleInTelegramNotification(trade, pendingSI);
-          // 達到最大加倉數後上移止損至保本
+
+          // ── 止損上移至前一個進場位（每次加倉均執行）──
+          // 加倉 1 → SL 移至原始進場；加倉 2 → SL 移至加倉 1 入場；加倉 3 → SL 移至加倉 2 入場
+          const confirmedBefore = trade.scaleIns.filter(s => s.status === 'open' && s !== pendingSI);
+          const prevEntry = confirmedBefore.length > 0
+            ? (confirmedBefore.at(-1).entryPrice || confirmedBefore.at(-1).entryLevel)
+            : trade.entry;
+          // 止損略低/高於前一進場位（0.05% 緩衝防止立即觸及）
+          const candidateSL = isLong ? prevEntry * 0.9995 : prevEntry * 1.0005;
+          const slMoved = isLong ? candidateSL > trade.sl : candidateSL < trade.sl;
+          const oldSL   = trade.sl;
+          if (slMoved) { trade.sl = candidateSL; changed = true; }
+
+          sendScaleInTelegramNotification(trade, pendingSI, slMoved ? oldSL : null, slMoved ? trade.sl : null);
+
+          // 達到最大加倉數後確保止損不低於保本位
           const nowConfirmed = trade.scaleIns.filter(s => s.status === 'open').length;
           if (nowConfirmed >= MAX_SCALE_INS) {
             const protectedSL = isLong
@@ -4904,22 +4925,25 @@ function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 
-function sendScaleInTelegramNotification(trade, scaleIn) {
+function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = null) {
   const s = loadSettings();
   if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
   const sym = trade.symbol.replace('/USDT', '');
   const dir = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
   const siteUrl = window.location.origin + window.location.pathname;
+  const slLine = (oldSL != null && newSL != null)
+    ? `🔒 止損已上移：$${fmt(oldSL)} → <b>$${fmt(newSL)}</b>（移至上一進場位）\n`
+    : `🛑 現行止損：<b>$${fmt(trade.sl)}</b>\n`;
+  const ltTarget = trade.ltTP || scaleIn.tp2 || scaleIn.tp1;
   const msg =
     `📈 <b>加倉確認通知 #${scaleIn.seqNum}</b>\n\n` +
     `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
     `📍 加倉進場位：<b>$${fmt(scaleIn.entryPrice || scaleIn.entryLevel)}</b>\n` +
-    `🛑 止損位：<b>$${fmt(scaleIn.sl)}</b>\n` +
-    `🎯 止盈一：<b>$${fmt(scaleIn.tp1)}</b>\n` +
-    `🚀 止盈二：<b>$${fmt(scaleIn.tp2)}</b>\n\n` +
-    `📊 原始進場：$${fmt(trade.entry)}  止損：$${fmt(trade.sl)}\n` +
-    `🔔 共加倉 ${scaleIn.seqNum}/3 次\n\n` +
+    `${slLine}` +
+    `🏁 長線最終目標：<b>$${fmt(ltTarget)}</b>\n\n` +
+    `📊 原始進場：$${fmt(trade.entry)}\n` +
+    `🔔 已加倉 ${scaleIn.seqNum}/3 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
@@ -6304,6 +6328,40 @@ function renderPositionsPage() {
       </div>
 
       ${progressHtml}
+
+      ${(() => {
+        if (!isLongTermOpen) return '';
+        const siTargets = t.scaleInTargets || [];
+        if (!siTargets.length) return '';
+        const sisDone    = (t.scaleIns || []).filter(s => s.status === 'open');
+        const siPending  = (t.scaleIns || []).find(s => s.status === 'pending');
+        const finalTP    = t.ltTP || t.tp2;
+        const rows = siTargets.map((level, i) => {
+          const isDone     = i < sisDone.length;
+          const isPending  = !isDone && siPending && i === sisDone.length;
+          const actualEntry = isDone ? (sisDone[i]?.entryPrice || sisDone[i]?.entryLevel) : null;
+          const movePct    = entry ? (((level - entry) / entry) * 100 * (isLong ? 1 : -1)).toFixed(1) : '—';
+          const icon  = isDone ? '✅' : isPending ? '⏳' : '📌';
+          const clr   = isDone ? '#22c55e' : isPending ? '#f59e0b' : 'var(--text3)';
+          const lbl   = isDone ? `已觸及 @ ${fmtPrice(actualEntry)}` : isPending ? '等待確認' : `目標 ${fmtPrice(level)}`;
+          return `<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;${i < siTargets.length - 1 ? 'border-bottom:1px solid rgba(255,255,255,.05)' : ''}">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span>${icon}</span>
+              <span style="font-size:0.78rem;color:${clr};font-weight:600">加倉 ${i + 1}</span>
+              <span style="font-size:0.7rem;color:var(--text3)">${isLong ? '+' : '-'}${movePct}%</span>
+            </div>
+            <span style="font-size:0.78rem;color:${clr}">${lbl}</span>
+          </div>`;
+        }).join('');
+        return `<div style="margin:10px 0 4px;padding:8px 12px;background:rgba(34,197,94,.05);border:1px solid rgba(34,197,94,.2);border-radius:8px">
+          <div style="font-size:0.72rem;font-weight:700;color:#4ade80;margin-bottom:6px;letter-spacing:.4px">📈 長線加倉計劃</div>
+          ${rows}
+          ${finalTP ? `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0 2px;margin-top:4px;border-top:1px solid rgba(34,197,94,.2)">
+            <span style="font-size:0.78rem;color:#4ade80;font-weight:700">🏁 最終目標</span>
+            <span style="font-size:0.82rem;font-weight:700;color:#4ade80">${fmtPrice(finalTP)}</span>
+          </div>` : ''}
+        </div>`;
+      })()}
 
       <div class="pos-reasons">
         <div class="pos-reasons-lbl">📍 進場理由</div>
