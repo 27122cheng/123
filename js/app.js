@@ -4623,11 +4623,11 @@ function updateOpenTrades(data) {
     // ── 等待進場確認：現價觸及進場位後才轉為開倉 ──
     if (trade.status === 'pending') {
       const coin = data.find(d => d.symbol === trade.symbol);
-      // 震盪單：影線區域失效快（2小時）；定向單：4小時等待回踩；長線單：24小時有效
+      // 震盪單：影線區域失效快（2小時）；定向短線單：4小時等待回踩；長線單（canScaleIn=true）：24小時有效
       const isRangeTrade = trade.tradeType === 'range';
-      // 長線單（canScaleIn=true 或 longTermBias 與方向一致）→ 基於4H/1D，不受短期信號影響，使用寬鬆門檻
-      const isLongTermTrade = !isRangeTrade && (trade.canScaleIn === true ||
-        (trade.longTermBias && trade.longTermBias === trade.direction));
+      // 長線單必須 canScaleIn===true（代表4H/1D長線偏向+信心>=85）才認定為長線單
+      // 注意：longTermBias===direction 僅代表週線順向，不足以判定長線單（會錯誤延長普通定向單的有效期）
+      const isLongTermTrade = !isRangeTrade && trade.canScaleIn === true;
       const expiryMs = isRangeTrade ? SIGNAL_COOLDOWN : (isLongTermTrade ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2);
       if (!coin || Date.now() - (trade.timestamp || 0) > expiryMs) {
         trade.status = 'expired'; changed = true; continue;
@@ -6233,7 +6233,7 @@ function renderPositionsPage() {
     const conf      = t.conf || Math.min(90, t.score || 60);
     const confClr   = conf >= 70 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
     const isRange   = t.tradeType === 'range';
-    const isLongTermOpen = !isRange && (t.canScaleIn === true || (t.longTermBias && t.longTermBias === t.direction));
+    const isLongTermOpen = !isRange && t.canScaleIn === true;
     const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
     const dirColor  = isLong ? 'var(--bull)' : 'var(--bear)';
     const rangeBadge = isRange
@@ -6243,45 +6243,83 @@ function renderPositionsPage() {
       ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.4);color:#4ade80;vertical-align:middle">〔長線單〕</span>`
       : '';
 
-    // 進度：SL → 進場 → TP1 → TP2 單一進度條
+    // 進度條
     let progressHtml = '';
-    if (cur && entry && tp1 && sl && tp2) {
-      const rangeTotal = isLong ? (tp2 - sl) : (sl - tp2);
-      if (rangeTotal > 0) {
-        // 將各價位轉換為 0-100% 的 bar 位置（左=SL, 右=TP2）
-        const toBarPct = v => Math.max(0, Math.min(100,
-          (isLong ? (v - sl) : (sl - v)) / rangeTotal * 100
-        ));
-        const curPct   = toBarPct(cur);
-        const entryPct = toBarPct(entry);
-        const tp1Pct   = toBarPct(tp1);
-        // 填充顏色：低於進場=虧損紅；超過TP1=綠；其他=多頭藍
-        const fillClr  = curPct < entryPct ? 'var(--bear)'
-                       : curPct >= tp1Pct  ? '#22c55e' : 'var(--bull)';
-
-        progressHtml = `
-          <div class="pos-progress-wrap" style="margin:10px 0 6px">
-            <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:18px">
-              <!-- 填充至現價 -->
-              <div style="position:absolute;inset:0;width:${curPct}%;background:${fillClr};border-radius:4px;transition:width .4s;max-width:100%"></div>
-              <!-- 進場線 -->
-              <div style="position:absolute;top:-3px;bottom:-3px;left:${entryPct}%;width:2px;background:rgba(255,255,255,.45);border-radius:1px;transform:translateX(-50%)"></div>
-              <!-- TP1 標記線 -->
-              <div style="position:absolute;top:-4px;bottom:-4px;left:${tp1Pct}%;width:2px;background:#f59e0b;border-radius:1px;transform:translateX(-50%)"></div>
-              <!-- 下方標籤層 -->
-              <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none">
-                <span style="position:absolute;left:0;color:var(--bear);white-space:nowrap">SL</span>
-                <span style="position:absolute;left:${entryPct}%;transform:translateX(-50%);color:var(--text3);white-space:nowrap">進場</span>
-                <span style="position:absolute;left:${tp1Pct}%;transform:translateX(-50%);color:#f59e0b;white-space:nowrap">TP1</span>
-                <span style="position:absolute;right:0;color:#22c55e;white-space:nowrap">TP2</span>
+    if (cur && entry && sl) {
+      if (isLongTermOpen) {
+        // ── 長線單：SL → 進場 → 加倉1~N → 最終TP ──
+        const finalTP    = t.ltTP || tp2;
+        const siTargets  = t.scaleInTargets || [];
+        const sisDone    = (t.scaleIns || []).filter(s => s.status === 'open');
+        if (finalTP) {
+          const rangeTotal = isLong ? (finalTP - sl) : (sl - finalTP);
+          if (rangeTotal > 0) {
+            const toP = v => Math.max(0, Math.min(100, (isLong ? (v - sl) : (sl - v)) / rangeTotal * 100));
+            const curPct   = toP(cur);
+            const entryPct = toP(entry);
+            const firstSIPct = siTargets.length ? toP(siTargets[0]) : null;
+            const fillClr  = curPct < entryPct ? 'var(--bear)'
+                           : (firstSIPct !== null && curPct >= firstSIPct) ? '#22c55e' : 'var(--bull)';
+            const siLines = siTargets.map((lv, i) => {
+              const p   = toP(lv);
+              const clr = i < sisDone.length ? '#22c55e' : 'rgba(167,139,250,.75)';
+              return `<div style="position:absolute;top:-4px;bottom:-4px;left:${p}%;width:2px;background:${clr};border-radius:1px;transform:translateX(-50%)"></div>`;
+            }).join('');
+            const siLabels = siTargets.map((lv, i) => {
+              const p   = toP(lv);
+              const clr = i < sisDone.length ? '#22c55e' : '#a78bfa';
+              return `<span style="position:absolute;left:${p}%;transform:translateX(-50%);color:${clr};white-space:nowrap">加${i + 1}</span>`;
+            }).join('');
+            progressHtml = `
+              <div class="pos-progress-wrap" style="margin:10px 0 6px">
+                <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:18px">
+                  <div style="position:absolute;inset:0;width:${curPct}%;background:${fillClr};border-radius:4px;transition:width .4s;max-width:100%"></div>
+                  <div style="position:absolute;top:-3px;bottom:-3px;left:${entryPct}%;width:2px;background:rgba(255,255,255,.45);border-radius:1px;transform:translateX(-50%)"></div>
+                  ${siLines}
+                  <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none">
+                    <span style="position:absolute;left:0;color:var(--bear);white-space:nowrap">SL</span>
+                    <span style="position:absolute;left:${entryPct}%;transform:translateX(-50%);color:var(--text3);white-space:nowrap">進場</span>
+                    ${siLabels}
+                    <span style="position:absolute;right:0;color:#22c55e;white-space:nowrap">TP</span>
+                  </div>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
+                  <span style="color:var(--bear)">${fmtPrice(sl)}</span>
+                  <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(cur)}</b></span>
+                  <span style="color:#22c55e">${fmtPrice(finalTP)}</span>
+                </div>
+              </div>`;
+          }
+        }
+      } else if (tp1 && tp2) {
+        // ── 短線單：SL → 進場 → TP1 → TP2 ──
+        const rangeTotal = isLong ? (tp2 - sl) : (sl - tp2);
+        if (rangeTotal > 0) {
+          const toP      = v => Math.max(0, Math.min(100, (isLong ? (v - sl) : (sl - v)) / rangeTotal * 100));
+          const curPct   = toP(cur);
+          const entryPct = toP(entry);
+          const tp1Pct   = toP(tp1);
+          const fillClr  = curPct < entryPct ? 'var(--bear)' : curPct >= tp1Pct ? '#22c55e' : 'var(--bull)';
+          progressHtml = `
+            <div class="pos-progress-wrap" style="margin:10px 0 6px">
+              <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:18px">
+                <div style="position:absolute;inset:0;width:${curPct}%;background:${fillClr};border-radius:4px;transition:width .4s;max-width:100%"></div>
+                <div style="position:absolute;top:-3px;bottom:-3px;left:${entryPct}%;width:2px;background:rgba(255,255,255,.45);border-radius:1px;transform:translateX(-50%)"></div>
+                <div style="position:absolute;top:-4px;bottom:-4px;left:${tp1Pct}%;width:2px;background:#f59e0b;border-radius:1px;transform:translateX(-50%)"></div>
+                <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none">
+                  <span style="position:absolute;left:0;color:var(--bear);white-space:nowrap">SL</span>
+                  <span style="position:absolute;left:${entryPct}%;transform:translateX(-50%);color:var(--text3);white-space:nowrap">進場</span>
+                  <span style="position:absolute;left:${tp1Pct}%;transform:translateX(-50%);color:#f59e0b;white-space:nowrap">TP1</span>
+                  <span style="position:absolute;right:0;color:#22c55e;white-space:nowrap">TP2</span>
+                </div>
               </div>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
-              <span style="color:var(--bear)">${fmtPrice(sl)}</span>
-              <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(cur)}</b></span>
-              <span style="color:#22c55e">${fmtPrice(tp2)}</span>
-            </div>
-          </div>`;
+              <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
+                <span style="color:var(--bear)">${fmtPrice(sl)}</span>
+                <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(cur)}</b></span>
+                <span style="color:#22c55e">${fmtPrice(tp2)}</span>
+              </div>
+            </div>`;
+        }
       }
     }
 
@@ -6313,6 +6351,12 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">止損</div>
           <div class="pos-cell-val" style="color:var(--bear)">${fmtPrice(sl)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&sl ? ((isLong?sl-entry:entry-sl)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
+        ${isLongTermOpen ? `
+        <div class="pos-cell" style="grid-column:span 2">
+          <div class="pos-cell-lbl">最終目標</div>
+          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&(t.ltTP||tp2) ? ((isLong?(t.ltTP||tp2)-entry:entry-(t.ltTP||tp2))/entry*100).toFixed(2)+'%' : ''}</span></div>
+        </div>
+        ` : `
         <div class="pos-cell">
           <div class="pos-cell-lbl">止盈一</div>
           <div class="pos-cell-val" style="color:var(--bull)">${fmtPrice(tp1)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp1 ? ((isLong?tp1-entry:entry-tp1)/entry*100).toFixed(2)+'%' : ''}</span></div>
@@ -6321,6 +6365,7 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">止盈二</div>
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
+        `}
         <div class="pos-cell">
           <div class="pos-cell-lbl">信號強度</div>
           <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
@@ -6435,7 +6480,7 @@ function renderPositionsPage() {
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
             const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
             const isRange   = t.tradeType === 'range';
-            const isLongTermCard = !isRange && (t.canScaleIn === true || (t.longTermBias && t.longTermBias === t.direction));
+            const isLongTermCard = !isRange && t.canScaleIn === true;
             const typeLabel = isRange
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc;padding:2px 7px;border-radius:20px;margin-left:6px">🔄 震盪</span>`
               : '';
