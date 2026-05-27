@@ -1156,17 +1156,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     todayBiasData  = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true, highEvs: [] };
     _btsNetDir     = 'neutral';
   }
-  // isRangeMode：4H + 日線方向矛盾或均中性 → 震盪模式（主要判斷），宏觀指標輔助
+  // isRangeMode：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪時進入震盪模式
+  // 與 recordSignalsFromScan 邏輯完全一致
   const _macroIsNeutral  = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
   const _rangeNeutralCnt = (_macroIsNeutral ? 1 : 0) + (weeklyBiasData.rangeMode ? 1 : 0) + (todayBiasData.rangeMode ? 1 : 0);
-  // 4H 和日線相互矛盾（一多一空）或均無明確方向 → 震盪
-  const _h4Bull_r = h4?.signal?.includes('bull');
-  const _h4Bear_r = h4?.signal?.includes('bear');
+  const isRangeMode      = _rangeNeutralCnt >= 2;  // 三個指標中至少兩個中性/震盪 → 震盪模式
+  // 4H / 日線信號（供範圍卡顯示及短線標籤判斷）
+  const _h4Bull_r  = h4?.signal?.includes('bull');
+  const _h4Bear_r  = h4?.signal?.includes('bear');
   const _dayBull_r = d1sig_?.signal?.includes('bull');
   const _dayBear_r = d1sig_?.signal?.includes('bear');
-  const _4hDayMismatch   = (_h4Bull_r && _dayBear_r) || (_h4Bear_r && _dayBull_r);
-  const _4hDayBothNeutral = !_h4Bull_r && !_h4Bear_r && !_dayBull_r && !_dayBear_r;
-  const isRangeMode      = _4hDayMismatch || _4hDayBothNeutral || _rangeNeutralCnt >= 2;
 
   if (direction === 'wait') {
     const reasons = [];
