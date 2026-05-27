@@ -2956,48 +2956,70 @@ function buildTodayAIBiasHtml(fg, globalMkt) {
   </div>`;
 }
 
-function buildTodayEconWidget() {
-  const allEvents = getWeeklyEconEvents();
-  if (!allEvents.length) {
-    return `<div class="econ-today-empty">本週無重要經濟數據公布</div>`;
-  }
-
-  const dayNames  = ['週日','週一','週二','週三','週四','週五','週六'];
-  const now       = Date.now();
-  const widgetId  = 'econTabs';   // unique enough for single instance
-
-  // ── 按天分組 ──────────────────────────────────────────────
-  const groups = {};   // daysAhead → { label, dateStr, events[] }
-  allEvents.forEach(ev => {
-    const d = ev.daysAhead || 0;
-    if (!groups[d]) {
-      const dt = new Date(); dt.setDate(dt.getDate() + d);
-      const dayLabel = d === 0 ? '今日' : d === 1 ? '明日' : dayNames[dt.getDay()];
-      const dateStr  = `${dt.getMonth()+1}/${dt.getDate()}`;
-      groups[d] = { label: dayLabel, dateStr, events: [] };
+function getNthWeekdayOfMonth(year, month, weekday, n) {
+  // Returns the date of the n-th occurrence of weekday in given month (month: 0-indexed)
+  const date = new Date(year, month, 1);
+  let count = 0;
+  while (date.getMonth() === month) {
+    if (date.getDay() === weekday) {
+      count++;
+      if (count === n) return new Date(date);
     }
-    groups[d].events.push(ev);
-  });
+    date.setDate(date.getDate() + 1);
+  }
+  return null;
+}
 
-  const dayKeys = Object.keys(groups).map(Number).sort((a,b)=>a-b);
+function getMonthEconEvents(year, month) {
+  // month: 0-indexed
+  const events = [];
+  for (const ev of MONTHLY_DATA_SCHEDULE) {
+    const date = getNthWeekdayOfMonth(year, month, ev.dayOfWeek, ev.weekOfMonth);
+    if (!date) continue;
+    const eventTime = new Date(date);
+    eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
+    const daysFromNow = Math.round((eventTime - new Date()) / 86400000);
+    events.push({ ...ev, eventTime, type: 'monthly', date, daysFromNow });
+  }
+  // Also include weekly events for the same month
+  // Find all days in the month, check WEEKLY_DATA_SCHEDULE
+  const firstDay = new Date(year, month, 1);
+  const lastDay  = new Date(year, month + 1, 0);
+  for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
+    const dow = d.getDay();
+    for (const ev of WEEKLY_DATA_SCHEDULE) {
+      if (ev.dayOfWeek === dow) {
+        const eventTime = new Date(d);
+        eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
+        const daysFromNow = Math.round((eventTime - new Date()) / 86400000);
+        events.push({ ...ev, eventTime, type: 'weekly', date: new Date(d), daysFromNow });
+      }
+    }
+  }
+  return events.sort((a, b) => a.eventTime - b.eventTime);
+}
 
-  // 預設顯示今日，否則第一個有事件的天
-  const defaultDay = dayKeys.includes(0) ? 0 : dayKeys[0];
+function buildTodayEconWidget() {
+  const now = Date.now();
+  const today = new Date();
+  const curYear  = today.getFullYear();
+  const curMonth = today.getMonth(); // 0-indexed
 
-  // ── 建立每個事件的 HTML ────────────────────────────────────
+  // Build event HTML (reused for both months)
   const buildEventHtml = (ev) => {
     const impactColor = ev.impact === 'high' ? 'var(--bear)' : ev.impact === 'medium' ? '#f0a500' : 'var(--bull)';
     const impactLabel = ev.impact === 'high' ? '🔴 高影響' : ev.impact === 'medium' ? '🟡 中影響' : '🟢 低影響';
     const timeStr     = fmt12h(ev.twHour, ev.twMin);
+    const published   = ev.eventTime.getTime() < now;
     const minsUntil   = (ev.eventTime.getTime() - now) / 60000;
-    const published   = minsUntil < 0;
+    const dateLabel   = `${ev.eventTime.getMonth()+1}/${ev.eventTime.getDate()}`;
     const timeStatus  = published
       ? `<span class="econ-status econ-status-done">已公布</span>`
       : minsUntil < 60
       ? `<span class="econ-status econ-status-soon">⚡ ${Math.round(minsUntil)}分後</span>`
       : minsUntil < 1440
       ? `<span class="econ-status econ-status-later">${Math.round(minsUntil/60)}h後</span>`
-      : `<span class="econ-status econ-status-later">${(ev.daysAhead||0)}天後</span>`;
+      : `<span class="econ-status econ-status-later">${dateLabel}</span>`;
     const confColor  = (ev.aiConf||0) >= 70 ? 'var(--bull)' : (ev.aiConf||0) >= 55 ? '#f0a500' : 'var(--text3)';
     const aiSection  = ev.aiMarketImpact ? `
       <div class="econ-ai-block">
@@ -3025,44 +3047,89 @@ function buildTodayEconWidget() {
     </div>`;
   };
 
-  // ── Tab 按鈕 ────────────────────────────────────────────────
-  const tabsHtml = dayKeys.map(d => {
-    const g = groups[d];
-    const isActive  = d === defaultDay;
-    const hasSoon   = g.events.some(ev => {
-      const m = (ev.eventTime.getTime() - now) / 60000;
-      return m > 0 && m < 180;
-    });
-    const highCount = g.events.filter(ev => ev.impact === 'high').length;
-    const dot       = hasSoon ? '<span class="econ-tab-dot soon"></span>' : highCount ? '<span class="econ-tab-dot high"></span>' : '';
-    return `<button class="econ-day-tab${isActive ? ' active' : ''}"
+  // Build month panel content (grouped by date)
+  const buildMonthPanel = (year, month, isActive) => {
+    const events = getMonthEconEvents(year, month);
+    if (!events.length) {
+      return `<div style="color:var(--text3);padding:16px;text-align:center">本月無重要數據</div>`;
+    }
+    // Group by date string
+    const groups = {};
+    for (const ev of events) {
+      const key = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
+      if (!groups[key]) {
+        const dayNames = ['週日','週一','週二','週三','週四','週五','週六'];
+        groups[key] = {
+          label: `${ev.eventTime.getMonth()+1}/${ev.eventTime.getDate()} ${dayNames[ev.eventTime.getDay()]}`,
+          events: [],
+          isPast: ev.eventTime.getTime() < now,
+        };
+      }
+      groups[key].events.push(ev);
+    }
+    const dayKeys = Object.keys(groups);
+    const defaultKey = dayKeys.find(k => !groups[k].isPast) || dayKeys[0];
+    const mId = `econ-m-${year}-${month}`;
+    const tabsHtml = dayKeys.map(k => {
+      const g = groups[k];
+      const isAct = k === defaultKey;
+      const highCount = g.events.filter(e => e.impact === 'high').length;
+      const dot = highCount ? '<span class="econ-tab-dot high"></span>' : '';
+      const pastStyle = g.isPast ? 'opacity:0.5;' : '';
+      return `<button class="econ-day-tab${isAct ? ' active' : ''}" style="${pastStyle}"
         onclick="(function(btn){
-          document.querySelectorAll('#${widgetId} .econ-day-tab').forEach(b=>b.classList.remove('active'));
-          document.querySelectorAll('#${widgetId} .econ-day-panel').forEach(p=>p.style.display='none');
+          document.querySelectorAll('#${mId} .econ-day-tab').forEach(b=>b.classList.remove('active'));
+          document.querySelectorAll('#${mId} .econ-day-panel').forEach(p=>p.style.display='none');
           btn.classList.add('active');
-          document.getElementById('${widgetId}-panel-${d}').style.display='block';
+          document.getElementById('${mId}-p-${k}').style.display='block';
         })(this)">
-      ${dot}${g.label}<span class="econ-tab-date">${g.dateStr}</span>
-      <span class="econ-tab-cnt">${g.events.length}</span>
+        ${dot}${g.label}<span class="econ-tab-cnt">${g.events.length}</span>
+      </button>`;
+    }).join('');
+    const panelsHtml = dayKeys.map(k => {
+      const g = groups[k];
+      const content = g.events.map(buildEventHtml).join('<div class="econ-divider"></div>');
+      return `<div id="${mId}-p-${k}" class="econ-day-panel" style="display:${k === defaultKey ? 'block' : 'none'}">${content}</div>`;
+    }).join('');
+    return `<div id="${mId}"><div class="econ-day-tabs" style="flex-wrap:wrap">${tabsHtml}</div>${panelsHtml}</div>`;
+  };
+
+  // Two months: current and next
+  const months = [
+    { year: curYear, month: curMonth },
+    { year: curMonth === 11 ? curYear + 1 : curYear, month: (curMonth + 1) % 12 },
+  ];
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const widgetId = 'econMonthWidget';
+
+  const monthTabsHtml = months.map((m, i) => {
+    const label = `${m.year} ${monthNames[m.month]}`;
+    const events = getMonthEconEvents(m.year, m.month);
+    const highCnt = events.filter(e => e.impact === 'high').length;
+    return `<button class="econ-month-btn${i === 0 ? ' active' : ''}"
+      onclick="(function(btn){
+        document.querySelectorAll('#${widgetId} .econ-month-btn').forEach(b=>b.classList.remove('active'));
+        document.querySelectorAll('#${widgetId} .econ-month-panel').forEach(p=>p.style.display='none');
+        btn.classList.add('active');
+        document.getElementById('${widgetId}-panel-${i}').style.display='block';
+      })(this)">
+      ${label} <span style="font-size:0.68rem;color:var(--bear)">🔴${highCnt}</span>
     </button>`;
   }).join('');
 
-  // ── 每日內容面板 ────────────────────────────────────────────
-  const panelsHtml = dayKeys.map(d => {
-    const g = groups[d];
-    const content = g.events.map(buildEventHtml).join('<div class="econ-divider"></div>');
-    return `<div id="${widgetId}-panel-${d}" class="econ-day-panel" style="display:${d === defaultDay ? 'block' : 'none'}">${content}</div>`;
-  }).join('');
+  const monthPanelsHtml = months.map((m, i) =>
+    `<div id="${widgetId}-panel-${i}" class="econ-month-panel" style="display:${i === 0 ? 'block' : 'none'}">${buildMonthPanel(m.year, m.month, i === 0)}</div>`
+  ).join('');
 
-  const totalEvents = allEvents.length;
+  const totalHighEvents = months.reduce((sum, m) => sum + getMonthEconEvents(m.year, m.month).filter(e => e.impact === 'high').length, 0);
 
   return `<div id="${widgetId}" class="econ-today-section">
     <div class="econ-today-header">
-      <span class="econ-today-title">📋 本週重要數據</span>
-      <span class="econ-today-count">${totalEvents} 項</span>
+      <span class="econ-today-title">📅 本月重要數據</span>
+      <span class="econ-today-count">${totalHighEvents} 項高影響</span>
     </div>
-    <div class="econ-day-tabs">${tabsHtml}</div>
-    ${panelsHtml}
+    <div style="display:flex;gap:8px;margin-bottom:10px">${monthTabsHtml}</div>
+    ${monthPanelsHtml}
   </div>`;
 }
 
@@ -6328,7 +6395,7 @@ function renderPositionsPage() {
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
       </div></div>
-      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 75%（定向）或 ≥ 68%（震盪）的訊號時會自動出現</span></div>`;
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 75% 的訊號時會自動出現</span></div>`;
     return;
   }
 

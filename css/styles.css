@@ -1449,6 +1449,23 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
   border-radius:9px; padding:0 5px; min-width:16px; text-align:center;
 }
 .econ-day-tab.active .econ-tab-cnt { background:rgba(0,212,255,.2); color:var(--accent); }
+/* 月份切換按鈕（本月重要數據 widget）*/
+.econ-month-btn {
+  position:relative;
+  display:inline-flex; align-items:center; gap:5px;
+  padding:6px 14px; border-radius:8px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.03);
+  color:var(--text2); font-size:0.78rem; font-weight:500;
+  cursor:pointer; white-space:nowrap;
+  transition:all .18s ease;
+}
+.econ-month-btn:hover { background:rgba(255,255,255,.07); color:var(--text1); }
+.econ-month-btn.active {
+  background:rgba(0,212,255,.12);
+  border-color:rgba(0,212,255,.35);
+  color:var(--accent); font-weight:700;
+}
 /* 提示點（即將公布 / 高影響）*/
 .econ-tab-dot {
   display:inline-block; width:6px; height:6px; border-radius:50%;
