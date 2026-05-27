@@ -363,16 +363,16 @@ function analyzeWhalePattern(whale) {
   const sellPct = 100 - buyPct;
 
   let pattern, strength, label, color;
-  if (buyPct > 72 && bigBuyCount >= 5) {
+  if (buyPct > 70 && bigBuyCount >= 3) {
     pattern = 'accumulation'; strength = Math.min(95, Math.round(buyPct * 0.9));
     label = `強力吸籌`; color = 'var(--bull)';
-  } else if (sellPct > 72 && bigSellCount >= 5) {
+  } else if (sellPct > 70 && bigSellCount >= 3) {
     pattern = 'distribution'; strength = Math.min(95, Math.round(sellPct * 0.9));
     label = `主動出貨`; color = 'var(--bear)';
-  } else if (buyPct > 60 && bigBuyCount >= 3) {
+  } else if (buyPct > 58 && bigBuyCount >= 2) {
     pattern = 'light_buy'; strength = Math.round(buyPct * 0.7);
     label = `溫和吸籌`; color = 'var(--bull)';
-  } else if (sellPct > 60 && bigSellCount >= 3) {
+  } else if (sellPct > 58 && bigSellCount >= 2) {
     pattern = 'light_sell'; strength = Math.round(sellPct * 0.7);
     label = `溫和出貨`; color = 'var(--bear)';
   } else {
@@ -720,11 +720,11 @@ async function _fetchSpotWhaleTrades(sym) {
       if (!Array.isArray(trades) || trades.length === 0) return null;
 
       const price = parseFloat(trades[trades.length - 1]?.p) || 1;
-      // 動態門檻：依幣價決定「巨鯨」最低成交額
-      const threshold = price > 10000 ? 500000
-        : price > 1000 ? 100000
-        : price > 10   ? 30000
-        : 5000;
+      // 動態門檻：依幣價決定「巨鯨」最低成交額（放寬以確保有資料）
+      const threshold = price > 10000 ? 150000
+        : price > 1000 ? 40000
+        : price > 10   ? 10000
+        : 2000;
 
       let buyVol = 0, sellVol = 0, bigBuyCount = 0, bigSellCount = 0;
       for (const tr of trades) {
@@ -755,49 +755,52 @@ async function _fetchSpotWhaleTrades(sym) {
 async function _fetchFuturesWhaleData(sym) {
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 6000);
-    const [takerRes, oiRes] = await Promise.all([
-      fetch(`https://fapi.binance.com/futures/data/takerBuySellVol?symbol=${sym}&period=5m&limit=12`, { signal: ctrl.signal }),
-      fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=12`, { signal: ctrl.signal }),
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    // 使用 allSettled 確保任一端點失敗不影響另一個
+    const [takerSettled, oiSettled] = await Promise.allSettled([
+      fetch(`https://fapi.binance.com/futures/data/takerBuySellVol?symbol=${sym}&period=5m&limit=24`, { signal: ctrl.signal }),
+      fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=24`, { signal: ctrl.signal }),
     ]);
     clearTimeout(t);
 
-    if (!takerRes.ok && !oiRes.ok) return null;
-
     let takerBuyPct = null, takerSellPct = null, takerBias = null, takerBuyVol = null, takerSellVol = null;
-    if (takerRes.ok) {
-      const takerData = await takerRes.json();
-      if (Array.isArray(takerData) && takerData.length > 0) {
-        let totalBuyVol = 0, totalSellVol = 0;
-        for (const rec of takerData) {
-          totalBuyVol  += parseFloat(rec.buyVol)  || 0;
-          totalSellVol += parseFloat(rec.sellVol) || 0;
+    if (takerSettled.status === 'fulfilled' && takerSettled.value.ok) {
+      try {
+        const takerData = await takerSettled.value.json();
+        if (Array.isArray(takerData) && takerData.length > 0) {
+          let totalBuyVol = 0, totalSellVol = 0;
+          for (const rec of takerData) {
+            totalBuyVol  += parseFloat(rec.buyVol)  || 0;
+            totalSellVol += parseFloat(rec.sellVol) || 0;
+          }
+          const totalVol = totalBuyVol + totalSellVol;
+          if (totalVol > 0) {
+            const buyPctNum = totalBuyVol / totalVol * 100;
+            takerBuyPct  = buyPctNum.toFixed(1);
+            takerSellPct = (100 - buyPctNum).toFixed(1);
+            takerBias    = buyPctNum > 55 ? 'bull' : buyPctNum < 45 ? 'bear' : 'neutral';
+            takerBuyVol  = totalBuyVol;
+            takerSellVol = totalSellVol;
+          }
         }
-        const totalVol = totalBuyVol + totalSellVol;
-        if (totalVol > 0) {
-          const buyPctNum = totalBuyVol / totalVol * 100;
-          takerBuyPct  = buyPctNum.toFixed(1);
-          takerSellPct = (100 - buyPctNum).toFixed(1);
-          takerBias    = buyPctNum > 55 ? 'bull' : buyPctNum < 45 ? 'bear' : 'neutral';
-          takerBuyVol  = totalBuyVol;
-          takerSellVol = totalSellVol;
-        }
-      }
+      } catch { /* json parse 失敗，忽略 */ }
     }
 
     let oiChange = null, oiTrend = null, oiCurrent = null;
-    if (oiRes.ok) {
-      const oiData = await oiRes.json();
-      if (Array.isArray(oiData) && oiData.length >= 2) {
-        const firstOI = parseFloat(oiData[0].sumOpenInterest) || 0;
-        const lastOI  = parseFloat(oiData[oiData.length - 1].sumOpenInterest) || 0;
-        oiCurrent = lastOI;
-        if (firstOI > 0) {
-          const changePct = (lastOI - firstOI) / firstOI * 100;
-          oiChange = parseFloat(changePct.toFixed(2));
-          oiTrend  = changePct > 0.5 ? 'increasing' : changePct < -0.5 ? 'decreasing' : 'stable';
+    if (oiSettled.status === 'fulfilled' && oiSettled.value.ok) {
+      try {
+        const oiData = await oiSettled.value.json();
+        if (Array.isArray(oiData) && oiData.length >= 2) {
+          const firstOI = parseFloat(oiData[0].sumOpenInterest) || 0;
+          const lastOI  = parseFloat(oiData[oiData.length - 1].sumOpenInterest) || 0;
+          oiCurrent = lastOI;
+          if (firstOI > 0) {
+            const changePct = (lastOI - firstOI) / firstOI * 100;
+            oiChange = parseFloat(changePct.toFixed(2));
+            oiTrend  = changePct > 0.5 ? 'increasing' : changePct < -0.5 ? 'decreasing' : 'stable';
+          }
         }
-      }
+      } catch { /* json parse 失敗，忽略 */ }
     }
 
     if (takerBuyPct === null && oiChange === null) return null;

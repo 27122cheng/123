@@ -3294,23 +3294,36 @@ function buildVPPanel(coin, mtfData, whale) {
         </div>`;
       })() : ''}
     </div>`;
+  } else if (whale && whale.futuresWhale) {
+    // 現貨大單不足，但有合約 Taker 數據 → 以合約為主
+    const fw = whale.futuresWhale;
+    const takerBias = fw.takerBias || 'neutral';
+    const takerBuyPct  = fw.takerBuyPct  || '—';
+    const takerSellPct = fw.takerSellPct || '—';
+    const oiChange    = fw.oiChange;
+    const oiChangeStr = (oiChange !== null && oiChange !== undefined) ? oiChange.toFixed(2) : null;
+    const biasClr = takerBias === 'bull' ? 'var(--bull)' : takerBias === 'bear' ? 'var(--bear)' : 'var(--text2)';
+    const biasLabel = takerBias === 'bull' ? '合約買方主導' : takerBias === 'bear' ? '合約賣方主導' : '合約多空均衡';
+    const oiLabel = fw.oiTrend === 'increasing' ? '持倉增加（資金流入）' : fw.oiTrend === 'decreasing' ? '持倉減少（資金流出）' : '持倉穩定';
+    whaleHtml = `<div class="vp-whale-section">
+      <div class="vp-sub-title">🐋 巨鯨進退場偵測（合約數據）</div>
+      <div class="vp-whale-pattern" style="color:${biasClr}">
+        <span class="vp-whale-label">${biasLabel}</span>
+        <div class="vp-whale-bar-wrap"><div class="vp-whale-bar" style="width:${takerBias === 'bull' ? takerBuyPct : takerBias === 'bear' ? takerSellPct : 50}%;background:${biasClr}"></div></div>
+        <span class="vp-whale-pct">${takerBias === 'bull' ? takerBuyPct : takerBias === 'bear' ? takerSellPct : 50}%</span>
+      </div>
+      <div class="vp-whale-stats">
+        <span style="font-size:0.7rem;color:var(--text3)">合約Taker：</span>
+        <span class="vp-chip" style="color:var(--bull)">買 ${takerBuyPct}%</span>
+        <span class="vp-chip" style="color:var(--bear)">賣 ${takerSellPct}%</span>
+        ${oiChangeStr !== null ? `<span class="vp-chip" style="color:${oiChange > 0 ? 'var(--bull)' : oiChange < 0 ? 'var(--bear)' : 'var(--text2)'}">OI ${oiChange > 0 ? '+' : ''}${oiChangeStr}%</span>` : ''}
+      </div>
+      ${fw.oiTrend ? `<div class="vp-ai-narr" style="color:var(--text3)">${oiLabel}</div>` : ''}
+    </div>`;
   } else {
     whaleHtml = `<div class="vp-whale-section">
       <div class="vp-sub-title">🐋 巨鯨進退場偵測</div>
-      <div style="color:var(--text3);font-size:0.8rem;padding:4px 0">大額交易數據不足，無法判斷</div>
-      ${whale && whale.futuresWhale ? (() => {
-        const fw = whale.futuresWhale;
-        const takerBias = fw.takerBias || 'neutral';
-        const takerBuyPct = fw.takerBuyPct || '—';
-        const takerSellPct = fw.takerSellPct || '—';
-        const oiChange = fw.oiChange;
-        const oiChangeStr = oiChange !== null && oiChange !== undefined ? oiChange.toFixed(2) : null;
-        return `<div class="vp-whale-stats" style="margin-top:4px">
-          <span style="font-size:0.7rem;color:var(--text3)">合約Taker：</span>
-          <span class="vp-chip" style="color:${takerBias === 'bull' ? 'var(--bull)' : takerBias === 'bear' ? 'var(--bear)' : 'var(--text2)'}">買 ${takerBuyPct}% / 賣 ${takerSellPct}%</span>
-          ${oiChangeStr !== null ? `<span class="vp-chip" style="color:${oiChange > 0 ? 'var(--bull)' : oiChange < 0 ? 'var(--bear)' : 'var(--text2)'}">OI ${oiChange > 0 ? '+' : ''}${oiChangeStr}%</span>` : ''}
-        </div>`;
-      })() : ''}
+      <div style="color:var(--text3);font-size:0.8rem;padding:4px 0">現貨 / 合約數據載入中，稍後重試...</div>
     </div>`;
   }
 
