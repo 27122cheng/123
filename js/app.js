@@ -246,13 +246,30 @@ async function manualRefresh() {
 }
 
 function computeLongTermBias(mtfData) {
-  // 長線單需要日線 + 週線同向（週線主導，權重 3:1）
-  // 沒有週線數據 → 不觸發長線單，只做短線單
+  // 長線單條件：日線同向，且 週線 OR 月線 至少一個同向
+  // 日線沒有方向 → 不觸發長線單
+  const daySig  = mtfData['1d']?.signal;
   const weekSig = mtfData['1w']?.signal;
-  if (!weekSig) return 'neutral';
+  const monSig  = mtfData['1M']?.signal;
+  if (!daySig) return 'neutral';
+  if (!weekSig && !monSig) return 'neutral';  // 缺少長周期資料
 
+  const dayBull  = daySig.signal?.includes('bull');
+  const dayBear  = daySig.signal?.includes('bear');
+  if (!dayBull && !dayBear) return 'neutral';  // 日線中性 → 不觸發長線單
+
+  const weekBull = weekSig?.signal?.includes('bull');
+  const weekBear = weekSig?.signal?.includes('bear');
+  const monBull  = monSig?.signal?.includes('bull');
+  const monBear  = monSig?.signal?.includes('bear');
+
+  // 至少週線或月線有一個方向與日線一致才算長線對齊
+  const ltBull = weekBull || monBull;
+  const ltBear = weekBear || monBear;
+
+  // 加權評分（月線 > 週線 > 日線）
   let bull = 0, bear = 0;
-  const weights = { '1d': 1, '1w': 3 };
+  const weights = { '1d': 1, '1w': 3, '1M': 4 };
   for (const [tf, w] of Object.entries(weights)) {
     const sig = mtfData[tf]?.signal;
     if (!sig) continue;
@@ -262,12 +279,9 @@ function computeLongTermBias(mtfData) {
     if (rsi < 42) bull += w * 0.4;
     if (rsi > 58) bear += w * 0.4;
   }
-  // 週線必須明確偏向（週線權重佔3，總分5才算強烈共識）
-  const weekBull = weekSig.signal?.includes('bull');
-  const weekBear = weekSig.signal?.includes('bear');
-  if (!weekBull && !weekBear) return 'neutral';  // 週線中性 → 不觸發長線單
-  if (bull >= 4 && bull > bear * 1.5 && weekBull) return 'long';
-  if (bear >= 4 && bear > bull * 1.5 && weekBear) return 'short';
+
+  if (dayBull && ltBull && bull >= 4 && bull > bear * 1.5) return 'long';
+  if (dayBear && ltBear && bear >= 4 && bear > bull * 1.5) return 'short';
   return 'neutral';
 }
 
@@ -1334,9 +1348,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const ltBias = computeLongTermBias(mtfData);
   // 方向一致才標示〔長線單〕（不需區分看多/看空，配對即可）
   // 長線信心分：85+ 才允許加倉（canScaleIn = true），ltTag 與 layout 保持一致
-  // 長線單需要日線 + 週線共識（週線不存在 → canScaleIn 永遠為 false）
+  // 長線單需要日線 + 週線或月線共識（月線權重最高）
   let ltBullScore = 0, ltBearScore = 0;
-  const ltWeights = { '1d': 1, '1w': 3 };
+  const ltWeights = { '1d': 1, '1w': 3, '1M': 4 };
   for (const [tf, w] of Object.entries(ltWeights)) {
     const sig = mtfData[tf]?.signal;
     if (!sig) continue;
@@ -1350,8 +1364,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 週線不存在時 ltBias 必為 neutral（computeLongTermBias 已保障），故 ltConf=0
   const ltConf     = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRawScore * 8)) : 0;
   const canScaleIn = ltBias === direction && ltConf >= 85;
+
+  // 短線單：4H + 日線同向（且非長線單）才顯示 ⚡ 短線標籤
+  const h4Sig  = mtfData['4h']?.signal;
+  const dayS   = mtfData['1d']?.signal;
+  const h4Bull = h4Sig?.signal?.includes('bull');
+  const h4Bear = h4Sig?.signal?.includes('bear');
+  const dayBullSig = dayS?.signal?.includes('bull');
+  const dayBearSig = dayS?.signal?.includes('bear');
+  const is4hDayAligned = isLong ? (h4Bull && dayBullSig) : (h4Bear && dayBearSig);
+
   // ltTag 只在真正觸發長線單（canScaleIn=true）時顯示，避免 badge 與 layout 不一致
   const ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
+  // 根據類型更新 dirLabel，避免出現「短線做多 〔長線單〕」矛盾文字
+  if (canScaleIn) dirLabel = isLong ? '長線做多' : '長線做空';
+  else if (!isRangeMode && is4hDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
+  else if (!isRangeMode) dirLabel = isLong ? '做多' : '做空';
 
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
@@ -1836,6 +1864,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ex.conf = conf; ex.rawConf = rawConf;
     ex.longTermBias = ltBias;
     ex.canScaleIn   = canScaleIn;
+    ex.is4hDayAligned = is4hDayAligned;
     if (!ex.scaleIns) ex.scaleIns = [];
     if (ex.peakPrice == null) ex.peakPrice = null;
     // 補齊長線加倉計劃（若之前未儲存）
@@ -1883,7 +1912,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
         refined: true,
-        longTermBias: ltBias, canScaleIn, ltConf,
+        longTermBias: ltBias, canScaleIn, ltConf, is4hDayAligned,
         scaleInTargets: canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.level) : [],
         ltTP: (canScaleIn && ltTP) ? ltTP : null,
         scaleIns: [], peakPrice: null,
@@ -3665,7 +3694,7 @@ function buildMTFTable(mtfData) {
   const tfs = [
     { key: '15m', label: '15分' }, { key: '1h', label: '1小時' },
     { key: '4h', label: '4小時' }, { key: '1d', label: '日線' },
-    { key: '1w', label: '週線' },
+    { key: '1w', label: '週線' },  { key: '1M', label: '月線' },
   ];
   const sigLabel = {
     strong_bull: '<span class="text-bull">強勢看漲 ▲▲</span>',
@@ -4629,12 +4658,8 @@ function recordSignalsFromScan(data) {
       const macroPen = isLong ? macroPenLong : macroPenShort;
       const finalConf = Math.max(55, setup.conf - macroPen);  // 最低 55% 防顯示異常
 
-      // 週線方向與交易方向一致且強烈 → 允許加倉（長線單）
-      const ltBiasD = (wBias === 'bull' || wBias === 'strong_bull') ? 'long'
-                    : (wBias === 'bear' || wBias === 'strong_bear') ? 'short'
-                    : 'neutral';
-      const canScaleInD = ltBiasD === direction && (wBias === 'strong_bull' || wBias === 'strong_bear');
-
+      // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
+      // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -4652,8 +4677,7 @@ function recordSignalsFromScan(data) {
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
         refined: false,
         tradeType: 'directional',
-        longTermBias: ltBiasD !== 'neutral' ? ltBiasD : null,
-        canScaleIn: canScaleInD,
+        longTermBias: null, canScaleIn: false,
         scaleIns: [], peakPrice: null,
       });
       changed = true;
@@ -6341,7 +6365,7 @@ function renderPositionsPage() {
     const ltBadgeOpen = isLongTermOpen
       ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.4);color:#4ade80;vertical-align:middle">〔長線單〕</span>`
       : '';
-    const shortTermBadgeOpen = (!isRange && !isLongTermOpen)
+    const shortTermBadgeOpen = (!isRange && !isLongTermOpen && t.is4hDayAligned !== false)
       ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;vertical-align:middle">⚡ 短線</span>`
       : '';
 
@@ -6585,19 +6609,19 @@ function renderPositionsPage() {
             const dirClr  = isLong ? 'var(--bull)' : 'var(--bear)';
             const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
             const fmt     = v => v ? fmtPrice(v) : '—';
+            const isRange   = t.tradeType === 'range';
+            const isLongTermCard = !isRange && t.canScaleIn === true;
             const expiry  = t.timestamp ? fmtDateTime(t.timestamp + (isLongTermCard ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2)) : '—';
             const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
             const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
-            const isRange   = t.tradeType === 'range';
-            const isLongTermCard = !isRange && t.canScaleIn === true;
             const typeLabel = isRange
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc;padding:2px 7px;border-radius:20px;margin-left:6px">🔄 震盪</span>`
               : '';
             const ltBadgePend = isLongTermCard
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.35);color:#4ade80;padding:2px 7px;border-radius:20px;margin-left:6px">〔長線單〕</span>`
               : '';
-            const shortTermBadgePend = (!isRange && !isLongTermCard)
+            const shortTermBadgePend = (!isRange && !isLongTermCard && t.is4hDayAligned !== false)
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:6px">⚡ 短線</span>`
               : '';
             const pendReasons = (t.entryReason || '').split('，').filter(Boolean);
