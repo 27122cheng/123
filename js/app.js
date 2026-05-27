@@ -1156,10 +1156,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     todayBiasData  = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true, highEvs: [] };
     _btsNetDir     = 'neutral';
   }
-  // isRangeMode：大方向 / 本週預測 / 今日預測 三者中 ≥2 個為中性/震盪時進入震盪模式
+  // isRangeMode：4H + 日線方向矛盾或均中性 → 震盪模式（主要判斷），宏觀指標輔助
   const _macroIsNeutral  = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
   const _rangeNeutralCnt = (_macroIsNeutral ? 1 : 0) + (weeklyBiasData.rangeMode ? 1 : 0) + (todayBiasData.rangeMode ? 1 : 0);
-  const isRangeMode      = _rangeNeutralCnt >= 2;  // 三個指標中至少兩個中性/震盪 → 震盪模式
+  // 4H 和日線相互矛盾（一多一空）或均無明確方向 → 震盪
+  const _h4Bull_r = h4?.signal?.includes('bull');
+  const _h4Bear_r = h4?.signal?.includes('bear');
+  const _dayBull_r = d1sig_?.signal?.includes('bull');
+  const _dayBear_r = d1sig_?.signal?.includes('bear');
+  const _4hDayMismatch   = (_h4Bull_r && _dayBear_r) || (_h4Bear_r && _dayBull_r);
+  const _4hDayBothNeutral = !_h4Bull_r && !_h4Bear_r && !_dayBull_r && !_dayBear_r;
+  const isRangeMode      = _4hDayMismatch || _4hDayBothNeutral || _rangeNeutralCnt >= 2;
 
   if (direction === 'wait') {
     const reasons = [];
@@ -4561,7 +4568,7 @@ function recordSignalsFromScan(data) {
         ? (nearSupp ? nearSupp.level - atr * 0.8 : price - atr * 0.9)
         : (nearRes  ? nearRes.level  + atr * 0.8 : price + atr * 0.9);
 
-      // ── 信心計算（震盪單門檻降至 68%，因為沒有多時框共振加成）──
+      // ── 信心計算（震盪單門檻 75%）──
       // 基礎：有影線區 70，無影線區（備用路徑）65，wicks 只加分不扣分
       const zoneWicks = rangeLong ? (nearSupp?.wicks || 0) : (nearRes?.wicks || 0);
       const hasNearZone = rangeLong ? !!nearSupp : !!nearRes;
@@ -4576,7 +4583,7 @@ function recordSignalsFromScan(data) {
 
       const { penalty: learnPen, hardBlocked: learnBlock } = applyLearnAdjustment(direction, rsiR, adxR, {});
       const finalConfR = Math.max(0, rawConfR - learnPen);
-      if (finalConfR < 68 || learnBlock) continue;  // 震盪單門檻 68（低於定向 75，因無多時框共振）
+      if (finalConfR < 75 || learnBlock) continue;  // 震盪單門檻 75
 
       // ── 進場理由 ──
       const zoneDesc = rangeLong
@@ -4644,7 +4651,7 @@ function recordSignalsFromScan(data) {
       // 原因：computeSimpleSetup conf 受 hardAdxPenalty 影響（ADX<22 扣14%），
       //       而 ADX 懲罰在 buildTradeSetup 精煉時才有意義，掃描初篩不應套用
       const scanScore = isLong ? coin.score : 100 - coin.score;
-      if (scanScore < 65) continue;  // score 65+ 才納入（建立掛單後 buildTradeSetup 會精煉）
+      if (scanScore < 75) continue;  // score 75+ 才納入（建立掛單後 buildTradeSetup 會精煉）
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
@@ -4656,7 +4663,7 @@ function recordSignalsFromScan(data) {
 
       // 宏觀逆風扣分後的顯示信心（存入 trade record 供 UI 顯示，非過濾依據）
       const macroPen = isLong ? macroPenLong : macroPenShort;
-      const finalConf = Math.max(55, setup.conf - macroPen);  // 最低 55% 防顯示異常
+      const finalConf = Math.max(75, setup.conf - macroPen);  // 顯示信心最低 75%（符合門檻要求）
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
@@ -7269,7 +7276,7 @@ function computeSimpleSetup(coin, isLong) {
   // 趨勢強度加成（強勢看漲/看跌）
   if (coin.trend === '強勢看漲' || coin.trend === '強勢看跌') rawConf += 4;
   rawConf = Math.min(90, rawConf);
-  const conf = Math.max(0, rawConf - learnPenalty - hardAdxPenalty);
+  const conf = Math.max(0, rawConf - learnPenalty);  // 掃描路徑不扣 ADX 懲罰（buildTradeSetup 精煉時處理）
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
