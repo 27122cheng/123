@@ -1198,7 +1198,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (rangeDir) {
       // ── 先計算完整信心（扣完所有分）再決定是否顯示與記錄 ──
       const rRawConf = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
-      const { penalty: rLearnPen, hardBlocked: rHardBlocked } = applyLearnAdjustment(rangeDir, rsi, coin.adx || 20, {});
+      let rLearnPen = 0, rHardBlocked = false;
+      try { ({ penalty: rLearnPen, hardBlocked: rHardBlocked } = applyLearnAdjustment(rangeDir, rsi, coin.adx || 20, {})); } catch(e) {}
       // slight_bear 做空不再額外懲罰（已是允許方向）; slight_bull 做多同理
       const rConf = Math.max(0, rRawConf - rLearnPen);
 
@@ -1388,7 +1389,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const macdHL  = parseFloat(coin.macdHist) || 0;
     const momL    = parseFloat(coin.momentum)  || 0;
     const volStrL = coin.volumeStrength || '';
-    const adxL    = adx; // already defined above
+    const adxL    = parseFloat(coin.adx) || 20;
     if (rsi >= 45 && rsi < 65) entryReasons.push(`RSI ${rsi} 積極偏多，動能尚未過熱`);
     else if (rsi >= 65)        entryReasons.push(`RSI ${rsi} 強勢偏多`);
     if (ema50L > 0 && price > m15ema && m15ema > ema50L) entryReasons.push(`EMA 多頭排列（20 > 50），趨勢向上`);
@@ -1450,7 +1451,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const macdHS  = parseFloat(coin.macdHist) || 0;
     const momS    = parseFloat(coin.momentum)  || 0;
     const volStrS = coin.volumeStrength || '';
-    const adxS    = adx;
+    const adxS    = parseFloat(coin.adx) || 20;
     if (rsi <= 50 && rsi > 35) entryReasons.push(`RSI ${rsi} 偏弱，下行動能確認`);
     else if (rsi <= 35)        entryReasons.push(`RSI ${rsi} 弱勢偏空`);
     else if (rsi > 62)         entryReasons.push(`RSI ${rsi} 超買區，回落機會`);
@@ -1694,7 +1695,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const adxVal = parseFloat(coin.adx) || 20;
   // 硬性 ADX 門檻（不依賴歷史數據，始終生效）
   const hardAdxPenalty = adxVal < 18 ? 28 : adxVal < 22 ? 14 : 0;
-  const learnResult = applyLearnAdjustment(direction, rsi, adxVal, learnCtx);
+  let learnResult;
+  try { learnResult = applyLearnAdjustment(direction, rsi, adxVal, learnCtx); } catch(e) {
+    console.warn('[buildTradeSetup] applyLearnAdjustment 失敗，使用預設值:', e);
+    learnResult = { penalty: 0, warnings: [], hardBlocked: false, blockReasons: [], defenseChecks: [] };
+  }
   const { penalty: learnPenalty, warnings: learnWarn0, hardBlocked, blockReasons } = learnResult;
   // 合併警告：硬性 ADX 警告 + AI 學習警告 + 最終防線
   const learnWarnings = [...learnWarn0];
