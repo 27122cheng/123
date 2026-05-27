@@ -2684,6 +2684,12 @@ function computeTodayAIBias(fg, globalMkt) {
   const todayEvs = getTodayEconEvents();
   const highEvs  = todayEvs.filter(ev => ev.impact === 'high');
   const nowMs    = Date.now();
+  // 只計算「有效時間窗口」內（2小時前～12小時後）的高影響事件，
+  // 避免把數小時前已公布的舊事件也算進 riskNote／conf 扣分
+  const relevantHighEvs = highEvs.filter(ev => {
+    const mins = (ev.eventTime.getTime() - nowMs) / 60000;
+    return mins > -120 && mins < 720;
+  });
   highEvs.forEach(ev => {
     const mins = (ev.eventTime.getTime() - nowMs) / 60000;
     if (mins > -120 && mins < 720) {
@@ -2703,11 +2709,12 @@ function computeTodayAIBias(fg, globalMkt) {
              : score > 0 ? 'slight_bull' : score < 0 ? 'slight_bear' : 'neutral';
   const biasLabel = { bull:'▲ 偏多', bear:'▼ 偏空', slight_bull:'▲ 小幅偏多', slight_bear:'▼ 小幅偏空', neutral:'◆ 中性觀望' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text3)';
-  const conf = Math.max(30, Math.min(80, 45 + absScore * 8 + (fgVal != null ? 4 : 0) - highEvs.length * 4));
+  // conf 扣分也只計有效時間窗口內的高影響事件（與 riskNote 保持一致）
+  const conf = Math.max(30, Math.min(80, 45 + absScore * 8 + (fgVal != null ? 4 : 0) - relevantHighEvs.length * 4));
   const confColor = conf >= 65 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
-  const riskNote = highEvs.length > 0
-    ? `今日 ${highEvs.length} 項高影響數據，建議等公布後確認方向再操作`
-    : '今日無高影響數據，技術面主導，可依訊號正常操作';
+  const riskNote = relevantHighEvs.length > 0
+    ? `今日 ${relevantHighEvs.length} 項高影響數據（${relevantHighEvs.map(ev => { const m = (ev.eventTime.getTime()-nowMs)/60000; return ev.name + (m < 0 ? '已公布' : m < 60 ? `${Math.round(m)}分後` : `${(m/60).toFixed(1)}h後`); }).join('、')}），建議等公布後確認方向再操作`
+    : '今日無近期高影響數據，技術面主導，可依訊號正常操作';
 
   // ── Persist current prediction for future self-evaluation ──
   try {
