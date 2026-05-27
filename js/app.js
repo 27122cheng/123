@@ -4611,24 +4611,23 @@ function recordSignalsFromScan(data) {
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // 快速預篩：基礎分數過低直接跳過（threshold 降至 60 與 isLong/isShort 一致）
-      // 最終信心由 computeSimpleSetup 計算（含 RSI/ADX 加成），不再在此提前否決
-      const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-      if (rawConf < 60) continue;
+      // 品質門檻：直接用 coin.score（掃描路徑不用 computeSimpleSetup conf 做過濾）
+      // 原因：computeSimpleSetup conf 受 hardAdxPenalty 影響（ADX<22 扣14%），
+      //       而 ADX 懲罰在 buildTradeSetup 精煉時才有意義，掃描初篩不應套用
+      const scanScore = isLong ? coin.score : 100 - coin.score;
+      if (scanScore < 65) continue;  // score 65+ 才納入（建立掛單後 buildTradeSetup 會精煉）
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
+      // computeSimpleSetup 只用於計算 entry/sl/tp，不用其 conf 做二次過濾
       const setup = computeSimpleSetup(coin, isLong);
+      if (setup.hardBlocked) continue;  // AI 硬封鎖仍然生效（有歷史大量止損記憶）
 
-      // 套用宏觀 + AI 逆風扣分後重新計算最終信心
+      // 宏觀逆風扣分後的顯示信心（存入 trade record 供 UI 顯示，非過濾依據）
       const macroPen = isLong ? macroPenLong : macroPenShort;
-      const finalConf = Math.max(0, setup.conf - macroPen);
-      const confThreshold = 72;  // 含 RSI/ADX 加成後，有效信號約 72-85%
-
-      // 最終信心 < 72% 或 AI 硬封鎖 → 不記錄
-      if (finalConf < confThreshold || setup.hardBlocked) continue;
+      const finalConf = Math.max(55, setup.conf - macroPen);  // 最低 55% 防顯示異常
 
       // 週線方向與交易方向一致且強烈 → 允許加倉（長線單）
       const ltBiasD = (wBias === 'bull' || wBias === 'strong_bull') ? 'long'
