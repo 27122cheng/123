@@ -922,14 +922,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
 
     if (!pendingCancelledByMacro) {
-      // 每次開啟幣種詳情都重新計算 AI 學習調整後的信心度，確保顯示值與警告一致
-      const rsiNow      = parseFloat(coin.rsi) || 50;
-      const adxNow      = parseFloat(coin.adx) || 20;
-      const hardAdxNow  = adxNow < 18 ? 28 : adxNow < 22 ? 14 : 0;
-      const vp1hNow     = mtfData['1h']?.vp;
+      // 每次開啟幣種詳情都重新計算完整信心扣分（ADX + 宏觀 + AI趨勢 + 風控記憶）
+      const rsiNow   = parseFloat(coin.rsi) || 50;
+      const adxNow   = parseFloat(coin.adx) || 20;
+      const isLongNow = existingActive.direction === 'long';
+      const hardAdxNow = adxNow < 18 ? 28 : adxNow < 22 ? 14 : 0;
+      const vp1hNow  = mtfData['1h']?.vp;
       const mtfAlignNow = ['15m','1h','4h','1d'].filter(tf => {
         const sig = mtfData[tf]?.signal;
-        return sig && (existingActive.direction === 'long' ? sig.signal?.includes('bull') : sig.signal?.includes('bear'));
+        return sig && (isLongNow ? sig.signal?.includes('bull') : sig.signal?.includes('bear'));
       }).length;
       const learnCtxNow = {
         abovePOC:      vp1hNow?.priceAbovePOC ?? null,
@@ -937,24 +938,95 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         volDivergence: mtfData['1h']?.volAI?.divergence || null,
         mtfAlign:      mtfAlignNow,
         slType:        existingActive.entrySlType || 'atr',
+        skipAdxRule:   true,
       };
-      try {
-        const { penalty: learnPenNow } = applyLearnAdjustment(existingActive.direction, rsiNow, adxNow, learnCtxNow);
-        const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-        const freshConf  = Math.max(0, rawConfNow - learnPenNow - hardAdxNow);
-        if (Math.abs((existingActive.conf || 0) - freshConf) >= 1) {
-          const tlogEdit = loadTradeLog();
-          const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
-          if (editIdx >= 0) {
-            tlogEdit[editIdx].conf    = freshConf;
-            tlogEdit[editIdx].rawConf = rawConfNow;
-            existingActive.conf       = freshConf;
-            saveTradeLog(tlogEdit);
+
+      let learnResultNow = { penalty: 0, warnings: [], hardBlocked: false, blockReasons: [], defenseChecks: [] };
+      try { learnResultNow = applyLearnAdjustment(existingActive.direction, rsiNow, adxNow, learnCtxNow); } catch(e) {}
+      const learnPenNow = learnResultNow.penalty;
+
+      // 宏觀 + AI 趨勢扣分（完整計算，與 buildTradeSetup 主路徑一致）
+      let macroPenNow = 0, aiTrendPenNow = 0;
+      const macroReasonsNow = [], aiTrendReasonsNow = [];
+      if (_macroCache) {
+        try {
+          const fg = _macroCache.fg, gm = _macroCache;
+          const fgVal  = fg ? parseInt(fg.value || '50') : 50;
+          const chgVal = gm?.marketCapChange || 0;
+          const domVal = gm?.btcDominance   || 50;
+          let against  = 0;
+          if (isLongNow) {
+            if (chgVal < -2) { against++; macroReasonsNow.push(`大盤下跌 ${chgVal.toFixed(1)}%`); }
+            if (domVal > 58) { against++; macroReasonsNow.push(`BTC主導率偏高 ${domVal.toFixed(1)}%`); }
+            if (fgVal  < 30) { against++; macroReasonsNow.push(`市場恐慌（F&G ${fgVal}）`); }
+            if (fgVal  > 75) { against += 0.5; macroReasonsNow.push(`市場過熱（F&G ${fgVal}）`); }
+          } else {
+            if (chgVal > 2)  { against++; macroReasonsNow.push(`大盤上漲 ${chgVal.toFixed(1)}%`); }
+            if (domVal < 44) { against++; macroReasonsNow.push(`BTC主導率偏低 ${domVal.toFixed(1)}%`); }
+            if (fgVal  > 70) { against++; macroReasonsNow.push(`市場貪婪（F&G ${fgVal}）`); }
+            if (fgVal  < 25) { against += 0.5; macroReasonsNow.push(`市場極度恐慌（F&G ${fgVal}）`); }
           }
+          macroPenNow = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+          const wb = computeWeeklyAIBias(fg, gm);
+          const tb = computeTodayAIBias(fg, gm);
+          const wkAligned = (isLongNow && wb.bias.includes('bull')) || (!isLongNow && wb.bias.includes('bear'));
+          const wkOpposed = !wkAligned && wb.bias !== 'neutral';
+          const tdAligned = (isLongNow && tb.bias.includes('bull')) || (!isLongNow && tb.bias.includes('bear'));
+          const tdOpposed = !tdAligned && tb.bias !== 'neutral';
+          if (wkOpposed) { const p = wb.bias.includes('strong') ? 8 : 4; aiTrendPenNow += p; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，逆向 -${p}%`); }
+          else aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}${wkAligned ? ' ✓ 同向' : ''}`);
+          if (tdOpposed) { aiTrendPenNow += 5; aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}，逆風 -5%`); }
+          else aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}${tdAligned ? ' ✓ 同向' : ''}`);
+        } catch(e) {}
+      }
+
+      const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
+      const freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow);
+      if (Math.abs((existingActive.conf || 0) - freshConf) >= 1) {
+        const tlogEdit = loadTradeLog();
+        const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
+        if (editIdx >= 0) {
+          tlogEdit[editIdx].conf    = freshConf;
+          tlogEdit[editIdx].rawConf = rawConfNow;
+          existingActive.conf       = freshConf;
+          saveTradeLog(tlogEdit);
         }
-      } catch(e) {}
-      if (existingActive.status === 'open')    return buildOpenPositionSetup(existingActive, price);
-      if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price);
+      }
+
+      // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
+      const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
+      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow;
+      const confPanelHtml = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
+        <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:8px">📊 信心評估（動態更新）</div>
+        <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.73rem;margin-bottom:8px;background:rgba(255,255,255,.02);border-radius:6px;padding:6px 8px">
+          <span style="color:var(--text3)">原始</span>
+          <span style="font-weight:700;color:${_cc(rawConfNow)}">${rawConfNow}%</span>
+          ${hardAdxNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">ADX -${hardAdxNow}</span>` : ''}
+          ${macroPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">宏觀 -${macroPenNow}</span>` : ''}
+          ${aiTrendPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">AI趨勢 -${aiTrendPenNow}</span>` : ''}
+          ${learnPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">風控 -${learnPenNow}</span>` : ''}
+          <span style="color:var(--text3)">= 最終</span>
+          <span style="font-weight:700;font-size:0.82rem;color:${_cc(freshConf)}">${freshConf}%</span>
+          ${totalPenNow === 0 ? `<span style="font-size:0.7rem;color:#22c55e">（無扣分）</span>` : ''}
+        </div>
+        <div style="font-size:0.72rem;line-height:1.8">
+          ${hardAdxNow > 0
+            ? `<div style="color:#f59e0b">⚡ ADX ${adxNow}${adxNow < 18 ? '（< 18，震盪過弱）' : '（< 22，趨勢偏弱）'}，扣 -${hardAdxNow}%</div>`
+            : `<div style="color:#22c55e">✓ ADX ${adxNow} 趨勢強度正常，無扣分</div>`}
+          ${macroReasonsNow.length
+            ? macroReasonsNow.map(r => `<div style="color:#f59e0b">⚠️ ${r}（宏觀逆風，共扣 -${macroPenNow}%）</div>`).join('')
+            : `<div style="color:#22c55e">✓ 宏觀環境無明顯逆風，無扣分</div>`}
+          ${aiTrendReasonsNow.map(r => `<div style="color:${r.includes('逆') || r.includes('逆風') ? '#f59e0b' : '#22c55e'}">${r.includes('逆') ? '⚠️' : '✓'} ${r}</div>`).join('')}
+          ${learnResultNow.hardBlocked
+            ? learnResultNow.blockReasons.slice(0, 2).map(r => `<div style="color:var(--bear)">🚫 ${r}</div>`).join('')
+            : learnPenNow > 0
+              ? `<div style="color:#f59e0b">⚠️ AI 風控：止損歷史記憶觸發，扣 -${learnPenNow}%</div>`
+              : `<div style="color:#22c55e">✓ AI 風控：無止損記憶觸發</div>`}
+        </div>
+      </div>`;
+
+      if (existingActive.status === 'open')    return buildOpenPositionSetup(existingActive, price) + confPanelHtml;
+      if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price) + confPanelHtml;
     }
     // 若 pendingCancelledByMacro = true，繼續往下執行新的交易分析
   }
