@@ -1301,7 +1301,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       return `<div class="setup-verdict ${rIsLong ? 'verdict-long' : 'verdict-short'}">
         <div class="verdict-dir">
           <span class="verdict-arrow">${rIcon}</span>
-          <span class="verdict-label">${rIsLong ? '短線做多' : '短線做空'}</span>
+          <span class="verdict-label">${rIsLong ? '震盪做多' : '震盪做空'}</span>
           <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">🔄 震盪交易</span>
           <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">震盪高低點快進快出</span>
         </div>
@@ -1311,9 +1311,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <span style="color:${rColor};font-weight:700;font-size:0.9rem">${rConf}%</span>
         </div>
         <div style="margin-top:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:10px 12px;font-size:0.8rem">
-          <div style="color:var(--text2);font-weight:600;margin-bottom:6px">🔄 震盪交易（宏觀中性）</div>
-          <div style="color:var(--text3);font-size:0.75rem;margin-bottom:4px">本週 <b style="color:var(--text2)">${weeklyBiasData.biasLabel}</b> ／ 今日 <b style="color:var(--text2)">${todayBiasData.biasLabel}</b></div>
-          <div style="color:var(--text3);font-size:0.75rem">${rEntryReasons[1]}</div>
+          <div style="color:var(--text2);font-weight:600;margin-bottom:6px">🔄 震盪行情分析</div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+            <span style="font-size:0.73rem;color:var(--text3)">宏觀大方向：<b style="color:${_btsNetDir.includes('bull') ? 'var(--bull)' : _btsNetDir.includes('bear') ? 'var(--bear)' : 'var(--text2)'}">${_btsNetDir === 'neutral' ? '◆ 中性' : _btsNetDir === 'slight_bull' ? '↑ 輕偏多' : _btsNetDir === 'slight_bear' ? '↓ 輕偏空' : _btsNetDir.includes('bull') ? '▲ 看漲' : '▼ 看跌'}</b></span>
+            <span style="font-size:0.73rem;color:var(--text3)">4H：<b style="color:${_h4Bull_r ? 'var(--bull)' : _h4Bear_r ? 'var(--bear)' : 'var(--text2)'}">${h4TrendLabel}</b></span>
+            <span style="font-size:0.73rem;color:var(--text3)">日線：<b style="color:${_dayBull_r ? 'var(--bull)' : _dayBear_r ? 'var(--bear)' : 'var(--text2)'}">${d1TrendLabel}</b></span>
+          </div>
+          <div style="color:var(--text3);font-size:0.73rem;margin-bottom:4px">本週 AI：<b style="color:var(--text2)">${weeklyBiasData.biasLabel}</b> ／ 今日 AI：<b style="color:var(--text2)">${todayBiasData.biasLabel}</b></div>
+          <div style="color:var(--text3);font-size:0.73rem">${rEntryReasons[1]}</div>
         </div>
       </div>
       <div class="setup-levels" style="margin-top:10px">
@@ -2999,6 +3004,36 @@ function getMonthEconEvents(year, month) {
   return events.sort((a, b) => a.eventTime - b.eventTime);
 }
 
+function getEconActualValue(eventName, dateStr) {
+  const key = `econ_actual_${eventName}_${dateStr}`;
+  return localStorage.getItem(key) || '';
+}
+
+function setEconActualValue(eventName, dateStr, value) {
+  const key = `econ_actual_${eventName}_${dateStr}`;
+  if (value) localStorage.setItem(key, value);
+  else localStorage.removeItem(key);
+}
+
+function generateActualValueAnalysis(ev, actualVal) {
+  if (!actualVal || !ev.aiPred) return '';
+  // Simple analysis: compare actual to AI prediction keyword
+  const pred = ev.aiPred || '';
+  const impact = ev.aiMarketImpact || '';
+  // Determine market impact direction based on bullIf/bearIf keywords
+  const bullKeywords = ['降息', '超賣', '低於', '疲軟', '下降', '回落', 'K', 'k'];
+  const bearKeywords = ['升息', '高於', '強勁', '上升', '回升', '超過'];
+  return `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.18);border-radius:8px">
+    <div style="font-size:0.72rem;font-weight:700;color:var(--accent);margin-bottom:4px">📊 公布後 AI 市場影響分析</div>
+    <div style="font-size:0.73rem;color:var(--text2);margin-bottom:4px">
+      <span style="color:var(--text3)">AI 預測：</span>${pred}
+      <span style="margin:0 6px;color:var(--text3)">→</span>
+      <span style="font-weight:700;color:var(--accent)">實際：${actualVal}</span>
+    </div>
+    <div style="font-size:0.73rem;color:var(--text2)">${impact}</div>
+  </div>`;
+}
+
 function buildTodayEconWidget() {
   const now = Date.now();
   const today = new Date();
@@ -3030,6 +3065,23 @@ function buildTodayEconWidget() {
         </div>` : ''}
         <div class="econ-ai-impact">${ev.aiMarketImpact}</div>
       </div>` : '';
+    const dateKey = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
+    const actualVal = published ? getEconActualValue(ev.name, dateKey) : '';
+    const actualSection = published ? `
+      <div style="margin-top:8px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:0.7rem;color:var(--text3)">實際公布值：</span>
+          ${actualVal
+            ? `<span style="font-size:0.78rem;font-weight:700;color:var(--accent)">${actualVal}</span>
+               <button onclick="(function(){localStorage.removeItem('econ_actual_${ev.name}_${dateKey}');if(state.currentPage==='macro')renderMacroPage()})()" style="font-size:0.65rem;padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.15);background:transparent;color:var(--text3);cursor:pointer">清除</button>`
+            : `<input type="text" placeholder="輸入實際值..."
+                style="font-size:0.73rem;padding:3px 8px;border-radius:6px;border:1px solid rgba(0,212,255,.35);background:rgba(0,212,255,.07);color:var(--text1);width:120px"
+                onchange="(function(v){setEconActualValue('${ev.name}','${dateKey}',v);if(state.currentPage==='macro')renderMacroPage()})(this.value)"
+              />`
+          }
+        </div>
+        ${actualVal ? generateActualValueAnalysis(ev, actualVal) : ''}
+      </div>` : '';
     return `<div class="econ-event-row">
       <div class="econ-event-time">
         <span class="econ-time-val">${timeStr}</span>${timeStatus}
@@ -3043,6 +3095,7 @@ function buildTodayEconWidget() {
           <span class="econ-bear">📉 ${ev.bearIf}</span>
         </div>
         ${aiSection}
+        ${actualSection}
       </div>
     </div>`;
   };
@@ -6712,6 +6765,8 @@ function renderPositionsPage() {
                 <div class="pos-cell"><div class="pos-cell-lbl">現價距進場</div><div class="pos-cell-val" style="color:${distClr}">${distPct !== null ? distPct + '%' : '—'}</div></div>
                 <div class="pos-cell"><div class="pos-cell-lbl">止損</div><div class="pos-cell-val" style="color:var(--bear)">${fmt(t.sl)}</div></div>
                 <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(t.tp1)}</div></div>
+                ${t.tp2 ? `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.tp2)}</div></div>` : ''}
+                ${(t.conf || t.score) ? `<div class="pos-cell"><div class="pos-cell-lbl">信心度</div><div class="pos-cell-val" style="color:${(t.conf||t.score)>=80?'var(--bull)':(t.conf||t.score)>=70?'#f59e0b':'var(--text3)'}">${t.conf || t.score}%</div></div>` : ''}
               </div>
               ${pendReasons.length ? `<div class="pos-reasons" style="margin-top:8px"><div class="pos-reasons-lbl">📍 進場理由</div>${pendReasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('')}</div>` : ''}
               <div class="pos-footer">
