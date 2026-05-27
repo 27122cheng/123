@@ -4611,10 +4611,10 @@ function recordSignalsFromScan(data) {
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // 快速預篩：原始評分不足直接跳過
+      // 快速預篩：基礎分數過低直接跳過（threshold 降至 60 與 isLong/isShort 一致）
+      // 最終信心由 computeSimpleSetup 計算（含 RSI/ADX 加成），不再在此提前否決
       const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-      const confThreshold = 75;
-      if (rawConf < confThreshold) continue;
+      if (rawConf < 60) continue;
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
@@ -4625,8 +4625,9 @@ function recordSignalsFromScan(data) {
       // 套用宏觀 + AI 逆風扣分後重新計算最終信心
       const macroPen = isLong ? macroPenLong : macroPenShort;
       const finalConf = Math.max(0, setup.conf - macroPen);
+      const confThreshold = 72;  // 含 RSI/ADX 加成後，有效信號約 72-85%
 
-      // 最終信心 < 75% 或 AI 硬封鎖 → 不記錄
+      // 最終信心 < 72% 或 AI 硬封鎖 → 不記錄
       if (finalConf < confThreshold || setup.hardBlocked) continue;
 
       // 週線方向與交易方向一致且強烈 → 允許加倉（長線單）
@@ -7226,8 +7227,26 @@ function computeSimpleSetup(coin, isLong) {
     slType: 'atr', // simple setup 預設使用 ATR 止損
     skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   });
-  const rawConf = Math.min(90, coin.score || 60);
-  const conf    = Math.max(0, rawConf - learnPenalty - hardAdxPenalty);
+  // rawConf：以 coin.score 為基礎，加入 RSI/ADX/趨勢強度加成
+  // 目標：讓 score 65-74 的高品質信號（RSI 確認 + ADX 趨勢強）也能通過 75% 門檻
+  let rawConf = Math.min(90, coin.score || 60);
+  // RSI 確認加成（順向 RSI：做多 RSI < 50，做空 RSI > 50 各 +3；極端加 +5）
+  if (isLong) {
+    if (rsi < 35)       rawConf += 8;
+    else if (rsi < 45)  rawConf += 5;
+    else if (rsi < 52)  rawConf += 2;
+  } else {
+    if (rsi > 65)       rawConf += 8;
+    else if (rsi > 55)  rawConf += 5;
+    else if (rsi > 48)  rawConf += 2;
+  }
+  // ADX 趨勢強度加成（ADX > 25 確認趨勢）
+  if (adx >= 35)      rawConf += 5;
+  else if (adx >= 25) rawConf += 3;
+  // 趨勢強度加成（強勢看漲/看跌）
+  if (coin.trend === '強勢看漲' || coin.trend === '強勢看跌') rawConf += 4;
+  rawConf = Math.min(90, rawConf);
+  const conf = Math.max(0, rawConf - learnPenalty - hardAdxPenalty);
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
