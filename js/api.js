@@ -708,8 +708,7 @@ function buildWeakenedSignalText(coin, direction, setup, siteUrl = '') {
 }
 
 /* ── 巨鯨偵測（大額現貨成交，不顯示，僅用於多空分析）────────── */
-async function fetchWhaleTrades(symbol) {
-  const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';
+async function _fetchSpotWhaleTrades(sym) {
   for (const host of BINANCE_HOSTS) {
     try {
       const ctrl = new AbortController();
@@ -751,6 +750,94 @@ async function fetchWhaleTrades(symbol) {
     } catch { continue; }
   }
   return null;
+}
+
+async function _fetchFuturesWhaleData(sym) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const [takerRes, oiRes] = await Promise.all([
+      fetch(`https://fapi.binance.com/futures/data/takerBuySellVol?symbol=${sym}&period=5m&limit=12`, { signal: ctrl.signal }),
+      fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=12`, { signal: ctrl.signal }),
+    ]);
+    clearTimeout(t);
+
+    if (!takerRes.ok && !oiRes.ok) return null;
+
+    let takerBuyPct = null, takerSellPct = null, takerBias = null, takerBuyVol = null, takerSellVol = null;
+    if (takerRes.ok) {
+      const takerData = await takerRes.json();
+      if (Array.isArray(takerData) && takerData.length > 0) {
+        let totalBuyVol = 0, totalSellVol = 0;
+        for (const rec of takerData) {
+          totalBuyVol  += parseFloat(rec.buyVol)  || 0;
+          totalSellVol += parseFloat(rec.sellVol) || 0;
+        }
+        const totalVol = totalBuyVol + totalSellVol;
+        if (totalVol > 0) {
+          const buyPctNum = totalBuyVol / totalVol * 100;
+          takerBuyPct  = buyPctNum.toFixed(1);
+          takerSellPct = (100 - buyPctNum).toFixed(1);
+          takerBias    = buyPctNum > 55 ? 'bull' : buyPctNum < 45 ? 'bear' : 'neutral';
+          takerBuyVol  = totalBuyVol;
+          takerSellVol = totalSellVol;
+        }
+      }
+    }
+
+    let oiChange = null, oiTrend = null, oiCurrent = null;
+    if (oiRes.ok) {
+      const oiData = await oiRes.json();
+      if (Array.isArray(oiData) && oiData.length >= 2) {
+        const firstOI = parseFloat(oiData[0].sumOpenInterest) || 0;
+        const lastOI  = parseFloat(oiData[oiData.length - 1].sumOpenInterest) || 0;
+        oiCurrent = lastOI;
+        if (firstOI > 0) {
+          const changePct = (lastOI - firstOI) / firstOI * 100;
+          oiChange = parseFloat(changePct.toFixed(2));
+          oiTrend  = changePct > 0.5 ? 'increasing' : changePct < -0.5 ? 'decreasing' : 'stable';
+        }
+      }
+    }
+
+    if (takerBuyPct === null && oiChange === null) return null;
+
+    return {
+      takerBuyPct,
+      takerSellPct,
+      takerBias,
+      takerBuyVol,
+      takerSellVol,
+      oiChange,
+      oiTrend,
+      oiCurrent,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWhaleTrades(symbol) {
+  const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';
+
+  // Run spot aggTrades and futures data in parallel
+  const [spotResult, futuresWhale] = await Promise.all([
+    _fetchSpotWhaleTrades(sym),
+    _fetchFuturesWhaleData(sym),
+  ]);
+
+  if (!spotResult && !futuresWhale) return null;
+
+  // If only futures data available (no spot whale trades), create minimal base
+  const base = spotResult || {
+    buyVol: 0, sellVol: 0, total: 0,
+    buyPct: futuresWhale ? parseFloat(futuresWhale.takerBuyPct) : 50,
+    netFlow: 0,
+    bias: futuresWhale?.takerBias || 'neutral',
+    bigBuyCount: 0, bigSellCount: 0, threshold: 0,
+  };
+
+  return { ...base, futuresWhale };
 }
 
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */

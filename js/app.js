@@ -3280,11 +3280,37 @@ function buildVPPanel(coin, mtfData, whale) {
         <span class="vp-chip" style="color:${wPat.netFlow > 0 ? 'var(--bull)' : 'var(--bear)'}">淨${netDir} $${netM}M</span>
       </div>
       <div class="vp-ai-narr ${narrCls}" style="${!narrCls ? 'color:var(--text3)' : ''}">${narr}</div>
+      ${whale && whale.futuresWhale ? (() => {
+        const fw = whale.futuresWhale;
+        const takerBias = fw.takerBias || 'neutral';
+        const takerBuyPct = fw.takerBuyPct || '—';
+        const takerSellPct = fw.takerSellPct || '—';
+        const oiChange = fw.oiChange;
+        const oiChangeStr = oiChange !== null && oiChange !== undefined ? oiChange.toFixed(2) : null;
+        return `<div class="vp-whale-stats" style="margin-top:4px">
+          <span style="font-size:0.7rem;color:var(--text3)">合約Taker：</span>
+          <span class="vp-chip" style="color:${takerBias === 'bull' ? 'var(--bull)' : takerBias === 'bear' ? 'var(--bear)' : 'var(--text2)'}">買 ${takerBuyPct}% / 賣 ${takerSellPct}%</span>
+          ${oiChangeStr !== null ? `<span class="vp-chip" style="color:${oiChange > 0 ? 'var(--bull)' : oiChange < 0 ? 'var(--bear)' : 'var(--text2)'}">OI ${oiChange > 0 ? '+' : ''}${oiChangeStr}%</span>` : ''}
+        </div>`;
+      })() : ''}
     </div>`;
   } else {
     whaleHtml = `<div class="vp-whale-section">
       <div class="vp-sub-title">🐋 巨鯨進退場偵測</div>
       <div style="color:var(--text3);font-size:0.8rem;padding:4px 0">大額交易數據不足，無法判斷</div>
+      ${whale && whale.futuresWhale ? (() => {
+        const fw = whale.futuresWhale;
+        const takerBias = fw.takerBias || 'neutral';
+        const takerBuyPct = fw.takerBuyPct || '—';
+        const takerSellPct = fw.takerSellPct || '—';
+        const oiChange = fw.oiChange;
+        const oiChangeStr = oiChange !== null && oiChange !== undefined ? oiChange.toFixed(2) : null;
+        return `<div class="vp-whale-stats" style="margin-top:4px">
+          <span style="font-size:0.7rem;color:var(--text3)">合約Taker：</span>
+          <span class="vp-chip" style="color:${takerBias === 'bull' ? 'var(--bull)' : takerBias === 'bear' ? 'var(--bear)' : 'var(--text2)'}">買 ${takerBuyPct}% / 賣 ${takerSellPct}%</span>
+          ${oiChangeStr !== null ? `<span class="vp-chip" style="color:${oiChange > 0 ? 'var(--bull)' : oiChange < 0 ? 'var(--bear)' : 'var(--text2)'}">OI ${oiChange > 0 ? '+' : ''}${oiChangeStr}%</span>` : ''}
+        </div>`;
+      })() : ''}
     </div>`;
   }
 
@@ -6280,6 +6306,9 @@ function renderPositionsPage() {
     const ltBadgeOpen = isLongTermOpen
       ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.4);color:#4ade80;vertical-align:middle">〔長線單〕</span>`
       : '';
+    const shortTermBadgeOpen = (!isRange && !isLongTermOpen)
+      ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;vertical-align:middle">⚡ 短線</span>`
+      : '';
 
     // 進度條
     let progressHtml = '';
@@ -6367,7 +6396,7 @@ function renderPositionsPage() {
       <div class="pos-card-top">
         <div class="pos-symbol">
           <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-          <span class="pos-dir" style="color:${dirColor}">${dirLabel}${rangeBadge}${ltBadgeOpen}</span>
+          <span class="pos-dir" style="color:${dirColor}">${dirLabel}${rangeBadge}${ltBadgeOpen}${shortTermBadgeOpen}</span>
         </div>
         <div class="pos-unreal ${unrealR !== null ? (unrealR > 0 ? 'pos-unreal-pos' : unrealR < 0 ? 'pos-unreal-neg' : '') : ''}">
           ${unrealR !== null
@@ -6533,12 +6562,15 @@ function renderPositionsPage() {
             const ltBadgePend = isLongTermCard
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.35);color:#4ade80;padding:2px 7px;border-radius:20px;margin-left:6px">〔長線單〕</span>`
               : '';
+            const shortTermBadgePend = (!isRange && !isLongTermCard)
+              ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:6px">⚡ 短線</span>`
+              : '';
             const pendReasons = (t.entryReason || '').split('，').filter(Boolean);
             return `<div class="pos-card" data-symbol="${t.symbol}" data-unreal="" onclick="navigateTo('coin','${t.symbol}')">
               <div class="pos-card-top">
                 <div class="pos-symbol">
                   <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}${ltBadgePend}</span>
+                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}${ltBadgePend}${shortTermBadgePend}</span>
                 </div>
                 <div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>
               </div>
