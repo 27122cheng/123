@@ -1545,6 +1545,45 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       : `1h 擺動低點 ${fmtPrice(swLow)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
   }
 
+  // ── 長線單：覆蓋 tp1/tp2 為長線最終止盈，並計算三個加倉位 ──────
+  // 觸發條件：ltBias === direction && ltConf >= 85（canScaleIn = true）
+  let ltTP = null, ltTPReason = '', scaleInLevels = [];
+  if (canScaleIn) {
+    const minLtTP = isLong ? entry + risk * 4 : entry - risk * 4; // 至少 4:1 R/R
+    const maxDist  = price * 0.18; // 上限：離現價不超過 18%
+    if (isLong) {
+      const cap     = entry + maxDist;
+      const ltCands = resists.filter(r => r >= minLtTP && r <= cap);
+      ltTP = ltCands.length ? ltCands[ltCands.length - 1] : Math.min(entry + risk * 5, cap);
+      const ltRRv = ((ltTP - entry) / risk).toFixed(1);
+      const ltRes  = resists.find(r => Math.abs(r - ltTP) < price * 0.004);
+      ltTPReason = ltRes
+        ? `日線/4H 關鍵壓力 ${fmtPrice(ltRes)}，R/R ${ltRRv}:1，全倉長線目標`
+        : `長線目標 R/R ${ltRRv}:1，全倉持有至目標`;
+    } else {
+      const cap     = entry - maxDist;
+      const ltCands = supps.filter(s => s <= minLtTP && s >= cap);
+      ltTP = ltCands.length ? ltCands[ltCands.length - 1] : Math.max(entry - risk * 5, cap);
+      const ltRRv = ((entry - ltTP) / risk).toFixed(1);
+      const ltSup  = supps.find(s => Math.abs(s - ltTP) < price * 0.004);
+      ltTPReason = ltSup
+        ? `日線/4H 關鍵支撐 ${fmtPrice(ltSup)}，R/R ${ltRRv}:1，全倉長線目標`
+        : `長線目標 R/R ${ltRRv}:1，全倉持有至目標`;
+    }
+    // 三個加倉位：25% / 50% / 75% 路程，嘗試吸附至附近 ±1.5% S/R
+    const totalMove = Math.abs(ltTP - entry);
+    scaleInLevels = [1, 2, 3].map(n => {
+      const raw = isLong ? entry + totalMove * (n / 4) : entry - totalMove * (n / 4);
+      const nearby = isLong
+        ? resists.find(r => r >= raw * 0.985 && r <= raw * 1.015)
+        : supps.find(s  => s <= raw * 1.015  && s >= raw * 0.985);
+      return { level: nearby || raw, snapped: !!nearby };
+    });
+    // 覆蓋 tp1/tp2 → updateOpenTrades TP1 觸發 & 持倉記錄均使用長線最終止盈
+    tp1 = ltTP; tp1Reason = ltTPReason;
+    tp2 = ltTP; tp2Reason = ltTPReason;
+  }
+
   const rr1str = ((Math.abs(tp1 - entry) / risk)).toFixed(1);
   const rr2str = ((Math.abs(tp2 - entry) / risk)).toFixed(1);
   const activeFactors = isLong ? totalBull : totalBear;
@@ -2034,6 +2073,44 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   ${_recordBlockedByCooldown ? (() => { const cancelledT = loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === direction && t.status === 'cancelled'); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
   ${_recordBlockedByActive ? `<div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#818cf8">📌 此幣種已有持倉進行中，<strong>未計入掛單記錄</strong>（不重複開倉）</div>` : ''}
 
+  ${canScaleIn && ltTP ? `
+  <!-- ═══ 長線單：進場 + 三加倉 + 最終止盈 ═══ -->
+  <div class="setup-levels">
+    <div class="level-row level-entry">
+      <div class="level-tag">📍 進場</div>
+      <div class="level-desc">${entryReasons.join('　')}</div>
+      <div class="level-price-val">${fmtPrice(entry)}</div>
+    </div>
+    ${scaleInLevels.map((si, i) => {
+      const movePct = ((Math.abs(si.level - entry) / price) * 100).toFixed(1);
+      const siRR    = ((Math.abs(si.level - entry) / risk)).toFixed(1);
+      return `<div class="level-row level-tp1" style="border-left:3px solid rgba(99,102,241,.5)">
+        <div class="level-tag">📈 加倉${i + 1}</div>
+        <div class="level-desc">+${movePct}%，趨勢持續確認加碼${si.snapped ? '（貼近結構位）' : ''}，R/R ${siRR}:1</div>
+        <div class="level-price-val" style="color:#a78bfa">${fmtPrice(si.level)}</div>
+      </div>`;
+    }).join('')}
+    <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
+      <div class="level-tag">🏁 最終止盈</div>
+      <div class="level-desc">${ltTPReason}</div>
+      <div class="level-price-val" style="color:var(--bull)">${fmtPrice(ltTP)}</div>
+    </div>
+    <div class="level-row level-sl">
+      <div class="level-tag">🛑 止損</div>
+      <div class="level-desc">${slReason}</div>
+      <div class="level-price-val">${fmtPrice(sl)}</div>
+    </div>
+  </div>
+  <div class="setup-rules">
+    <div class="rules-title">🏆 長線加倉操作守則</div>
+    <div class="rule-item">✦ 初始倉位 <strong>2~3%</strong>，每次加倉追加 <strong>1~2%</strong>，三次加倉合計上限 <strong>8~9%</strong></div>
+    <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(sl)}</strong>），每次加倉後將止損上移至<strong>上一進場位下方</strong></div>
+    <div class="rule-item">✦ 第三次加倉確認後，止損上移至<strong>保本位（進場價 ${fmtPrice(entry)} ${isLong ? '上方' : '下方'}）</strong></div>
+    <div class="rule-item">✦ 全倉持有至最終止盈（<strong style="color:${dirColor}">${fmtPrice(ltTP)}</strong>），中途不提前止盈</div>
+    ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
+  </div>
+  ` : `
+  <!-- ═══ 短線單：TP1 / TP2 ═══ -->
   <div class="setup-levels">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
@@ -2064,6 +2141,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="rule-item">✦ 若 15m K棒轉向且成交量放大，不等止損主動離場</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
+  `}
 
   ${(() => { try {
     // ── AI 交易決策三層邏輯面板 ──
