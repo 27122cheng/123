@@ -4411,42 +4411,41 @@ function recordSignalsFromScan(data) {
       const price  = parseFloat(coin.price) || 0;
       const atr    = parseFloat(coin.atr)   || price * 0.012;
 
-      // ADX < 30：確認非趨勢行情（放寬至 30，搭配區域過濾）
-      if (adxR >= 30) continue;
+      // ADX < 32：確認非趨勢行情
+      if (adxR >= 32) continue;
 
       const wSupps = Array.isArray(coin.wickSupports)    ? coin.wickSupports    : [];
       const wRess  = Array.isArray(coin.wickResistances) ? coin.wickResistances : [];
 
       // ── 主要邏輯：利用多次觸碰+收引線的區域定方向 ──────────
-      // 做多條件：現價在「影線支撐區」上方 ATR×1.2 以內（接近支撐），且 RSI 未超買
-      // 止盈目標：上方「影線壓力區」
-      // 做空條件：現價在「影線壓力區」下方 ATR×1.2 以內（接近壓力），且 RSI 未超賣
-      // 止盈目標：下方「影線支撐區」
+      // 中性偏多：現價在「影線支撐區」附近（ATR×2.0），RSI 偏低（< 52）→ 反彈做多
+      // 中性偏空：現價在「影線壓力區」附近（ATR×2.0），RSI 偏高（> 48）→ 反壓做空
 
       let rangeLong = false, rangeShort = false;
       let nearSupp = null, nearRes = null;
 
-      // 找最近影線支撐（在現價下方 ATR×1.2 範圍內）
+      // 找最近影線支撐（在現價下方 ATR×2.0 範圍內）
       for (const z of wSupps) {
         const dist = price - z.level;
-        if (dist > 0 && dist < atr * 1.2) { nearSupp = z; break; }
+        if (dist >= 0 && dist < atr * 2.0) { nearSupp = z; break; }
       }
-      // 找最近影線壓力（在現價上方 ATR×1.2 範圍內）
+      // 找最近影線壓力（在現價上方 ATR×2.0 範圍內）
       for (const z of wRess) {
         const dist = z.level - price;
-        if (dist > 0 && dist < atr * 1.2) { nearRes = z; break; }
+        if (dist >= 0 && dist < atr * 2.0) { nearRes = z; break; }
       }
 
-      // 在影線支撐區附近且 RSI < 55（未超買）→ 做多
-      if (nearSupp && rsiR < 55) rangeLong = true;
-      // 在影線壓力區附近且 RSI > 45（未超賣）→ 做空
-      if (nearRes && rsiR > 45 && !rangeLong) rangeShort = true;
+      // 中性偏多：貼近支撐且 RSI < 52
+      if (nearSupp && rsiR < 52) rangeLong = true;
+      // 中性偏空：貼近壓力且 RSI > 48（偏高）
+      if (nearRes && rsiR > 48 && !rangeLong) rangeShort = true;
 
-      // ── 備用：無明確影線區域時，退回 RSI 極值觸發 ──
+      // ── 備用：無明確影線區域 → 用 RSI 震盪位置判斷 ──
+      // 震盪市中 RSI 通常在 40~60 之間；42 以下偏低、58 以上偏高
       const hasZones = wSupps.length >= 1 || wRess.length >= 1;
       if (!hasZones) {
-        if (rsiR < 35 && adxR < 22) rangeLong  = true;
-        if (rsiR > 65 && adxR < 22) rangeShort = true;
+        if (rsiR < 42 && adxR < 25) rangeLong  = true;  // 中性偏多
+        if (rsiR > 58 && adxR < 25) rangeShort = true;  // 中性偏空
       }
 
       // 宏觀方向限制：中性偏空不做多，中性偏多不做空
@@ -4498,8 +4497,8 @@ function recordSignalsFromScan(data) {
         ? (wRess[0] ? `影線壓力區 $${wRess[0].level.toPrecision(5)}（${wRess[0].wicks} 次觸碰）` : `ATR 倍數目標`)
         : (wSupps[0] ? `影線支撐區 $${wSupps[0].level.toPrecision(5)}（${wSupps[0].wicks} 次觸碰）` : `ATR 倍數目標`);
       const entryReason = rangeLong
-        ? `震盪做多：貼近${zoneDesc}，ADX ${adxR.toFixed(0)} 非趨勢，止盈至${oppDesc}`
-        : `震盪做空：貼近${zoneDesc}，ADX ${adxR.toFixed(0)} 非趨勢，止盈至${oppDesc}`;
+        ? `中性偏多：貼近${zoneDesc}，ADX ${adxR.toFixed(0)} 震盪行情，反彈至${oppDesc}`
+        : `中性偏空：貼近${zoneDesc}，ADX ${adxR.toFixed(0)} 震盪行情，反壓至${oppDesc}`;
       const slReason  = rangeLong
         ? `支撐區下方 ATR×0.8（$${sl.toPrecision(5)}），跌破視為支撐失守`
         : `壓力區上方 ATR×0.8（$${sl.toPrecision(5)}），突破視為壓力失守`;
@@ -4538,19 +4537,13 @@ function recordSignalsFromScan(data) {
   }
 
   // ══════════════════════════════════════════════════
-  // 定向行情路徑（趨勢交易）
-  // 震盪模式下仍執行，但只接受強勢趨勢訊號（門檻更嚴）
+  // 定向行情路徑（趨勢交易，信心門檻 75%）
+  // 震盪模式下不執行，由震盪行情路徑接管
   // ══════════════════════════════════════════════════
-  {
+  if (!isRangeMode) {
     for (const coin of data) {
-      // 震盪期需更強烈趨勢才考慮定向交易
-      const minLongScore  = isRangeMode ? 70 : 60;
-      const maxShortScore = isRangeMode ? 30 : 40;
-      const isLong  = coin.score >= minLongScore && (coin.trend === '強勢看漲' || coin.trend === '看漲');
-      const isShort = coin.score <= maxShortScore && (coin.trend === '強勢看跌' || coin.trend === '看跌');
-      // 震盪期短線只接受「強勢」趨勢標籤
-      if (isRangeMode && isLong  && coin.trend !== '強勢看漲') continue;
-      if (isRangeMode && isShort && coin.trend !== '強勢看跌') continue;
+      const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
+      const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
       if (!isLong && !isShort) continue;
       const direction = isLong ? 'long' : 'short';
 
@@ -4558,9 +4551,9 @@ function recordSignalsFromScan(data) {
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // 快速預篩：原始評分不足直接跳過；震盪期提高門檻
+      // 快速預篩：原始評分不足直接跳過
       const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-      const confThreshold = isRangeMode ? 80 : 75;  // 震盪期需更高信心
+      const confThreshold = 75;
       if (rawConf < confThreshold) continue;
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
@@ -4573,7 +4566,7 @@ function recordSignalsFromScan(data) {
       const macroPen = isLong ? macroPenLong : macroPenShort;
       const finalConf = Math.max(0, setup.conf - macroPen);
 
-      // 最終信心不足或 AI 硬封鎖 → 不記錄（震盪期門檻 80%，一般期 75%）
+      // 最終信心 < 75% 或 AI 硬封鎖 → 不記錄
       if (finalConf < confThreshold || setup.hardBlocked) continue;
 
       // 週線方向與交易方向一致且強烈 → 允許加倉（長線單）
