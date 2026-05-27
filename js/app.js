@@ -1323,10 +1323,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // AI 長線分析（僅括號標注，不另開面板）
   const ltBias = computeLongTermBias(mtfData);
   // 方向一致才標示〔長線單〕（不需區分看多/看空，配對即可）
-  const ltTag  = (ltBias === 'long' && direction === 'long') || (ltBias === 'short' && direction === 'short')
-               ? ' <span class="lt-tag lt-bull">〔長線單〕</span>'
-               : '';
-  // 長線信心分：85+ 才允許加倉
+  // 長線信心分：85+ 才允許加倉（canScaleIn = true），ltTag 與 layout 保持一致
   let ltBullScore = 0, ltBearScore = 0;
   ['4h','1d'].forEach(tf => {
     const sig = mtfData[tf]?.signal;
@@ -1340,6 +1337,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const ltRawScore = ltBias === 'long' ? ltBullScore : ltBias === 'short' ? ltBearScore : 0;
   const ltConf     = ltBias !== 'neutral' ? Math.round(Math.min(95, 65 + ltRawScore * 15)) : 0;
   const canScaleIn = ltBias === direction && ltConf >= 85;
+  // ltTag 只在真正觸發長線單（canScaleIn=true）時顯示，避免 badge 與 layout 不一致
+  const ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
 
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
@@ -2576,22 +2575,31 @@ function _adjustBiasWeights(weights, predBias, actualMktChg, factorVotes, prefix
   return newWeights;
 }
 
-/* ── 本週 AI 走勢預測資料層（4小時快取，全站共用同一結果）──────── */
-const _WEEKLY_BIAS_CACHE_KEY = 'weekly_bias_cache_v2';
-const _WEEKLY_BIAS_TTL = 4 * 3600 * 1000; // 4 小時
+/* ── 本週 AI 走勢預測資料層（禮拜日 8:00 刷新一次，整週有效）──────── */
+const _WEEKLY_BIAS_CACHE_KEY = 'weekly_bias_cache_v3';
+
+/** 計算「本週起始時間」= 最近一個禮拜日的 08:00（本地時間）*/
+function _getThisWeekSunday8am() {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun
+  const sun = new Date(now);
+  sun.setDate(now.getDate() - day);   // 退回到本週日
+  sun.setHours(8, 0, 0, 0);
+  // 若今天是禮拜日但還未到 8am，退到上週日
+  if (day === 0 && now < sun) sun.setDate(sun.getDate() - 7);
+  return sun.getTime();
+}
 
 function computeWeeklyAIBias(fg, globalMkt) {
   const fgValNow  = fg ? parseInt(fg.value) : null;
   const mktChgNow = globalMkt?.marketCapChange || 0;
 
-  // ── 快取命中：未超時且宏觀條件無重大變動 → 直接回傳 ──
+  // ── 快取命中：快取時間在本週日 08:00 之後 → 整週有效 ──
   try {
     const cached = JSON.parse(localStorage.getItem(_WEEKLY_BIAS_CACHE_KEY) || 'null');
     if (cached && cached.result && cached.timestamp) {
-      const age = Date.now() - cached.timestamp;
-      const fgShift  = (fgValNow != null && cached.fgVal != null) ? Math.abs(fgValNow - cached.fgVal) : 0;
-      const mktFlipped = (mktChgNow > 2) !== (cached.mktChg > 2) || (mktChgNow < -2) !== (cached.mktChg < -2);
-      if (age < _WEEKLY_BIAS_TTL && fgShift < 10 && !mktFlipped) {
+      const weekStart = _getThisWeekSunday8am();
+      if (cached.timestamp >= weekStart) {
         return cached.result;
       }
     }
@@ -2690,30 +2698,58 @@ function computeWeeklyAIBias(fg, globalMkt) {
 
 /* ── 本週 AI 走勢 UI Widget（使用 computeWeeklyAIBias 快取結果）── */
 function buildWeeklyAIOutlook(fg, globalMkt) {
-  // 直接使用已快取的統一計算結果，不重複計算
   const d = computeWeeklyAIBias(fg, globalMkt);
   const { biasLabel, biasColor, conf: confScore, confColor, factors, riskNote, highRisk } = d;
-  const allFactors = factors;
 
-  const factorsHtml = allFactors.slice(0, 6).map(f => {
+  const factorsHtml = factors.slice(0, 6).map(f => {
     const isBull = f.includes('偏多') || f.includes('看漲') || f.includes('淨流入') || f.includes('積極') || f.includes('動能升溫') || f.includes('多頭');
     const isBear = f.includes('偏空') || f.includes('看跌') || f.includes('流出') || f.includes('空頭') || f.includes('過熱') || f.includes('受壓');
     const clr    = isBull ? 'var(--bull)' : isBear ? 'var(--bear)' : 'var(--text2)';
     return `<div style="font-size:0.73rem;color:${clr};padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)">${isBull ? '▲' : isBear ? '▼' : '—'} ${f}</div>`;
   }).join('');
 
-  // 顯示快取更新時間
-  let updatedAt = '—';
+  // ── 本週已公布的重大數據（本週日之後，已過去）──
+  const now = new Date();
+  const weekStart = _getThisWeekSunday8am();
+  const allWeekEvs = (() => {
+    try {
+      const evs = [];
+      for (let d = 0; d <= 6; d++) {
+        getUpcomingEconEvents(d).forEach(ev => {
+          if (ev.impact === 'high' && ev.eventTime.getTime() >= weekStart && ev.eventTime.getTime() <= Date.now())
+            evs.push(ev);
+        });
+      }
+      return evs.sort((a, b) => a.eventTime - b.eventTime);
+    } catch(e) { return []; }
+  })();
+  const pastEventsHtml = allWeekEvs.length
+    ? `<div style="margin:8px 0 4px;font-size:0.68rem;font-weight:700;color:var(--text3);letter-spacing:.4px">📅 本週已公布重大數據</div>` +
+      allWeekEvs.map(ev => {
+        const dt = `${ev.eventTime.getMonth()+1}/${ev.eventTime.getDate()} ${String(ev.eventTime.getHours()).padStart(2,'0')}:${String(ev.eventTime.getMinutes()).padStart(2,'0')}`;
+        return `<div style="font-size:0.72rem;color:var(--text3);padding:2px 0">📊 ${dt} ${ev.name}</div>`;
+      }).join('')
+    : '';
+
+  // ── 顯示週期：本週日 → 下週日 ──
+  const thisSun = new Date(weekStart);
+  const nextSun = new Date(weekStart + 7 * 86400000);
+  const fmt = d => `${d.getMonth()+1}/${d.getDate()}`;
+  const weekRange = `${fmt(thisSun)}（日）→ ${fmt(nextSun)}（日）`;
+
+  // 預測建立時間
+  let createdAt = '—';
   try {
     const cached = JSON.parse(localStorage.getItem(_WEEKLY_BIAS_CACHE_KEY) || 'null');
-    if (cached?.timestamp) updatedAt = new Date(cached.timestamp).toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit' });
+    if (cached?.timestamp) createdAt = new Date(cached.timestamp).toLocaleString('zh-TW', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
   } catch(e) {}
 
   return `<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:12px;padding:14px 16px;margin-bottom:10px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <span style="font-size:0.82rem;font-weight:700;color:var(--text2)">🤖 AI 本週走勢預測</span>
-      <span style="font-size:0.72rem;color:var(--text3)" title="每4小時更新或宏觀條件重大變動時更新">🕒 ${updatedAt} 更新</span>
+      <span style="font-size:0.7rem;color:var(--text3)" title="每週日 8:00 刷新">🔄 週日 8:00 更新</span>
     </div>
+    <div style="font-size:0.68rem;color:var(--text3);margin-bottom:10px">📅 預測週期：${weekRange}　建立：${createdAt}</div>
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
       <div style="font-size:1.4rem;font-weight:800;color:${biasColor}">${biasLabel}</div>
       <div>
@@ -2726,9 +2762,10 @@ function buildWeeklyAIOutlook(fg, globalMkt) {
         </div>
       </div>
     </div>
-    <div style="margin-bottom:10px">${factorsHtml}</div>
-    <div style="font-size:0.72rem;color:#f59e0b;background:rgba(245,158,11,.07);border-radius:7px;padding:6px 10px">
-      ⚠️ ${highRisk ? riskNote : riskNote}
+    <div style="margin-bottom:8px">${factorsHtml}</div>
+    ${pastEventsHtml}
+    <div style="font-size:0.72rem;color:#f59e0b;background:rgba(245,158,11,.07);border-radius:7px;padding:6px 10px;margin-top:8px">
+      ⚠️ ${riskNote}
     </div>
   </div>`;
 }
@@ -4501,12 +4538,19 @@ function recordSignalsFromScan(data) {
   }
 
   // ══════════════════════════════════════════════════
-  // 定向行情路徑（趨勢交易，信心門檻 75%）
+  // 定向行情路徑（趨勢交易）
+  // 震盪模式下仍執行，但只接受強勢趨勢訊號（門檻更嚴）
   // ══════════════════════════════════════════════════
-  if (!isRangeMode) {
+  {
     for (const coin of data) {
-      const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
-      const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
+      // 震盪期需更強烈趨勢才考慮定向交易
+      const minLongScore  = isRangeMode ? 70 : 60;
+      const maxShortScore = isRangeMode ? 30 : 40;
+      const isLong  = coin.score >= minLongScore && (coin.trend === '強勢看漲' || coin.trend === '看漲');
+      const isShort = coin.score <= maxShortScore && (coin.trend === '強勢看跌' || coin.trend === '看跌');
+      // 震盪期短線只接受「強勢」趨勢標籤
+      if (isRangeMode && isLong  && coin.trend !== '強勢看漲') continue;
+      if (isRangeMode && isShort && coin.trend !== '強勢看跌') continue;
       if (!isLong && !isShort) continue;
       const direction = isLong ? 'long' : 'short';
 
@@ -4514,9 +4558,10 @@ function recordSignalsFromScan(data) {
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // 快速預篩：原始評分不足直接跳過
+      // 快速預篩：原始評分不足直接跳過；震盪期提高門檻
       const rawConf = Math.min(90, isLong ? coin.score : 100 - coin.score);
-      if (rawConf < 75) continue;
+      const confThreshold = isRangeMode ? 80 : 75;  // 震盪期需更高信心
+      if (rawConf < confThreshold) continue;
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
@@ -4528,8 +4573,8 @@ function recordSignalsFromScan(data) {
       const macroPen = isLong ? macroPenLong : macroPenShort;
       const finalConf = Math.max(0, setup.conf - macroPen);
 
-      // 最終信心 < 75% 或 AI 硬封鎖 → 不記錄
-      if (finalConf < 75 || setup.hardBlocked) continue;
+      // 最終信心不足或 AI 硬封鎖 → 不記錄（震盪期門檻 80%，一般期 75%）
+      if (finalConf < confThreshold || setup.hardBlocked) continue;
 
       // 週線方向與交易方向一致且強烈 → 允許加倉（長線單）
       const ltBiasD = (wBias === 'bull' || wBias === 'strong_bull') ? 'long'
@@ -6352,9 +6397,17 @@ function renderPositionsPage() {
           <div class="pos-cell-val" style="color:var(--bear)">${fmtPrice(sl)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&sl ? ((isLong?sl-entry:entry-sl)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
         ${isLongTermOpen ? `
-        <div class="pos-cell" style="grid-column:span 2">
+        <div class="pos-cell">
           <div class="pos-cell-lbl">最終目標</div>
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&(t.ltTP||tp2) ? ((isLong?(t.ltTP||tp2)-entry:entry-(t.ltTP||tp2))/entry*100).toFixed(2)+'%' : ''}</span></div>
+        </div>
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">已加倉</div>
+          <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / 3</div>
+        </div>
+        <div class="pos-cell">
+          <div class="pos-cell-lbl">信號強度</div>
+          <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
         </div>
         ` : `
         <div class="pos-cell">
@@ -6365,11 +6418,11 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">止盈二</div>
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
-        `}
         <div class="pos-cell">
           <div class="pos-cell-lbl">信號強度</div>
           <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
         </div>
+        `}
       </div>
 
       ${progressHtml}

@@ -714,7 +714,7 @@ async function fetchWhaleTrades(symbol) {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 7000);
-      const res = await fetch(`${host}/api/v3/aggTrades?symbol=${sym}&limit=500`, { signal: ctrl.signal });
+      const res = await fetch(`${host}/api/v3/aggTrades?symbol=${sym}&limit=1000`, { signal: ctrl.signal });
       clearTimeout(t);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const trades = await res.json();
