@@ -336,12 +336,15 @@ async function fetchDerivativesData(symbol) {
 /* 獲取單幣多時間框架 K 線並分析 */
 async function fetchMTFKlines(symbol) {
   const base = symbol.replace('/', '');
-  const tfs  = ['15m', '1h', '4h', '1d'];
+  // 加入 1w（週線），供長線單判斷使用（需要日線 + 週線同向才觸發）
+  const tfs  = ['15m', '1h', '4h', '1d', '1w'];
   const out  = {};
 
   await Promise.allSettled(tfs.map(async tf => {
-    const raw = await fetchKlines(base, tf, 100);
-    if (raw && raw.length >= 30) {
+    // 週線只需 60 根（約 14 個月），其他維持 100 根
+    const limit = tf === '1w' ? 60 : 100;
+    const raw = await fetchKlines(base, tf, limit);
+    if (raw && raw.length >= (tf === '1w' ? 8 : 30)) {
       out[tf] = {
         signal:    analyzeTimeframeSignal(raw),
         orderFlow: analyzeOrderFlow(raw),

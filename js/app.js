@@ -246,18 +246,28 @@ async function manualRefresh() {
 }
 
 function computeLongTermBias(mtfData) {
+  // 長線單需要日線 + 週線同向（週線主導，權重 3:1）
+  // 沒有週線數據 → 不觸發長線單，只做短線單
+  const weekSig = mtfData['1w']?.signal;
+  if (!weekSig) return 'neutral';
+
   let bull = 0, bear = 0;
-  ['4h', '1d'].forEach(tf => {
+  const weights = { '1d': 1, '1w': 3 };
+  for (const [tf, w] of Object.entries(weights)) {
     const sig = mtfData[tf]?.signal;
-    if (!sig) return;
-    if (sig.signal?.includes('bull')) bull++;
-    if (sig.signal?.includes('bear')) bear++;
+    if (!sig) continue;
+    if (sig.signal?.includes('bull')) bull += w;
+    if (sig.signal?.includes('bear')) bear += w;
     const rsi = sig.rsi || 50;
-    if (rsi < 45) bull += 0.5;
-    if (rsi > 55) bear += 0.5;
-  });
-  if (bull >= 1 && bull > bear) return 'long';
-  if (bear >= 1 && bear > bull) return 'short';
+    if (rsi < 42) bull += w * 0.4;
+    if (rsi > 58) bear += w * 0.4;
+  }
+  // 週線必須明確偏向（週線權重佔3，總分5才算強烈共識）
+  const weekBull = weekSig.signal?.includes('bull');
+  const weekBear = weekSig.signal?.includes('bear');
+  if (!weekBull && !weekBear) return 'neutral';  // 週線中性 → 不觸發長線單
+  if (bull >= 4 && bull > bear * 1.5 && weekBull) return 'long';
+  if (bear >= 4 && bear > bull * 1.5 && weekBear) return 'short';
   return 'neutral';
 }
 
@@ -1324,18 +1334,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const ltBias = computeLongTermBias(mtfData);
   // 方向一致才標示〔長線單〕（不需區分看多/看空，配對即可）
   // 長線信心分：85+ 才允許加倉（canScaleIn = true），ltTag 與 layout 保持一致
+  // 長線單需要日線 + 週線共識（週線不存在 → canScaleIn 永遠為 false）
   let ltBullScore = 0, ltBearScore = 0;
-  ['4h','1d'].forEach(tf => {
+  const ltWeights = { '1d': 1, '1w': 3 };
+  for (const [tf, w] of Object.entries(ltWeights)) {
     const sig = mtfData[tf]?.signal;
-    if (!sig) return;
-    if (sig.signal?.includes('bull')) ltBullScore++;
-    if (sig.signal?.includes('bear')) ltBearScore++;
+    if (!sig) continue;
+    if (sig.signal?.includes('bull')) ltBullScore += w;
+    if (sig.signal?.includes('bear')) ltBearScore += w;
     const rsi = sig.rsi || 50;
-    if (rsi < 45) ltBullScore += 0.5;
-    if (rsi > 55) ltBearScore += 0.5;
-  });
+    if (rsi < 42) ltBullScore += w * 0.4;
+    if (rsi > 58) ltBearScore += w * 0.4;
+  }
   const ltRawScore = ltBias === 'long' ? ltBullScore : ltBias === 'short' ? ltBearScore : 0;
-  const ltConf     = ltBias !== 'neutral' ? Math.round(Math.min(95, 65 + ltRawScore * 15)) : 0;
+  // 週線不存在時 ltBias 必為 neutral（computeLongTermBias 已保障），故 ltConf=0
+  const ltConf     = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRawScore * 8)) : 0;
   const canScaleIn = ltBias === direction && ltConf >= 85;
   // ltTag 只在真正觸發長線單（canScaleIn=true）時顯示，避免 badge 與 layout 不一致
   const ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
@@ -1729,6 +1742,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     volDivergence: mtfData['1h']?.volAI?.divergence || null,
     mtfAlign: entryMTFAlign,
     slType,
+    skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   };
   const adxVal = parseFloat(coin.adx) || 20;
   // 硬性 ADX 門檻（不依賴歷史數據，始終生效）
@@ -3651,6 +3665,7 @@ function buildMTFTable(mtfData) {
   const tfs = [
     { key: '15m', label: '15分' }, { key: '1h', label: '1小時' },
     { key: '4h', label: '4小時' }, { key: '1d', label: '日線' },
+    { key: '1w', label: '週線' },
   ];
   const sigLabel = {
     strong_bull: '<span class="text-bull">強勢看漲 ▲▲</span>',
@@ -5902,7 +5917,8 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       const match =
         (rule.condition === 'long_high_rsi'       && direction === 'long'  && rsi > 65) ||
         (rule.condition === 'short_low_rsi'        && direction === 'short' && rsi < 35) ||
-        (rule.condition === 'low_adx'              && adx < 20) ||
+        // low_adx 由 hardAdxPenalty（buildTradeSetup/computeSimpleSetup）單獨處理，避免雙重扣分
+        (rule.condition === 'low_adx'              && !ctx.skipAdxRule && adx < 20) ||
         (rule.condition === 'long_high_score_rsi'  && direction === 'long'  && rsi > 72) ||
         (rule.condition === 'short_oversold'       && direction === 'short' && rsi < 28) ||
         (rule.condition === 'long_below_poc'       && direction === 'long'  && ctx.abovePOC === false) ||
@@ -7208,6 +7224,7 @@ function computeSimpleSetup(coin, isLong) {
   const hardAdxPenalty = adx < 18 ? 28 : adx < 22 ? 14 : 0;
   const { penalty: learnPenalty, warnings: learnWarn, hardBlocked, blockReasons } = applyLearnAdjustment(direction, rsi, adx, {
     slType: 'atr', // simple setup 預設使用 ATR 止損
+    skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   });
   const rawConf = Math.min(90, coin.score || 60);
   const conf    = Math.max(0, rawConf - learnPenalty - hardAdxPenalty);
