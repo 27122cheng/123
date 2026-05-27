@@ -1756,9 +1756,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
   const tlog = loadTradeLog();
   const existIdx = tlog.findIndex(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.direction === direction);
+
+  // ── 宏觀大方向封鎖（與 recordSignalsFromScan 一致）——提前計算供後續模板使用 ──
+  let macroBlockedForRecord = false;
+  if (_macroCache) {
+    try {
+      const macroDir = computeMacroNetDir(_macroCache.fg, _macroCache);
+      if (direction === 'long'  && (macroDir === 'bear' || macroDir === 'strong_bear')) macroBlockedForRecord = true;
+      if (direction === 'short' && (macroDir === 'bull' || macroDir === 'strong_bull')) macroBlockedForRecord = true;
+    } catch(e) {}
+  }
+
   if (existIdx >= 0) {
     const ex = tlog[existIdx];
-    if (!ex.refined) {
+    // 若 entry 缺失（舊版資料）或尚未精煉，強制更新完整欄位
+    if (!ex.refined || !ex.entry) {
       ex.entry = entry; ex.sl = sl; ex.tp1 = tp1; ex.tp2 = tp2;
       ex.entryReason = entryReasons.join('，');
       ex.slReason = slReason; ex.tp1Reason = tp1Reason; ex.tp2Reason = tp2Reason;
@@ -1774,8 +1786,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     saveTradeLog(tlog);
   } else {
     // 只在方向明確（非觀望）且該幣種完全沒有活躍交易時才建立新掛單
+    // 注意：hasAnyActive 同樣要求 t.entry，避免舊版無 entry 的掛單封鎖新掛單建立
     const hasAnyActive = tlog.some(t =>
-      t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending')
+      t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry
     );
     // 若同幣種+方向在冷卻期內有取消記錄（含飛越止盈取消），不重複建立掛單
     const recentlyCancelled = tlog.some(t =>
@@ -1784,17 +1797,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       t.status === 'cancelled' &&
       (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
-    // ── 宏觀大方向封鎖（與 recordSignalsFromScan 一致）──
-    // 大方向「偏空」時不建立多單掛單，「偏多」時不建立空單掛單
-    let macroBlocked = false;
-    if (_macroCache) {
-      try {
-        const macroDir = computeMacroNetDir(_macroCache.fg, _macroCache);
-        if (direction === 'long'  && (macroDir === 'bear' || macroDir === 'strong_bear')) macroBlocked = true;
-        if (direction === 'short' && (macroDir === 'bull' || macroDir === 'strong_bull')) macroBlocked = true;
-      } catch(e) {}
-    }
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && !macroBlocked) {
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && !macroBlockedForRecord) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -2005,6 +2008,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           </div>`).join('')}
       </div>` : ''}
   </div>
+
+  ${macroBlockedForRecord ? `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#ef4444">⚠️ 宏觀大方向${isLong ? '偏空' : '偏多'}，本次技術訊號僅供參考，<strong>未計入掛單記錄</strong>（不會出現在「未進場」）</div>` : ''}
 
   <div class="setup-levels">
     <div class="level-row level-entry">
