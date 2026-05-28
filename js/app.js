@@ -1358,15 +1358,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if      (bb1hPctB >= 0.76 || rsi > 63) rangeDir = 'short';
     else if (bb1hPctB <= 0.24 || rsi < 37) rangeDir = 'long';
 
-    // 方向封鎖：三指標中 2+ 個偏空 → 禁止震盪做多；2+ 個偏多 → 禁止震盪做空
-    const _rMBear = (_btsNetDir === 'strong_bear' || _btsNetDir === 'bear' || _btsNetDir === 'slight_bear') ? 1 : 0;
-    const _rWBear = weeklyBiasData.bias?.includes('bear') ? 1 : 0;
-    const _rTBear = todayBiasData.bias?.includes('bear')  ? 1 : 0;
+    // 方向確認：宏觀、週線AI、今日AI 三者中 2+ 個需與震盪方向同向才執行
     const _rMBull = (_btsNetDir === 'strong_bull' || _btsNetDir === 'bull' || _btsNetDir === 'slight_bull') ? 1 : 0;
     const _rWBull = weeklyBiasData.bias?.includes('bull') ? 1 : 0;
     const _rTBull = todayBiasData.bias?.includes('bull')  ? 1 : 0;
-    if (_rMBear + _rWBear + _rTBear >= 2 && rangeDir === 'long')  rangeDir = null;
-    if (_rMBull + _rWBull + _rTBull >= 2 && rangeDir === 'short') rangeDir = null;
+    const _rMBear = (_btsNetDir === 'strong_bear' || _btsNetDir === 'bear' || _btsNetDir === 'slight_bear') ? 1 : 0;
+    const _rWBear = weeklyBiasData.bias?.includes('bear') ? 1 : 0;
+    const _rTBear = todayBiasData.bias?.includes('bear')  ? 1 : 0;
+    if (rangeDir === 'long'  && (_rMBull + _rWBull + _rTBull) < 2) rangeDir = null;
+    if (rangeDir === 'short' && (_rMBear + _rWBear + _rTBear) < 2) rangeDir = null;
 
     if (rangeDir) {
       // ── 先計算完整信心（扣完所有分）再決定是否顯示與記錄 ──
@@ -1381,46 +1381,73 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const rIsLong  = rangeDir === 'long';
       const rIcon    = rIsLong ? '▲' : '▼';
       const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
-      // 震盪進場：優先貼近 S/R 結構位（比純 ATR 更精準）
+      // 震盪進場：優先貼近 1H S/R 結構位（精度進場）
       const _rNearSup = supps.find(s => (price - s) < atr * 1.8);
       const _rNearRes = resists.find(r => (r - price) < atr * 1.8);
       const rEntry = rIsLong
         ? (_rNearSup ? Math.min(price, _rNearSup + atr * 0.12) : Math.max(supps[0] || price - atr * 1.2, price - atr * 1.5))
         : (_rNearRes ? Math.max(price, _rNearRes - atr * 0.12) : Math.min(resists[0] || price + atr * 1.2, price + atr * 1.5));
-      // 震盪止損：結構外側（比純 ATR 更有根據）
+      // D1/4H 引線高低點——震盪止損止盈的主要依據
+      const _rWickSupps = [
+        ...(_pld1.swingLow    ? [_pld1.swingLow]    : []),
+        ...(_pl4h.swingLow    ? [_pl4h.swingLow]    : []),
+        ...(_pld1.supports    || []),
+        ...(_pl4h.supports    || []),
+      ].filter(s => s > 0 && s < price * 0.999).sort((a, b) => b - a);
+      const _rWickResists = [
+        ...(_pld1.swingHigh   ? [_pld1.swingHigh]   : []),
+        ...(_pl4h.swingHigh   ? [_pl4h.swingHigh]   : []),
+        ...(_pld1.resistances || []),
+        ...(_pl4h.resistances || []),
+      ].filter(r => r > price * 1.001).sort((a, b) => a - b);
+      // 止損：優先 D1/4H 引線外側，次選 1H 結構，最後 ATR
+      const _rSlWick = rIsLong
+        ? _rWickSupps.find(s => s < rEntry * 0.998 && s > rEntry - atr * 3)
+        : _rWickResists.find(r => r > rEntry * 1.002 && r < rEntry + atr * 3);
       const rSL = rIsLong
-        ? (_rNearSup ? _rNearSup - atr * 0.25 : rEntry - atr * 0.9)
-        : (_rNearRes ? _rNearRes + atr * 0.25 : rEntry + atr * 0.9);
-      // 震盪止盈一：內部 S/R 目標優先
-      const _rTP1Target = rIsLong
+        ? (_rSlWick   ? _rSlWick   - atr * 0.20
+          : _rNearSup ? _rNearSup  - atr * 0.25
+          : rEntry - atr * 0.9)
+        : (_rSlWick   ? _rSlWick   + atr * 0.20
+          : _rNearRes ? _rNearRes  + atr * 0.25
+          : rEntry + atr * 0.9);
+      // TP1：優先 D1/4H 引線壓力/支撐，次選 1H S/R
+      const _rTP1WickTarget = rIsLong
+        ? _rWickResists.find(r => r > rEntry + atr * 0.3 && r <= rEntry + atr * 2.5)
+        : _rWickSupps.find(s  => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.5);
+      const _rTP1Target = _rTP1WickTarget || (rIsLong
         ? resists.find(r => r > rEntry + atr * 0.3 && r <= rEntry + atr * 2.0)
-        : supps.find(s => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.0);
+        : supps.find(s  => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.0));
       const rTP1 = _rTP1Target || (rIsLong ? rEntry + atr * 0.8 : rEntry - atr * 0.8);
-      // TP2 由 AI 自行判斷：BB%B 極端（離中軸 ≥ 0.27）或信心度 ≥ 75 才設延伸止盈
+      // TP2：BB%B 極端或信心 ≥ 75 才延伸；優先 D1/4H 引線
       const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 75;
-      const _rTP2Target = _rHasTP2 ? (rIsLong
+      const _rTP2WickTarget = _rHasTP2 ? (rIsLong
+        ? _rWickResists.find(r => r > rTP1 + price * 0.003 && r <= rEntry + atr * 3.5)
+        : _rWickSupps.find(s  => s < rTP1 - price * 0.003 && s >= rEntry - atr * 3.5)) : null;
+      const _rTP2Target = _rHasTP2 ? (_rTP2WickTarget || (rIsLong
         ? resists.find(r => r > rTP1 + price * 0.003 && r <= rEntry + atr * 2.5)
-        : supps.find(s => s < rTP1 - price * 0.003 && s >= rEntry - atr * 2.5)) : null;
+        : supps.find(s  => s < rTP1 - price * 0.003 && s >= rEntry - atr * 2.5))) : null;
       const rTP2 = _rHasTP2
         ? (_rTP2Target || (rIsLong ? rEntry + atr * 1.5 : rEntry - atr * 1.5))
         : null;
       const rRisk = Math.abs(rEntry - rSL) || atr;
       const rRR1  = (Math.abs(rTP1 - rEntry) / rRisk).toFixed(1);
       const rRR2  = rTP2 ? (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1) : null;
-      // 判斷進場/止損是否貼近 HTF 結構（供 reason label 使用）
-      const _rEntryTfLabel  = _htfTfLabel(rEntry);
+      // reason labels
       const _rSlStructLabel = rIsLong
-        ? (_rNearSup ? `${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)} 外側` : 'ATR×0.9')
-        : (_rNearRes ? `${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)} 外側` : 'ATR×0.9');
+        ? (_rSlWick   ? `D1/4H引線低點 ${fmtPrice(_rSlWick)} 外側`
+          : _rNearSup ? `${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)} 外側` : 'ATR×0.9')
+        : (_rSlWick   ? `D1/4H引線高點 ${fmtPrice(_rSlWick)} 外側`
+          : _rNearRes ? `${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)} 外側` : 'ATR×0.9');
       const _rSlReason = rIsLong
-        ? (_rNearSup ? `跌破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價下方）`)
-        : (_rNearRes ? `突破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價上方）`);
+        ? ((_rSlWick || _rNearSup) ? `跌破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價下方）`)
+        : ((_rSlWick || _rNearRes) ? `突破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價上方）`);
       const _rTp1Reason = _rTP1Target
-        ? `震盪${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP1Target)}（${_htfTfLabel(_rTP1Target)}結構），快速止盈 R/R ${rRR1}:1`
+        ? `震盪${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP1Target)}（${_rTP1WickTarget ? 'D1/4H引線' : _htfTfLabel(_rTP1Target)+'結構'}），快速止盈 R/R ${rRR1}:1`
         : `震盪快速止盈（ATR×0.8），R/R ${rRR1}:1`;
       const _rTp2Reason = _rHasTP2
         ? (_rTP2Target
-          ? `震盪延伸${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP2Target)}（${_htfTfLabel(_rTP2Target)}，BB%B極端/高信心）`
+          ? `震盪延伸${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP2Target)}（${_rTP2WickTarget ? 'D1/4H引線' : _htfTfLabel(_rTP2Target)}，BB%B極端/高信心）`
           : `震盪延伸目標（ATR×1.5，BB%B極端/高信心）`)
         : null;
       const rEntryReasons = [
@@ -7138,22 +7165,31 @@ function renderPositionsPage() {
               const clr = i < sisDone.length ? '#22c55e' : 'rgba(167,139,250,.75)';
               return `<div style="position:absolute;top:-4px;bottom:-4px;left:${p}%;width:2px;background:${clr};border-radius:1px;transform:translateX(-50%)"></div>`;
             }).join('');
-            const siLabels = siTargets.map((lv, i) => {
-              const p   = toP(lv);
-              const clr = i < sisDone.length ? '#22c55e' : '#a78bfa';
-              return `<span style="position:absolute;left:${p}%;transform:translateX(-50%);color:${clr};white-space:nowrap">加${i + 1}</span>`;
-            }).join('');
+            // Build label list and stagger rows when labels are closer than 12%
+            const _ltL = [
+              { pct: 0,       text: 'SL', color: 'var(--bear)',  pos: 'left:0' },
+              { pct: entryPct,text: '進場', color: 'var(--text3)', pos: `left:${entryPct}%;transform:translateX(-50%)` },
+              ...siTargets.map((lv, i) => {
+                const p   = toP(lv);
+                const clr = i < sisDone.length ? '#22c55e' : '#a78bfa';
+                return { pct: p, text: `加${i+1}`, color: clr, pos: `left:${p}%;transform:translateX(-50%)` };
+              }),
+              { pct: 100, text: 'TP', color: '#22c55e', pos: 'right:0' },
+            ];
+            const _ltR = _ltL.map(() => 0);
+            for (let i = 1; i < _ltL.length; i++) if (_ltL[i].pct - _ltL[i-1].pct < 12) _ltR[i] = (_ltR[i-1] + 1) % 2;
+            const _ltHas2 = _ltR.some(r => r === 1);
+            const _ltLabelHtml = _ltL.map((l, i) =>
+              `<span style="position:absolute;top:${_ltR[i] * 13}px;${l.pos};color:${l.color};white-space:nowrap">${l.text}</span>`
+            ).join('');
             progressHtml = `
               <div class="pos-progress-wrap" style="margin:10px 0 6px">
-                <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:18px">
+                <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:${_ltHas2 ? 30 : 18}px">
                   <div style="position:absolute;inset:0;width:${curPct}%;background:${fillClr};border-radius:4px;transition:width .4s;max-width:100%"></div>
                   <div style="position:absolute;top:-3px;bottom:-3px;left:${entryPct}%;width:2px;background:rgba(255,255,255,.45);border-radius:1px;transform:translateX(-50%)"></div>
                   ${siLines}
-                  <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none">
-                    <span style="position:absolute;left:0;color:var(--bear);white-space:nowrap">SL</span>
-                    <span style="position:absolute;left:${entryPct}%;transform:translateX(-50%);color:var(--text3);white-space:nowrap">進場</span>
-                    ${siLabels}
-                    <span style="position:absolute;right:0;color:#22c55e;white-space:nowrap">TP</span>
+                  <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none;height:28px">
+                    ${_ltLabelHtml}
                   </div>
                 </div>
                 <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
@@ -7173,17 +7209,27 @@ function renderPositionsPage() {
           const entryPct = toP(entry);
           const tp1Pct   = toP(tp1);
           const fillClr  = curPct < entryPct ? 'var(--bear)' : curPct >= tp1Pct ? '#22c55e' : 'var(--bull)';
+          // Stagger labels that are closer than 12% apart
+          const _stL = [
+            { pct: 0,       text: 'SL',  color: 'var(--bear)',  pos: 'left:0' },
+            { pct: entryPct,text: '進場', color: 'var(--text3)', pos: `left:${entryPct}%;transform:translateX(-50%)` },
+            { pct: tp1Pct,  text: 'TP1', color: '#f59e0b',      pos: `left:${tp1Pct}%;transform:translateX(-50%)` },
+            { pct: 100,     text: 'TP2', color: '#22c55e',      pos: 'right:0' },
+          ];
+          const _stR = [0, 0, 0, 0];
+          for (let i = 1; i < _stL.length; i++) if (_stL[i].pct - _stL[i-1].pct < 12) _stR[i] = (_stR[i-1] + 1) % 2;
+          const _stHas2 = _stR.some(r => r === 1);
+          const _stLabelHtml = _stL.map((l, i) =>
+            `<span style="position:absolute;top:${_stR[i] * 13}px;${l.pos};color:${l.color};white-space:nowrap">${l.text}</span>`
+          ).join('');
           progressHtml = `
             <div class="pos-progress-wrap" style="margin:10px 0 6px">
-              <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:18px">
+              <div style="position:relative;height:8px;background:rgba(255,255,255,.08);border-radius:4px;margin-bottom:${_stHas2 ? 30 : 18}px">
                 <div style="position:absolute;inset:0;width:${curPct}%;background:${fillClr};border-radius:4px;transition:width .4s;max-width:100%"></div>
                 <div style="position:absolute;top:-3px;bottom:-3px;left:${entryPct}%;width:2px;background:rgba(255,255,255,.45);border-radius:1px;transform:translateX(-50%)"></div>
                 <div style="position:absolute;top:-4px;bottom:-4px;left:${tp1Pct}%;width:2px;background:#f59e0b;border-radius:1px;transform:translateX(-50%)"></div>
-                <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none">
-                  <span style="position:absolute;left:0;color:var(--bear);white-space:nowrap">SL</span>
-                  <span style="position:absolute;left:${entryPct}%;transform:translateX(-50%);color:var(--text3);white-space:nowrap">進場</span>
-                  <span style="position:absolute;left:${tp1Pct}%;transform:translateX(-50%);color:#f59e0b;white-space:nowrap">TP1</span>
-                  <span style="position:absolute;right:0;color:#22c55e;white-space:nowrap">TP2</span>
+                <div style="position:absolute;top:12px;left:0;right:0;font-size:0.67rem;pointer-events:none;height:28px">
+                  ${_stLabelHtml}
                 </div>
               </div>
               <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
