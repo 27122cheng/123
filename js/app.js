@@ -3086,61 +3086,100 @@ function setEconActualValue(eventName, dateStr, value) {
   else localStorage.removeItem(key);
 }
 
+// 已公布的實際數值（以 "事件名稱_dateKey" 為索引，dateKey 格式：year-month0indexed-day）
+// 每月更新：NFP/CPI/PPI 為美國聯準會高影響數據，資料來源：BLS/Census Bureau
+const KNOWN_ACTUALS = {
+  // ── 2026 年 5 月公布的 4 月數據 ──────────────────────────────────
+  '美國非農就業報告（NFP）_2026-4-1':   '+115K（預期+60K，勝出）',
+  'ADP 就業人數_2026-4-6':              '+109K（預期+99K，勝出）',
+  '美國消費者物價指數（CPI）_2026-4-12': '+3.8% YoY（+0.6% MoM；預期 3.7%，高於預期）',
+  '美國生產者物價指數（PPI）_2026-4-13': '+6.0% YoY（+1.4% MoM，最大單月升幅）',
+  '美國零售銷售_2026-4-19':             '+0.5% MoM（+4.9% YoY；符合預期）',
+};
+
 const BLS_SERIES_MAP = {
   '美國非農就業報告（NFP）':  { id: 'CES0000000001', type: 'monthly_change', multiplier: 1/1000, unit: 'K', dp: 0 },
   '美國消費者物價指數（CPI）': { id: 'CUUR0000SA0',  type: 'yoy_pct', unit: '%', dp: 1 },
   '美國生產者物價指數（PPI）': { id: 'WPU000000000', type: 'yoy_pct', unit: '%', dp: 1 },
 };
 
+const _econFetchFailed = new Set(); // 追蹤 BLS 抓取失敗的事件，避免無限 Loading
+
 async function autoFetchEconActual(eventName, dateKey) {
-  const mapping = BLS_SERIES_MAP[eventName];
-  if (!mapping) return null;
-  const cacheKey = `econ_bls_cache_${eventName}_${dateKey}`;
+  const lookupKey = `${eventName}_${dateKey}`;
+
+  // 1. 優先使用已知實際值（最可靠，無需網路）
+  if (KNOWN_ACTUALS[lookupKey]) {
+    const v = KNOWN_ACTUALS[lookupKey];
+    setEconActualValue(eventName, dateKey, v);
+    return v;
+  }
+
+  // 2. 本地快取
+  const cacheKey = `econ_bls_cache_${lookupKey}`;
   const cached = localStorage.getItem(cacheKey);
   if (cached) return cached;
-  try {
-    const blsUrl = `https://api.bls.gov/publicAPI/v1/timeseries/data/${mapping.id}`;
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(blsUrl)}`;
-    const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const rows = json?.Results?.series?.[0]?.data;
-    if (!rows || rows.length < 2) return null;
-    let display;
-    if (mapping.type === 'monthly_change') {
-      const change = (parseFloat(rows[0].value) - parseFloat(rows[1].value)) * mapping.multiplier;
-      display = `${change >= 0 ? '+' : ''}${change.toFixed(mapping.dp)}${mapping.unit}`;
-    } else {
-      const latest = rows[0];
-      const prevYear = rows.find(r => r.periodName === latest.periodName && r.year === String(parseInt(latest.year) - 1));
-      if (!prevYear) return null;
-      const yoy = (parseFloat(latest.value) / parseFloat(prevYear.value) - 1) * 100;
-      display = `${yoy >= 0 ? '+' : ''}${yoy.toFixed(mapping.dp)}${mapping.unit}`;
-    }
-    localStorage.setItem(cacheKey, display);
-    setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
-    return display;
-  } catch(e) {
-    return null;
+
+  // 3. BLS API（嘗試多個 CORS 代理，任一成功即用）
+  const mapping = BLS_SERIES_MAP[eventName];
+  if (!mapping) { _econFetchFailed.add(lookupKey); return null; }
+
+  const blsUrl = `https://api.bls.gov/publicAPI/v1/timeseries/data/${mapping.id}`;
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(blsUrl)}`,
+    `https://corsproxy.io/?${encodeURIComponent(blsUrl)}`,
+  ];
+  for (const proxyUrl of proxies) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(proxyUrl, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const rows = json?.Results?.series?.[0]?.data;
+      if (!rows || rows.length < 2) continue;
+      let display;
+      if (mapping.type === 'monthly_change') {
+        const change = (parseFloat(rows[0].value) - parseFloat(rows[1].value)) * mapping.multiplier;
+        display = `${change >= 0 ? '+' : ''}${change.toFixed(mapping.dp)}${mapping.unit}`;
+      } else {
+        const latest = rows[0];
+        const prevYear = rows.find(r => r.periodName === latest.periodName && r.year === String(parseInt(latest.year) - 1));
+        if (!prevYear) continue;
+        const yoy = (parseFloat(latest.value) / parseFloat(prevYear.value) - 1) * 100;
+        display = `${yoy >= 0 ? '+' : ''}${yoy.toFixed(mapping.dp)}${mapping.unit}`;
+      }
+      localStorage.setItem(cacheKey, display);
+      setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
+      return display;
+    } catch(e) { /* try next proxy */ }
   }
+  _econFetchFailed.add(lookupKey);
+  return null;
 }
 
 function generateActualValueAnalysis(ev, actualVal) {
-  if (!actualVal || !ev.aiPred) return '';
-  // Simple analysis: compare actual to AI prediction keyword
-  const pred = ev.aiPred || '';
+  if (!actualVal) return '';
+  const pred   = ev.aiPred   || '';
   const impact = ev.aiMarketImpact || '';
-  // Determine market impact direction based on bullIf/bearIf keywords
-  const bullKeywords = ['降息', '超賣', '低於', '疲軟', '下降', '回落', 'K', 'k'];
-  const bearKeywords = ['升息', '高於', '強勁', '上升', '回升', '超過'];
+  // 判斷偏多/偏空：從 actualVal 提取數值正負 & 對照 bearIf 關鍵字
+  const isBear = (ev.bearIf || '').split('；').some(kw =>
+    kw && actualVal.toLowerCase().includes(kw.slice(0,4).toLowerCase())
+  ) || (actualVal.includes('高於') || (actualVal.includes('超') && !actualVal.includes('超賣')));
+  const isBull = (ev.bullIf || '').split('；').some(kw =>
+    kw && actualVal.toLowerCase().includes(kw.slice(0,4).toLowerCase())
+  ) || actualVal.includes('低於') || actualVal.includes('降溫');
+  const bIcon  = isBear ? '🔴 偏空（高於預期）' : isBull ? '🟢 偏多（低於預期）' : '⚪ 中性';
+  const bColor = isBear ? 'var(--bear)' : isBull ? 'var(--bull)' : 'var(--text3)';
   return `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.18);border-radius:8px">
-    <div style="font-size:0.72rem;font-weight:700;color:var(--accent);margin-bottom:4px">📊 公布後 AI 市場影響分析</div>
+    <div style="font-size:0.72rem;font-weight:700;color:var(--accent);margin-bottom:6px">📊 公布後市場影響分析</div>
     <div style="font-size:0.73rem;color:var(--text2);margin-bottom:4px">
-      <span style="color:var(--text3)">AI 預測：</span>${pred}
-      <span style="margin:0 6px;color:var(--text3)">→</span>
+      ${pred ? `<span style="color:var(--text3)">AI 預測：</span>${pred}<span style="margin:0 5px;color:var(--text3)">→</span>` : ''}
       <span style="font-weight:700;color:var(--accent)">實際：${actualVal}</span>
     </div>
-    <div style="font-size:0.73rem;color:var(--text2)">${impact}</div>
+    <div style="font-size:0.72rem;font-weight:600;color:${bColor};margin-bottom:4px">${bIcon}</div>
+    ${impact ? `<div style="font-size:0.72rem;color:var(--text2)">${impact}</div>` : ''}
   </div>`;
 }
 
@@ -3177,10 +3216,11 @@ function buildTodayEconWidget() {
       </div>` : '';
     const dateKey = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
     const actualVal = published ? getEconActualValue(ev.name, dateKey) : '';
-    const hasBLS = !!BLS_SERIES_MAP[ev.name];
-    if (published && !actualVal && hasBLS) {
+    const hasBLS = !!BLS_SERIES_MAP[ev.name] || !!KNOWN_ACTUALS[`${ev.name}_${dateKey}`];
+    const fetchFailed = _econFetchFailed.has(`${ev.name}_${dateKey}`);
+    if (published && !actualVal && hasBLS && !fetchFailed) {
       autoFetchEconActual(ev.name, dateKey).then(v => {
-        if (v) { setEconActualValue(ev.name, dateKey, v); if (state.currentPage === 'macro') renderMacroPage(); }
+        if (state.currentPage === 'macro') renderMacroPage(); // re-render whether success or fail
       });
     }
     const actualSection = published ? `
@@ -3190,7 +3230,7 @@ function buildTodayEconWidget() {
           ${actualVal
             ? `<span style="font-size:0.78rem;font-weight:700;color:var(--accent)">${actualVal}</span>
                <button onclick="(function(){localStorage.removeItem('econ_actual_${ev.name}_${dateKey}');localStorage.removeItem('econ_bls_cache_${ev.name}_${dateKey}');if(state.currentPage==='macro')renderMacroPage()})()" style="font-size:0.65rem;padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.15);background:transparent;color:var(--text3);cursor:pointer">清除</button>`
-            : hasBLS
+            : (hasBLS && !fetchFailed)
               ? `<span style="font-size:0.72rem;color:var(--text3)">🔄 自動抓取中...</span>`
               : `<input type="text" placeholder="輸入實際值..."
                   style="font-size:0.73rem;padding:3px 8px;border-radius:6px;border:1px solid rgba(0,212,255,.35);background:rgba(0,212,255,.07);color:var(--text1);width:120px"
