@@ -3305,7 +3305,8 @@ function buildTodayEconWidget() {
     const fetchFailed = _econFetchFailed.has(`${ev.name}_${dateKey}`);
     if (published && !actualVal && hasBLS && !fetchFailed) {
       autoFetchEconActual(ev.name, dateKey).then(v => {
-        if (state.currentPage === 'macro') renderMacroPage(); // re-render whether success or fail
+        const _econEl = document.getElementById('econMonthWidget');
+        if (_econEl) _econEl.outerHTML = buildTodayEconWidget();
       });
     }
     const actualSection = published ? `
@@ -3314,12 +3315,12 @@ function buildTodayEconWidget() {
           <span style="font-size:0.7rem;color:var(--text3)">實際公布值：</span>
           ${actualVal
             ? `<span style="font-size:0.78rem;font-weight:700;color:var(--accent)">${actualVal}</span>
-               <button onclick="(function(){localStorage.removeItem('econ_actual_${ev.name}_${dateKey}');localStorage.removeItem('econ_bls_cache_${ev.name}_${dateKey}');if(state.currentPage==='macro')renderMacroPage()})()" style="font-size:0.65rem;padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.15);background:transparent;color:var(--text3);cursor:pointer">清除</button>`
+               <button onclick="(function(){localStorage.removeItem('econ_actual_${ev.name}_${dateKey}');localStorage.removeItem('econ_bls_cache_${ev.name}_${dateKey}');const _el=document.getElementById('econMonthWidget');if(_el)_el.outerHTML=buildTodayEconWidget()})()" style="font-size:0.65rem;padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.15);background:transparent;color:var(--text3);cursor:pointer">清除</button>`
             : (hasBLS && !fetchFailed)
               ? `<span style="font-size:0.72rem;color:var(--text3)">🔄 自動抓取中...</span>`
               : `<input type="text" placeholder="輸入實際值..."
                   style="font-size:0.73rem;padding:3px 8px;border-radius:6px;border:1px solid rgba(0,212,255,.35);background:rgba(0,212,255,.07);color:var(--text1);width:120px"
-                  onchange="(function(v){setEconActualValue('${ev.name}','${dateKey}',v);if(state.currentPage==='macro')renderMacroPage()})(this.value)"
+                  onchange="(function(v){setEconActualValue('${ev.name}','${dateKey}',v);const _el=document.getElementById('econMonthWidget');if(_el)_el.outerHTML=buildTodayEconWidget()})(this.value)"
                 />`
           }
         </div>
