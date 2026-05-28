@@ -5197,11 +5197,10 @@ function recordSignalsFromScan(data) {
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-      // 計算進場參數，並以 rawConf ≥ 70 作為品質門檻
-      // （與 buildTradeSetup 一致：score≥60 即可考慮，由 rawConf 決定品質）
+      // 計算進場參數：減完所有懲罰後的最終信心度才做門檻判斷
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      if (setup.rawConf < 70) continue;
+      if (setup.conf < 70) continue;  // 使用最終信心度（含 ADX + 學習懲罰）
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
@@ -5216,7 +5215,9 @@ function recordSignalsFromScan(data) {
         rsi: parseFloat(coin.rsi) || 50,
         adx: parseFloat(coin.adx) || 20,
         score: coin.score, trend: coin.trend,
-        conf: setup.conf, rawConf: setup.rawConf, learnPenalty: setup.learnPenalty || 0,
+        conf: setup.conf, rawConf: setup.rawConf,
+        hardAdxPenalty: setup.hardAdxPenalty || 0,
+        learnPenalty: setup.learnPenalty || 0,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5432,7 +5433,9 @@ function updateOpenTrades(data) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
     const baseConf   = trade.rawConf || trade.conf || 100;
-    const _learnPen  = trade.learnPenalty || 0; // 靜態 AI 學習懲罰（建單時已計算，後續不重算）
+    // 靜態懲罰（建單時已計算，後續不重算，但需保留進 freshConf 以正確顯示最終信心度）
+    const _adxPen    = trade.hardAdxPenalty || 0;
+    const _learnPen  = trade.learnPenalty   || 0;
     let freshConf = baseConf;
     if (_macroCache) {
       try {
@@ -5460,8 +5463,8 @@ function updateOpenTrades(data) {
         const _wOp = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
         const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
         const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 8 : 4) : 0) + (_tOp ? 5 : 0);
-        // freshConf = rawConf - learnPenalty（靜態） - 宏觀懲罰（動態） - AI趨勢懲罰（動態）
-        freshConf = Math.max(0, baseConf - _learnPen - _macP - _aiP);
+        // 最終信心度 = rawConf - ADX懲罰（靜態）- 學習懲罰（靜態）- 宏觀懲罰（動態）- AI趨勢懲罰（動態）
+        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       } catch(_e) {}
@@ -8015,7 +8018,7 @@ function computeSimpleSetup(coin, isLong) {
   // 趨勢強度加成（強勢看漲/看跌）
   if (coin.trend === '強勢看漲' || coin.trend === '強勢看跌') rawConf += 4;
   rawConf = Math.min(90, rawConf);
-  const conf = Math.max(0, rawConf - learnPenalty);  // 掃描路徑不扣 ADX 懲罰（buildTradeSetup 精煉時處理）
+  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty);  // 最終信心度：扣完 ADX 懲罰 + 學習懲罰
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
