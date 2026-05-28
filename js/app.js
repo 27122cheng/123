@@ -1723,14 +1723,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ? `日線/4H 關鍵支撐 ${fmtPrice(ltSup)}，R/R ${ltRRv}:1，全倉長線目標`
         : `長線目標 R/R ${ltRRv}:1，全倉持有至目標`;
     }
-    // 三個加倉位：25% / 50% / 75% 路程，嘗試吸附至附近 ±1.5% S/R
+    // AI 自行判斷加倉次數（最多 3 次）：依長線信心度和 R/R 決定
+    const ltRRraw = risk > 0 ? Math.abs(ltTP - entry) / risk : 0;
+    const _aiScaleCount = (ltConf >= 90 && ltRRraw >= 5.0) ? 3
+                        : (ltConf >= 87 && ltRRraw >= 4.0) ? 2
+                        : 1;
+    const _aiScaleReason = _aiScaleCount === 3 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 3 次加倉`
+                         : _aiScaleCount === 2 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 2 次加倉`
+                         : `長線信心 ${ltConf}%，建議 1 次加倉（保守佈局）`;
+    // 加倉位：均勻分佈在路程中，並嘗試吸附至附近 ±1.5% S/R
     const totalMove = Math.abs(ltTP - entry);
-    scaleInLevels = [1, 2, 3].map(n => {
-      const raw = isLong ? entry + totalMove * (n / 4) : entry - totalMove * (n / 4);
+    scaleInLevels = Array.from({ length: _aiScaleCount }, (_, i) => i + 1).map(n => {
+      const raw = isLong ? entry + totalMove * (n / (_aiScaleCount + 1))
+                         : entry - totalMove * (n / (_aiScaleCount + 1));
       const nearby = isLong
         ? resists.find(r => r >= raw * 0.985 && r <= raw * 1.015)
         : supps.find(s  => s <= raw * 1.015  && s >= raw * 0.985);
-      return { level: nearby || raw, snapped: !!nearby };
+      // 每次加倉後的止損調整：移至前一個進場位（0.05% 緩衝）
+      const prevLevel = n === 1 ? entry : (isLong ? entry + totalMove * ((n - 1) / (_aiScaleCount + 1)) : entry - totalMove * ((n - 1) / (_aiScaleCount + 1)));
+      const newSL = isLong ? prevLevel * 0.9995 : prevLevel * 1.0005;
+      return { level: nearby || raw, snapped: !!nearby, newSL };
     });
     // 覆蓋 tp1/tp2 → updateOpenTrades TP1 觸發 & 持倉記錄均使用長線最終止盈
     tp1 = ltTP; tp1Reason = ltTPReason;
@@ -1928,6 +1940,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     slReason, tp1Reason, tp2Reason,
     rr1: rr1str, rr2: rr2str, atr, conf,
     longTermBias: ltBias, canScaleIn, ltConf,
+    maxScaleIns: canScaleIn ? _aiScaleCount : undefined,
+    aiScaleReason: canScaleIn ? _aiScaleReason : undefined,
+    scaleInNewSLs: canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.newSL) : [],
     // 三層決策資料（供 Telegram 顯示 AI 邏輯摘要）
     rawConf, macroConf, finalConf,
     bigTrend, bigTrendBlocked, h4TrendLabel, d1TrendLabel,
@@ -1984,6 +1999,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // 補齊長線加倉計劃（若之前未儲存）
     if (canScaleIn && scaleInLevels.length && !ex.scaleInTargets?.length) {
       ex.scaleInTargets = scaleInLevels.map(s => s.level);
+      ex.scaleInNewSLs  = scaleInLevels.map(s => s.newSL);
+      ex.maxScaleIns    = _aiScaleCount;
+      ex.aiScaleReason  = _aiScaleReason;
       ex.ltTP = ltTP || null;
     }
     saveTradeLog(tlog);
@@ -2028,6 +2046,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         refined: true,
         longTermBias: ltBias, canScaleIn, ltConf, is4hDayAligned,
         scaleInTargets: canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.level) : [],
+        scaleInNewSLs:  canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.newSL) : [],
+        maxScaleIns:    canScaleIn ? _aiScaleCount : undefined,
+        aiScaleReason:  canScaleIn ? _aiScaleReason : undefined,
         ltTP: (canScaleIn && ltTP) ? ltTP : null,
         scaleIns: [], peakPrice: null,
         ...tradeCtx,
@@ -2237,7 +2258,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   ${_recordBlockedByActive ? `<div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#818cf8">📌 此幣種已有持倉進行中，<strong>未計入掛單記錄</strong>（不重複開倉）</div>` : ''}
 
   ${canScaleIn && ltTP ? `
-  <!-- ═══ 長線單：進場 + 三加倉 + 最終止盈 ═══ -->
+  <!-- ═══ 長線單：進場 + 加倉（AI決定次數）+ 最終止盈 ═══ -->
+  <div style="font-size:0.73rem;color:#a78bfa;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:7px;padding:7px 11px;margin-bottom:8px">
+    🤖 AI 加倉判斷：${_aiScaleReason}
+  </div>
   <div class="setup-levels">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
@@ -2249,7 +2273,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const siRR    = ((Math.abs(si.level - entry) / risk)).toFixed(1);
       return `<div class="level-row level-tp1" style="border-left:3px solid rgba(99,102,241,.5)">
         <div class="level-tag">📈 加倉${i + 1}</div>
-        <div class="level-desc">+${movePct}%，趨勢持續確認加碼${si.snapped ? '（貼近結構位）' : ''}，R/R ${siRR}:1</div>
+        <div class="level-desc">+${movePct}%，趨勢持續確認加碼${si.snapped ? '（貼近結構位）' : ''}，R/R ${siRR}:1　<span style="color:var(--bear);font-size:0.72rem">加倉後止損移至 ${fmtPrice(si.newSL)}</span></div>
         <div class="level-price-val" style="color:#a78bfa">${fmtPrice(si.level)}</div>
       </div>`;
     }).join('')}
@@ -2259,16 +2283,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="level-price-val" style="color:var(--bull)">${fmtPrice(ltTP)}</div>
     </div>
     <div class="level-row level-sl">
-      <div class="level-tag">🛑 止損</div>
+      <div class="level-tag">🛑 初始止損</div>
       <div class="level-desc">${slReason}</div>
       <div class="level-price-val">${fmtPrice(sl)}</div>
     </div>
   </div>
   <div class="setup-rules">
     <div class="rules-title">🏆 長線加倉操作守則</div>
-    <div class="rule-item">✦ 初始倉位 <strong>2~3%</strong>，每次加倉追加 <strong>1~2%</strong>，三次加倉合計上限 <strong>8~9%</strong></div>
-    <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(sl)}</strong>），每次加倉後將止損上移至<strong>上一進場位下方</strong></div>
-    <div class="rule-item">✦ 第三次加倉確認後，止損上移至<strong>保本位（進場價 ${fmtPrice(entry)} ${isLong ? '上方' : '下方'}）</strong></div>
+    <div class="rule-item">✦ 初始倉位 <strong>2~3%</strong>，每次加倉追加 <strong>1~2%</strong>，${_aiScaleCount}次加倉合計上限 <strong>${_aiScaleCount <= 1 ? '4~5' : _aiScaleCount === 2 ? '6~7' : '8~9'}%</strong></div>
+    <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(sl)}</strong>），每次加倉後將止損移至對應調整位（詳見上方各加倉行）</div>
+    <div class="rule-item">✦ 最後一次加倉確認後，止損上移至<strong>保本位（進場價 ${fmtPrice(entry)} ${isLong ? '上方' : '下方'}）</strong></div>
     <div class="rule-item">✦ 全倉持有至最終止盈（<strong style="color:${dirColor}">${fmtPrice(ltTP)}</strong>），中途不提前止盈</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
@@ -5177,18 +5201,37 @@ async function backgroundRefineNewTrades() {
         const ltTP = isLong
           ? Math.min(price * 1.35, ltRes)
           : Math.max(price * 0.65, ltRes);
-        tlogEdit[idx].ltTP = ltTP;
-        tlogEdit[idx].scaleInTargets = [1, 2, 3].map(n =>
-          isLong
-            ? tlogEdit[idx].entry * (1 + 0.008 * n)
-            : tlogEdit[idx].entry * (1 - 0.008 * n)
-        );
+        // AI 自行判斷加倉次數（與 buildTradeSetup 邏輯一致）
+        const _bgRRraw = origRisk > 0 ? Math.abs(ltTP - tlogEdit[idx].entry) / origRisk : 0;
+        const _bgScaleCount = (ltConf >= 90 && _bgRRraw >= 5.0) ? 3
+                            : (ltConf >= 87 && _bgRRraw >= 4.0) ? 2
+                            : 1;
+        const _bgScaleReason = _bgScaleCount === 3 ? `長線信心 ${ltConf}%、R/R ${_bgRRraw.toFixed(1)}:1，建議 3 次加倉`
+                             : _bgScaleCount === 2 ? `長線信心 ${ltConf}%、R/R ${_bgRRraw.toFixed(1)}:1，建議 2 次加倉`
+                             : `長線信心 ${ltConf}%，建議 1 次加倉（保守佈局）`;
+        const totalMove = Math.abs(ltTP - tlogEdit[idx].entry);
+        const bgScaleInLevels = Array.from({ length: _bgScaleCount }, (_, i) => i + 1).map(n => {
+          const raw = isLong
+            ? tlogEdit[idx].entry + totalMove * (n / (_bgScaleCount + 1))
+            : tlogEdit[idx].entry - totalMove * (n / (_bgScaleCount + 1));
+          const prevLevel = n === 1
+            ? tlogEdit[idx].entry
+            : (isLong
+              ? tlogEdit[idx].entry + totalMove * ((n - 1) / (_bgScaleCount + 1))
+              : tlogEdit[idx].entry - totalMove * ((n - 1) / (_bgScaleCount + 1)));
+          const newSL = isLong ? prevLevel * 0.9995 : prevLevel * 1.0005;
+          return { level: raw, newSL };
+        });
+        tlogEdit[idx].ltTP           = ltTP;
+        tlogEdit[idx].maxScaleIns    = _bgScaleCount;
+        tlogEdit[idx].aiScaleReason  = _bgScaleReason;
+        tlogEdit[idx].scaleInTargets = bgScaleInLevels.map(s => s.level);
+        tlogEdit[idx].scaleInNewSLs  = bgScaleInLevels.map(s => s.newSL);
         // 發送長線升級通知
         try {
           const s = loadSettings();
           if (s.notifTelegram && s.tgToken && s.tgChatId) {
             const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-            const sym = tlogEdit[idx].symbol.replace('/USDT', '');
             const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
             const confIcon = ltConf >= 90 ? '🟢' : ltConf >= 85 ? '🟡' : '🟠';
             sendTelegramMessage(s.tgToken, s.tgChatId,
@@ -5197,7 +5240,7 @@ async function backgroundRefineNewTrades() {
               `${confIcon} 長線信心度：<b>${ltConf}%</b>\n` +
               `🏁 長線目標：<b>$${fmt(ltTP)}</b>\n` +
               `📍 進場位：$${fmt(tlogEdit[idx].entry)}\n\n` +
-              `支持長線的條件：日線 + ${ltBull > ltBear ? '週線/月線看漲' : '週線/月線看跌'}，可分 3 次加倉`
+              `🤖 ${_bgScaleReason}`
             );
           }
         } catch(e) {}
@@ -5470,7 +5513,7 @@ function updateOpenTrades(data) {
 
     // ── 加倉邏輯 ──
     if (!trade.scaleIns) { trade.scaleIns = []; changed = true; }
-    const MAX_SCALE_INS  = 3;
+    const MAX_SCALE_INS  = trade.maxScaleIns || 3;
     const confirmedSIs   = trade.scaleIns.filter(s => s.status === 'open');
     const pendingSI      = trade.scaleIns.find(s => s.status === 'pending');
 
