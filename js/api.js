@@ -730,24 +730,31 @@ async function _fetchSpotWhaleTrades(sym) {
         : 2000;
 
       let buyVol = 0, sellVol = 0, bigBuyCount = 0, bigSellCount = 0;
+      let bigBuyWeightedPrice = 0, bigSellWeightedPrice = 0;
       for (const tr of trades) {
-        const val = parseFloat(tr.p) * parseFloat(tr.q);
+        const p   = parseFloat(tr.p);
+        const val = p * parseFloat(tr.q);
         if (val < threshold) continue;
         // m=true 表示主動賣出（maker 是買方），m=false 表示主動買入
-        if (!tr.m) { buyVol += val; bigBuyCount++; }
-        else        { sellVol += val; bigSellCount++; }
+        if (!tr.m) { buyVol += val; bigBuyCount++;  bigBuyWeightedPrice  += p * val; }
+        else        { sellVol += val; bigSellCount++; bigSellWeightedPrice += p * val; }
       }
 
       const total  = buyVol + sellVol;
       if (total === 0) return null;
       const buyPct = buyVol / total * 100;
       const bias   = buyPct > 60 ? 'bull' : buyPct < 40 ? 'bear' : 'neutral';
+      // 大單加權均價（掛單价格参考）
+      const bigBuyAvgPrice  = buyVol  > 0 ? bigBuyWeightedPrice  / buyVol  : 0;
+      const bigSellAvgPrice = sellVol > 0 ? bigSellWeightedPrice / sellVol : 0;
       return {
         buyVol, sellVol, total,
         buyPct:      parseFloat(buyPct.toFixed(1)),
         netFlow:     buyVol - sellVol,
         bias,
         bigBuyCount, bigSellCount,
+        bigBuyAvgPrice:  parseFloat(bigBuyAvgPrice.toFixed(6)),
+        bigSellAvgPrice: parseFloat(bigSellAvgPrice.toFixed(6)),
         threshold,
       };
     } catch { continue; }
