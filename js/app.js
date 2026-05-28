@@ -4851,11 +4851,11 @@ function recordSignalsFromScan(data) {
   // slight_bear/slight_bull：用宏觀扣分處理，不封鎖（避免所有信號被雙重攔截）
   const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
   const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
-  // 震盪模式：宏觀必須是真正中性（neutral），並且本週或今日AI預測也是中性/震盪
-  // slight_bear/slight_bull 屬輕微方向性，不應觸發震盪模式（否則會阻斷所有定向交易）
+  // 震盪模式：三指標（宏觀、本週、今日）中有2個「真正中性」才算震盪
+  // slight_bear/slight_bull 屬輕微方向性，不算中性（否則會阻斷所有定向交易）
   const _rsMacroNeutral  = macroNetDir === 'neutral';  // 只有完全中性才算
-  const _rsWeeklyNeutral = wbRangeMode;               // 本週AI中性（bias==='neutral'）
-  const _rsTodayNeutral  = tbRangeMode;               // 今日AI中性/輕微（bias===neutral/slight）
+  const _rsWeeklyNeutral = wBias === 'neutral';        // 本週AI真正中性（不含 slight）
+  const _rsTodayNeutral  = tBias === 'neutral';        // 今日AI真正中性（不含 slight_bull/bear）
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
   const isRangeMode      = _rsNeutralCnt >= 2;  // 個別幣種再用 adxR < 22 過濾（見下方迴圈）
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
@@ -5260,19 +5260,18 @@ function updateOpenTrades(data) {
           if (_fgV < 25) _agt += 0.5;
         }
         const _macP = _agt >= 3 ? 18 : _agt >= 2 ? 12 : _agt >= 1 ? 5 : 0;
-        const _adxV = trade.adx || 20;
-        const _adxP = _adxV < 18 ? 28 : _adxV < 22 ? 14 : 0;
+        // ADX 不列入 freshConf：建單時 ADX 是靜態品質過濾，不應在每次刷新時重複扣分
         const _wb  = computeWeeklyAIBias(_fg, _gm);
         const _tb  = computeTodayAIBias(_fg, _gm);
         const _wOp = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
         const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
         const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 8 : 4) : 0) + (_tOp ? 5 : 0);
-        freshConf = Math.max(0, baseConf - _macP - _adxP - _aiP);
+        freshConf = Math.max(0, baseConf - _macP - _aiP);
       } catch(_e) {}
     }
-    if (freshConf < 75) {
+    if (freshConf < 65) {
       trade.status = 'cancelled';
-      trade.cancelReason = `市場波動導致信心度降至 ${freshConf}%（低於進場門檻 75%），自動撤單`;
+      trade.cancelReason = `市場波動導致信心度降至 ${freshConf}%（低於撤單門檻 65%），自動撤單`;
       trade.cancelTime = Date.now();
       changed = true;
       cancelledSymbols.add(trade.symbol);
@@ -5305,10 +5304,11 @@ function updateOpenTrades(data) {
       const trendReversed = !isRangeTrade && !isLongTermTrade && (isLong
         ? coin.trend?.includes('看跌')
         : coin.trend?.includes('看漲'));
-      // 評分跌破取消門檻（長線單寬鬆：多頭<50 / 空頭>50；普通：多頭<63 / 空頭>37）
+      // 評分跌破取消門檻（長線單寬鬆：多頭<50 / 空頭>50；普通：多頭<55 / 空頭>45）
+      // 建單門檻多頭 score>=60、空頭 score<=40，取消門檻需留 5 分緩衝避免建單後立即撤單
       const scoreFailed = !isRangeTrade && (isLong
-        ? (isLongTermTrade ? nowScore < 50 : nowScore < 63)
-        : (isLongTermTrade ? nowScore > 50 : nowScore > 37));
+        ? (isLongTermTrade ? nowScore < 50 : nowScore < 55)
+        : (isLongTermTrade ? nowScore > 50 : nowScore > 45));
       // 信號轉弱（長線單跳過；短線單以 scoreFailed 為主，避免評分短暫波動觸發過早取消）
       // 注意：signalWeak 門檻從 68 移除，改為只在 trendReversed 或 scoreFailed 時才取消
       const signalWeak = false; // 已廢棄：原 nowScore < 68 會讓剛建立的掛單立即被取消（建立門檻75 vs 取消門檻68）
