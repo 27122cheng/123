@@ -3087,14 +3087,32 @@ function setEconActualValue(eventName, dateStr, value) {
 }
 
 // 已公布的實際數值（以 "事件名稱_dateKey" 為索引，dateKey 格式：year-month0indexed-day）
-// 每月更新：NFP/CPI/PPI 為美國聯準會高影響數據，資料來源：BLS/Census Bureau
+// 每月更新：資料來源 BLS / EIA / Census Bureau / Fed
 const KNOWN_ACTUALS = {
-  // ── 2026 年 5 月公布的 4 月數據 ──────────────────────────────────
-  '美國非農就業報告（NFP）_2026-4-1':   '+115K（預期+60K，勝出）',
+  // ── 2026 年 5 月公布的月度數據（4月數據）────────────────────────
+  '美國非農就業報告（NFP）_2026-4-1':   '+115K（預期+60K，勝出；失業率 4.3%）',
   'ADP 就業人數_2026-4-6':              '+109K（預期+99K，勝出）',
-  '美國消費者物價指數（CPI）_2026-4-12': '+3.8% YoY（+0.6% MoM；預期 3.7%，高於預期）',
-  '美國生產者物價指數（PPI）_2026-4-13': '+6.0% YoY（+1.4% MoM，最大單月升幅）',
-  '美國零售銷售_2026-4-19':             '+0.5% MoM（+4.9% YoY；符合預期）',
+  '美國消費者物價指數（CPI）_2026-4-12': '+3.8% YoY（+0.6% MoM；預期 3.7%，高於預期，油價推升）',
+  '美國生產者物價指數（PPI）_2026-4-13': '+6.0% YoY（+1.4% MoM；最大單月漲幅，高於預期）',
+  '美國零售銷售_2026-4-19':             '+0.5% MoM（+4.9% YoY；符合預期，實際消費疲弱）',
+
+  // ── EIA 原油庫存（每週三 22:30）─────────────────────────────────
+  'EIA 原油庫存_2026-4-6':  '-2.314M 桶（週截至 4/30；去庫存，低於預期 -3.3M；輕微通膨支撐）',
+  'EIA 原油庫存_2026-4-13': '-4.306M 桶（週截至 5/8；大幅去庫存，超越預期 -2.1M；能源通膨升溫）',
+  'EIA 原油庫存_2026-4-20': '+5.5M 桶（週截至 5/15；意外增庫存，通縮壓力，風險情緒轉差）',
+  'EIA 原油庫存_2026-4-27': '（今日稍晚 22:30 公布，數據待確認）',
+
+  // ── FOMC 紀要（僅在真正發布日有數據，其餘週標注無紀要）──────────
+  'FOMC 紀要_2026-4-6':  '（本週無FOMC紀要；4/28-29會議紀要將於5/20公布）',
+  'FOMC 紀要_2026-4-13': '（本週無FOMC紀要）',
+  'FOMC 紀要_2026-4-20': '鷹派傾向 - 4名官員異議（1人主張降息、3人反對寬鬆偏向），年內降息預期降低，委員對伊朗戰爭帶來的油價通膨表示憂慮，維持高利率展望',
+  'FOMC 紀要_2026-4-27': '（本週無FOMC紀要；下次6月FOMC會議）',
+
+  // ── 美國初請失業金人數（每週四 20:30）───────────────────────────
+  '美國初請失業金人數_2026-4-7':  '（數據未查得，請手動確認）',
+  '美國初請失業金人數_2026-4-14': '212K（前值 218K；就業市場略微轉弱）',
+  '美國初請失業金人數_2026-4-21': '209K（前值 212K；4週均值 202.5K，就業市場改善）',
+  '美國初請失業金人數_2026-4-28': '（今日 20:30 公布，數據待確認）',
 };
 
 const BLS_SERIES_MAP = {
@@ -3161,25 +3179,54 @@ async function autoFetchEconActual(eventName, dateKey) {
 
 function generateActualValueAnalysis(ev, actualVal) {
   if (!actualVal) return '';
+  // 待確認/無紀要的佔位值：只顯示提示，不做方向分析
+  const isPlaceholder = actualVal.includes('待確認') || actualVal.includes('無FOMC') || actualVal.includes('稍晚公布') || actualVal.includes('未查得');
+  if (isPlaceholder) {
+    return `<div style="margin-top:6px;font-size:0.71rem;color:var(--text3);padding:6px 10px;background:rgba(255,255,255,.03);border-radius:6px">ℹ️ ${actualVal}</div>`;
+  }
+
   const pred   = ev.aiPred   || '';
   const impact = ev.aiMarketImpact || '';
-  // 判斷偏多/偏空：從 actualVal 提取數值正負 & 對照 bearIf 關鍵字
-  const isBear = (ev.bearIf || '').split('；').some(kw =>
-    kw && actualVal.toLowerCase().includes(kw.slice(0,4).toLowerCase())
-  ) || (actualVal.includes('高於') || (actualVal.includes('超') && !actualVal.includes('超賣')));
-  const isBull = (ev.bullIf || '').split('；').some(kw =>
-    kw && actualVal.toLowerCase().includes(kw.slice(0,4).toLowerCase())
-  ) || actualVal.includes('低於') || actualVal.includes('降溫');
-  const bIcon  = isBear ? '🔴 偏空（高於預期）' : isBull ? '🟢 偏多（低於預期）' : '⚪ 中性';
+
+  // 方向判斷：結合事件名稱特性 + actualVal 關鍵字
+  let isBear = false, isBull = false;
+  const av = actualVal.toLowerCase();
+
+  if (ev.name.includes('NFP') || ev.name.includes('非農') || ev.name.includes('ADP') || ev.name.includes('失業金')) {
+    // 就業數據：超過預期=鷹派=偏空；低於預期=偏多
+    isBear = av.includes('勝出') || av.includes('高於') || (av.includes('>') && !av.includes('降息'));
+    isBull = av.includes('低於') || av.includes('疲軟') || parseFloat(av) < 150;
+    // 就業反轉邏輯：就業強勁 → 降息預期降 → 加密偏空
+    if (av.includes('勝出')) isBear = true;
+  } else if (ev.name.includes('CPI') || ev.name.includes('PPI') || ev.name.includes('通膨') || ev.name.includes('物價')) {
+    isBear = av.includes('高於') || av.includes('超預期') || av.includes('升溫');
+    isBull = av.includes('低於') || av.includes('降溫') || av.includes('回落');
+  } else if (ev.name.includes('零售')) {
+    isBull = av.includes('低於') || av.includes('疲弱') || av.includes('疲軟');
+    isBear = av.includes('高於') || av.includes('超越');
+  } else if (ev.name.includes('EIA') || ev.name.includes('原油')) {
+    isBull = av.includes('-') && (av.includes('桶') || av.includes('m ')); // 去庫存
+    isBear = av.includes('+') && (av.includes('桶') || av.includes('m ')); // 增庫存
+    // 更精確：數字前的正負號
+    const numMatch = av.match(/([+-]?\d+\.?\d*)\s*m?\s*桶/);
+    if (numMatch) { const n = parseFloat(numMatch[1]); isBull = n < 0; isBear = n > 0; }
+  } else if (ev.name.includes('FOMC')) {
+    isBear = av.includes('鷹派') || av.includes('維持高利率') || av.includes('通膨') || av.includes('異議');
+    isBull = av.includes('鴿派') || av.includes('降息') || av.includes('寬鬆');
+  } else {
+    isBear = av.includes('高於') || av.includes('超越預期');
+    isBull = av.includes('低於') || av.includes('降溫');
+  }
+
+  const bIcon  = isBear ? '🔴 偏空' : isBull ? '🟢 偏多' : '⚪ 中性';
   const bColor = isBear ? 'var(--bear)' : isBull ? 'var(--bull)' : 'var(--text3)';
+
   return `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.18);border-radius:8px">
-    <div style="font-size:0.72rem;font-weight:700;color:var(--accent);margin-bottom:6px">📊 公布後市場影響分析</div>
-    <div style="font-size:0.73rem;color:var(--text2);margin-bottom:4px">
-      ${pred ? `<span style="color:var(--text3)">AI 預測：</span>${pred}<span style="margin:0 5px;color:var(--text3)">→</span>` : ''}
-      <span style="font-weight:700;color:var(--accent)">實際：${actualVal}</span>
-    </div>
-    <div style="font-size:0.72rem;font-weight:600;color:${bColor};margin-bottom:4px">${bIcon}</div>
-    ${impact ? `<div style="font-size:0.72rem;color:var(--text2)">${impact}</div>` : ''}
+    <div style="font-size:0.72rem;font-weight:700;color:var(--accent);margin-bottom:6px">📊 AI 市場影響分析</div>
+    ${pred ? `<div style="font-size:0.72rem;color:var(--text3);margin-bottom:4px">AI 預測：${pred}</div>` : ''}
+    <div style="font-size:0.73rem;font-weight:600;color:${bColor};margin-bottom:5px">${bIcon} — 實際公布：${actualVal.split('（')[0].trim()}</div>
+    ${actualVal.includes('（') ? `<div style="font-size:0.71rem;color:var(--text2);margin-bottom:4px">（${actualVal.split('（').slice(1).join('（').replace(/\)$/, '')}）</div>` : ''}
+    ${impact ? `<div style="font-size:0.72rem;color:var(--text2);border-top:1px solid rgba(255,255,255,.06);padding-top:5px;margin-top:4px">💡 ${impact}</div>` : ''}
   </div>`;
 }
 
