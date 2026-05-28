@@ -1238,11 +1238,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _macroRangeish  = ['neutral','slight_bull','slight_bear'].includes(_btsNetDir);
   const _weeklyRangeish = ['neutral','slight_bull','slight_bear'].includes(_wBias);
   const _todayRangeish  = ['neutral','slight_bull','slight_bear'].includes(_tBias);
-  const _rangeNeutralCnt = (_macroRangeish ? 1 : 0) + (_weeklyRangeish ? 1 : 0) + (_todayRangeish ? 1 : 0);
   const _h4IsRange  = !h4?.signal?.includes('bull') && !h4?.signal?.includes('bear');
   const _d1IsRange  = !d1sig_?.signal?.includes('bull') && !d1sig_?.signal?.includes('bear');
-  const _tfRanging  = _h4IsRange && _d1IsRange;  // 4H AND 日線都無明確方向
-  const isRangeMode = _rangeNeutralCnt >= 2 && _tfRanging;  // 宏觀+預測中性 AND 時框盤整
+  // 震盪模式：5個因子中至少3個為震盪/中性 → 觸發震盪交易邏輯
+  // 因子：四小時盤整、日線盤整、大方向宏觀中性/輕微、週AI中性/輕微、今日AI中性/輕微
+  const _rngFactors = (_h4IsRange ? 1 : 0) + (_d1IsRange ? 1 : 0) +
+                      (_macroRangeish ? 1 : 0) + (_weeklyRangeish ? 1 : 0) + (_todayRangeish ? 1 : 0);
+  const isRangeMode = _rngFactors >= 3;
   // 4H / 日線信號（供範圍卡顯示及短線標籤判斷）
   const _h4Bull_r  = h4?.signal?.includes('bull');
   const _h4Bear_r  = h4?.signal?.includes('bear');
@@ -1341,10 +1343,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         : Math.min(resists[0] || price + atr * 1.2, price + atr * 1.5);
       const rSL      = rIsLong ? rEntry - atr * 0.9  : rEntry + atr * 0.9;
       const rTP1     = rIsLong ? rEntry + atr * 0.8  : rEntry - atr * 0.8;
-      const rTP2     = rIsLong ? rEntry + atr * 1.5  : rEntry - atr * 1.5;
+      // TP2 由 AI 自行判斷：BB%B 極端（離中軸 ≥ 0.27）或信心度 ≥ 75 才設延伸止盈
+      const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 75;
+      const rTP2     = _rHasTP2 ? (rIsLong ? rEntry + atr * 1.5 : rEntry - atr * 1.5) : null;
       const rRisk    = Math.abs(rEntry - rSL) || atr;
       const rRR1     = (Math.abs(rTP1 - rEntry) / rRisk).toFixed(1);
-      const rRR2     = (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1);
+      const rRR2     = rTP2 ? (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1) : null;
       const rEntryReasons = [
         `🔄 震盪交易模式（宏觀+今日AI中性）`,
         rIsLong
@@ -1361,7 +1365,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         entryReasons: [...rEntryReasons],
         slReason: `震盪範圍外緊湊止損（ATR×0.9，現價${rIsLong ? '下' : '上'}方）`,
         tp1Reason: '震盪快速止盈（ATR×0.8）',
-        tp2Reason: '震盪延伸目標（ATR×1.5）',
+        tp2Reason: _rHasTP2 ? '震盪延伸目標（ATR×1.5，BB%B極端/高信心）' : null,
         rr1: rRR1, rr2: rRR2, atr, conf: rConf, rawConf: rConf,
         weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
         weeklyRangeMode: true,
@@ -1386,7 +1390,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           entryReason: rEntryReasons[1],
           slReason: `震盪範圍外緊湊止損（ATR×0.9）`,
           tp1Reason: '震盪快速止盈（ATR×0.8）',
-          tp2Reason: '震盪延伸目標（ATR×1.5）',
+          tp2Reason: _rHasTP2 ? '震盪延伸目標（ATR×1.5，BB%B極端/高信心）' : null,
           conf: rConf, rawConf: rConf, atr,
           status: 'pending', entryTime: null, timestamp: Date.now(),
           score: coin.score, adx: coin.adx, rsi,
@@ -1429,18 +1433,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <div class="level-desc">ATR×0.8（震盪快速獲利）R:R ${rRR1}:1</div>
           <div class="level-price-val">${fmtPrice(rTP1)}</div>
         </div>
-        <div class="level-row level-tp2">
+        ${rTP2 ? `<div class="level-row level-tp2">
           <div class="level-tag">🚀 延伸目標</div>
-          <div class="level-desc">ATR×1.5（震盪波段）R:R ${rRR2}:1</div>
+          <div class="level-desc">ATR×1.5（震盪波段，BB%B極端/高信心）R:R ${rRR2}:1</div>
           <div class="level-price-val">${fmtPrice(rTP2)}</div>
-        </div>
+        </div>` : ''}
         <div class="level-row level-sl">
           <div class="level-tag">🛑 止損</div>
           <div class="level-desc">ATR×0.9 緊湊止損（超出震盪範圍離場）</div>
           <div class="level-price-val">${fmtPrice(rSL)}</div>
         </div>
       </div>`;
-      } // ─── end if (rConf >= 75 && !rHardBlocked) ───
+      } // ─── end if (rConf >= 70 && !rHardBlocked) ───
     }
   }
 
@@ -4875,7 +4879,9 @@ function recordSignalsFromScan(data) {
   const _rsWeeklyNeutral = ['neutral','slight_bull','slight_bear'].includes(wBias);
   const _rsTodayNeutral  = ['neutral','slight_bull','slight_bear'].includes(tBias);
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
-  const isRangeMode      = _rsNeutralCnt >= 2;  // 個別幣種再用 adxR < 22 過濾（見下方迴圈）
+  // 掃描路徑無 4H/日線 K 線：以宏觀/週/今日 2/3 中性為市場層級條件，
+  // 個別幣種再用 ADX < 22 代理「4H+日線盤整」，合計等效 buildTradeSetup 的 5因子≥3 規則
+  const isRangeMode      = _rsNeutralCnt >= 2;
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
   const _rsMBear = (macroNetDir === 'strong_bear' || macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
   const _rsWBear = wBias.includes('bear') ? 1 : 0;
