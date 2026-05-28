@@ -1853,10 +1853,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const nearby = isLong
         ? resists.find(r => r >= raw * 0.985 && r <= raw * 1.015)
         : supps.find(s  => s <= raw * 1.015  && s >= raw * 0.985);
-      // 每次加倉後的止損調整：移至前一個進場位（0.05% 緩衝）
+      const level = nearby || raw;
       const prevLevel = n === 1 ? entry : (isLong ? entry + totalMove * ((n - 1) / (_aiScaleCount + 1)) : entry - totalMove * ((n - 1) / (_aiScaleCount + 1)));
-      const newSL = isLong ? prevLevel * 0.9995 : prevLevel * 1.0005;
-      return { level: nearby || raw, snapped: !!nearby, newSL };
+      // 止損往前調：鎖住加倉位到前一進場位增量的 30%，避免大幅回吐利潤
+      const incGain = Math.abs(level - prevLevel);
+      const newSL   = isLong ? prevLevel + incGain * 0.30 : prevLevel - incGain * 0.30;
+      return { level, snapped: !!nearby, newSL };
     });
     // 覆蓋 tp1/tp2 → updateOpenTrades TP1 觸發 & 持倉記錄均使用長線最終止盈
     tp1 = ltTP; tp1Reason = ltTPReason;
@@ -2407,8 +2409,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   <div class="setup-rules">
     <div class="rules-title">🏆 長線加倉操作守則</div>
     <div class="rule-item">✦ 初始倉位 <strong>2~3%</strong>，每次加倉追加 <strong>1~2%</strong>，${_aiScaleCount}次加倉合計上限 <strong>${_aiScaleCount <= 1 ? '4~5' : _aiScaleCount === 2 ? '6~7' : '8~9'}%</strong></div>
-    <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(sl)}</strong>），每次加倉後將止損移至對應調整位（詳見上方各加倉行）</div>
-    <div class="rule-item">✦ 最後一次加倉確認後，止損上移至<strong>保本位（進場價 ${fmtPrice(entry)} ${isLong ? '上方' : '下方'}）</strong></div>
+    <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(sl)}</strong>）；每次加倉確認後止損往前調至各加倉行顯示的位置（鎖住 30% 增量利潤，不讓大幅回吐）</div>
+    <div class="rule-item">✦ 最後一次加倉後止損接近保本位，確保整體持倉不虧損</div>
     <div class="rule-item">✦ 全倉持有至最終止盈（<strong style="color:${dirColor}">${fmtPrice(ltTP)}</strong>），中途不提前止盈</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
@@ -5214,7 +5216,7 @@ function recordSignalsFromScan(data) {
         rsi: parseFloat(coin.rsi) || 50,
         adx: parseFloat(coin.adx) || 20,
         score: coin.score, trend: coin.trend,
-        conf: setup.rawConf, rawConf: setup.rawConf,
+        conf: setup.conf, rawConf: setup.rawConf, learnPenalty: setup.learnPenalty || 0,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5335,7 +5337,9 @@ async function backgroundRefineNewTrades() {
             : (isLong
               ? tlogEdit[idx].entry + totalMove * ((n - 1) / (_bgScaleCount + 1))
               : tlogEdit[idx].entry - totalMove * ((n - 1) / (_bgScaleCount + 1)));
-          const newSL = isLong ? prevLevel * 0.9995 : prevLevel * 1.0005;
+          // 止損往前調：鎖住 30% 增量利潤
+          const incGain = Math.abs(raw - prevLevel);
+          const newSL   = isLong ? prevLevel + incGain * 0.30 : prevLevel - incGain * 0.30;
           return { level: raw, newSL };
         });
         tlogEdit[idx].ltTP           = ltTP;
@@ -5427,7 +5431,8 @@ function updateOpenTrades(data) {
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
-    const baseConf = trade.rawConf || trade.conf || 100;
+    const baseConf   = trade.rawConf || trade.conf || 100;
+    const _learnPen  = trade.learnPenalty || 0; // 靜態 AI 學習懲罰（建單時已計算，後續不重算）
     let freshConf = baseConf;
     if (_macroCache) {
       try {
@@ -5455,7 +5460,8 @@ function updateOpenTrades(data) {
         const _wOp = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
         const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
         const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 8 : 4) : 0) + (_tOp ? 5 : 0);
-        freshConf = Math.max(0, baseConf - _macP - _aiP);
+        // freshConf = rawConf - learnPenalty（靜態） - 宏觀懲罰（動態） - AI趨勢懲罰（動態）
+        freshConf = Math.max(0, baseConf - _learnPen - _macP - _aiP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       } catch(_e) {}
@@ -5645,14 +5651,18 @@ function updateOpenTrades(data) {
           pendingSI.entryPrice = cur;
           changed = true;
 
-          // ── 止損上移至前一個進場位（每次加倉均執行）──
-          // 加倉 1 → SL 移至原始進場；加倉 2 → SL 移至加倉 1 入場；加倉 3 → SL 移至加倉 2 入場
+          // ── 止損往前調（每次加倉均執行）：鎖住增量利潤的 30%，不讓利潤大幅回吐 ──
+          // 加倉 1 → SL 移至原始進場 + 30% 距離；加倉 2 → SL 移至加倉1進場 + 30% 距離；以此類推
           const confirmedBefore = trade.scaleIns.filter(s => s.status === 'open' && s !== pendingSI);
           const prevEntry = confirmedBefore.length > 0
             ? (confirmedBefore.at(-1).entryPrice || confirmedBefore.at(-1).entryLevel)
             : trade.entry;
-          // 止損略低/高於前一進場位（0.05% 緩衝防止立即觸及）
-          const candidateSL = isLong ? prevEntry * 0.9995 : prevEntry * 1.0005;
+          const currentSIEntry = pendingSI.entryPrice || pendingSI.entryLevel;
+          const incGain     = Math.abs(currentSIEntry - prevEntry);
+          // 止損移至前一進場位 + 30% 增量（鎖住 30% 的移動利潤，不讓回吐超過 70%）
+          const candidateSL = isLong
+            ? prevEntry + incGain * 0.30
+            : prevEntry - incGain * 0.30;
           const slMoved = isLong ? candidateSL > trade.sl : candidateSL < trade.sl;
           const oldSL   = trade.sl;
           if (slMoved) { trade.sl = candidateSL; changed = true; }
