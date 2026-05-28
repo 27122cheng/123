@@ -3087,30 +3087,44 @@ function setEconActualValue(eventName, dateStr, value) {
 }
 
 // 已公布的實際數值（以 "事件名稱_dateKey" 為索引，dateKey 格式：year-month0indexed-day）
-// 每月更新：資料來源 BLS / EIA / Census Bureau / Fed
+// 資料來源：BLS / EIA / Census Bureau / Federal Reserve / ADP Research
 const KNOWN_ACTUALS = {
-  // ── 2026 年 5 月公布的月度數據（4月數據）────────────────────────
-  '美國非農就業報告（NFP）_2026-4-1':   '+115K（預期+60K，勝出；失業率 4.3%）',
-  'ADP 就業人數_2026-4-6':              '+109K（預期+99K，勝出）',
-  '美國消費者物價指數（CPI）_2026-4-12': '+3.8% YoY（+0.6% MoM；預期 3.7%，高於預期，油價推升）',
-  '美國生產者物價指數（PPI）_2026-4-13': '+6.0% YoY（+1.4% MoM；最大單月漲幅，高於預期）',
-  '美國零售銷售_2026-4-19':             '+0.5% MoM（+4.9% YoY；符合預期，實際消費疲弱）',
+  // ── 2026 年 5 月公布的月度數據（4 月份數據）─────────────────────
+  // NFP：+115K（預期+60K）→ 就業強勁，降息延後，加密短線承壓
+  '美國非農就業報告（NFP）_2026-4-1':   '+115K（預期+60K，遠超預期；失業率維持4.3%，時薪年增3.6%）',
+  // ADP：+109K（預期+99K）→ 就業強勁，加密偏空
+  'ADP 就業人數_2026-4-6':              '+109K（預期+99K，勝出；服務業+94K為主力）',
+  // CPI：+3.8% YoY（預期3.7%）→ 通膨高於預期，鷹派，加密偏空
+  '美國消費者物價指數（CPI）_2026-4-12': '+3.8% YoY / +0.6% MoM（預期3.7%，高於預期；油價+3.8%為主因）',
+  // PPI：+6.0% YoY（最大年增幅）→ 生產端通膨壓力大，加密偏空
+  '美國生產者物價指數（PPI）_2026-4-13': '+6.0% YoY / +1.4% MoM（2022年12月來最大年增幅，高於預期）',
+  // 零售銷售：+0.5% MoM（符合預期）→ 通膨推升名目值，實際消費疲弱，中性
+  '美國零售銷售_2026-4-19':             '+0.5% MoM / +4.9% YoY（符合預期；扣除油站後實際消費疲軟）',
 
-  // ── EIA 原油庫存（每週三 22:30）─────────────────────────────────
-  'EIA 原油庫存_2026-4-6':  '-2.314M 桶（週截至 4/30；去庫存，低於預期 -3.3M；輕微通膨支撐）',
-  'EIA 原油庫存_2026-4-13': '-4.306M 桶（週截至 5/8；大幅去庫存，超越預期 -2.1M；能源通膨升溫）',
-  'EIA 原油庫存_2026-4-20': '+5.5M 桶（週截至 5/15；意外增庫存，通縮壓力，風險情緒轉差）',
-  'EIA 原油庫存_2026-4-27': '（今日稍晚 22:30 公布，數據待確認）',
+  // ── EIA 原油庫存（每週三 22:30 台灣時間）────────────────────────
+  // 去庫存（負值）= 能源需求增 = 通膨升溫 = 對加密中性略偏多
+  // 增庫存（正值）= 供過於求 = 通縮壓力 = 風險情緒下行 = 加密偏空
+  'EIA 原油庫存_2026-4-6':  '-2.314M 桶（週截至4/30；低於預期-3.3M；去庫存幅度不如預期，偏中性）',
+  'EIA 原油庫存_2026-4-13': '-4.306M 桶（週截至5/8；大幅超越預期-2.1M；庫存快速去化，能源通膨升溫）',
+  'EIA 原油庫存_2026-4-20': '+5.5M 桶（週截至5/15；意外大幅增庫存，遠超市場預期；通縮壓力加劇）',
+  'EIA 原油庫存_2026-4-27': '（紀念日假期延至5/28週四公布；數據請於今日稍晚確認）',
 
-  // ── FOMC 紀要（僅在真正發布日有數據，其餘週標注無紀要）──────────
-  'FOMC 紀要_2026-4-6':  '（本週無FOMC紀要；4/28-29會議紀要將於5/20公布）',
+  // ── FOMC 紀要（每6~8週發布一次，非每週；其餘週標注無發布）────────
+  'FOMC 紀要_2026-4-6':  '（本週無FOMC紀要；4/28-29會議紀要定於5/20發布）',
   'FOMC 紀要_2026-4-13': '（本週無FOMC紀要）',
-  'FOMC 紀要_2026-4-20': '鷹派傾向 - 4名官員異議（1人主張降息、3人反對寬鬆偏向），年內降息預期降低，委員對伊朗戰爭帶來的油價通膨表示憂慮，維持高利率展望',
+  // 5/20 為真正的FOMC紀要發布日（4/28-29會議）
+  // 鷹派：4名官員異議 → 年內降息預期大幅下修 → 加密強烈偏空
+  'FOMC 紀要_2026-4-20': '鷹派傾向：4名官員異議（1票主張降息、3票反對寬鬆偏向），年內降息預期大幅下修，委員憂慮伊朗戰爭推升油價通膨，維持高利率展望',
   'FOMC 紀要_2026-4-27': '（本週無FOMC紀要；下次6月FOMC會議）',
 
-  // ── 美國初請失業金人數（每週四 20:30）───────────────────────────
-  '美國初請失業金人數_2026-4-7':  '（數據未查得，請手動確認）',
-  '美國初請失業金人數_2026-4-14': '212K（前值 218K；就業市場略微轉弱）',
+  // ── 美國初請失業金人數（每週四 20:30 台灣時間）──────────────────
+  // 注意反向邏輯：低於預期 = 就業強勁 = 鷹派 = 加密短線承壓
+  //              高於預期 = 就業疲軟 = 降息預期升 = 加密偏多
+  '美國初請失業金人數_2026-4-7':  '200K（週截至5/2；低於預期205K，4週均值觸近年低；就業市場強勁）',
+  '美國初請失業金人數_2026-4-14': '212K（週截至5/9；高於前值200K；就業市場略轉弱）',
+  '美國初請失業金人數_2026-4-21': '209K（週截至5/16；4週均值202.5K；低於預期210K，就業仍穩健）',
+  '美國初請失業金人數_2026-4-28': '209K（週截至5/22；前值209K；維持低位，就業市場穩健）',
+};
   '美國初請失業金人數_2026-4-21': '209K（前值 212K；4週均值 202.5K，就業市場改善）',
   '美國初請失業金人數_2026-4-28': '（今日 20:30 公布，數據待確認）',
 };
@@ -3179,54 +3193,81 @@ async function autoFetchEconActual(eventName, dateKey) {
 
 function generateActualValueAnalysis(ev, actualVal) {
   if (!actualVal) return '';
-  // 待確認/無紀要的佔位值：只顯示提示，不做方向分析
-  const isPlaceholder = actualVal.includes('待確認') || actualVal.includes('無FOMC') || actualVal.includes('稍晚公布') || actualVal.includes('未查得');
+  // 佔位值（無紀要/待確認）：僅顯示 info 提示，不做方向分析
+  const isPlaceholder = actualVal.includes('待確認') || actualVal.includes('無FOMC') ||
+                        actualVal.includes('稍晚公布') || actualVal.includes('未查得') ||
+                        actualVal.includes('定於') || actualVal.includes('假期延');
   if (isPlaceholder) {
-    return `<div style="margin-top:6px;font-size:0.71rem;color:var(--text3);padding:6px 10px;background:rgba(255,255,255,.03);border-radius:6px">ℹ️ ${actualVal}</div>`;
+    return `<div style="margin-top:6px;font-size:0.71rem;color:var(--text3);padding:6px 10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:6px">ℹ️ ${actualVal}</div>`;
   }
 
   const pred   = ev.aiPred   || '';
   const impact = ev.aiMarketImpact || '';
+  const av = actualVal;
+  const avL = av.toLowerCase();
 
-  // 方向判斷：結合事件名稱特性 + actualVal 關鍵字
-  let isBear = false, isBull = false;
-  const av = actualVal.toLowerCase();
+  let isBear = false, isBull = false, bearReason = '', bullReason = '';
 
-  if (ev.name.includes('NFP') || ev.name.includes('非農') || ev.name.includes('ADP') || ev.name.includes('失業金')) {
-    // 就業數據：超過預期=鷹派=偏空；低於預期=偏多
-    isBear = av.includes('勝出') || av.includes('高於') || (av.includes('>') && !av.includes('降息'));
-    isBull = av.includes('低於') || av.includes('疲軟') || parseFloat(av) < 150;
-    // 就業反轉邏輯：就業強勁 → 降息預期降 → 加密偏空
-    if (av.includes('勝出')) isBear = true;
-  } else if (ev.name.includes('CPI') || ev.name.includes('PPI') || ev.name.includes('通膨') || ev.name.includes('物價')) {
-    isBear = av.includes('高於') || av.includes('超預期') || av.includes('升溫');
-    isBull = av.includes('低於') || av.includes('降溫') || av.includes('回落');
+  if (ev.name.includes('失業金') || ev.name.includes('初請')) {
+    // ⚠️ 反向邏輯：低於預期 = 就業強勁 = 降息預期降 = 加密承壓（偏空）
+    isBear = avL.includes('低於') || avL.includes('強勁') || avL.includes('承壓') || avL.includes('鷹派');
+    isBull = avL.includes('高於') || avL.includes('轉弱') || avL.includes('疲軟') || avL.includes('降息預期升');
+    bearReason = '就業強勁 → 聯準會維持鷹派 → 加密短線承壓';
+    bullReason = '就業轉弱 → 降息預期升溫 → 加密偏多';
+  } else if (ev.name.includes('NFP') || ev.name.includes('非農') || ev.name.includes('ADP')) {
+    // 就業增加超預期 = 鷹派 = 加密偏空
+    isBear = avL.includes('勝出') || avL.includes('高於') || avL.includes('遠超') || avL.includes('強勁');
+    isBull = avL.includes('低於') || avL.includes('疲軟') || avL.includes('未達');
+    bearReason = '就業超預期 → 聯準會降息延後 → 加密短線承壓';
+    bullReason = '就業低於預期 → 降息預期升溫 → 加密偏多';
+  } else if (ev.name.includes('CPI') || ev.name.includes('PPI') || ev.name.includes('物價')) {
+    isBear = avL.includes('高於') || avL.includes('超預期') || avL.includes('升溫') || avL.includes('升幅');
+    isBull = avL.includes('低於') || avL.includes('降溫') || avL.includes('回落') || avL.includes('符合');
+    bearReason = '通膨高於預期 → 高利率延長 → 加密承壓';
+    bullReason = '通膨降溫 → 降息預期升 → 加密偏多';
   } else if (ev.name.includes('零售')) {
-    isBull = av.includes('低於') || av.includes('疲弱') || av.includes('疲軟');
-    isBear = av.includes('高於') || av.includes('超越');
+    // 零售數據：強勁消費 → 經濟好 → 可能鷹派；但也可通膨驅動（名目 vs 實質）
+    isBull = avL.includes('低於') || avL.includes('疲軟') || avL.includes('疲弱');
+    isBear = avL.includes('高於') || avL.includes('強勁') || avL.includes('超預期');
+    bearReason = '消費強勁 → 聯準會維持緊縮 → 加密中性偏空';
+    bullReason = '消費疲軟 → 降息預期升 → 加密偏多';
   } else if (ev.name.includes('EIA') || ev.name.includes('原油')) {
-    isBull = av.includes('-') && (av.includes('桶') || av.includes('m ')); // 去庫存
-    isBear = av.includes('+') && (av.includes('桶') || av.includes('m ')); // 增庫存
-    // 更精確：數字前的正負號
-    const numMatch = av.match(/([+-]?\d+\.?\d*)\s*m?\s*桶/);
-    if (numMatch) { const n = parseFloat(numMatch[1]); isBull = n < 0; isBear = n > 0; }
+    const numMatch = av.match(/([+-]?\d+\.?\d*)\s*M?\s*桶/);
+    if (numMatch) {
+      const n = parseFloat(numMatch[1]);
+      isBull = n < 0;   // 去庫存 → 能源需求增 → 通膨升 → 中性略偏多
+      isBear = n > 0;   // 增庫存 → 供過於求 → 通縮壓力 → 風險情緒轉差
+    }
+    bearReason = '原油庫存增加 → 供過於求 → 通縮壓力 → 風險情緒下行';
+    bullReason = '原油去庫存 → 能源需求增 → 通膨預期升溫 → 中性偏多';
   } else if (ev.name.includes('FOMC')) {
-    isBear = av.includes('鷹派') || av.includes('維持高利率') || av.includes('通膨') || av.includes('異議');
-    isBull = av.includes('鴿派') || av.includes('降息') || av.includes('寬鬆');
+    isBear = avL.includes('鷹派') || avL.includes('維持高利率') || avL.includes('通膨') || avL.includes('異議');
+    isBull = avL.includes('鴿派') || avL.includes('降息') || (avL.includes('寬鬆') && !avL.includes('反對寬鬆'));
+    bearReason = 'FOMC鷹派 → 高利率維持 → 流動性緊縮 → 加密承壓';
+    bullReason = 'FOMC鴿派 → 降息預期升 → 流動性增加 → 加密偏多';
   } else {
-    isBear = av.includes('高於') || av.includes('超越預期');
-    isBull = av.includes('低於') || av.includes('降溫');
+    isBear = avL.includes('高於') || avL.includes('超預期');
+    isBull = avL.includes('低於') || avL.includes('降溫');
   }
 
-  const bIcon  = isBear ? '🔴 偏空' : isBull ? '🟢 偏多' : '⚪ 中性';
-  const bColor = isBear ? 'var(--bear)' : isBull ? 'var(--bull)' : 'var(--text3)';
+  const dirLabel = isBear ? '🔴 偏空（Bearish）' : isBull ? '🟢 偏多（Bullish）' : '⚪ 中性（Neutral）';
+  const dirColor = isBear ? 'var(--bear)' : isBull ? 'var(--bull)' : 'var(--text3)';
+  const dirReason = isBear ? bearReason : isBull ? bullReason : '影響有限，等待更多數據確認方向';
 
-  return `<div style="margin-top:8px;padding:8px 10px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.18);border-radius:8px">
-    <div style="font-size:0.72rem;font-weight:700;color:var(--accent);margin-bottom:6px">📊 AI 市場影響分析</div>
-    ${pred ? `<div style="font-size:0.72rem;color:var(--text3);margin-bottom:4px">AI 預測：${pred}</div>` : ''}
-    <div style="font-size:0.73rem;font-weight:600;color:${bColor};margin-bottom:5px">${bIcon} — 實際公布：${actualVal.split('（')[0].trim()}</div>
-    ${actualVal.includes('（') ? `<div style="font-size:0.71rem;color:var(--text2);margin-bottom:4px">（${actualVal.split('（').slice(1).join('（').replace(/\)$/, '')}）</div>` : ''}
-    ${impact ? `<div style="font-size:0.72rem;color:var(--text2);border-top:1px solid rgba(255,255,255,.06);padding-top:5px;margin-top:4px">💡 ${impact}</div>` : ''}
+  // 提取數值部分（括號前）和備注（括號內）
+  const mainVal = av.split('（')[0].trim();
+  const detailVal = av.includes('（') ? av.slice(av.indexOf('（') + 1).replace(/\）?$/, '') : '';
+
+  return `<div style="margin-top:8px;padding:10px 12px;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.18);border-radius:8px">
+    <div style="font-size:0.72rem;font-weight:700;color:var(--accent);margin-bottom:7px">📊 AI 市場影響分析</div>
+    ${pred ? `<div style="font-size:0.71rem;color:var(--text3);margin-bottom:5px">🤖 AI 預測：${pred}</div>` : ''}
+    <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:5px;flex-wrap:wrap">
+      <span style="font-size:0.73rem;font-weight:700;color:var(--accent)">實際：${mainVal}</span>
+      ${detailVal ? `<span style="font-size:0.7rem;color:var(--text3)">${detailVal}</span>` : ''}
+    </div>
+    <div style="font-size:0.73rem;font-weight:700;color:${dirColor};margin-bottom:4px">${dirLabel}</div>
+    <div style="font-size:0.71rem;color:var(--text2);margin-bottom:${impact ? '5px' : '0'}">${dirReason}</div>
+    ${impact ? `<div style="font-size:0.71rem;color:var(--text3);border-top:1px solid rgba(255,255,255,.07);padding-top:5px">💡 ${impact}</div>` : ''}
   </div>`;
 }
 
