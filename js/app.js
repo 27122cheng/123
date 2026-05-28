@@ -1230,10 +1230,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     _btsNetDir     = 'neutral';
   }
   // isRangeMode：
-  //   條件 A：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪（含 slight_bull/slight_bear）
-  //   條件 B：4H 與日線都是盤整（無明確多空信號）
-  //   兩個條件都滿足 → 震盪交易模式
-  const _macroIsNeutral  = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
+  //   條件 A：大方向必須是真正中性（neutral）；slight_bear/slight_bull 是輕微方向性，不算
+  //   條件 B：本週或今日AI預測中性/震盪（兩者至少一個）
+  //   條件 C：4H 與日線都無明確多空信號（真正盤整）
+  //   全部滿足 → 震盪交易模式
+  const _macroIsNeutral  = _btsNetDir === 'neutral';  // 只有完全中性
   const _rangeNeutralCnt = (_macroIsNeutral ? 1 : 0) + (weeklyBiasData.rangeMode ? 1 : 0) + (todayBiasData.rangeMode ? 1 : 0);
   const _h4IsRange  = !h4?.signal?.includes('bull') && !h4?.signal?.includes('bear');
   const _d1IsRange  = !d1sig_?.signal?.includes('bull') && !d1sig_?.signal?.includes('bear');
@@ -1927,19 +1928,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const existIdx = tlog.findIndex(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.direction === direction);
 
   // ── 宏觀大方向封鎖（與 recordSignalsFromScan blockLong/blockShort 完全一致）──
+  // 只有 bear/strong_bear 才封鎖多單；slight_bear 用扣分處理，不直接封鎖
   let macroBlockedForRecord = false;
   if (_macroCache) {
     try {
       const _mDir = computeMacroNetDir(_macroCache.fg, _macroCache);
-      const _mWb  = computeWeeklyAIBias(_macroCache.fg, _macroCache);
-      const _mTb  = computeTodayAIBias(_macroCache.fg, _macroCache);
-      if (direction === 'long') {
-        macroBlockedForRecord = _mDir === 'bear' || _mDir === 'strong_bear'
-          || (_mDir === 'slight_bear' && (_mWb.bias.includes('bear') || _mTb.bias.includes('bear')));
-      } else {
-        macroBlockedForRecord = _mDir === 'bull' || _mDir === 'strong_bull'
-          || (_mDir === 'slight_bull' && (_mWb.bias.includes('bull') || _mTb.bias.includes('bull')));
-      }
+      if (direction === 'long')  macroBlockedForRecord = _mDir === 'bear' || _mDir === 'strong_bear';
+      if (direction === 'short') macroBlockedForRecord = _mDir === 'bull' || _mDir === 'strong_bull';
     } catch(e) {}
   }
   // 封鎖原因追蹤（供模板顯示說明橫幅）
@@ -4851,19 +4846,16 @@ function recordSignalsFromScan(data) {
   }
 
   // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
-  // 大方向「偏空」(bear) → 完全不開多；「偏多」(bull) → 完全不開空
-  // 「中性偏空」+ AI 至少一方向確認偏空 → 也封鎖多單（以免在弱空環境建倉後很快被取消）
-  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear'
-                  || (macroNetDir === 'slight_bear' && (wBias.includes('bear') || tBias.includes('bear')));
-  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull'
-                  || (macroNetDir === 'slight_bull' && (wBias.includes('bull') || tBias.includes('bull')));
-  // 震盪模式：
-  //   條件 A：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪
-  //   條件 B（掃描代理）：幣種 1H ADX < 22（代理 4H/日線盤整，掃描路徑無 MTF 資料）
-  //   兩個條件都滿足才進入震盪模式
-  const _rsMacroNeutral  = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
-  const _rsWeeklyNeutral = wbRangeMode;
-  const _rsTodayNeutral  = tbRangeMode;
+  // 大方向「偏空」(bear/strong_bear) → 完全不開多
+  // 大方向「偏多」(bull/strong_bull) → 完全不開空
+  // slight_bear/slight_bull：用宏觀扣分處理，不封鎖（避免所有信號被雙重攔截）
+  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
+  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
+  // 震盪模式：宏觀必須是真正中性（neutral），並且本週或今日AI預測也是中性/震盪
+  // slight_bear/slight_bull 屬輕微方向性，不應觸發震盪模式（否則會阻斷所有定向交易）
+  const _rsMacroNeutral  = macroNetDir === 'neutral';  // 只有完全中性才算
+  const _rsWeeklyNeutral = wbRangeMode;               // 本週AI中性（bias==='neutral'）
+  const _rsTodayNeutral  = tbRangeMode;               // 今日AI中性/輕微（bias===neutral/slight）
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
   const isRangeMode      = _rsNeutralCnt >= 2;  // 個別幣種再用 adxR < 22 過濾（見下方迴圈）
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
@@ -5219,8 +5211,10 @@ function updateOpenTrades(data) {
     try {
       const wb2 = computeWeeklyAIBias(_macroCache.fg, _macroCache);
       const tb2 = computeTodayAIBias(_macroCache.fg, _macroCache);
-      const bothClearBear = wb2.bias.includes('bear') && tb2.bias.includes('bear');
-      const bothClearBull = wb2.bias.includes('bull') && tb2.bias.includes('bull');
+      const bothClearBear = (wb2.bias === 'bear' || wb2.bias === 'strong_bear')
+                         && (tb2.bias === 'bear' || tb2.bias === 'strong_bear');
+      const bothClearBull = (wb2.bias === 'bull' || wb2.bias === 'strong_bull')
+                         && (tb2.bias === 'bull' || tb2.bias === 'strong_bull');
       // 條件 B：綜合大方向封鎖（與開單封鎖邏輯一致）
       const macroNetDir2 = computeMacroNetDir(_macroCache.fg, _macroCache);
       const macroClearBear = macroNetDir2 === 'bear' || macroNetDir2 === 'strong_bear';
