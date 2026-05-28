@@ -1926,13 +1926,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const tlog = loadTradeLog();
   const existIdx = tlog.findIndex(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.direction === direction);
 
-  // ── 宏觀大方向封鎖（與 recordSignalsFromScan 一致）——提前計算供後續模板使用 ──
+  // ── 宏觀大方向封鎖（與 recordSignalsFromScan blockLong/blockShort 完全一致）──
   let macroBlockedForRecord = false;
   if (_macroCache) {
     try {
-      const macroDir = computeMacroNetDir(_macroCache.fg, _macroCache);
-      if (direction === 'long'  && (macroDir === 'bear' || macroDir === 'strong_bear')) macroBlockedForRecord = true;
-      if (direction === 'short' && (macroDir === 'bull' || macroDir === 'strong_bull')) macroBlockedForRecord = true;
+      const _mDir = computeMacroNetDir(_macroCache.fg, _macroCache);
+      const _mWb  = computeWeeklyAIBias(_macroCache.fg, _macroCache);
+      const _mTb  = computeTodayAIBias(_macroCache.fg, _macroCache);
+      if (direction === 'long') {
+        macroBlockedForRecord = _mDir === 'bear' || _mDir === 'strong_bear'
+          || (_mDir === 'slight_bear' && (_mWb.bias.includes('bear') || _mTb.bias.includes('bear')));
+      } else {
+        macroBlockedForRecord = _mDir === 'bull' || _mDir === 'strong_bull'
+          || (_mDir === 'slight_bull' && (_mWb.bias.includes('bull') || _mTb.bias.includes('bull')));
+      }
     } catch(e) {}
   }
   // 封鎖原因追蹤（供模板顯示說明橫幅）
@@ -5032,20 +5039,17 @@ function recordSignalsFromScan(data) {
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-      // computeSimpleSetup 只用於計算 entry/sl/tp，不用其 conf 做二次過濾
+      // computeSimpleSetup 只用於計算 entry/sl/tp
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;  // AI 硬封鎖仍然生效（有歷史大量止損記憶）
 
-      // 完整扣分後判斷是否通過 75% 門檻（宏觀 + ADX，learn 已含於 setup.conf）
-      const macroPen   = isLong ? macroPenLong : macroPenShort;
-      const adxValS    = parseFloat(coin.adx) || 20;
-      const hardAdxPen = adxValS < 18 ? 28 : adxValS < 22 ? 14 : 0;
-      const finalConf  = Math.max(0, setup.conf - macroPen - hardAdxPen);
-      if (finalConf < 75) continue;  // 完整扣分後不達門檻 → 跳過
+      // 信號品質門檻：rawConf ≥ 75（不扣宏觀/ADX，避免最高90分被扣至不可能通過）
+      // 宏觀/ADX 扣分後的 freshConf 在 updateOpenTrades 動態計算，低於75時才自動撤單
+      if (setup.rawConf < 75) continue;
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
-      tlog.unshift({
+      const newTrade = {
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
         timestamp: Date.now(),
@@ -5056,7 +5060,7 @@ function recordSignalsFromScan(data) {
         rsi: parseFloat(coin.rsi) || 50,
         adx: parseFloat(coin.adx) || 20,
         score: coin.score, trend: coin.trend,
-        conf: finalConf, rawConf: setup.rawConf,
+        conf: setup.rawConf, rawConf: setup.rawConf,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5064,8 +5068,30 @@ function recordSignalsFromScan(data) {
         tradeType: 'directional',
         longTermBias: null, canScaleIn: false,
         scaleIns: [], peakPrice: null,
-      });
+      };
+      tlog.unshift(newTrade);
       changed = true;
+      // 掃描建單後立即發 Telegram 通知
+      try {
+        const _ns = loadSettings();
+        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+          const _fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+          const _sym = newTrade.symbol.replace('/USDT', '');
+          const _dir = isLong ? '▲ 做多' : '▼ 做空';
+          const _ci  = newTrade.conf >= 85 ? '🟢' : newTrade.conf >= 80 ? '🟡' : '🟠';
+          sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
+            `📡 <b>新交易信號（自動掃描）</b>\n\n` +
+            `💎 <b>${newTrade.symbol}</b>  ${_dir}\n` +
+            `${_ci} 信心度：<b>${newTrade.conf}%</b>\n` +
+            `📍 建議進場：$${_fmt(newTrade.entry)}\n` +
+            `🛑 止損：$${_fmt(newTrade.sl)}\n` +
+            `🎯 TP1：$${_fmt(newTrade.tp1)}　TP2：$${_fmt(newTrade.tp2)}\n\n` +
+            `📊 RSI ${newTrade.rsi} · ADX ${newTrade.adx} · 評分 ${newTrade.score}\n` +
+            `📌 進場理由：${newTrade.entryReason || '—'}\n\n` +
+            `⚠️ 此為掃描自動信號，進場前請至幣種詳情頁確認 MTF 分析`
+          );
+        }
+      } catch(_e) {}
     }
   }
   if (changed) {
@@ -5220,15 +5246,47 @@ function updateOpenTrades(data) {
     } catch(e) {}
   }
 
-  // ── 信心度崩跌取消：未入場掛單 conf < 65 時自動撤單 ──────────
-  // 掃描時 finalConf ≥ 75 才建單，若後來宏觀惡化導致 conf 已低於 65，該單失去意義
+  // ── 信心度崩跌取消：動態計算 freshConf，低於 75% 時自動撤單 ──
+  // 以 rawConf 為基礎（掃描時以 rawConf ≥ 75 建單），再扣宏觀/ADX 當前懲罰
+  // 若 freshConf < 75 代表市場波動已讓信號失效
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
-    const storedConf = trade.conf || 100;
-    if (storedConf < 75) {
+    const baseConf = trade.rawConf || trade.conf || 100;
+    let freshConf = baseConf;
+    if (_macroCache) {
+      try {
+        const _fg  = _macroCache.fg, _gm = _macroCache;
+        const _fgV = parseInt(_fg?.value || '50');
+        const _chg = _gm?.marketCapChange || 0;
+        const _dom = _gm?.btcDominance   || 50;
+        const _isL = trade.direction === 'long';
+        let _agt = 0;
+        if (_isL) {
+          if (_chg < -2) _agt++;
+          if (_dom > 58) _agt++;
+          if (_fgV < 30) _agt++;
+          if (_fgV > 75) _agt += 0.5;
+        } else {
+          if (_chg > 2)  _agt++;
+          if (_dom < 44) _agt++;
+          if (_fgV > 70) _agt++;
+          if (_fgV < 25) _agt += 0.5;
+        }
+        const _macP = _agt >= 3 ? 18 : _agt >= 2 ? 12 : _agt >= 1 ? 5 : 0;
+        const _adxV = trade.adx || 20;
+        const _adxP = _adxV < 18 ? 28 : _adxV < 22 ? 14 : 0;
+        const _wb  = computeWeeklyAIBias(_fg, _gm);
+        const _tb  = computeTodayAIBias(_fg, _gm);
+        const _wOp = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
+        const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
+        const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 8 : 4) : 0) + (_tOp ? 5 : 0);
+        freshConf = Math.max(0, baseConf - _macP - _adxP - _aiP);
+      } catch(_e) {}
+    }
+    if (freshConf < 75) {
       trade.status = 'cancelled';
-      trade.cancelReason = `信心度已降至 ${storedConf}%（低於進場門檻 75%），自動撤單`;
+      trade.cancelReason = `市場波動導致信心度降至 ${freshConf}%（低於進場門檻 75%），自動撤單`;
       trade.cancelTime = Date.now();
       changed = true;
       cancelledSymbols.add(trade.symbol);
