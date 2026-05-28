@@ -1272,19 +1272,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     todayBiasData  = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true, highEvs: [] };
     _btsNetDir     = 'neutral';
   }
+  // 提前提取 bias 字串（後續方向對齊、懲罰計算均需要）
+  const _wBias = weeklyBiasData.bias || '';
+  const _tBias = todayBiasData.bias  || '';
   // isRangeMode：
   //   條件 A：大方向必須是真正中性（neutral）；slight_bear/slight_bull 是輕微方向性，不算
   //   條件 B：本週或今日AI預測中性/震盪（兩者至少一個）
   //   條件 C：4H 與日線都無明確多空信號（真正盤整）
   //   全部滿足 → 震盪交易模式
-  // 震盪/中性票：neutral 或 slight_bull/slight_bear（輕微方向）均視為震盪中性
-  const _macroRangeish  = ['neutral','slight_bull','slight_bear'].includes(_btsNetDir);
-  const _weeklyRangeish = ['neutral','slight_bull','slight_bear'].includes(_wBias);
-  const _todayRangeish  = ['neutral','slight_bull','slight_bear'].includes(_tBias);
+  // 宏觀/AI 方向指標：只有真正 neutral 才算震盪（slight_bull/slight_bear 仍有方向性，不算）
+  // 4H/日線 K 線結構：無明確多空信號才算震盪
+  const _macroRangeish  = _btsNetDir === 'neutral';
+  const _weeklyRangeish = _wBias === 'neutral' || _wBias === '';
+  const _todayRangeish  = _tBias === 'neutral' || _tBias === '';
   const _h4IsRange  = !h4?.signal?.includes('bull') && !h4?.signal?.includes('bear');
   const _d1IsRange  = !d1sig_?.signal?.includes('bull') && !d1sig_?.signal?.includes('bear');
-  // 震盪模式：5個因子中至少3個為震盪/中性 → 觸發震盪交易邏輯
-  // 因子：四小時盤整、日線盤整、大方向宏觀中性/輕微、週AI中性/輕微、今日AI中性/輕微
+  // 震盪模式：宏觀/週AI/今日AI 三指標中至少 2 個真正中性，且 4H 或日線也是盤整
+  // （加嚴條件：slight_bull/slight_bear 已有方向偏好，應走定向交易邏輯）
   const _rngFactors = (_h4IsRange ? 1 : 0) + (_d1IsRange ? 1 : 0) +
                       (_macroRangeish ? 1 : 0) + (_weeklyRangeish ? 1 : 0) + (_todayRangeish ? 1 : 0);
   const isRangeMode = _rngFactors >= 3;
@@ -1998,10 +2002,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     console.warn('[buildTradeSetup] macroOpposePenalty 計算失敗:', e);
   }
 
-  // ── 本週 / 今日 AI 預測方向對照（第①層宏觀擴展；已在函式前段計算）──
-  // 防禦：bias 可能因舊版快取為 undefined → 用 || '' 確保 .includes() 不 throw
-  const _wBias = weeklyBiasData.bias || '';
-  const _tBias = todayBiasData.bias  || '';
+  // ── 本週 / 今日 AI 預測方向對照（_wBias / _tBias 已在函式前段提前定義）──
   const weeklyAligned = (isLong && _wBias.includes('bull')) || (!isLong && _wBias.includes('bear'));
   const weeklyNeutral = _wBias === 'neutral' || _wBias === '';
   const weeklyOpposed = !weeklyAligned && !weeklyNeutral;
@@ -5074,13 +5075,12 @@ function recordSignalsFromScan(data) {
   // slight_bear/slight_bull：用宏觀扣分處理，不封鎖（避免所有信號被雙重攔截）
   const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
   const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
-  // 震盪模式：neutral 或 slight_bull/slight_bear 均算震盪中性，2個以上→震盪路徑
-  const _rsMacroNeutral  = ['neutral','slight_bull','slight_bear'].includes(macroNetDir);
-  const _rsWeeklyNeutral = ['neutral','slight_bull','slight_bear'].includes(wBias);
-  const _rsTodayNeutral  = ['neutral','slight_bull','slight_bear'].includes(tBias);
+  // 震盪模式：只有真正 neutral 的指標才算震盪票（slight_bull/slight_bear 仍有方向，走定向路徑）
+  const _rsMacroNeutral  = macroNetDir === 'neutral';
+  const _rsWeeklyNeutral = wBias === 'neutral' || wBias === '';
+  const _rsTodayNeutral  = tBias === 'neutral' || tBias === '';
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
-  // 掃描路徑無 4H/日線 K 線：以宏觀/週/今日 2/3 中性為市場層級條件，
-  // 個別幣種再用 ADX < 22 代理「4H+日線盤整」，合計等效 buildTradeSetup 的 5因子≥3 規則
+  // 掃描路徑以宏觀/週/今日全部中性（3/3）才觸發震盪路徑，確保輕微方向性市場走定向邏輯
   const isRangeMode      = _rsNeutralCnt >= 2;
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
   const _rsMBear = (macroNetDir === 'strong_bear' || macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
