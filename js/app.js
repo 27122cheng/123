@@ -1234,8 +1234,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   //   條件 B：本週或今日AI預測中性/震盪（兩者至少一個）
   //   條件 C：4H 與日線都無明確多空信號（真正盤整）
   //   全部滿足 → 震盪交易模式
-  const _macroIsNeutral  = _btsNetDir === 'neutral';  // 只有完全中性
-  const _rangeNeutralCnt = (_macroIsNeutral ? 1 : 0) + (weeklyBiasData.rangeMode ? 1 : 0) + (todayBiasData.rangeMode ? 1 : 0);
+  // 震盪/中性票：neutral 或 slight_bull/slight_bear（輕微方向）均視為震盪中性
+  const _macroRangeish  = ['neutral','slight_bull','slight_bear'].includes(_btsNetDir);
+  const _weeklyRangeish = ['neutral','slight_bull','slight_bear'].includes(_wBias);
+  const _todayRangeish  = ['neutral','slight_bull','slight_bear'].includes(_tBias);
+  const _rangeNeutralCnt = (_macroRangeish ? 1 : 0) + (_weeklyRangeish ? 1 : 0) + (_todayRangeish ? 1 : 0);
   const _h4IsRange  = !h4?.signal?.includes('bull') && !h4?.signal?.includes('bear');
   const _d1IsRange  = !d1sig_?.signal?.includes('bull') && !d1sig_?.signal?.includes('bear');
   const _tfRanging  = _h4IsRange && _d1IsRange;  // 4H AND 日線都無明確方向
@@ -1246,10 +1249,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _dayBull_r = d1sig_?.signal?.includes('bull');
   const _dayBear_r = d1sig_?.signal?.includes('bear');
 
+  // ── 定向單方向一致性門檻：大方向宏觀、本週AI、今日AI 其中兩個需同向 ──
+  // slight_bull/slight_bear 算同向；neutral 不算同向
+  // 震盪單不受此限制（震盪單靠影線/RSI進場，不依賴方向指標）
+  let _dirAlignMiss = '';
+  if (!isRangeMode && direction !== 'wait') {
+    const _macAgrDir  = (isLong && _btsNetDir.includes('bull')) || (!isLong && _btsNetDir.includes('bear'));
+    const _wkAgrDir   = (isLong && _wBias.includes('bull'))     || (!isLong && _wBias.includes('bear'));
+    const _tdAgrDir   = (isLong && _tBias.includes('bull'))     || (!isLong && _tBias.includes('bear'));
+    const _alignCnt   = (_macAgrDir ? 1 : 0) + (_wkAgrDir ? 1 : 0) + (_tdAgrDir ? 1 : 0);
+    if (_alignCnt < 2) {
+      direction = 'wait';
+      _dirAlignMiss = `大方向宏觀/本週/今日預測僅 ${_alignCnt} 個與${isLong ? '多' : '空'}方向一致（需 ≥ 2）`;
+    }
+  }
+
   if (direction === 'wait') {
     const reasons = [];
     // 大趨勢攔截說明優先顯示
     if (bigTrendBlocked) reasons.push(`🚫 ${bigTrendBlockReason}`);
+    if (_dirAlignMiss) reasons.push(`📊 ${_dirAlignMiss}`);
     if (!bigTrendBlocked) {
       if (primaryBull === 0 && primaryBear === 0) reasons.push('15m/1h 尚未出現明確突破訊號');
       if (coin.adx < 18) reasons.push(`ADX ${coin.adx} 過低，短線震盪不宜追`);
@@ -4851,11 +4870,10 @@ function recordSignalsFromScan(data) {
   // slight_bear/slight_bull：用宏觀扣分處理，不封鎖（避免所有信號被雙重攔截）
   const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
   const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
-  // 震盪模式：三指標（宏觀、本週、今日）中有2個「真正中性」才算震盪
-  // slight_bear/slight_bull 屬輕微方向性，不算中性（否則會阻斷所有定向交易）
-  const _rsMacroNeutral  = macroNetDir === 'neutral';  // 只有完全中性才算
-  const _rsWeeklyNeutral = wBias === 'neutral';        // 本週AI真正中性（不含 slight）
-  const _rsTodayNeutral  = tBias === 'neutral';        // 今日AI真正中性（不含 slight_bull/bear）
+  // 震盪模式：neutral 或 slight_bull/slight_bear 均算震盪中性，2個以上→震盪路徑
+  const _rsMacroNeutral  = ['neutral','slight_bull','slight_bear'].includes(macroNetDir);
+  const _rsWeeklyNeutral = ['neutral','slight_bull','slight_bear'].includes(wBias);
+  const _rsTodayNeutral  = ['neutral','slight_bull','slight_bear'].includes(tBias);
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
   const isRangeMode      = _rsNeutralCnt >= 2;  // 個別幣種再用 adxR < 22 過濾（見下方迴圈）
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
@@ -5020,6 +5038,12 @@ function recordSignalsFromScan(data) {
       // 方向封鎖：宏觀 + AI 均明確反向 → 跳過
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
+
+      // 方向一致性：大方向宏觀、本週AI、今日AI 其中兩個需同向（slight 算同向）
+      const _smAg = (isLong && macroNetDir.includes('bull')) || (!isLong && macroNetDir.includes('bear'));
+      const _swAg = (isLong && wBias.includes('bull'))       || (!isLong && wBias.includes('bear'));
+      const _stAg = (isLong && tBias.includes('bull'))       || (!isLong && tBias.includes('bear'));
+      if ((_smAg ? 1 : 0) + (_swAg ? 1 : 0) + (_stAg ? 1 : 0) < 2) continue;
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
@@ -5267,6 +5291,8 @@ function updateOpenTrades(data) {
         const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
         const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 8 : 4) : 0) + (_tOp ? 5 : 0);
         freshConf = Math.max(0, baseConf - _macP - _aiP);
+        // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
+        if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       } catch(_e) {}
     }
     if (freshConf < 70) {
