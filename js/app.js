@@ -1130,8 +1130,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 陷阱型態加成（PO3 / 2B / 掃蕩後反轉 = 高信心進場點）
   const traps1h__  = mtfData['1h']?.traps;
+  const traps4h__  = mtfData['4h']?.traps;
   const trapBull   = traps1h__ ? ((traps1h__.po3Bull || traps1h__.twoB_Bull || traps1h__.sweepBull) ? 2 : 0) : 0;
   const trapBear   = traps1h__ ? ((traps1h__.po3Bear || traps1h__.twoB_Bear || traps1h__.sweepBear) ? 2 : 0) : 0;
+  // 4H 陷阱加成（比 1H 更強的結構確認，加 1 分）
+  const trap4hBull = traps4h__ ? ((traps4h__.po3Bull || traps4h__.twoB_Bull || traps4h__.sweepBull) ? 1 : 0) : 0;
+  const trap4hBear = traps4h__ ? ((traps4h__.po3Bear || traps4h__.twoB_Bear || traps4h__.sweepBear) ? 1 : 0) : 0;
 
   // 布林通道加成（1h 主信號 + 15m 輔助確認）
   const bb1h_  = mtfData['1h']?.bb;
@@ -1139,8 +1143,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const bbBull = (bb1h_?.bullBonus || 0) + (bb15m_ ? Math.min(1, bb15m_.bullBonus) : 0);
   const bbBear = (bb1h_?.bearBonus || 0) + (bb15m_ ? Math.min(1, bb15m_.bearBonus) : 0);
 
-  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull + trapBull + bbBull;
-  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear + trapBear + bbBear;
+  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull + trapBull + trap4hBull + bbBull;
+  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear + trapBear + trap4hBear + bbBear;
 
   let direction = 'wait';
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
@@ -1209,6 +1213,45 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     supps   = supps.sort((a, b) => b - a);
     resists = resists.sort((a, b) => a - b);
   }
+
+  // ── HTF S/R：4H、日線、週線樞軸位（比 1H 更重要的結構位，優先用於 TP/SL 定位）──
+  const _pl4h = mtfData['4h']?.pivotLevels || {};
+  const _pld1 = mtfData['1d']?.pivotLevels || {};
+  const _plw1 = mtfData['1w']?.pivotLevels || {};
+  // 4H + 日線：合併進主池，SL / TP 計算均受益
+  const _htfResists = [
+    ...(_pl4h.resistances || []),
+    ...(_pld1.resistances || []),
+    ...(_pl4h.swingHigh ? [_pl4h.swingHigh] : []),
+    ...(_pld1.swingHigh ? [_pld1.swingHigh] : []),
+  ].filter(r => r > price * 1.001).sort((a, b) => a - b);
+  const _htfSupps = [
+    ...(_pl4h.supports || []),
+    ...(_pld1.supports || []),
+    ...(_pl4h.swingLow  ? [_pl4h.swingLow]  : []),
+    ...(_pld1.swingLow  ? [_pld1.swingLow]  : []),
+  ].filter(s => s > 0 && s < price * 0.999).sort((a, b) => b - a);
+  // 週線：僅供長線 TP 使用，不合併進主池（避免過遠的週線 SL 偏移）
+  const _w1Resists = [
+    ...(_plw1.resistances || []),
+    ...(_plw1.swingHigh ? [_plw1.swingHigh] : []),
+  ].filter(r => r > price * 1.001).sort((a, b) => a - b);
+  const _w1Supps = [
+    ...(_plw1.supports || []),
+    ...(_plw1.swingLow  ? [_plw1.swingLow]  : []),
+  ].filter(s => s > 0 && s < price * 0.999).sort((a, b) => b - a);
+  // 將 4H/日線 S/R 合併進主池（去重容差 1.2%）
+  const _mergeR = v => { if (!resists.some(r => Math.abs(r - v) < price * 0.012)) resists.push(v); };
+  const _mergeS = v => { if (!supps.some(s => Math.abs(s - v) < price * 0.012)) supps.push(v); };
+  _htfResists.forEach(_mergeR); _htfSupps.forEach(_mergeS);
+  resists = resists.sort((a, b) => a - b);
+  supps   = supps.sort((a, b) => b - a);
+  // Helper：辨識某個位是否屬於 HTF 等級，供 TP/SL Reason 標注時間框架
+  const _htfTfLabel = v => {
+    if (_w1Resists.some(x => Math.abs(x - v) < price * 0.015) || _w1Supps.some(x => Math.abs(x - v) < price * 0.015)) return '週線';
+    if (_htfResists.some(x => Math.abs(x - v) < price * 0.015) || _htfSupps.some(x => Math.abs(x - v) < price * 0.015)) return '4H/日線';
+    return '1H';
+  };
 
   // 訂單流 & RSI 斜率
   const of15m    = mtfData['15m']?.orderFlow;
@@ -1338,22 +1381,53 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const rIsLong  = rangeDir === 'long';
       const rIcon    = rIsLong ? '▲' : '▼';
       const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
-      const rEntry   = rIsLong
-        ? Math.max(supps[0]   || price - atr * 1.2, price - atr * 1.5)
-        : Math.min(resists[0] || price + atr * 1.2, price + atr * 1.5);
-      const rSL      = rIsLong ? rEntry - atr * 0.9  : rEntry + atr * 0.9;
-      const rTP1     = rIsLong ? rEntry + atr * 0.8  : rEntry - atr * 0.8;
+      // 震盪進場：優先貼近 S/R 結構位（比純 ATR 更精準）
+      const _rNearSup = supps.find(s => (price - s) < atr * 1.8);
+      const _rNearRes = resists.find(r => (r - price) < atr * 1.8);
+      const rEntry = rIsLong
+        ? (_rNearSup ? Math.min(price, _rNearSup + atr * 0.12) : Math.max(supps[0] || price - atr * 1.2, price - atr * 1.5))
+        : (_rNearRes ? Math.max(price, _rNearRes - atr * 0.12) : Math.min(resists[0] || price + atr * 1.2, price + atr * 1.5));
+      // 震盪止損：結構外側（比純 ATR 更有根據）
+      const rSL = rIsLong
+        ? (_rNearSup ? _rNearSup - atr * 0.25 : rEntry - atr * 0.9)
+        : (_rNearRes ? _rNearRes + atr * 0.25 : rEntry + atr * 0.9);
+      // 震盪止盈一：內部 S/R 目標優先
+      const _rTP1Target = rIsLong
+        ? resists.find(r => r > rEntry + atr * 0.3 && r <= rEntry + atr * 2.0)
+        : supps.find(s => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.0);
+      const rTP1 = _rTP1Target || (rIsLong ? rEntry + atr * 0.8 : rEntry - atr * 0.8);
       // TP2 由 AI 自行判斷：BB%B 極端（離中軸 ≥ 0.27）或信心度 ≥ 75 才設延伸止盈
       const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 75;
-      const rTP2     = _rHasTP2 ? (rIsLong ? rEntry + atr * 1.5 : rEntry - atr * 1.5) : null;
-      const rRisk    = Math.abs(rEntry - rSL) || atr;
-      const rRR1     = (Math.abs(rTP1 - rEntry) / rRisk).toFixed(1);
-      const rRR2     = rTP2 ? (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1) : null;
+      const _rTP2Target = _rHasTP2 ? (rIsLong
+        ? resists.find(r => r > rTP1 + price * 0.003 && r <= rEntry + atr * 2.5)
+        : supps.find(s => s < rTP1 - price * 0.003 && s >= rEntry - atr * 2.5)) : null;
+      const rTP2 = _rHasTP2
+        ? (_rTP2Target || (rIsLong ? rEntry + atr * 1.5 : rEntry - atr * 1.5))
+        : null;
+      const rRisk = Math.abs(rEntry - rSL) || atr;
+      const rRR1  = (Math.abs(rTP1 - rEntry) / rRisk).toFixed(1);
+      const rRR2  = rTP2 ? (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1) : null;
+      // 判斷進場/止損是否貼近 HTF 結構（供 reason label 使用）
+      const _rEntryTfLabel  = _htfTfLabel(rEntry);
+      const _rSlStructLabel = rIsLong
+        ? (_rNearSup ? `${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)} 外側` : 'ATR×0.9')
+        : (_rNearRes ? `${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)} 外側` : 'ATR×0.9');
+      const _rSlReason = rIsLong
+        ? (_rNearSup ? `跌破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價下方）`)
+        : (_rNearRes ? `突破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價上方）`);
+      const _rTp1Reason = _rTP1Target
+        ? `震盪${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP1Target)}（${_htfTfLabel(_rTP1Target)}結構），快速止盈 R/R ${rRR1}:1`
+        : `震盪快速止盈（ATR×0.8），R/R ${rRR1}:1`;
+      const _rTp2Reason = _rHasTP2
+        ? (_rTP2Target
+          ? `震盪延伸${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP2Target)}（${_htfTfLabel(_rTP2Target)}，BB%B極端/高信心）`
+          : `震盪延伸目標（ATR×1.5，BB%B極端/高信心）`)
+        : null;
       const rEntryReasons = [
         `🔄 震盪交易模式（宏觀+今日AI中性）`,
         rIsLong
-          ? `RSI ${rsi}（偏低）${bb1hPctB <= 0.24 ? `，BB%B ${bb1hPctB.toFixed(2)}（近下軌）` : ''}，震盪低點做多`
-          : `RSI ${rsi}（偏高）${bb1hPctB >= 0.76 ? `，BB%B ${bb1hPctB.toFixed(2)}（近上軌）` : ''}，震盪高點做空`,
+          ? `RSI ${rsi}（偏低）${bb1hPctB <= 0.24 ? `，BB%B ${bb1hPctB.toFixed(2)}（近下軌）` : ''}，震盪低點做多${_rNearSup ? `（${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)}）` : ''}`
+          : `RSI ${rsi}（偏高）${bb1hPctB >= 0.76 ? `，BB%B ${bb1hPctB.toFixed(2)}（近上軌）` : ''}，震盪高點做空${_rNearRes ? `（${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)}）` : ''}`,
         `本週 ${weeklyBiasData.biasLabel} ／ 今日 ${todayBiasData.biasLabel}`,
       ];
 
@@ -1363,9 +1437,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         entry: rEntry, sl: rSL, tp1: rTP1, tp2: rTP2,
         entryReason: rEntryReasons.join('，'),
         entryReasons: [...rEntryReasons],
-        slReason: `震盪範圍外緊湊止損（ATR×0.9，現價${rIsLong ? '下' : '上'}方）`,
-        tp1Reason: '震盪快速止盈（ATR×0.8）',
-        tp2Reason: _rHasTP2 ? '震盪延伸目標（ATR×1.5，BB%B極端/高信心）' : null,
+        slReason: _rSlReason,
+        tp1Reason: _rTp1Reason,
+        tp2Reason: _rTp2Reason,
         rr1: rRR1, rr2: rRR2, atr, conf: rConf, rawConf: rConf,
         weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
         weeklyRangeMode: true,
@@ -1388,9 +1462,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           symbol: coin.symbol, direction: rangeDir, tradeType: 'range',
           entry: rEntry, sl: rSL, tp1: rTP1, tp2: rTP2,
           entryReason: rEntryReasons[1],
-          slReason: `震盪範圍外緊湊止損（ATR×0.9）`,
-          tp1Reason: '震盪快速止盈（ATR×0.8）',
-          tp2Reason: _rHasTP2 ? '震盪延伸目標（ATR×1.5，BB%B極端/高信心）' : null,
+          slReason: _rSlReason,
+          tp1Reason: _rTp1Reason,
+          tp2Reason: _rTp2Reason,
           conf: rConf, rawConf: rConf, atr,
           status: 'pending', entryTime: null, timestamp: Date.now(),
           score: coin.score, adx: coin.adx, rsi,
@@ -1425,22 +1499,24 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="setup-levels" style="margin-top:10px">
         <div class="level-row level-entry">
           <div class="level-tag">📍 進場位</div>
-          <div class="level-desc">${rIsLong ? '震盪低點附近' : '震盪高點附近'}</div>
+          <div class="level-desc">${rIsLong
+            ? (_rNearSup ? `${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)} 上方確認，震盪低點做多` : '震盪低點附近')
+            : (_rNearRes ? `${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)} 下方確認，震盪高點做空` : '震盪高點附近')}</div>
           <div class="level-price-val">${fmtPrice(rEntry)}</div>
         </div>
         <div class="level-row level-tp1">
           <div class="level-tag">🎯 快速止盈</div>
-          <div class="level-desc">ATR×0.8（震盪快速獲利）R:R ${rRR1}:1</div>
+          <div class="level-desc">${_rTp1Reason}</div>
           <div class="level-price-val">${fmtPrice(rTP1)}</div>
         </div>
         ${rTP2 ? `<div class="level-row level-tp2">
           <div class="level-tag">🚀 延伸目標</div>
-          <div class="level-desc">ATR×1.5（震盪波段，BB%B極端/高信心）R:R ${rRR2}:1</div>
+          <div class="level-desc">${_rTp2Reason} R/R ${rRR2}:1</div>
           <div class="level-price-val">${fmtPrice(rTP2)}</div>
         </div>` : ''}
         <div class="level-row level-sl">
           <div class="level-tag">🛑 止損</div>
-          <div class="level-desc">ATR×0.9 緊湊止損（超出震盪範圍離場）</div>
+          <div class="level-desc">${_rSlReason}</div>
           <div class="level-price-val">${fmtPrice(rSL)}</div>
         </div>
       </div>`;
@@ -1498,10 +1574,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
   if (isLong) {
-    const nearSup = supps[0];
-    if (nearSup && (price - nearSup) < atr * 0.8) {
+    const near4hSup = _htfSupps.find(s => (price - s) < atr * 1.0);
+    const nearSup   = supps[0];
+    if (near4hSup && (price - near4hSup) < atr * 0.8) {
+      entry = Math.min(price, near4hSup + atr * 0.12);
+      entryReasons.push(`${_htfTfLabel(near4hSup)}結構支撐 ${fmtPrice(near4hSup)} 確認進場`);
+    } else if (nearSup && (price - nearSup) < atr * 0.8) {
       entry = Math.min(price, nearSup + atr * 0.15);
-      entryReasons.push(`1h 結構支撐 ${fmtPrice(nearSup)} 附近確認`);
+      entryReasons.push(`1H 結構支撐 ${fmtPrice(nearSup)} 附近確認`);
     } else if (m15ema < price && (price - m15ema) < atr * 0.6) {
       entry = Math.min(price, m15ema * 1.002);
       entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
@@ -1534,6 +1614,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const bullTraps = [
       traps1h?.po3Bull?.label, traps1h?.twoB_Bull?.label, traps1h?.sweepBull?.label,
       traps15?.po3Bull?.label, traps15?.sweepBull?.label,
+      traps4h__?.po3Bull?.label   && `4H ${traps4h__?.po3Bull?.label}`,
+      traps4h__?.twoB_Bull?.label && `4H ${traps4h__?.twoB_Bull?.label}`,
+      traps4h__?.sweepBull?.label && `4H ${traps4h__?.sweepBull?.label}`,
     ].filter(Boolean);
     bullTraps.forEach(t => entryReasons.push(`📌 ${t}`));
     // 基礎技術指標（補充或作為主要進場依據）
@@ -1560,10 +1643,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
     if (!entryReasons.length) entryReasons.push('15m/1h 多頭信號共振');
   } else {
-    const nearRes = resists[0];
-    if (nearRes && (nearRes - price) < atr * 0.8) {
+    const near4hRes = _htfResists.find(r => (r - price) < atr * 1.0);
+    const nearRes   = resists[0];
+    if (near4hRes && (near4hRes - price) < atr * 0.8) {
+      entry = Math.max(price, near4hRes - atr * 0.12);
+      entryReasons.push(`${_htfTfLabel(near4hRes)}結構壓力 ${fmtPrice(near4hRes)} 確認進場`);
+    } else if (nearRes && (nearRes - price) < atr * 0.8) {
       entry = Math.max(price, nearRes - atr * 0.15);
-      entryReasons.push(`1h 結構壓力 ${fmtPrice(nearRes)} 附近確認`);
+      entryReasons.push(`1H 結構壓力 ${fmtPrice(nearRes)} 附近確認`);
     } else if (m15ema > price && (m15ema - price) < atr * 0.6) {
       entry = Math.max(price, m15ema * 0.998);
       entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
@@ -1596,6 +1683,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const bearTraps = [
       traps1h_?.po3Bear?.label, traps1h_?.twoB_Bear?.label, traps1h_?.sweepBear?.label,
       traps15_?.po3Bear?.label, traps15_?.sweepBear?.label,
+      traps4h__?.po3Bear?.label   && `4H ${traps4h__?.po3Bear?.label}`,
+      traps4h__?.twoB_Bear?.label && `4H ${traps4h__?.twoB_Bear?.label}`,
+      traps4h__?.sweepBear?.label && `4H ${traps4h__?.sweepBear?.label}`,
     ].filter(Boolean);
     bearTraps.forEach(t => entryReasons.push(`📌 ${t}`));
     // 基礎技術指標（補充或作為主要進場依據）
@@ -1624,78 +1714,101 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (!entryReasons.length) entryReasons.push('15m/1h 空頭信號共振');
   }
 
-  // ── 止損：結構位 + 緩衝 ──
+  // ── 止損：HTF 結構位 + 緩衝（4H/日線優先，1H fallback）──
   let sl, slReason;
   if (isLong) {
-    const structSup = supps[0] || (price - atr * 2);
-    // 動態止損：有 PO3/2B/掃蕩訊號時可設更緊的止損（在陷阱低點下方）
-    const trapLow = traps1h__?.po3Bull?.sweepLevel || traps1h__?.sweepBull?.level;
-    if (trapLow && trapLow < entry && trapLow > entry - atr * 2) {
-      sl = trapLow - atr * 0.2; // 陷阱止損：掃蕩低點下方一點點緩衝
+    // 陷阱止損：1H 或 4H PO3/2B/掃蕩低點（4H 優先，更強確認）
+    const trapLow4h = traps4h__?.po3Bull?.sweepLevel || traps4h__?.sweepBull?.level;
+    const trapLow1h = traps1h__?.po3Bull?.sweepLevel || traps1h__?.sweepBull?.level;
+    const trapLow   = (trapLow4h && trapLow4h < entry && trapLow4h > entry - atr * 3) ? trapLow4h
+                    : (trapLow1h && trapLow1h < entry && trapLow1h > entry - atr * 2) ? trapLow1h : null;
+    // 結構止損：4H 支撐 > 日線支撐 > 1H 支撐
+    const sl4hSup  = _htfSupps.find(s => s < entry * 0.999 && s > entry - atr * 3);
+    const structSup = sl4hSup || supps[0] || (price - atr * 2);
+    if (trapLow) {
+      sl = trapLow - atr * 0.2;
       const slDistPct = ((entry - sl) / price * 100).toFixed(2);
-      slReason = `PO3/掃蕩低點 ${fmtPrice(trapLow)} 下方止損，-${slDistPct}%（結構化止損）`;
+      const tfLabel = trapLow === trapLow4h ? '4H ' : '';
+      slReason = `${tfLabel}PO3/掃蕩低點 ${fmtPrice(trapLow)} 下方止損，-${slDistPct}%（結構化止損）`;
     } else {
       sl = Math.min(structSup - atr * 0.3, entry - atr * 1.3);
       const slDistPct = ((entry - sl) / price * 100).toFixed(2);
-      slReason = supps[0]
-        ? `1h 支撐結構 ${fmtPrice(supps[0])} 下方緩衝，-${slDistPct}%，跌破結構反轉`
-        : `現價下方 ${slDistPct}%（ATR 止損），動能失效離場`;
+      slReason = sl4hSup
+        ? `${_htfTfLabel(sl4hSup)}支撐結構 ${fmtPrice(sl4hSup)} 下方緩衝，-${slDistPct}%，跌破 ${_htfTfLabel(sl4hSup)} 結構反轉`
+        : supps[0]
+          ? `1H 支撐結構 ${fmtPrice(supps[0])} 下方緩衝，-${slDistPct}%，跌破結構反轉`
+          : `現價下方 ${slDistPct}%（ATR 止損），動能失效離場`;
     }
   } else {
-    const structRes = resists[0] || (price + atr * 2);
-    const trapHigh = traps1h__?.po3Bear?.sweepLevel || traps1h__?.sweepBear?.level;
-    if (trapHigh && trapHigh > entry && trapHigh < entry + atr * 2) {
+    const trapHigh4h = traps4h__?.po3Bear?.sweepLevel || traps4h__?.sweepBear?.level;
+    const trapHigh1h = traps1h__?.po3Bear?.sweepLevel || traps1h__?.sweepBear?.level;
+    const trapHigh   = (trapHigh4h && trapHigh4h > entry && trapHigh4h < entry + atr * 3) ? trapHigh4h
+                     : (trapHigh1h && trapHigh1h > entry && trapHigh1h < entry + atr * 2) ? trapHigh1h : null;
+    const sl4hRes  = _htfResists.find(r => r > entry * 1.001 && r < entry + atr * 3);
+    const structRes = sl4hRes || resists[0] || (price + atr * 2);
+    if (trapHigh) {
       sl = trapHigh + atr * 0.2;
       const slDistPct = ((sl - entry) / price * 100).toFixed(2);
-      slReason = `PO3/掃蕩高點 ${fmtPrice(trapHigh)} 上方止損，+${slDistPct}%（結構化止損）`;
+      const tfLabel = trapHigh === trapHigh4h ? '4H ' : '';
+      slReason = `${tfLabel}PO3/掃蕩高點 ${fmtPrice(trapHigh)} 上方止損，+${slDistPct}%（結構化止損）`;
     } else {
       sl = Math.max(structRes + atr * 0.3, entry + atr * 1.3);
       const slDistPct = ((sl - entry) / price * 100).toFixed(2);
-      slReason = resists[0]
-        ? `1h 壓力結構 ${fmtPrice(resists[0])} 上方緩衝，+${slDistPct}%，突破結構反轉`
-        : `現價上方 ${slDistPct}%（ATR 止損），動能失效離場`;
+      slReason = sl4hRes
+        ? `${_htfTfLabel(sl4hRes)}壓力結構 ${fmtPrice(sl4hRes)} 上方緩衝，+${slDistPct}%，突破 ${_htfTfLabel(sl4hRes)} 結構反轉`
+        : resists[0]
+          ? `1H 壓力結構 ${fmtPrice(resists[0])} 上方緩衝，+${slDistPct}%，突破結構反轉`
+          : `現價上方 ${slDistPct}%（ATR 止損），動能失效離場`;
     }
   }
   const risk = Math.abs(entry - sl) || atr;
 
-  // ── 止盈一：最近有意義 S/R，最低 2:1 ──
+  // ── 止盈一：優先 4H/日線 S/R，最低 2:1 R/R ──
   let tp1, tp1Reason;
   const minTP1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
   if (isLong) {
-    const r1 = resists.find(r => r >= minTP1 * 0.99);
+    // 先嘗試 4H/日線壓力，再 fallback 到 1H
+    const htfR1 = _htfResists.find(r => r >= minTP1 * 0.99);
+    const r1    = htfR1 || resists.find(r => r >= minTP1 * 0.99);
     tp1 = r1 || minTP1;
     const rr1v = ((tp1 - entry) / risk).toFixed(1);
     tp1Reason = r1
-      ? `前高壓力 ${fmtPrice(r1)}，R/R ${rr1v}:1，到達後減倉 60%`
+      ? `${_htfTfLabel(r1)}壓力 ${fmtPrice(r1)}，R/R ${rr1v}:1，到達後減倉 60%`
       : `短線目標 R/R ${rr1v}:1，到達後減倉 60%`;
   } else {
-    const s1 = supps.find(s => s <= minTP1 * 1.01);
+    const htfS1 = _htfSupps.find(s => s <= minTP1 * 1.01);
+    const s1    = htfS1 || supps.find(s => s <= minTP1 * 1.01);
     tp1 = s1 || minTP1;
     const rr1v = ((entry - tp1) / risk).toFixed(1);
     tp1Reason = s1
-      ? `前低支撐 ${fmtPrice(s1)}，R/R ${rr1v}:1，到達後減倉 60%`
+      ? `${_htfTfLabel(s1)}支撐 ${fmtPrice(s1)}，R/R ${rr1v}:1，到達後減倉 60%`
       : `短線目標 R/R ${rr1v}:1，到達後減倉 60%`;
   }
 
-  // ── 止盈二：次遠 S/R 或擺動極值，最低 3:1 ──
+  // ── 止盈二：優先日線/週線 S/R，最低 3:1 R/R ──
   let tp2, tp2Reason;
   const minTP2 = isLong ? entry + risk * 2.5 : entry - risk * 2.5;
   if (isLong) {
-    const r2 = resists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
+    // 優先週線，再日線/4H，再 1H swing high
+    const w1R2  = _w1Resists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
+    const htfR2 = w1R2 || _htfResists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
+    const r2    = htfR2 || resists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
     tp2 = r2 || Math.max(swHigh, minTP2);
     if (tp2 <= tp1) tp2 = Math.max(tp1 + price * 0.004, minTP2);
     const rr2v = ((tp2 - entry) / risk).toFixed(1);
     tp2Reason = r2
-      ? `波段壓力 ${fmtPrice(r2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
-      : `1h 擺動高點 ${fmtPrice(swHigh)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
+      ? `${_htfTfLabel(r2)}壓力 ${fmtPrice(r2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
+      : `擺動高點 ${fmtPrice(swHigh)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
   } else {
-    const s2 = supps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
+    const w1S2  = _w1Supps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
+    const htfS2 = w1S2 || _htfSupps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
+    const s2    = htfS2 || supps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
     tp2 = s2 || Math.min(swLow, minTP2);
     if (tp2 >= tp1) tp2 = Math.min(tp1 - price * 0.004, minTP2);
     const rr2v = ((entry - tp2) / risk).toFixed(1);
     tp2Reason = s2
-      ? `波段支撐 ${fmtPrice(s2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
-      : `1h 擺動低點 ${fmtPrice(swLow)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
+      ? `${_htfTfLabel(s2)}支撐 ${fmtPrice(s2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
+      : `擺動低點 ${fmtPrice(swLow)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
   }
 
   // ── 長線單：覆蓋 tp1/tp2 為長線最終止盈，並計算三個加倉位 ──────
@@ -1703,25 +1816,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   let ltTP = null, ltTPReason = '', scaleInLevels = [];
   if (canScaleIn) {
     const minLtTP = isLong ? entry + risk * 4 : entry - risk * 4; // 至少 4:1 R/R
-    const maxDist  = price * 0.18; // 上限：離現價不超過 18%
+    const maxDist  = price * 0.30; // 長線上限擴展至 30%（週線目標可能較遠）
     if (isLong) {
       const cap     = entry + maxDist;
-      const ltCands = resists.filter(r => r >= minLtTP && r <= cap);
-      ltTP = ltCands.length ? ltCands[ltCands.length - 1] : Math.min(entry + risk * 5, cap);
+      // 優先：週線壓力 > 日線/4H 壓力 > 計算值（取最遠的有效結構位）
+      const wkCands  = _w1Resists.filter(r => r >= minLtTP && r <= cap);
+      const htfCands = _htfResists.filter(r => r >= minLtTP && r <= cap);
+      const allCands = [...new Set([...wkCands, ...htfCands, ...resists.filter(r => r >= minLtTP && r <= cap)])].sort((a,b)=>a-b);
+      ltTP = allCands.length ? allCands[allCands.length - 1] : Math.min(entry + risk * 5, cap);
       const ltRRv = ((ltTP - entry) / risk).toFixed(1);
-      const ltRes  = resists.find(r => Math.abs(r - ltTP) < price * 0.004);
-      ltTPReason = ltRes
-        ? `日線/4H 關鍵壓力 ${fmtPrice(ltRes)}，R/R ${ltRRv}:1，全倉長線目標`
-        : `長線目標 R/R ${ltRRv}:1，全倉持有至目標`;
+      const ltTfLabel = _htfTfLabel(ltTP);
+      ltTPReason = `${ltTfLabel}關鍵壓力 ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
     } else {
       const cap     = entry - maxDist;
-      const ltCands = supps.filter(s => s <= minLtTP && s >= cap);
-      ltTP = ltCands.length ? ltCands[ltCands.length - 1] : Math.max(entry - risk * 5, cap);
+      const wkCands  = _w1Supps.filter(s => s <= minLtTP && s >= cap);
+      const htfCands = _htfSupps.filter(s => s <= minLtTP && s >= cap);
+      const allCands = [...new Set([...wkCands, ...htfCands, ...supps.filter(s => s <= minLtTP && s >= cap)])].sort((a,b)=>b-a);
+      ltTP = allCands.length ? allCands[allCands.length - 1] : Math.max(entry - risk * 5, cap);
       const ltRRv = ((entry - ltTP) / risk).toFixed(1);
-      const ltSup  = supps.find(s => Math.abs(s - ltTP) < price * 0.004);
-      ltTPReason = ltSup
-        ? `日線/4H 關鍵支撐 ${fmtPrice(ltSup)}，R/R ${ltRRv}:1，全倉長線目標`
-        : `長線目標 R/R ${ltRRv}:1，全倉持有至目標`;
+      const ltTfLabel = _htfTfLabel(ltTP);
+      ltTPReason = `${ltTfLabel}關鍵支撐 ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
     }
     // AI 自行判斷加倉次數（最多 3 次）：依長線信心度和 R/R 決定
     const ltRRraw = risk > 0 ? Math.abs(ltTP - entry) / risk : 0;
@@ -1759,9 +1873,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const rrBonus  = parseFloat(rr1str) >= 3 ? 1 : 0;
   // 進場/止盈/止損位置質量加成（落在真實結構位 vs ATR 估算）
   const tp1Quality = isLong
-    ? (tp1Reason.includes('前高壓力') ? 1 : 0)
-    : (tp1Reason.includes('前低支撐') ? 1 : 0);
-  const slQuality = (slReason.includes('支撐結構') || slReason.includes('壓力結構') || slReason.includes('PO3') || slReason.includes('掃蕩')) ? 1 : 0;
+    ? (tp1Reason.includes('壓力') || tp1Reason.includes('前高') ? 1 : 0)
+    : (tp1Reason.includes('支撐') || tp1Reason.includes('前低') ? 1 : 0);
+  const slQuality = (slReason.includes('支撐結構') || slReason.includes('壓力結構') ||
+                     slReason.includes('4H') || slReason.includes('日線') || slReason.includes('週線') ||
+                     slReason.includes('PO3') || slReason.includes('掃蕩')) ? 1 : 0;
   const levelQualityBonus = tp1Quality + slQuality;
   const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus) * 6));
 
