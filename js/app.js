@@ -1303,13 +1303,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 震盪單不受此限制（震盪單靠影線/RSI進場，不依賴方向指標）
   let _dirAlignMiss = '';
   if (!isRangeMode && direction !== 'wait') {
-    const _macAgrDir  = (isLong && _btsNetDir.includes('bull')) || (!isLong && _btsNetDir.includes('bear'));
-    const _wkAgrDir   = (isLong && _wBias.includes('bull'))     || (!isLong && _wBias.includes('bear'));
-    const _tdAgrDir   = (isLong && _tBias.includes('bull'))     || (!isLong && _tBias.includes('bear'));
+    const _isLongDir  = direction === 'long';
+    const _macAgrDir  = (_isLongDir && _btsNetDir.includes('bull')) || (!_isLongDir && _btsNetDir.includes('bear'));
+    const _wkAgrDir   = (_isLongDir && _wBias.includes('bull'))     || (!_isLongDir && _wBias.includes('bear'));
+    const _tdAgrDir   = (_isLongDir && _tBias.includes('bull'))     || (!_isLongDir && _tBias.includes('bear'));
     const _alignCnt   = (_macAgrDir ? 1 : 0) + (_wkAgrDir ? 1 : 0) + (_tdAgrDir ? 1 : 0);
     if (_alignCnt < 2) {
       direction = 'wait';
-      _dirAlignMiss = `大方向宏觀/本週/今日預測僅 ${_alignCnt} 個與${isLong ? '多' : '空'}方向一致（需 ≥ 2）`;
+      _dirAlignMiss = `大方向宏觀/本週/今日預測僅 ${_alignCnt} 個與${_isLongDir ? '多' : '空'}方向一致（需 ≥ 2）`;
     }
   }
 
