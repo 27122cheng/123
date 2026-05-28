@@ -5227,7 +5227,7 @@ function recordSignalsFromScan(data) {
       // 計算進場參數：減完所有懲罰後的最終信心度才做門檻判斷
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      if (setup.conf < 70) continue;  // 使用最終信心度（含 ADX + 學習懲罰）
+      if (setup.conf < 70) continue;  // 使用最終信心度（ADX + 學習 + 宏觀 + AI 趨勢全部扣完）
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
@@ -5245,6 +5245,8 @@ function recordSignalsFromScan(data) {
         conf: setup.conf, rawConf: setup.rawConf,
         hardAdxPenalty: setup.hardAdxPenalty || 0,
         learnPenalty: setup.learnPenalty || 0,
+        macroPenalty: setup.macroPenalty || 0,
+        aiTrendPenalty: setup.aiTrendPenalty || 0,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5506,45 +5508,7 @@ function updateOpenTrades(data) {
     }
   }
 
-  // ── 持倉中（open）信心度同步：動態更新 trade.conf 供持倉頁面顯示 ──
-  if (_macroCache) {
-    try {
-      const _fg3 = _macroCache.fg, _gm3 = _macroCache;
-      const _fgV3 = parseInt(_fg3?.value || '50');
-      const _chg3 = _gm3?.marketCapChange || 0;
-      const _dom3 = _gm3?.btcDominance   || 50;
-      const _wb3  = computeWeeklyAIBias(_fg3, _gm3);
-      const _tb3  = computeTodayAIBias(_fg3, _gm3);
-      for (const trade of tlog) {
-        if (trade.status !== 'open') continue;
-        const baseConf3 = trade.rawConf || trade.conf || 100;
-        const _adxP3    = trade.hardAdxPenalty || 0;
-        const _learnP3  = trade.learnPenalty   || 0;
-        const _isL3 = trade.direction === 'long';
-        let _agt3 = 0;
-        if (_isL3) {
-          if (_chg3 < -2) _agt3++;
-          if (_dom3 > 58) _agt3++;
-          if (_fgV3 < 30) _agt3++;
-          if (_fgV3 > 75) _agt3 += 0.5;
-        } else {
-          if (_chg3 > 2)  _agt3++;
-          if (_dom3 < 44) _agt3++;
-          if (_fgV3 > 70) _agt3++;
-          if (_fgV3 < 25) _agt3 += 0.5;
-        }
-        const _macP3 = _agt3 >= 3 ? 18 : _agt3 >= 2 ? 12 : _agt3 >= 1 ? 5 : 0;
-        const _wOp3  = _isL3 ? _wb3.bias.includes('bear') : _wb3.bias.includes('bull');
-        const _tOp3  = _isL3 ? _tb3.bias.includes('bear') : _tb3.bias.includes('bull');
-        const _aiP3  = (_wOp3 ? (_wb3.bias.includes('strong') ? 8 : 4) : 0) + (_tOp3 ? 5 : 0);
-        const freshConf3 = Math.max(0, baseConf3 - _adxP3 - _learnP3 - _macP3 - _aiP3);
-        if (trade.conf !== freshConf3) { trade.conf = freshConf3; changed = true; }
-      }
-    } catch(_e3) {}
-  }
-
   for (const trade of tlog) {
-    // ── 等待進場確認：現價觸及進場位後才轉為開倉 ──
     if (trade.status === 'pending') {
       const coin = data.find(d => d.symbol === trade.symbol);
       // 震盪單：影線區域失效快（2小時）；定向短線單：4小時等待回踩；長線單（canScaleIn=true）：24小時有效
@@ -8101,7 +8065,38 @@ function computeSimpleSetup(coin, isLong) {
   // 趨勢強度加成（強勢看漲/看跌）
   if (coin.trend === '強勢看漲' || coin.trend === '強勢看跌') rawConf += 4;
   rawConf = Math.min(90, rawConf);
-  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty);  // 最終信心度：扣完 ADX 懲罰 + 學習懲罰
+  // 宏觀逆風懲罰（與 buildTradeSetup 相同邏輯，使用全域 _macroCache）
+  let _sMacroPen = 0, _sAIPen = 0;
+  if (typeof _macroCache !== 'undefined' && _macroCache) {
+    try {
+      const _sfg = _macroCache.fg, _sgm = _macroCache;
+      const _sfgV = parseInt(_sfg?.value || '50');
+      const _schg = _sgm?.marketCapChange || 0;
+      const _sdom = _sgm?.btcDominance   || 50;
+      let _sagt = 0;
+      if (isLong) {
+        if (_schg < -2) _sagt++;
+        if (_sdom > 58) _sagt++;
+        if (_sfgV < 30) _sagt++;
+        if (_sfgV > 75) _sagt += 0.5;
+      } else {
+        if (_schg > 2)  _sagt++;
+        if (_sdom < 44) _sagt++;
+        if (_sfgV > 70) _sagt++;
+        if (_sfgV < 25) _sagt += 0.5;
+      }
+      _sMacroPen = _sagt >= 3 ? 18 : _sagt >= 2 ? 12 : _sagt >= 1 ? 5 : 0;
+      const _swb = computeWeeklyAIBias(_sfg, _sgm);
+      const _stb = computeTodayAIBias(_sfg, _sgm);
+      const _swBias = _swb.bias || '';
+      const _stBias = _stb.bias || '';
+      const _swOp = isLong ? _swBias.includes('bear') : _swBias.includes('bull');
+      const _stOp = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
+      if (_swOp) _sAIPen += _swBias.includes('strong') ? 8 : 4;
+      if (_stOp) _sAIPen += 5;
+    } catch(_se) {}
+  }
+  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen);
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
@@ -8194,6 +8189,7 @@ function computeSimpleSetup(coin, isLong) {
     rr1: (Math.abs(tp1 - entry) / risk).toFixed(1),
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
     atr, conf, rawConf, hardAdxPenalty, learnPenalty,
+    macroPenalty: _sMacroPen, aiTrendPenalty: _sAIPen,
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
