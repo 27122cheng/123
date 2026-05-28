@@ -1312,8 +1312,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       // slight_bear 做空不再額外懲罰（已是允許方向）; slight_bull 做多同理
       const rConf = Math.max(0, rRawConf - rLearnPen);
 
-      // 門檻檢查：扣完分後 < 75% 或 AI 硬封鎖 → 不顯示也不記錄，交由後續正常分析
-      if (rConf >= 75 && !rHardBlocked) {
+      // 門檻檢查：扣完分後 < 70% 或 AI 硬封鎖 → 不顯示也不記錄，交由後續正常分析
+      if (rConf >= 70 && !rHardBlocked) {
       const rIsLong  = rangeDir === 'long';
       const rIcon    = rIsLong ? '▲' : '▼';
       const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
@@ -1883,7 +1883,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty);  // 含週/日 AI 趨勢對照
   const finalConf = conf;
   // 最終防線：被AI風控硬封鎖 OR 信心低於80% → 觀望
-  if (conf < 75 || hardBlocked) direction = 'wait';
+  if (conf < 70 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -4942,7 +4942,7 @@ function recordSignalsFromScan(data) {
         ? (nearSupp ? nearSupp.level - atr * 0.8 : price - atr * 0.9)
         : (nearRes  ? nearRes.level  + atr * 0.8 : price + atr * 0.9);
 
-      // ── 信心計算（震盪單門檻 75%）──
+      // ── 信心計算（震盪單門檻 70%）──
       // 基礎：有影線區 70，無影線區（備用路徑）65，wicks 只加分不扣分
       const zoneWicks = rangeLong ? (nearSupp?.wicks || 0) : (nearRes?.wicks || 0);
       const hasNearZone = rangeLong ? !!nearSupp : !!nearRes;
@@ -4957,7 +4957,7 @@ function recordSignalsFromScan(data) {
 
       const { penalty: learnPen, hardBlocked: learnBlock } = applyLearnAdjustment(direction, rsiR, adxR, {});
       const finalConfR = Math.max(0, rawConfR - learnPen);
-      if (finalConfR < 75 || learnBlock) continue;  // 震盪單門檻 75
+      if (finalConfR < 70 || learnBlock) continue;  // 震盪單門檻 70
 
       // ── 進場理由 ──
       const zoneDesc = rangeLong
@@ -5007,7 +5007,7 @@ function recordSignalsFromScan(data) {
   }
 
   // ══════════════════════════════════════════════════
-  // 定向行情路徑（趨勢交易，信心門檻 75%）
+  // 定向行情路徑（趨勢交易，信心門檻 70%）
   // 震盪模式下不執行，由震盪行情路徑接管
   // ══════════════════════════════════════════════════
   if (!isRangeMode) {
@@ -5025,7 +5025,7 @@ function recordSignalsFromScan(data) {
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-      // 計算進場參數，並以 rawConf ≥ 75 作為品質門檻
+      // 計算進場參數，並以 rawConf ≥ 70 作為品質門檻
       // （與 buildTradeSetup 一致：score≥60 即可考慮，由 rawConf 決定品質）
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
@@ -5234,7 +5234,7 @@ function updateOpenTrades(data) {
 
   // ── 信心度崩跌取消：動態計算 freshConf，低於 75% 時自動撤單 ──
   // 以 rawConf 為基礎（掃描時以 rawConf ≥ 75 建單），再扣宏觀/ADX 當前懲罰
-  // 若 freshConf < 75 代表市場波動已讓信號失效
+  // 若 freshConf < 70 代表市場波動已讓信號失效
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
@@ -7750,7 +7750,7 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 75) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
+    if (notifConf < 70) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
 
     // 信心度達標 → 完整交易信號通知
     if (s.notifBrowser) {
@@ -7796,7 +7796,7 @@ function computeSimpleSetup(coin, isLong) {
     skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   });
   // rawConf：以 coin.score 為基礎，加入 RSI/ADX/趨勢強度加成
-  // 目標：讓 score 65-74 的高品質信號（RSI 確認 + ADX 趨勢強）也能通過 75% 門檻
+  // 目標：讓 score 65-74 的高品質信號（RSI 確認 + ADX 趨勢強）也能通過 70% 門檻
   let rawConf = Math.min(90, coin.score || 60);
   // RSI 確認加成（順向 RSI：做多 RSI < 50，做空 RSI > 50 各 +3；極端加 +5）
   if (isLong) {
@@ -7910,7 +7910,7 @@ function computeSimpleSetup(coin, isLong) {
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
-    learnFiltered: (conf < 75 || hardBlocked) && rawConf >= 75,
+    learnFiltered: (conf < 70 || hardBlocked) && rawConf >= 70,
     hardBlocked,
   };
 }
