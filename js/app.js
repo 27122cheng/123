@@ -1369,14 +1369,42 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (rangeDir === 'short' && (_rMBear + _rWBear + _rTBear) < 2) rangeDir = null;
 
     if (rangeDir) {
-      // ── 先計算完整信心（扣完所有分）再決定是否顯示與記錄 ──
       const rRawConf = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
       let rLearnPen = 0, rHardBlocked = false;
       try { ({ penalty: rLearnPen, hardBlocked: rHardBlocked } = applyLearnAdjustment(rangeDir, rsi, coin.adx || 20, {})); } catch(e) {}
-      // slight_bear 做空不再額外懲罰（已是允許方向）; slight_bull 做多同理
-      const rConf = Math.max(0, rRawConf - rLearnPen);
+      // 宏觀 + AI 逆風扣分（依震盪方向計算）
+      const _rIsLongDir = rangeDir === 'long';
+      let _rMacroPen = 0, _rAIPen = 0;
+      try {
+        if (fearGreed || globalMkt) {
+          const _rfgV = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+          const _rchg = globalMkt?.marketCapChange || 0;
+          const _rdom = globalMkt?.btcDominance   || 50;
+          let _ragt = 0;
+          if (_rIsLongDir) {
+            if (_rchg < -2) _ragt++;
+            if (_rdom > 58) _ragt++;
+            if (_rfgV < 30) _ragt++;
+            if (_rfgV > 75) _ragt += 0.5;
+          } else {
+            if (_rchg > 2)  _ragt++;
+            if (_rdom < 44) _ragt++;
+            if (_rfgV > 70) _ragt++;
+            if (_rfgV < 25) _ragt += 0.5;
+          }
+          _rMacroPen = _ragt >= 3 ? 18 : _ragt >= 2 ? 12 : _ragt >= 1 ? 5 : 0;
+        }
+        const _rwBias = weeklyBiasData.bias || '';
+        const _rtBias = todayBiasData.bias  || '';
+        const _rwOp = _rIsLongDir ? _rwBias.includes('bear') : _rwBias.includes('bull');
+        const _rtOp = _rIsLongDir ? _rtBias.includes('bear') : _rtBias.includes('bull');
+        if (_rwOp) _rAIPen += _rwBias.includes('strong') ? 8 : 4;
+        if (_rtOp) _rAIPen += 5;
+      } catch(_re) {}
+      // 最終信心度：ADX不適用震盪單，扣學習+宏觀+AI
+      const rConf = Math.max(0, rRawConf - rLearnPen - _rMacroPen - _rAIPen);
 
-      // 門檻檢查：扣完分後 < 70% 或 AI 硬封鎖 → 不顯示也不記錄，交由後續正常分析
+      // 門檻檢查：扣完所有分後 < 70% 或 AI 硬封鎖 → 不顯示也不記錄
       if (rConf >= 70 && !rHardBlocked) {
       const rIsLong  = rangeDir === 'long';
       const rIcon    = rIsLong ? '▲' : '▼';
@@ -1467,15 +1495,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         slReason: _rSlReason,
         tp1Reason: _rTp1Reason,
         tp2Reason: _rTp2Reason,
-        rr1: rRR1, rr2: rRR2, atr, conf: rConf, rawConf: rConf,
+        rr1: rRR1, rr2: rRR2, atr, conf: rConf, rawConf: rRawConf,
+        learnPenalty: rLearnPen, hardAdxPenalty: 0,
+        macroPenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
         weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
         weeklyRangeMode: true,
         todayBias: todayBiasData.biasLabel, todayConf: todayBiasData.conf,
         todayRangeMode: true,
-        rangeMacroDir: _btsNetDir,   // 供 Telegram 判斷是否顯示「謹慎操作」
+        rangeMacroDir: _btsNetDir,
         bigTrend: 'mixed', bigTrendBlocked: false, h4TrendLabel, d1TrendLabel,
-        hardBlocked: false, learnPenalty: 0, hardAdxPenalty: 0,
-        macroOpposePenalty: 0, aiTrendPenalty: 0,
+        hardBlocked: false, macroOpposePenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
         flipRisks: [], macroReasons: [], aiTrendReasons: [],
         blockReasons: [], learnWarnings: [], defenseChecks: [],
       };
@@ -1492,7 +1521,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           slReason: _rSlReason,
           tp1Reason: _rTp1Reason,
           tp2Reason: _rTp2Reason,
-          conf: rConf, rawConf: rConf, atr,
+          conf: rConf, rawConf: rRawConf, atr,
+          learnPenalty: rLearnPen, hardAdxPenalty: 0,
+          macroPenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
           status: 'pending', entryTime: null, timestamp: Date.now(),
           score: coin.score, adx: coin.adx, rsi,
           refined: false, scaleIns: [],
@@ -5058,8 +5089,9 @@ function recordSignalsFromScan(data) {
   const _rsMBull = (macroNetDir === 'strong_bull' || macroNetDir === 'bull' || macroNetDir === 'slight_bull') ? 1 : 0;
   const _rsWBull = wBias.includes('bull') ? 1 : 0;
   const _rsTBull = tBias.includes('bull') ? 1 : 0;
-  const rangeBlockLong  = (_rsMBear + _rsWBear + _rsTBear) >= 2;  // 2+ 偏空 → 禁震盪多
-  const rangeBlockShort = (_rsMBull + _rsWBull + _rsTBull) >= 2;  // 2+ 偏多 → 禁震盪空
+  // 震盪方向需要 2+ 個指標同向才允許（與 buildTradeSetup 邏輯對齊）
+  const rangeBlockLong  = (_rsMBull + _rsWBull + _rsTBull) < 2;  // 需 2+ 偏多同向
+  const rangeBlockShort = (_rsMBear + _rsWBear + _rsTBear) < 2;  // 需 2+ 偏空同向
 
   // ══════════════════════════════════════════════════
   // 震盪行情路徑（大時區多次觸碰+收引線的區域做反轉）
@@ -5149,8 +5181,10 @@ function recordSignalsFromScan(data) {
       rawConfR = Math.min(88, rawConfR);
 
       const { penalty: learnPen, hardBlocked: learnBlock } = applyLearnAdjustment(direction, rsiR, adxR, {});
-      const finalConfR = Math.max(0, rawConfR - learnPen);
-      if (finalConfR < 70 || learnBlock) continue;  // 震盪單門檻 70
+      // 宏觀 + AI 逆風扣分（macroPenLong/macroPenShort 已包含 AI 趨勢懲罰）
+      const macroPenR  = rangeLong ? macroPenLong : macroPenShort;
+      const finalConfR = Math.max(0, rawConfR - learnPen - macroPenR);
+      if (finalConfR < 70 || learnBlock) continue;  // 震盪單門檻：全部扣分後 ≥ 70
 
       // ── 進場理由 ──
       const zoneDesc = rangeLong
@@ -5185,6 +5219,8 @@ function recordSignalsFromScan(data) {
         rsi: rsiR, adx: adxR,
         score: coin.score, trend: coin.trend,
         conf: Math.round(finalConfR), rawConf: Math.round(rawConfR),
+        learnPenalty: Math.round(learnPen), hardAdxPenalty: 0,
+        macroPenalty: Math.round(macroPenR),
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5455,12 +5491,9 @@ function updateOpenTrades(data) {
     } catch(e) {}
   }
 
-  // ── 信心度崩跌取消：動態計算 freshConf，低於 75% 時自動撤單 ──
-  // 以 rawConf 為基礎（掃描時以 rawConf ≥ 75 建單），再扣宏觀/ADX 當前懲罰
-  // 若 freshConf < 70 代表市場波動已讓信號失效
+  // ── 信心度崩跌取消：動態計算 freshConf，低於 70% 時自動撤單（所有類型含震盪單）──
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
-    if (trade.tradeType === 'range') continue;
     const baseConf   = trade.rawConf || trade.conf || 100;
     // 靜態懲罰（建單時已計算，後續不重算，但需保留進 freshConf 以正確顯示最終信心度）
     const _adxPen    = trade.hardAdxPenalty || 0;
