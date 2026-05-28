@@ -792,7 +792,7 @@ function buildOpenPositionSetup(t, currentPrice) {
         <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">持倉進行中</span>
       </div>
       <div class="verdict-conf-wrap">
-        <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
+        <span style="font-size:0.78rem;color:var(--text3)">信心度</span>
         <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confClr}"></div></div>
         <span style="color:${confClr};font-weight:700;font-size:0.9rem">${conf}%</span>
       </div>
@@ -1377,7 +1377,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">震盪高低點快進快出</span>
         </div>
         <div class="verdict-conf-wrap">
-          <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
+          <span style="font-size:0.78rem;color:var(--text3)">信心度</span>
           <div class="conf-bar"><div class="conf-fill" style="width:${rConf}%;background:${rColor}"></div></div>
           <span style="color:${rColor};font-weight:700;font-size:0.9rem">${rConf}%</span>
         </div>
@@ -2090,7 +2090,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">${isRangeMode ? '震盪高低點快進快出' : '15m ~ 1h 時間框架'}</span>
     </div>
     ${conf >= 60 ? `<div class="verdict-conf-wrap">
-      <span style="font-size:0.78rem;color:var(--text3)">信號強度</span>
+      <span style="font-size:0.78rem;color:var(--text3)">信心度</span>
       <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${dirColor}"></div></div>
       <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf}%</span>
     </div>` : ''}
@@ -3086,6 +3086,45 @@ function setEconActualValue(eventName, dateStr, value) {
   else localStorage.removeItem(key);
 }
 
+const BLS_SERIES_MAP = {
+  '美國非農就業報告（NFP）':  { id: 'CES0000000001', type: 'monthly_change', multiplier: 1/1000, unit: 'K', dp: 0 },
+  '美國消費者物價指數（CPI）': { id: 'CUUR0000SA0',  type: 'yoy_pct', unit: '%', dp: 1 },
+  '美國生產者物價指數（PPI）': { id: 'WPU000000000', type: 'yoy_pct', unit: '%', dp: 1 },
+};
+
+async function autoFetchEconActual(eventName, dateKey) {
+  const mapping = BLS_SERIES_MAP[eventName];
+  if (!mapping) return null;
+  const cacheKey = `econ_bls_cache_${eventName}_${dateKey}`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) return cached;
+  try {
+    const blsUrl = `https://api.bls.gov/publicAPI/v1/timeseries/data/${mapping.id}`;
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(blsUrl)}`;
+    const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const rows = json?.Results?.series?.[0]?.data;
+    if (!rows || rows.length < 2) return null;
+    let display;
+    if (mapping.type === 'monthly_change') {
+      const change = (parseFloat(rows[0].value) - parseFloat(rows[1].value)) * mapping.multiplier;
+      display = `${change >= 0 ? '+' : ''}${change.toFixed(mapping.dp)}${mapping.unit}`;
+    } else {
+      const latest = rows[0];
+      const prevYear = rows.find(r => r.periodName === latest.periodName && r.year === String(parseInt(latest.year) - 1));
+      if (!prevYear) return null;
+      const yoy = (parseFloat(latest.value) / parseFloat(prevYear.value) - 1) * 100;
+      display = `${yoy >= 0 ? '+' : ''}${yoy.toFixed(mapping.dp)}${mapping.unit}`;
+    }
+    localStorage.setItem(cacheKey, display);
+    setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
+    return display;
+  } catch(e) {
+    return null;
+  }
+}
+
 function generateActualValueAnalysis(ev, actualVal) {
   if (!actualVal || !ev.aiPred) return '';
   // Simple analysis: compare actual to AI prediction keyword
@@ -3138,17 +3177,25 @@ function buildTodayEconWidget() {
       </div>` : '';
     const dateKey = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
     const actualVal = published ? getEconActualValue(ev.name, dateKey) : '';
+    const hasBLS = !!BLS_SERIES_MAP[ev.name];
+    if (published && !actualVal && hasBLS) {
+      autoFetchEconActual(ev.name, dateKey).then(v => {
+        if (v) { setEconActualValue(ev.name, dateKey, v); if (state.currentPage === 'macro') renderMacroPage(); }
+      });
+    }
     const actualSection = published ? `
       <div style="margin-top:8px">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <span style="font-size:0.7rem;color:var(--text3)">實際公布值：</span>
           ${actualVal
             ? `<span style="font-size:0.78rem;font-weight:700;color:var(--accent)">${actualVal}</span>
-               <button onclick="(function(){localStorage.removeItem('econ_actual_${ev.name}_${dateKey}');if(state.currentPage==='macro')renderMacroPage()})()" style="font-size:0.65rem;padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.15);background:transparent;color:var(--text3);cursor:pointer">清除</button>`
-            : `<input type="text" placeholder="輸入實際值..."
-                style="font-size:0.73rem;padding:3px 8px;border-radius:6px;border:1px solid rgba(0,212,255,.35);background:rgba(0,212,255,.07);color:var(--text1);width:120px"
-                onchange="(function(v){setEconActualValue('${ev.name}','${dateKey}',v);if(state.currentPage==='macro')renderMacroPage()})(this.value)"
-              />`
+               <button onclick="(function(){localStorage.removeItem('econ_actual_${ev.name}_${dateKey}');localStorage.removeItem('econ_bls_cache_${ev.name}_${dateKey}');if(state.currentPage==='macro')renderMacroPage()})()" style="font-size:0.65rem;padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,.15);background:transparent;color:var(--text3);cursor:pointer">清除</button>`
+            : hasBLS
+              ? `<span style="font-size:0.72rem;color:var(--text3)">🔄 自動抓取中...</span>`
+              : `<input type="text" placeholder="輸入實際值..."
+                  style="font-size:0.73rem;padding:3px 8px;border-radius:6px;border:1px solid rgba(0,212,255,.35);background:rgba(0,212,255,.07);color:var(--text1);width:120px"
+                  onchange="(function(v){setEconActualValue('${ev.name}','${dateKey}',v);if(state.currentPage==='macro')renderMacroPage()})(this.value)"
+                />`
           }
         </div>
         ${actualVal ? generateActualValueAnalysis(ev, actualVal) : ''}
@@ -4852,9 +4899,12 @@ function recordSignalsFromScan(data) {
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;  // AI 硬封鎖仍然生效（有歷史大量止損記憶）
 
-      // 宏觀逆風扣分後的顯示信心（存入 trade record 供 UI 顯示，非過濾依據）
-      const macroPen = isLong ? macroPenLong : macroPenShort;
-      const finalConf = Math.max(75, setup.conf - macroPen);  // 顯示信心最低 75%（符合門檻要求）
+      // 完整扣分後判斷是否通過 75% 門檻（宏觀 + ADX，learn 已含於 setup.conf）
+      const macroPen   = isLong ? macroPenLong : macroPenShort;
+      const adxValS    = parseFloat(coin.adx) || 20;
+      const hardAdxPen = adxValS < 18 ? 28 : adxValS < 22 ? 14 : 0;
+      const finalConf  = Math.max(0, setup.conf - macroPen - hardAdxPen);
+      if (finalConf < 75) continue;  // 完整扣分後不達門檻 → 跳過
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
@@ -4884,6 +4934,96 @@ function recordSignalsFromScan(data) {
   if (changed) {
     if (tlog.length > 500) tlog.splice(500);
     saveTradeLog(tlog);
+  }
+  // 背景檢測新建短線單是否符合長線條件（異步，不阻塞掃描）
+  if (changed) setTimeout(() => backgroundRefineNewTrades(), 2000);
+}
+/* ── 背景精煉：為新建短線單自動檢測長線條件 ─────────────────── */
+async function backgroundRefineNewTrades() {
+  const tlog = loadTradeLog();
+  const now  = Date.now();
+  // 僅對 5 分鐘內新建的、尚未精煉的定向掛單進行長線檢測
+  const toRefine = tlog.filter(t =>
+    t.status === 'pending' &&
+    t.tradeType === 'directional' &&
+    !t.refined &&
+    (now - (t.timestamp || 0)) < 5 * 60 * 1000
+  );
+  if (!toRefine.length) return;
+
+  for (const trade of toRefine.slice(0, 3)) { // 每次最多 3 筆，避免 API 負荷
+    try {
+      const mtfData  = await fetchMTFKlines(trade.symbol);
+      const direction = trade.direction;
+      const isLong    = direction === 'long';
+
+      // 長線偏向計算（與 buildTradeSetup 邏輯一致）
+      const ltBias = computeLongTermBias(mtfData);
+      let ltBull = 0, ltBear = 0;
+      const ltW = { '1d': 1, '1w': 3, '1M': 4 };
+      for (const [tf, w] of Object.entries(ltW)) {
+        const sig = mtfData[tf]?.signal;
+        if (!sig) continue;
+        if (sig.signal?.includes('bull')) ltBull += w;
+        if (sig.signal?.includes('bear')) ltBear += w;
+        const rsi = sig.rsi || 50;
+        if (rsi < 42) ltBull += w * 0.4;
+        if (rsi > 58) ltBear += w * 0.4;
+      }
+      const ltRaw  = ltBias === 'long' ? ltBull : ltBias === 'short' ? ltBear : 0;
+      const ltConf = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRaw * 8)) : 0;
+      const canScaleIn = ltBias === direction && ltConf >= 85;
+
+      const tlogEdit = loadTradeLog();
+      const idx = tlogEdit.findIndex(t => t.id === trade.id);
+      if (idx < 0) continue;
+
+      tlogEdit[idx].longTermBias = ltBias;
+      tlogEdit[idx].canScaleIn   = canScaleIn;
+      tlogEdit[idx].ltConf       = ltConf;
+      tlogEdit[idx].refined      = true;
+
+      if (canScaleIn) {
+        const price  = tlogEdit[idx].entryPrice || tlogEdit[idx].entry || 0;
+        const atr    = price * 0.013;
+        const origRisk = Math.abs(tlogEdit[idx].entry - tlogEdit[idx].sl) || atr;
+        const d1sig   = mtfData['1d']?.signal;
+        const ltRes   = isLong
+          ? (d1sig?.resistance || price * 1.12)
+          : (d1sig?.support    || price * 0.88);
+        const ltTP = isLong
+          ? Math.min(price * 1.35, ltRes)
+          : Math.max(price * 0.65, ltRes);
+        tlogEdit[idx].ltTP = ltTP;
+        tlogEdit[idx].scaleInTargets = [1, 2, 3].map(n =>
+          isLong
+            ? tlogEdit[idx].entry * (1 + 0.008 * n)
+            : tlogEdit[idx].entry * (1 - 0.008 * n)
+        );
+        // 發送長線升級通知
+        try {
+          const s = loadSettings();
+          if (s.notifTelegram && s.tgToken && s.tgChatId) {
+            const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+            const sym = tlogEdit[idx].symbol.replace('/USDT', '');
+            const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
+            const confIcon = ltConf >= 90 ? '🟢' : ltConf >= 85 ? '🟡' : '🟠';
+            sendTelegramMessage(s.tgToken, s.tgChatId,
+              `🏆 <b>長線單升級通知</b>\n\n` +
+              `💎 <b>${tlogEdit[idx].symbol}</b>  ${dirLabel}\n` +
+              `${confIcon} 長線信心度：<b>${ltConf}%</b>\n` +
+              `🏁 長線目標：<b>$${fmt(ltTP)}</b>\n` +
+              `📍 進場位：$${fmt(tlogEdit[idx].entry)}\n\n` +
+              `支持長線的條件：日線 + ${ltBull > ltBear ? '週線/月線看漲' : '週線/月線看跌'}，可分 3 次加倉`
+            );
+          }
+        } catch(e) {}
+      }
+
+      saveTradeLog(tlogEdit);
+    } catch(e) {
+      console.warn('[backgroundRefine]', trade.symbol, e);
+    }
   }
 }
 function updateOpenTrades(data) {
@@ -5168,6 +5308,7 @@ function updateOpenTrades(data) {
           status: 'pending',
           entryTime: null,
           entryPrice: null,
+          conf: trade.conf || 0,
         });
         changed = true;
       }
@@ -5256,12 +5397,15 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
     ? `🔒 止損已上移：$${fmt(oldSL)} → <b>$${fmt(newSL)}</b>（移至上一進場位）\n`
     : `🛑 現行止損：<b>$${fmt(trade.sl)}</b>\n`;
   const ltTarget = trade.ltTP || scaleIn.tp2 || scaleIn.tp1;
+  const siConf = scaleIn.conf || trade.conf || 0;
+  const confColor = siConf >= 85 ? '🟢' : siConf >= 75 ? '🟡' : '🔴';
   const msg =
     `📈 <b>加倉確認通知 #${scaleIn.seqNum}</b>\n\n` +
     `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
     `📍 加倉進場位：<b>$${fmt(scaleIn.entryPrice || scaleIn.entryLevel)}</b>\n` +
     `${slLine}` +
-    `🏁 長線最終目標：<b>$${fmt(ltTarget)}</b>\n\n` +
+    `🏁 長線最終目標：<b>$${fmt(ltTarget)}</b>\n` +
+    `${confColor} 本次加倉信心度：<b>${siConf}%</b>\n\n` +
     `📊 原始進場：$${fmt(trade.entry)}\n` +
     `🔔 已加倉 ${scaleIn.seqNum}/3 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
@@ -6685,7 +6829,7 @@ function renderPositionsPage() {
           <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / 3</div>
         </div>
         <div class="pos-cell">
-          <div class="pos-cell-lbl">信號強度</div>
+          <div class="pos-cell-lbl">信心度</div>
           <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
         </div>
         ` : `
@@ -6698,7 +6842,7 @@ function renderPositionsPage() {
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
         <div class="pos-cell">
-          <div class="pos-cell-lbl">信號強度</div>
+          <div class="pos-cell-lbl">信心度</div>
           <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
         </div>
         `}
@@ -7191,7 +7335,7 @@ function showTradeDetail(id) {
       <button class="td-close-btn" onclick="closeTradeModal()">✕</button>
     </div>
     <div class="td-conf-row">
-      <span style="color:var(--text3);font-size:0.78rem">信號強度</span>
+      <span style="color:var(--text3);font-size:0.78rem">信心度</span>
       <div class="td-conf-bar"><div style="width:${conf}%;background:${confColor};height:100%;border-radius:4px;transition:width .3s"></div></div>
       <span style="color:${confColor};font-weight:700">${conf}%</span>
       ${conf >= 85 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 達標</span>' : conf >= 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">⚠ 偏低</span>' : '<span style="font-size:0.7rem;color:#ef4444;margin-left:4px">✗ 未達標</span>'}
@@ -7226,7 +7370,7 @@ function showTradeDetail(id) {
         <div class="td-cell-val" style="color:#22c55e">${fmt(trade.tp2)}<span class="td-pct">${trade.entry && trade.tp2 ? pctStr(trade.entry, trade.tp2) : ''}</span></div>
       </div>
       <div class="td-cell">
-        <div class="td-cell-lbl">信號強度</div>
+        <div class="td-cell-lbl">信心度</div>
         <div class="td-cell-val" style="color:${confColor};font-weight:700">${conf}%</div>
       </div>
       <div class="td-cell">
