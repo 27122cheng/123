@@ -4839,9 +4839,11 @@ function recordSignalsFromScan(data) {
 
   // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
   // 大方向「偏空」(bear) → 完全不開多；「偏多」(bull) → 完全不開空
-  // 「中性偏空」→ 震盪模式但只開空（壓力區做空）；「中性偏多」→ 只開多（支撐區做多）；「中性」→ 兩邊皆可
-  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
-  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
+  // 「中性偏空」+ AI 至少一方向確認偏空 → 也封鎖多單（以免在弱空環境建倉後很快被取消）
+  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear'
+                  || (macroNetDir === 'slight_bear' && (wBias.includes('bear') || tBias.includes('bear')));
+  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull'
+                  || (macroNetDir === 'slight_bull' && (wBias.includes('bull') || tBias.includes('bull')));
   // 震盪模式：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪時觸發
   const _rsMacroNeutral  = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
   const _rsWeeklyNeutral = wbRangeMode;
@@ -5176,10 +5178,8 @@ function updateOpenTrades(data) {
     try {
       const wb2 = computeWeeklyAIBias(_macroCache.fg, _macroCache);
       const tb2 = computeTodayAIBias(_macroCache.fg, _macroCache);
-      const bothClearBear = (wb2.bias === 'bear' || wb2.bias === 'strong_bear')
-                         && (tb2.bias === 'bear' || tb2.bias === 'strong_bear');
-      const bothClearBull = (wb2.bias === 'bull' || wb2.bias === 'strong_bull')
-                         && (tb2.bias === 'bull' || tb2.bias === 'strong_bull');
+      const bothClearBear = wb2.bias.includes('bear') && tb2.bias.includes('bear');
+      const bothClearBull = wb2.bias.includes('bull') && tb2.bias.includes('bull');
       // 條件 B：綜合大方向封鎖（與開單封鎖邏輯一致）
       const macroNetDir2 = computeMacroNetDir(_macroCache.fg, _macroCache);
       const macroClearBear = macroNetDir2 === 'bear' || macroNetDir2 === 'strong_bear';
@@ -5203,6 +5203,22 @@ function updateOpenTrades(data) {
         }
       }
     } catch(e) {}
+  }
+
+  // ── 信心度崩跌取消：未入場掛單 conf < 65 時自動撤單 ──────────
+  // 掃描時 finalConf ≥ 75 才建單，若後來宏觀惡化導致 conf 已低於 65，該單失去意義
+  for (const trade of tlog) {
+    if (trade.status !== 'pending' || trade.entryTime) continue;
+    if (trade.tradeType === 'range') continue;
+    const storedConf = trade.conf || 100;
+    if (storedConf < 65) {
+      trade.status = 'cancelled';
+      trade.cancelReason = `信心度已降至 ${storedConf}%（低於最低門檻 65%），自動撤單`;
+      trade.cancelTime = Date.now();
+      changed = true;
+      cancelledSymbols.add(trade.symbol);
+      sendCancelTelegramNotification(trade, trade.cancelReason);
+    }
   }
 
   for (const trade of tlog) {
