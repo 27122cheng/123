@@ -246,28 +246,28 @@ async function manualRefresh() {
 }
 
 function computeLongTermBias(mtfData) {
-  // 長線單條件：日線同向，且 週線 OR 月線 至少一個同向
-  // 日線沒有方向 → 不觸發長線單
+  // 長線單條件：日線 AND 週線都確認同方向（用戶明確要求：日線+週線確定才算長線）
+  // 日線或週線缺失 → 不觸發長線單
   const daySig  = mtfData['1d']?.signal;
   const weekSig = mtfData['1w']?.signal;
-  const monSig  = mtfData['1M']?.signal;
-  if (!daySig) return 'neutral';
-  if (!weekSig && !monSig) return 'neutral';  // 缺少長周期資料
+  if (!daySig || !weekSig) return 'neutral';  // 必須同時有日線和週線
 
   const dayBull  = daySig.signal?.includes('bull');
   const dayBear  = daySig.signal?.includes('bear');
   if (!dayBull && !dayBear) return 'neutral';  // 日線中性 → 不觸發長線單
 
-  const weekBull = weekSig?.signal?.includes('bull');
-  const weekBear = weekSig?.signal?.includes('bear');
+  const weekBull = weekSig.signal?.includes('bull');
+  const weekBear = weekSig.signal?.includes('bear');
+  if (!weekBull && !weekBear) return 'neutral';  // 週線中性 → 不觸發長線單
+
+  // 日線 AND 週線必須方向一致（月線為額外加分）
+  if (!dayBull && weekBull) return 'neutral';
+  if (!dayBear && weekBear) return 'neutral';
+
+  // 加權評分（月線 > 週線 > 日線），月線額外加成
+  const monSig  = mtfData['1M']?.signal;
   const monBull  = monSig?.signal?.includes('bull');
   const monBear  = monSig?.signal?.includes('bear');
-
-  // 至少週線或月線有一個方向與日線一致才算長線對齊
-  const ltBull = weekBull || monBull;
-  const ltBear = weekBear || monBear;
-
-  // 加權評分（月線 > 週線 > 日線）
   let bull = 0, bear = 0;
   const weights = { '1d': 1, '1w': 3, '1M': 4 };
   for (const [tf, w] of Object.entries(weights)) {
@@ -280,8 +280,9 @@ function computeLongTermBias(mtfData) {
     if (rsi > 58) bear += w * 0.4;
   }
 
-  if (dayBull && ltBull && bull >= 4 && bull > bear * 1.5) return 'long';
-  if (dayBear && ltBear && bear >= 4 && bear > bull * 1.5) return 'short';
+  // 日線+週線確認 + 加權分數達標
+  if (dayBull && weekBull && bull >= 3 && bull > bear * 1.2) return 'long';
+  if (dayBear && weekBear && bear >= 3 && bear > bull * 1.2) return 'short';
   return 'neutral';
 }
 
@@ -1228,11 +1229,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     todayBiasData  = { bias: 'neutral', biasLabel: '◆ 震盪中性', conf: 50, rangeMode: true, highEvs: [] };
     _btsNetDir     = 'neutral';
   }
-  // isRangeMode：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪時進入震盪模式
-  // 與 recordSignalsFromScan 邏輯完全一致
+  // isRangeMode：
+  //   條件 A：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪（含 slight_bull/slight_bear）
+  //   條件 B：4H 與日線都是盤整（無明確多空信號）
+  //   兩個條件都滿足 → 震盪交易模式
   const _macroIsNeutral  = _btsNetDir === 'neutral' || _btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull';
   const _rangeNeutralCnt = (_macroIsNeutral ? 1 : 0) + (weeklyBiasData.rangeMode ? 1 : 0) + (todayBiasData.rangeMode ? 1 : 0);
-  const isRangeMode      = _rangeNeutralCnt >= 2;  // 三個指標中至少兩個中性/震盪 → 震盪模式
+  const _h4IsRange  = !h4?.signal?.includes('bull') && !h4?.signal?.includes('bear');
+  const _d1IsRange  = !d1sig_?.signal?.includes('bull') && !d1sig_?.signal?.includes('bear');
+  const _tfRanging  = _h4IsRange && _d1IsRange;  // 4H AND 日線都無明確方向
+  const isRangeMode = _rangeNeutralCnt >= 2 && _tfRanging;  // 宏觀+預測中性 AND 時框盤整
   // 4H / 日線信號（供範圍卡顯示及短線標籤判斷）
   const _h4Bull_r  = h4?.signal?.includes('bull');
   const _h4Bear_r  = h4?.signal?.includes('bear');
@@ -4844,12 +4850,15 @@ function recordSignalsFromScan(data) {
                   || (macroNetDir === 'slight_bear' && (wBias.includes('bear') || tBias.includes('bear')));
   const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull'
                   || (macroNetDir === 'slight_bull' && (wBias.includes('bull') || tBias.includes('bull')));
-  // 震盪模式：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪時觸發
+  // 震盪模式：
+  //   條件 A：大方向 / 本週預測 / 今日預測 三者中 ≥2 個中性/震盪
+  //   條件 B（掃描代理）：幣種 1H ADX < 22（代理 4H/日線盤整，掃描路徑無 MTF 資料）
+  //   兩個條件都滿足才進入震盪模式
   const _rsMacroNeutral  = macroNetDir === 'neutral' || macroNetDir === 'slight_bear' || macroNetDir === 'slight_bull';
   const _rsWeeklyNeutral = wbRangeMode;
   const _rsTodayNeutral  = tbRangeMode;
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
-  const isRangeMode      = _rsNeutralCnt >= 2;
+  const isRangeMode      = _rsNeutralCnt >= 2;  // 個別幣種再用 adxR < 22 過濾（見下方迴圈）
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
   const _rsMBear = (macroNetDir === 'strong_bear' || macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
   const _rsWBear = wBias.includes('bear') ? 1 : 0;
@@ -4870,8 +4879,8 @@ function recordSignalsFromScan(data) {
       const price  = parseFloat(coin.price) || 0;
       const atr    = parseFloat(coin.atr)   || price * 0.012;
 
-      // ADX < 32：確認非趨勢行情
-      if (adxR >= 32) continue;
+      // ADX < 22：確認真正盤整（代理 4H/日線盤整條件；ADX 22-32 屬弱趨勢非純盤整，不算震盪單）
+      if (adxR >= 22) continue;
 
       const wSupps = Array.isArray(coin.wickSupports)    ? coin.wickSupports    : [];
       const wRess  = Array.isArray(coin.wickResistances) ? coin.wickResistances : [];
@@ -5085,8 +5094,13 @@ async function backgroundRefineNewTrades() {
       const direction = trade.direction;
       const isLong    = direction === 'long';
 
-      // 長線偏向計算（與 buildTradeSetup 邏輯一致）
+      // 長線偏向計算（與 buildTradeSetup/computeLongTermBias 邏輯一致）
+      // 用戶需求：日線 AND 週線都確認同方向才算長線單
       const ltBias = computeLongTermBias(mtfData);
+      const d1SigBg = mtfData['1d']?.signal;
+      const w1SigBg = mtfData['1w']?.signal;
+      const d1OkBg  = isLong ? d1SigBg?.signal?.includes('bull') : d1SigBg?.signal?.includes('bear');
+      const w1OkBg  = isLong ? w1SigBg?.signal?.includes('bull') : w1SigBg?.signal?.includes('bear');
       let ltBull = 0, ltBear = 0;
       const ltW = { '1d': 1, '1w': 3, '1M': 4 };
       for (const [tf, w] of Object.entries(ltW)) {
@@ -5100,7 +5114,8 @@ async function backgroundRefineNewTrades() {
       }
       const ltRaw  = ltBias === 'long' ? ltBull : ltBias === 'short' ? ltBear : 0;
       const ltConf = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRaw * 8)) : 0;
-      const canScaleIn = ltBias === direction && ltConf >= 85;
+      // 長線單升級：日線 AND 週線都明確確認 + computeLongTermBias 返回同方向 + ltConf 達標
+      const canScaleIn = d1OkBg && w1OkBg && ltBias === direction && ltConf >= 82;
 
       const tlogEdit = loadTradeLog();
       const idx = tlogEdit.findIndex(t => t.id === trade.id);
