@@ -5226,9 +5226,9 @@ function updateOpenTrades(data) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
     const storedConf = trade.conf || 100;
-    if (storedConf < 65) {
+    if (storedConf < 75) {
       trade.status = 'cancelled';
-      trade.cancelReason = `信心度已降至 ${storedConf}%（低於最低門檻 65%），自動撤單`;
+      trade.cancelReason = `信心度已降至 ${storedConf}%（低於進場門檻 75%），自動撤單`;
       trade.cancelTime = Date.now();
       changed = true;
       cancelledSymbols.add(trade.symbol);
