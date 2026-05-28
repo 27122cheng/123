@@ -5021,22 +5021,14 @@ function recordSignalsFromScan(data) {
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // 品質門檻：直接用 coin.score（掃描路徑不用 computeSimpleSetup conf 做過濾）
-      // 原因：computeSimpleSetup conf 受 hardAdxPenalty 影響（ADX<22 扣14%），
-      //       而 ADX 懲罰在 buildTradeSetup 精煉時才有意義，掃描初篩不應套用
-      const scanScore = isLong ? coin.score : 100 - coin.score;
-      if (scanScore < 75) continue;  // score 75+ 才納入（建立掛單後 buildTradeSetup 會精煉）
-
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-      // computeSimpleSetup 只用於計算 entry/sl/tp
+      // 計算進場參數，並以 rawConf ≥ 75 作為品質門檻
+      // （與 buildTradeSetup 一致：score≥60 即可考慮，由 rawConf 決定品質）
       const setup = computeSimpleSetup(coin, isLong);
-      if (setup.hardBlocked) continue;  // AI 硬封鎖仍然生效（有歷史大量止損記憶）
-
-      // 信號品質門檻：rawConf ≥ 75（不扣宏觀/ADX，避免最高90分被扣至不可能通過）
-      // 宏觀/ADX 扣分後的 freshConf 在 updateOpenTrades 動態計算，低於75時才自動撤單
+      if (setup.hardBlocked) continue;
       if (setup.rawConf < 75) continue;
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
