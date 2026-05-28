@@ -5506,6 +5506,43 @@ function updateOpenTrades(data) {
     }
   }
 
+  // ── 持倉中（open）信心度同步：動態更新 trade.conf 供持倉頁面顯示 ──
+  if (_macroCache) {
+    try {
+      const _fg3 = _macroCache.fg, _gm3 = _macroCache;
+      const _fgV3 = parseInt(_fg3?.value || '50');
+      const _chg3 = _gm3?.marketCapChange || 0;
+      const _dom3 = _gm3?.btcDominance   || 50;
+      const _wb3  = computeWeeklyAIBias(_fg3, _gm3);
+      const _tb3  = computeTodayAIBias(_fg3, _gm3);
+      for (const trade of tlog) {
+        if (trade.status !== 'open') continue;
+        const baseConf3 = trade.rawConf || trade.conf || 100;
+        const _adxP3    = trade.hardAdxPenalty || 0;
+        const _learnP3  = trade.learnPenalty   || 0;
+        const _isL3 = trade.direction === 'long';
+        let _agt3 = 0;
+        if (_isL3) {
+          if (_chg3 < -2) _agt3++;
+          if (_dom3 > 58) _agt3++;
+          if (_fgV3 < 30) _agt3++;
+          if (_fgV3 > 75) _agt3 += 0.5;
+        } else {
+          if (_chg3 > 2)  _agt3++;
+          if (_dom3 < 44) _agt3++;
+          if (_fgV3 > 70) _agt3++;
+          if (_fgV3 < 25) _agt3 += 0.5;
+        }
+        const _macP3 = _agt3 >= 3 ? 18 : _agt3 >= 2 ? 12 : _agt3 >= 1 ? 5 : 0;
+        const _wOp3  = _isL3 ? _wb3.bias.includes('bear') : _wb3.bias.includes('bull');
+        const _tOp3  = _isL3 ? _tb3.bias.includes('bear') : _tb3.bias.includes('bull');
+        const _aiP3  = (_wOp3 ? (_wb3.bias.includes('strong') ? 8 : 4) : 0) + (_tOp3 ? 5 : 0);
+        const freshConf3 = Math.max(0, baseConf3 - _adxP3 - _learnP3 - _macP3 - _aiP3);
+        if (trade.conf !== freshConf3) { trade.conf = freshConf3; changed = true; }
+      }
+    } catch(_e3) {}
+  }
+
   for (const trade of tlog) {
     // ── 等待進場確認：現價觸及進場位後才轉為開倉 ──
     if (trade.status === 'pending') {
