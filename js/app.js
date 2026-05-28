@@ -5029,7 +5029,7 @@ function recordSignalsFromScan(data) {
       // （與 buildTradeSetup 一致：score≥60 即可考慮，由 rawConf 決定品質）
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      if (setup.rawConf < 75) continue;
+      if (setup.rawConf < 70) continue;
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
@@ -5269,9 +5269,9 @@ function updateOpenTrades(data) {
         freshConf = Math.max(0, baseConf - _macP - _aiP);
       } catch(_e) {}
     }
-    if (freshConf < 65) {
+    if (freshConf < 70) {
       trade.status = 'cancelled';
-      trade.cancelReason = `市場波動導致信心度降至 ${freshConf}%（低於撤單門檻 65%），自動撤單`;
+      trade.cancelReason = `市場波動導致信心度降至 ${freshConf}%（低於門檻 70%），自動撤單`;
       trade.cancelTime = Date.now();
       changed = true;
       cancelledSymbols.add(trade.symbol);
