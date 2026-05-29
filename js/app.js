@@ -5391,9 +5391,8 @@ function recordSignalsFromScan(data) {
   // ══════════════════════════════════════════════════
   {
     for (const coin of data) {
-      const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
-      const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
-      if (!isLong && !isShort) continue;
+      if (coin.score === 50) continue;  // 完全中性，跳過
+      const isLong  = coin.score > 50;
       const direction = isLong ? 'long' : 'short';
 
       // 方向封鎖：宏觀明確反向 → 跳過
