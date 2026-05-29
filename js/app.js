@@ -1640,13 +1640,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const ltRawScore = ltBias === 'long' ? ltBullScore : ltBias === 'short' ? ltBearScore : 0;
   // 週線不存在時 ltBias 必為 neutral（computeLongTermBias 已保障），故 ltConf=0
   const ltConf     = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRawScore * 8)) : 0;
-  // 長線單額外條件：宏觀/本週AI/今日AI 三者中 2+ 個同向
+  // 長線單額外條件：宏觀/本週AI/今日AI 三者中 2+ 個同向（供參考，不再單獨決定 canScaleIn）
   const _ltIsLong  = direction === 'long';
   const _ltMacAgr  = (_ltIsLong && _btsNetDir.includes('bull'))  || (!_ltIsLong && _btsNetDir.includes('bear'));
   const _ltWkAgr   = (_ltIsLong && _wBias.includes('bull'))      || (!_ltIsLong && _wBias.includes('bear'));
   const _ltTdAgr   = (_ltIsLong && _tBias.includes('bull'))      || (!_ltIsLong && _tBias.includes('bear'));
   const _ltAlignCnt = (_ltMacAgr ? 1 : 0) + (_ltWkAgr ? 1 : 0) + (_ltTdAgr ? 1 : 0);
-  const canScaleIn = ltBias === direction && ltConf >= 85 && _ltAlignCnt >= 2;
 
   // 短線單：4H + 日線同向（且非長線單）才顯示 ⚡ 短線標籤
   const h4Sig  = mtfData['4h']?.signal;
