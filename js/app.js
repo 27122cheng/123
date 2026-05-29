@@ -5381,20 +5381,20 @@ function recordSignalsFromScan(data) {
       const _dirOppT = (isLong && tBias.includes('bear'))  || (!isLong && tBias.includes('bull'));
       if (_dirOppM && _dirOppW && _dirOppT) continue;  // 三項全逆向才封鎖
 
-      // 日線同向（優先使用逐幣 dailySignal，無資料時退回趨勢代理）
+      // 日線同向（優先使用逐幣 dailySignal；neutral 或無資料時退回趨勢代理）
       const _scanDayBull = coin.dailySignal?.includes('bull');
       const _scanDayBear = coin.dailySignal?.includes('bear');
-      const _dailyAligned = coin.dailySignal
-        ? (isLong ? _scanDayBull : _scanDayBear)
-        : (isLong ? (coin.trend === '強勢看漲' || coin.trend === '看漲')
-                  : (coin.trend === '強勢看跌' || coin.trend === '看跌'));
+      const _dailyNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
+      const _dailyAligned = isLong
+        ? (_scanDayBull || (_dailyNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
+        : (_scanDayBear || (_dailyNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
       if (!_dailyAligned) continue;
 
-      // 周AI 或 今日AI 至少一個同向（有宏觀快取時）；兩個都逆向才封鎖
+      // 周AI / 今日AI 兩個都主動逆向才封鎖（中性/震盪不封鎖，扣分已在 conf 中體現）
       if (_macroCache) {
-        const _wAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
-        const _tAligned = isLong ? tBias.includes('bull') : tBias.includes('bear');
-        if (!_wAligned && !_tAligned) continue;  // 兩個都不同向才跳過
+        const _wOpposes = isLong ? wBias.includes('bear') : wBias.includes('bull');
+        const _tOpposes = isLong ? tBias.includes('bear') : tBias.includes('bull');
+        if (_wOpposes && _tOpposes) continue;
       }
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
