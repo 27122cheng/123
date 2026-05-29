@@ -5405,6 +5405,19 @@ function recordSignalsFromScan(data) {
       const _dirOppT = (isLong && tBias.includes('bear'))  || (!isLong && tBias.includes('bull'));
       if (_dirOppM && _dirOppW && _dirOppT) continue;  // 三項全逆向才封鎖
 
+      // 短線單 MTF 對齊要求：
+      //   1. 四小時/日線（以幣種趨勢代理）必須同向
+      //   2. 周/日 AI 預測兩個同向（有宏觀快取時）
+      const _htfAligned = isLong
+        ? (coin.trend === '強勢看漲' || coin.trend === '看漲')
+        : (coin.trend === '強勢看跌' || coin.trend === '看跌');
+      if (!_htfAligned) continue;
+      if (_macroCache) {
+        const _wAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
+        const _tAligned = isLong ? tBias.includes('bull') : tBias.includes('bear');
+        if (!_wAligned || !_tAligned) continue;
+      }
+
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
