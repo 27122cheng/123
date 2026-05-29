@@ -5,6 +5,7 @@
 /* ── 交易設置緩存（供 Telegram 通知使用）────────────────────── */
 const _tradeSetupCache = {};
 let   _macroCache      = null;
+let   _positionsScanTimer = null;
 
 /* ── 狀態 ───────────────────────────────────────────────────── */
 const state = {
@@ -402,6 +403,17 @@ function navigateTo(page, coinSymbol) {
   if (page === 'settings') populateSettingsPage();
   if (page === 'positions') {
     renderPositionsPage();
+    if (_positionsScanTimer) clearInterval(_positionsScanTimer);
+    _positionsScanTimer = setInterval(() => {
+      if (state.data && state.data.length) {
+        try { recordSignalsFromScan(state.data); } catch(e) {}
+        try { updateOpenTrades(state.data); } catch(e) {}
+      }
+      try { renderPositionsPage(); } catch(e) {}
+    }, 10000);
+  } else if (_positionsScanTimer) {
+    clearInterval(_positionsScanTimer);
+    _positionsScanTimer = null;
   }
   if (page === 'tradelog') renderTradeLogPage();
 
@@ -7337,7 +7349,9 @@ function renderPositionsPage() {
       lossCount++;
     }
 
-    const conf      = t.conf || Math.min(90, t.score || 60);
+    const conf      = t.rawConf != null
+      ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0))
+      : (t.conf || Math.min(90, t.score || 60));
     const confClr   = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#ff6d00' : 'var(--text3)';
     const isRange   = t.tradeType === 'range';
     const isLongTermOpen = !isRange && t.canScaleIn === true;
