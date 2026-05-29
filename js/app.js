@@ -7360,7 +7360,7 @@ function renderPositionsPage() {
     const ltBadgeOpen = isLongTermOpen
       ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(34,197,94,.18);border:1px solid rgba(34,197,94,.4);color:#4ade80;vertical-align:middle">〔長線單〕</span>`
       : '';
-    const shortTermBadgeOpen = (!isLongTermOpen && t.is4hDayAligned !== false)
+    const shortTermBadgeOpen = !isLongTermOpen
       ? `<span style="display:inline-flex;align-items:center;gap:3px;margin-left:7px;padding:2px 7px;border-radius:20px;font-size:0.7rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;vertical-align:middle">⚡ 短線</span>`
       : '';
 
@@ -7652,7 +7652,7 @@ function renderPositionsPage() {
             const ltBadgePend = isLongTermCard
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.35);color:#4ade80;padding:2px 7px;border-radius:20px;margin-left:6px">〔長線單〕</span>`
               : '';
-            const shortTermBadgePend = (!isLongTermCard && t.is4hDayAligned !== false)
+            const shortTermBadgePend = !isLongTermCard
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:6px">⚡ 短線</span>`
               : '';
             const pendReasons = (t.entryReason || '').split('，').filter(Boolean);
