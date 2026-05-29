@@ -910,9 +910,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             const tlogC = loadTradeLog();
             const ci = tlogC.findIndex(t => t.id === existingActive.id);
             if (ci >= 0) {
-              tlogC[ci].status = 'cancelled';
-              tlogC[ci].cancelReason = reason;
-              tlogC[ci].cancelTime = Date.now();
+              addCancelCooldown(tlogC[ci], reason);
+              tlogC.splice(ci, 1);
               saveTradeLog(tlogC);
             }
             try { sendCancelTelegramNotification(existingActive, reason); } catch(e) {}
@@ -1033,8 +1032,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // 若冷卻期內有同方向取消記錄（含飛越止盈），顯示機會已過提示
-  const recentCancel = tlogNow
-    .filter(t => t.symbol === coin.symbol && t.status === 'cancelled' && (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN)
+  const recentCancel = loadCancelCooldowns()
+    .filter(c => c.symbol === coin.symbol && (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN)
     .sort((a, b) => (b.cancelTime || 0) - (a.cancelTime || 0))[0];
   if (recentCancel) {
     const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
@@ -1879,7 +1878,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // ── 長線單：覆蓋 tp1/tp2 為長線最終止盈，並計算三個加倉位 ──────
   // 觸發條件：ltBias === direction && ltConf >= 85（canScaleIn = true）
-  let ltTP = null, ltTPReason = '', scaleInLevels = [];
+  let ltTP = null, ltTPReason = '', scaleInLevels = [], _aiScaleCount = 1, _aiScaleReason = '';
   if (canScaleIn) {
     const minLtTP = isLong ? entry + risk * 4 : entry - risk * 4; // 至少 4:1 R/R
     const maxDist  = price * 0.30; // 長線上限擴展至 30%（週線目標可能較遠）
@@ -1905,12 +1904,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
     // AI 自行判斷加倉次數（最多 3 次）：依長線信心度和 R/R 決定
     const ltRRraw = risk > 0 ? Math.abs(ltTP - entry) / risk : 0;
-    const _aiScaleCount = (ltConf >= 90 && ltRRraw >= 5.0) ? 3
-                        : (ltConf >= 87 && ltRRraw >= 4.0) ? 2
-                        : 1;
-    const _aiScaleReason = _aiScaleCount === 3 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 3 次加倉`
-                         : _aiScaleCount === 2 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 2 次加倉`
-                         : `長線信心 ${ltConf}%，建議 1 次加倉（保守佈局）`;
+    _aiScaleCount = (ltConf >= 90 && ltRRraw >= 5.0) ? 3
+                  : (ltConf >= 87 && ltRRraw >= 4.0) ? 2
+                  : 1;
+    _aiScaleReason = _aiScaleCount === 3 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 3 次加倉`
+                   : _aiScaleCount === 2 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 2 次加倉`
+                   : `長線信心 ${ltConf}%，建議 1 次加倉（保守佈局）`;
     // 加倉位：均勻分佈在路程中，並嘗試吸附至附近 ±1.5% S/R
     const totalMove = Math.abs(ltTP - entry);
     scaleInLevels = Array.from({ length: _aiScaleCount }, (_, i) => i + 1).map(n => {
@@ -2194,9 +2193,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     );
     if (oppIdx >= 0) {
       const oppDir = tlog[oppIdx].direction;
-      tlog[oppIdx].status = 'cancelled';
-      tlog[oppIdx].cancelReason = `技術訊號方向由${oppDir === 'long' ? '多' : '空'}轉${direction === 'long' ? '多' : '空'}，幣種詳情頁自動更新掛單方向`;
-      tlog[oppIdx].cancelTime = Date.now();
+      const _oppReason = `技術訊號方向由${oppDir === 'long' ? '多' : '空'}轉${direction === 'long' ? '多' : '空'}，幣種詳情頁自動更新掛單方向`;
+      addCancelCooldown(tlog[oppIdx], _oppReason);
+      tlog.splice(oppIdx, 1);
     }
 
     // hasAnyActive：反方向掛單已於上方取消；只有「已入場（open）」的交易才真正封鎖
@@ -2204,11 +2203,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const hasAnyActive = tlog.some(t => t.symbol === coin.symbol && t.status === 'open');
 
     // 若同幣種+方向在冷卻期內有取消記錄（含飛越止盈取消），不重複建立掛單
-    const recentlyCancelled = tlog.some(t =>
-      t.symbol === coin.symbol &&
-      t.direction === direction &&
-      t.status === 'cancelled' &&
-      (Date.now() - (t.cancelTime || 0)) < SIGNAL_COOLDOWN
+    const recentlyCancelled = loadCancelCooldowns().some(c =>
+      c.symbol === coin.symbol &&
+      c.direction === direction &&
+      (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && !macroBlockedForRecord) {
@@ -2435,7 +2433,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   </div>
 
   ${macroBlockedForRecord ? `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#ef4444">⚠️ 宏觀大方向${isLong ? '偏空' : '偏多'}，本次技術訊號僅供參考，<strong>未計入掛單記錄</strong>（不會出現在「未進場」）</div>` : ''}
-  ${_recordBlockedByCooldown ? (() => { const cancelledT = loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === direction && t.status === 'cancelled'); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
+  ${_recordBlockedByCooldown ? (() => { const cancelledT = loadCancelCooldowns().find(c => c.symbol === coin.symbol && c.direction === direction && (Date.now() - (c.cancelTime||0)) < SIGNAL_COOLDOWN); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
   ${_recordBlockedByActive ? `<div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#818cf8">📌 此幣種已有持倉進行中，<strong>未計入掛單記錄</strong>（不重複開倉）</div>` : ''}
 
   ${canScaleIn && ltTP ? `
@@ -4996,24 +4994,37 @@ const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內
 function loadTradeLog() { try { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); } catch(e) { return []; } }
 function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
 
+/* ── 取消冷卻記錄（取代 cancelled 狀態的 trade，以便從持倉中刪除）*/
+const CANCEL_COOLDOWN_KEY = 'csp_cancel_cooldowns';
+function loadCancelCooldowns() { try { return JSON.parse(localStorage.getItem(CANCEL_COOLDOWN_KEY) || '[]'); } catch(e) { return []; } }
+function saveCancelCooldowns(list) { localStorage.setItem(CANCEL_COOLDOWN_KEY, JSON.stringify(list)); }
+function addCancelCooldown(trade, reason) {
+  const cutoff = Date.now() - SIGNAL_COOLDOWN;
+  const all = loadCancelCooldowns().filter(c => (c.cancelTime || 0) > cutoff);
+  all.unshift({ symbol: trade.symbol, direction: trade.direction, cancelTime: Date.now(), cancelReason: reason || '', entry: trade.entry, tp1: trade.tp1, sl: trade.sl });
+  saveCancelCooldowns(all);
+}
+
 /* 判斷是否在冷卻期（防止同一進場機會被重複記錄）*/
 function inCooldown(tlog, symbol, direction) {
   const now = Date.now();
   const sameDir = tlog.some(t =>
     t.symbol === symbol &&
     t.direction === direction &&
-    (t.status === 'open' || t.status === 'pending' || t.status === 'cancelled') &&
+    (t.status === 'open' || t.status === 'pending') &&
     (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN
   );
-  // 阻止同幣種有任何有效方向（非 wait）的活躍交易重複記錄
-  // 注意：需要 t.entry，避免舊版無 entry 的掛單誤觸發冷卻
+  const cancelledRecently = loadCancelCooldowns().some(c =>
+    c.symbol === symbol && c.direction === direction &&
+    (now - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
+  );
   const anyOpen = tlog.some(t =>
     t.symbol === symbol &&
     t.direction !== 'wait' &&
     (t.status === 'open' || t.status === 'pending') &&
     t.entry
   );
-  return sameDir || anyOpen;
+  return sameDir || cancelledRecently || anyOpen;
 }
 
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
@@ -5443,14 +5454,13 @@ function updateOpenTrades(data) {
   const tlog = loadTradeLog();
   let changed = false;
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
+  const toDeleteIds = new Set();      // 取消後立即從 tlog 刪除的 trade id
   const tp1Hits = []; // trades that just reached TP1 this cycle
 
-  // ── 清除殘留的 direction='wait' 無效掛單（不應出現在持倉中）──
+  // ── 清除殘留的 direction='wait' 無效掛單（直接刪除，不留冷卻記錄）──
   for (const trade of tlog) {
     if (trade.status === 'pending' && trade.direction === 'wait') {
-      trade.status = 'cancelled';
-      trade.cancelReason = '觀望方向無效掛單（自動清除）';
-      trade.cancelTime = Date.now();
+      toDeleteIds.add(trade.id);
       changed = true;
     }
   }
@@ -5481,9 +5491,8 @@ function updateOpenTrades(data) {
           const reason = (cancelLong && macroClearBear) || (cancelShort && macroClearBull)
             ? `宏觀大方向${macroLabel}，取消逆勢${trade.direction === 'long' ? '多' : '空'}單掛單`
             : '本週 + 今日 AI 均明確反向，取消未入場掛單';
-          trade.status = 'cancelled';
-          trade.cancelReason = reason;
-          trade.cancelTime = Date.now();
+          addCancelCooldown(trade, reason);
+          toDeleteIds.add(trade.id);
           changed = true;
           cancelledSymbols.add(trade.symbol);
           sendCancelTelegramNotification(trade, reason);
@@ -5533,12 +5542,12 @@ function updateOpenTrades(data) {
       } catch(_e) {}
     }
     if (freshConf < 75) {
-      trade.status = 'cancelled';
-      trade.cancelReason = `市場波動導致信心度降至 ${freshConf}%（低於門檻 75%），自動撤單`;
-      trade.cancelTime = Date.now();
+      const _confReason = `市場波動導致信心度降至 ${freshConf}%（低於門檻 75%），自動撤單`;
+      addCancelCooldown(trade, _confReason);
+      toDeleteIds.add(trade.id);
       changed = true;
       cancelledSymbols.add(trade.symbol);
-      sendCancelTelegramNotification(trade, trade.cancelReason);
+      sendCancelTelegramNotification(trade, _confReason);
     }
   }
 
@@ -5579,9 +5588,8 @@ function updateOpenTrades(data) {
         if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
         const cancelReason = reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`;
-        trade.status = 'cancelled';
-        trade.cancelReason = cancelReason;
-        trade.cancelTime   = Date.now();
+        addCancelCooldown(trade, cancelReason);
+        toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
         sendCancelTelegramNotification(trade, cancelReason);
@@ -5591,9 +5599,9 @@ function updateOpenTrades(data) {
       // ── 進場前已突破止損位 → 立即取消（風控執行）──
       const sl = trade.sl;
       if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
-        trade.status     = 'cancelled';
-        trade.cancelReason = `進場前價格已${isLong ? '跌破' : '突破'}止損位 $${sl}（現價 $${cur.toPrecision(6)}）`;
-        trade.cancelTime   = Date.now();
+        const _slReason = `進場前價格已${isLong ? '跌破' : '突破'}止損位 $${sl}（現價 $${cur.toPrecision(6)}）`;
+        addCancelCooldown(trade, _slReason);
+        toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
         continue;
@@ -5607,9 +5615,8 @@ function updateOpenTrades(data) {
         const hitLevel = hitTP2 ? '止盈二' : '止盈一';
         const fmt      = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
         const cancelReason = `價格未回踩進場直接飛越${hitLevel}（$${fmt(isLong ? tp1 : tp1)}），掛單失效`;
-        trade.status       = 'cancelled';
-        trade.cancelReason = cancelReason;
-        trade.cancelTime   = Date.now();
+        addCancelCooldown(trade, cancelReason);
+        toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
         // 瀏覽器通知
@@ -5780,6 +5787,10 @@ function updateOpenTrades(data) {
         changed = true;
       }
     }
+  }
+  if (toDeleteIds.size > 0) {
+    tlog.splice(0, tlog.length, ...tlog.filter(t => !toDeleteIds.has(t.id)));
+    changed = true;
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
   if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
