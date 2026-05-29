@@ -6,6 +6,7 @@
 const _tradeSetupCache = {};
 let   _macroCache      = null;
 let   _positionsScanTimer = null;
+let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
 
 /* ── 狀態 ───────────────────────────────────────────────────── */
 const state = {
@@ -149,6 +150,17 @@ function hideLoading() {
 function startRefreshCycle() {
   clearInterval(state.refreshTimer);
   clearInterval(state.countdownTimer);
+
+  // 持續背景掃描：每 30 秒掃描所有幣種交易建議，與頁面無關
+  clearInterval(_bgScanTimer);
+  _bgScanTimer = setInterval(() => {
+    if (!state.data || !state.data.length) return;
+    try { recordSignalsFromScan(state.data); } catch(e) {}
+    try { updateOpenTrades(state.data); } catch(e) {}
+    if (state.currentPage === 'positions') {
+      try { renderPositionsPage(); } catch(e) {}
+    }
+  }, 30000);
 
   const secs = state.settings.refreshInterval || 60;
   state.countdown = secs;
