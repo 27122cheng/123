@@ -5375,10 +5375,9 @@ function recordSignalsFromScan(data) {
   }
 
   // ══════════════════════════════════════════════════
-  // 定向行情路徑（趨勢交易，信心門檻 70%）
-  // 需要宏觀快取才能正確計算扣分；無快取時跳過，避免所有幣種因零扣分通過
+  // 定向行情路徑（趨勢交易，掃描初步信號自動加入持倉）
   // ══════════════════════════════════════════════════
-  if (_macroCache) {
+  {
     for (const coin of data) {
       const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
       const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
@@ -5399,10 +5398,10 @@ function recordSignalsFromScan(data) {
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-      // 計算進場參數：減完所有懲罰後的最終信心度才做門檻判斷
+      // 計算進場參數：掃描路徑為初步信號（refined=false），不設信心門檻
+      // 信心度用於顯示參考；幣種詳情頁（buildTradeSetup）會精煉為最終建議
       const setup = computeSimpleSetup(coin, isLong);
-      if (setup.hardBlocked) continue;
-      if (setup.conf < 70) continue;  // 使用最終信心度（ADX + 學習 + 宏觀 + AI趨勢 + 技術面 + 籌碼面全部扣完）
+      if (setup.hardBlocked) continue;  // 僅 AI 學習硬封鎖才跳過
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
@@ -5457,7 +5456,7 @@ function recordSignalsFromScan(data) {
         }
       } catch(_e) {}
     }
-  } // end if (_macroCache) — directional scan
+  }
   if (changed) {
     if (tlog.length > 500) tlog.splice(500);
     saveTradeLog(tlog);
