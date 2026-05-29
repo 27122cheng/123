@@ -186,21 +186,32 @@ async function fetchAllFromBinance(timeframe) {
     const batch = pairs.slice(i, i + batchSize);
 
     const batchResults = await Promise.allSettled(
-      batch.map(pair => fetchKlines(pair.s.replace('/', ''), interval, 220))
+      batch.map(pair => {
+        const sym = pair.s.replace('/', '');
+        return Promise.all([
+          fetchKlines(sym, interval, 220),
+          fetchKlines(sym, '1d', 100),
+          fetchKlines(sym, '1w', 52),
+        ]);
+      })
     );
 
     batchResults.forEach((r, j) => {
       const idx  = i + j;
       const pair = pairs[idx];
       const sym  = pair.s.replace('/', '');
-      const raw  = r.status === 'fulfilled' ? r.value : null;
-      const analysed = raw ? analyzeKlines(pair.s, raw) : null;
+      const [mainRaw, dayRaw, wkRaw] = r.status === 'fulfilled' ? r.value : [null, null, null];
+      const analysed = mainRaw ? analyzeKlines(pair.s, mainRaw) : null;
+      const daySig   = dayRaw  && dayRaw.length  >= 30 ? analyzeTimeframeSignal(dayRaw)  : null;
+      const wkSig    = wkRaw   && wkRaw.length   >= 8  ? analyzeTimeframeSignal(wkRaw)   : null;
 
       if (analysed) {
         results[idx] = {
           ...analysed,
           trend:          scoreToTrend(analysed.score),
           volumeStrength: getVolStr(analysed.volume),
+          dailySignal:    daySig?.signal  || null,
+          weeklySignal:   wkSig?.signal   || null,
         };
       } else {
         /* 優先使用幣安即時現貨價格，無法獲取才退回靜態基準 */
@@ -214,6 +225,7 @@ async function fetchAllFromBinance(timeframe) {
           ema200: fmtPrice(fallbackPrice * 0.90),
           volume: 0, volumeStrength: '中',
           momentum: 0, strength: 20, macdHist: 0, change24h: 0,
+          dailySignal: null, weeklySignal: null,
         };
       }
     });
@@ -251,6 +263,8 @@ function enrichData(raw) {
       atr:             item.atr             ?? null,
       wickSupports:    item.wickSupports     ?? [],
       wickResistances: item.wickResistances  ?? [],
+      dailySignal:     item.dailySignal      ?? null,
+      weeklySignal:    item.weeklySignal     ?? null,
     };
   });
 }

@@ -1704,14 +1704,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const wkBearSig  = wkS?.signal?.includes('bear');
   const is4hDayAligned = isLong ? (h4Bull && dayBullSig) : (h4Bear && dayBearSig);
 
-  // 長線單：日線 + 週線同向後，再看短線（4H）是否在關鍵位置有同向
+  // 長線單條件：日線與週線同方向（用戶要求：去除 4H 關鍵位要求，純日線+週線決定）
   const _dayWkAligned = isLong ? (dayBullSig && wkBullSig) : (dayBearSig && wkBearSig);
-  const _h4AtKey = isLong
-    ? (h4Bull && _htfSupps.some(s => Math.abs(price - s) < atr * 2.0))
-    : (h4Bear && _htfResists.some(r => Math.abs(price - r) < atr * 2.0));
-  // 若無 4H 關鍵位，退用 4H 方向對齊 + 日線週線已足夠（避免無結構資料時永遠封鎖）
-  const _h4Aligned = _h4AtKey || (isLong ? h4Bull : h4Bear);
-  const canScaleIn = _dayWkAligned && _h4Aligned && ltBias === direction && ltConf >= 85;
+  const canScaleIn = _dayWkAligned && ltBias === direction && ltConf >= 85;
   const ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
   // 根據類型更新 dirLabel，避免出現「短線做多 〔長線單〕」矛盾文字
   if (canScaleIn) dirLabel = isLong ? '長線做多' : '長線做空';
@@ -5459,18 +5454,23 @@ function recordSignalsFromScan(data) {
       const _dirOppT = (isLong && tBias.includes('bear'))  || (!isLong && tBias.includes('bull'));
       if (_dirOppM && _dirOppW && _dirOppT) continue;  // 三項全逆向才封鎖
 
-      // 短線單 MTF 對齊要求：
-      //   1. 四小時/日線（以幣種趨勢代理）必須同向
-      //   2. 周/日 AI 預測兩個同向（有宏觀快取時）
-      const _htfAligned = isLong
-        ? (coin.trend === '強勢看漲' || coin.trend === '看漲')
-        : (coin.trend === '強勢看跌' || coin.trend === '看跌');
+      // MTF 對齊要求：日線與週線同方向（長線單條件）
+      // 優先使用掃描時取得的逐幣 dailySignal / weeklySignal
+      const _scanDayBull  = coin.dailySignal?.includes('bull');
+      const _scanDayBear  = coin.dailySignal?.includes('bear');
+      const _scanWkBull   = coin.weeklySignal?.includes('bull');
+      const _scanWkBear   = coin.weeklySignal?.includes('bear');
+      const _hasMTFData   = coin.dailySignal && coin.weeklySignal;
+      const _dayWkAligned = isLong
+        ? (_scanDayBull && _scanWkBull)
+        : (_scanDayBear && _scanWkBear);
+      // 無 MTF 資料時退回趨勢代理（向後相容）
+      const _htfAligned = _hasMTFData
+        ? _dayWkAligned
+        : isLong
+          ? (coin.trend === '強勢看漲' || coin.trend === '看漲')
+          : (coin.trend === '強勢看跌' || coin.trend === '看跌');
       if (!_htfAligned) continue;
-      if (_macroCache) {
-        const _wAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
-        const _tAligned = isLong ? tBias.includes('bull') : tBias.includes('bear');
-        if (!_wAligned || !_tAligned) continue;
-      }
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
