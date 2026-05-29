@@ -5641,9 +5641,20 @@ function updateOpenTrades(data) {
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     const baseConf   = trade.rawConf || trade.conf || 100;
-    // 靜態懲罰（建單時已計算，後續不重算，但需保留進 freshConf 以正確顯示最終信心度）
     const _adxPen    = trade.hardAdxPenalty || 0;
-    const _learnPen  = trade.learnPenalty   || 0;
+
+    // 取得最新幣種資料（RSI/ADX 供學習規則重算用）
+    const _fCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
+    const _curRsi = parseFloat(_fCoin?.rsi) || parseFloat(trade.rsi) || 50;
+    const _curAdx = parseFloat(_fCoin?.adx) || parseFloat(trade.adx) || 20;
+
+    // 重新執行學習規則扣分（反映最新止損紀錄，不使用建單時的靜態值）
+    let _learnPen = trade.learnPenalty || 0;
+    try {
+      const _lrFresh = applyLearnAdjustment(trade.direction, _curRsi, _curAdx, { slType: 'atr', skipAdxRule: true });
+      _learnPen = _lrFresh.penalty || 0;
+    } catch(_le) { /* 保留靜態值 */ }
+
     let freshConf = baseConf;
     if (_macroCache) {
       try {
@@ -5680,15 +5691,13 @@ function updateOpenTrades(data) {
         }
         // 動態技術面 + 籌碼面扣分（依最新掃描數據重算）
         let _techP = 0, _chipsP = 0;
-        const _fCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
         if (_fCoin) {
-          const _fRsi = parseFloat(_fCoin.rsi) || 50;
           if (_isL) {
-            if (_fRsi > 78)      _techP += 7;
-            else if (_fRsi > 70) _techP += 4;
+            if (_curRsi > 78)      _techP += 7;
+            else if (_curRsi > 70) _techP += 4;
           } else {
-            if (_fRsi < 22)      _techP += 7;
-            else if (_fRsi < 30) _techP += 4;
+            if (_curRsi < 22)      _techP += 7;
+            else if (_curRsi < 30) _techP += 4;
           }
           const _fMacd = parseFloat(_fCoin.macdHist) || 0;
           if (_isL  && _fMacd < 0) _techP += 3;
@@ -5711,13 +5720,16 @@ function updateOpenTrades(data) {
           }
           _chipsP = Math.min(10, _chipsP);
         }
-        // 最終信心度 = rawConf - ADX（靜態）- 學習（靜態）- 宏觀（動態）- AI趨勢（動態）- 技術面（動態）- 籌碼面（動態）
+        // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 技術面（動態）- 籌碼面（動態）
         freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       } catch(_e) {}
+    } else {
+      // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
+      const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
+      if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
     }
-    // freshConf 更新僅供顯示，不自動撤單（避免市場短暫波動清空持倉頁面）
   }
 
   for (const trade of tlog) {
