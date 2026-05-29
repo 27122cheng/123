@@ -5146,6 +5146,21 @@ function purgeSymbolData(symbol) {
   state.filtered = (state.filtered || []).filter(d => d.symbol !== symbol);
 }
 
+function cancelPendingTrade(tradeId, event) {
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+  const tlog = loadTradeLog();
+  const trade = tlog.find(t => t.id === tradeId && t.status === 'pending');
+  if (!trade) return;
+  if (!confirm(`確定取消 ${trade.symbol} ${trade.direction === 'long' ? '做多' : '做空'} 掛單？`)) return;
+  const reason = '手動取消掛單';
+  addCancelCooldown(trade, reason);
+  const updated = tlog.filter(t => t.id !== tradeId);
+  saveTradeLog(updated);
+  try { sendCancelTelegramNotification(trade, reason); } catch(e) {}
+  if (typeof showToast === 'function') showToast(`已取消 ${trade.symbol} ${trade.direction === 'long' ? '多' : '空'}單掛單`, 'info');
+  if (state.currentPage === 'positions') renderPositionsPage();
+}
+
 function removePairFromList(symbol) {
   const hasTrades = loadTradeLog().some(t => t.symbol === symbol);
   if (hasTrades) {
@@ -5715,6 +5730,7 @@ function updateOpenTrades(data) {
         toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
+        sendCancelTelegramNotification(trade, _slReason);
         continue;
       }
 
@@ -7625,9 +7641,15 @@ function renderPositionsPage() {
               </div>
               ${isLongTermCard && t.aiScaleReason ? `<div style="margin-top:6px;font-size:0.72rem;color:#a78bfa;padding:4px 8px;background:rgba(167,139,250,.08);border-radius:6px">🤖 ${t.aiScaleReason}</div>` : ''}
               ${pendReasons.length ? `<div class="pos-reasons" style="margin-top:8px"><div class="pos-reasons-lbl">📍 進場理由</div>${pendReasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('')}</div>` : ''}
-              <div class="pos-footer">
-                <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
-                <span style="color:var(--text3);font-size:0.72rem">有效期至：${expiry}</span>
+              <div class="pos-footer" style="display:flex;align-items:center;justify-content:space-between">
+                <div>
+                  <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
+                  <span style="color:var(--text3);font-size:0.72rem;margin-left:10px">有效期至：${expiry}</span>
+                </div>
+                <button
+                  onclick="cancelPendingTrade('${t.id}', event)"
+                  style="font-size:0.72rem;padding:3px 10px;border-radius:6px;border:1px solid rgba(239,68,68,.4);background:rgba(239,68,68,.08);color:#ef4444;cursor:pointer;white-space:nowrap"
+                  title="取消此掛單">✕ 取消掛單</button>
               </div>
             </div>`;
           }).join('')}
