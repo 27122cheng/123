@@ -5364,7 +5364,7 @@ function recordSignalsFromScan(data) {
 
   // ══════════════════════════════════════════════════
   // Loop 2 ── 短線單
-  // 條件：宏觀/大方向/週預測/日預測/大時間框架，≥2 項同向
+  // 條件：4 大指標（宏觀/大方向/週日AI預測/大時間框架）≥2 項同向
   // 門檻：扣掉所有懲罰後的最終信心度 ≥ 70%
   // ══════════════════════════════════════════════════
   {
@@ -5377,24 +5377,27 @@ function recordSignalsFromScan(data) {
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // ── 多空條件計分（5 項指標，至少 2 項同向才進入信心評估）──
-      // F1 宏觀：fear&greed + 市值變化 + BTC優勢
+      // ── 4 項多空條件計分，至少 2 項同向才進入信心評估 ──
+      // F1 宏觀（slight_bull/bull/strong_bull 均算同向）
       const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
-      // F2 大方向：幣種週線 K 線方向（幣種自身的大級別趨勢）
-      const _f2 = isLong ? coin.weeklySignal?.includes('bull') : coin.weeklySignal?.includes('bear');
-      // F3 週AI預測
-      const _f3 = _macroCache ? (isLong ? wBias.includes('bull') : wBias.includes('bear')) : false;
-      // F4 日AI預測
-      const _f4 = _macroCache ? (isLong ? tBias.includes('bull') : tBias.includes('bear')) : false;
-      // F5 大時間框架：幣種日線信號；neutral 或無資料時退回趨勢代理
+      // F2 大方向：幣種週線 K 線同向，或幣種評分達強烈信號門檻（多頭 ≥65 / 空頭 ≤35）
+      const _f2 = isLong
+        ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 65)
+        : (!!coin.weeklySignal?.includes('bear') || coin.score <= 35);
+      // F3 週/日AI預測：週AI 或 今日AI 任一同向即計分
+      const _f3 = _macroCache
+        ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
+           (isLong ? tBias.includes('bull') : tBias.includes('bear')))
+        : false;
+      // F4 大時間框架：幣種日線信號；neutral 或無資料時退回趨勢代理
       const _dtBull    = coin.dailySignal?.includes('bull');
       const _dtBear    = coin.dailySignal?.includes('bear');
       const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
-      const _f5 = isLong
+      const _f4 = isLong
         ? (_dtBull || (_dtNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
         : (_dtBear || (_dtNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
 
-      const _alignedCount = [_f1, _f2, _f3, _f4, _f5].filter(Boolean).length;
+      const _alignedCount = [_f1, _f2, _f3, _f4].filter(Boolean).length;
       if (_alignedCount < 2) continue;  // 未達 2 項同向，繼續觀望
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
