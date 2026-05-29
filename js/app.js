@@ -51,7 +51,6 @@ async function init() {
   }
   // 後續處理獨立保護，不影響 state.data
   try { updateOpenTrades(state.data); } catch(e) { console.error('[init] updateOpenTrades 錯誤:', e); }
-  try { recordSignalsFromScan(state.data); } catch(e) { console.error('[init] recordSignalsFromScan 錯誤:', e); }
 
   hideLoading();
   hideScanBar();
@@ -62,8 +61,10 @@ async function init() {
   startEconCalendarCheck();
   bindEvents();
   checkApiStatus();
-  // 背景預載宏觀數據，讓首次通知就能帶入 AI 預測與扣分
-  _prefetchMacroCache();
+  // 預載宏觀快取後再執行首次掃描，確保 isRangeMode 依真實宏觀決定
+  _prefetchMacroCache().then(() => {
+    try { recordSignalsFromScan(state.data); } catch(e) { console.error('[init] recordSignalsFromScan 錯誤:', e); }
+  });
 }
 
 async function _prefetchMacroCache() {
@@ -181,6 +182,13 @@ function startRefreshCycle() {
     let _cancelled1 = new Set();
     try { checkAndSendAlerts(data); } catch(e) { console.error('[refresh] checkAndSendAlerts 錯誤:', e); }
     try { _cancelled1 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[refresh] updateOpenTrades 錯誤:', e); }
+    // 確保宏觀快取就緒，避免掃描時因 _macroCache 為 null 觸發震盪模式封鎖
+    if (!_macroCache) {
+      try {
+        const [_rfg, _rgm] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
+        if (_rfg || _rgm) _macroCache = { ...(_rgm || {}), fg: _rfg };
+      } catch(_re) {}
+    }
     try { recordSignalsFromScan(data); } catch(e) { console.error('[refresh] recordSignalsFromScan 錯誤:', e); }
     try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
     try {
@@ -231,6 +239,13 @@ async function manualRefresh() {
   let _cancelled2 = new Set();
   try { checkAndSendAlerts(data); } catch(e) { console.error('[manualRefresh] checkAndSendAlerts 錯誤:', e); }
   try { _cancelled2 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[manualRefresh] updateOpenTrades 錯誤:', e); }
+  // 確保宏觀快取就緒，避免掃描時因 _macroCache 為 null 觸發震盪模式封鎖
+  if (!_macroCache) {
+    try {
+      const [_rfg2, _rgm2] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
+      if (_rfg2 || _rgm2) _macroCache = { ...(_rgm2 || {}), fg: _rfg2 };
+    } catch(_re2) {}
+  }
   try { recordSignalsFromScan(data); } catch(e) { console.error('[manualRefresh] recordSignalsFromScan 錯誤:', e); }
   try { checkPostDataReversal(data); } catch(e) { console.error('[manualRefresh] checkPostDataReversal 錯誤:', e); }
   try {
@@ -5145,7 +5160,8 @@ function recordSignalsFromScan(data) {
   const _rsWeeklyNeutral = !_RS_DIR.includes(wBias);
   const _rsTodayNeutral  = !_RS_DIR.includes(tBias);
   const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
-  const isRangeMode      = _rsNeutralCnt >= 2;
+  // 無宏觀快取時不觸發震盪模式，避免封鎖所有方向性掃描
+  const isRangeMode      = _macroCache ? (_rsNeutralCnt >= 2) : false;
   // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
   const _rsMBear = (macroNetDir === 'strong_bear' || macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
   const _rsWBear = wBias.includes('bear') ? 1 : 0;
