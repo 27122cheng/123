@@ -5454,23 +5454,21 @@ function recordSignalsFromScan(data) {
       const _dirOppT = (isLong && tBias.includes('bear'))  || (!isLong && tBias.includes('bull'));
       if (_dirOppM && _dirOppW && _dirOppT) continue;  // 三項全逆向才封鎖
 
-      // MTF 對齊要求：日線與週線同方向（長線單條件）
-      // 優先使用掃描時取得的逐幣 dailySignal / weeklySignal
-      const _scanDayBull  = coin.dailySignal?.includes('bull');
-      const _scanDayBear  = coin.dailySignal?.includes('bear');
-      const _scanWkBull   = coin.weeklySignal?.includes('bull');
-      const _scanWkBear   = coin.weeklySignal?.includes('bear');
-      const _hasMTFData   = coin.dailySignal && coin.weeklySignal;
-      const _dayWkAligned = isLong
-        ? (_scanDayBull && _scanWkBull)
-        : (_scanDayBear && _scanWkBear);
-      // 無 MTF 資料時退回趨勢代理（向後相容）
-      const _htfAligned = _hasMTFData
-        ? _dayWkAligned
-        : isLong
-          ? (coin.trend === '強勢看漲' || coin.trend === '看漲')
-          : (coin.trend === '強勢看跌' || coin.trend === '看跌');
-      if (!_htfAligned) continue;
+      // 日線同向（優先使用逐幣 dailySignal，無資料時退回趨勢代理）
+      const _scanDayBull = coin.dailySignal?.includes('bull');
+      const _scanDayBear = coin.dailySignal?.includes('bear');
+      const _dailyAligned = coin.dailySignal
+        ? (isLong ? _scanDayBull : _scanDayBear)
+        : (isLong ? (coin.trend === '強勢看漲' || coin.trend === '看漲')
+                  : (coin.trend === '強勢看跌' || coin.trend === '看跌'));
+      if (!_dailyAligned) continue;
+
+      // 周/日 AI 預測兩個同向（有宏觀快取時）
+      if (_macroCache) {
+        const _wAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
+        const _tAligned = isLong ? tBias.includes('bull') : tBias.includes('bear');
+        if (!_wAligned || !_tAligned) continue;
+      }
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
