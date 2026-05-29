@@ -6038,17 +6038,102 @@ function sendCancelTelegramNotification(trade, reason) {
   const s = loadSettings();
   if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-  const escHtml = str => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const sym = trade.symbol.replace('/USDT', '');
-  const dir = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
+  const esc = str => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const sym     = trade.symbol.replace('/USDT', '');
+  const isLong  = trade.direction === 'long';
+  const dirLabel = isLong ? '▲ 做多（Long）' : '▼ 做空（Short）';
   const siteUrl = window.location.origin + window.location.pathname;
+  const now = new Date();
+  const ts   = now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) + ' ' +
+               now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+  const tags = `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #取消`;
+
+  // ── 信心度顯示 ──
+  const rawConf   = trade.rawConf || 0;
+  const freshConf = trade.conf    || 0;
+  const confDrop  = Math.max(0, rawConf - freshConf);
+  const confLine  = (rawConf > 0 && confDrop > 1)
+    ? `📶 信心度：${rawConf}% → 降至 ${freshConf}%（扣 -${confDrop}%，未達推薦門檻）`
+    : `📶 信心度：${freshConf}%`;
+
+  // ── 取消原因 bullets ──
+  const bullets = [];
+  const hasMacro = typeof _macroCache !== 'undefined' && _macroCache;
+
+  if (hasMacro && confDrop > 1) {
+    try {
+      const _fg = _macroCache.fg;
+      const _gm = _macroCache;
+      const fgV = _fg ? parseInt(_fg.value) : null;
+      const dom = _gm.btcDominance   || 0;
+      const chg = _gm.marketCapChange || 0;
+      let against = 0;
+      if (isLong) {
+        if (chg < -2) against++;
+        if (dom > 58) against++;
+        if (fgV != null && fgV < 30) against++;
+        if (fgV != null && fgV > 75) against += 0.5;
+      } else {
+        if (chg > 2)  against++;
+        if (dom < 44) against++;
+        if (fgV != null && fgV > 70) against++;
+        if (fgV != null && fgV < 25) against += 0.5;
+      }
+      let macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+      const bigDir  = computeMacroNetDir(_fg, _gm);
+      const bdAg    = (isLong && bigDir.includes('bear')) || (!isLong && bigDir.includes('bull'));
+      if (bdAg) { const bdMin = (bigDir === 'slight_bear' || bigDir === 'slight_bull') ? 3 : 7; if (macroPen < bdMin) macroPen = bdMin; }
+      if (macroPen > 0) {
+        const why = [];
+        if (isLong) {
+          if (dom > 58) why.push(`BTC主導率偏高 ${dom.toFixed(1)}%`);
+          if (chg < -2) why.push(`市值下跌 ${chg.toFixed(1)}%`);
+          if (fgV != null && fgV < 30) why.push(`恐貪指數偏低 ${fgV}`);
+        } else {
+          if (dom < 44) why.push(`BTC主導率偏低 ${dom.toFixed(1)}%`);
+          if (chg > 2)  why.push(`市值上漲 ${chg.toFixed(1)}%`);
+          if (fgV != null && fgV > 70) why.push(`恐貪指數偏高 ${fgV}`);
+        }
+        bullets.push(`宏觀環境逆風 -${macroPen}%${why.length ? `（${why.join('；')}）` : ''}`);
+      }
+      const wb = computeWeeklyAIBias(_fg, _gm);
+      const tb = computeTodayAIBias(_fg, _gm);
+      const wOp = isLong ? (wb.bias||'').includes('bear') : (wb.bias||'').includes('bull');
+      const tOp = isLong ? (tb.bias||'').includes('bear') : (tb.bias||'').includes('bull');
+      if (wOp) {
+        const wPen = (wb.bias||'').includes('strong') ? 8 : 4;
+        bullets.push(`本週AI預測 ${esc(wb.biasLabel||'')}，${isLong ? '與做多逆向' : '與做空逆向'}，扣 ${wPen}%`);
+      }
+      if (tOp) {
+        bullets.push(`今日AI預測 ${esc(tb.biasLabel||'')}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 5%`);
+      }
+    } catch (e) {}
+  }
+
+  // 學習記憶扣分 + 詳細建議
+  const learnPen = trade.learnPenalty || 0;
+  if (learnPen > 0) {
+    bullets.push(`止損歷史記憶觸發 -${learnPen}%`);
+    try {
+      const lr = applyLearnAdjustment(trade.direction, trade.rsi || 50, trade.adx || 20, { skipAdxRule: true });
+      (lr.warnings || []).slice(0, 3).forEach(w => bullets.push(`  ↳ ${esc(w)}`));
+    } catch (e) {}
+  }
+
+  if ((trade.techPenalty   || 0) > 0) bullets.push(`技術面扣分 -${trade.techPenalty}%`);
+  if ((trade.chipsPenalty  || 0) > 0) bullets.push(`籌碼面扣分 -${trade.chipsPenalty}%`);
+  if ((trade.hardAdxPenalty|| 0) > 0) bullets.push(`ADX 過低扣分 -${trade.hardAdxPenalty}%`);
+  if (!bullets.length) bullets.push(esc(reason));
+
+  const reasonsBlock = bullets.map(b => `  • ${b}`).join('\n');
   const msg =
-    `❌ <b>交易建議已取消</b>\n\n` +
-    `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
-    `📍 原進場位：$${fmt(trade.entry)}\n` +
-    `🛑 原止損位：$${fmt(trade.sl)}\n\n` +
-    `⚠️ 取消原因：${escHtml(reason)}\n\n` +
-    `🔗 <a href="${siteUrl}">查看 ${sym} 最新分析 →</a>`;
+    `🚫 <b>交易建議已取消</b>\n\n` +
+    `${dirLabel}：<b>${trade.symbol}</b>\n` +
+    `${confLine}\n\n` +
+    `📋 <b>取消原因</b>\n${reasonsBlock}\n\n` +
+    `⏰ ${ts}\n` +
+    `${tags}\n\n` +
+    `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 
@@ -6083,15 +6168,12 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
     ? `🔒 止損已上移：$${fmt(oldSL)} → <b>$${fmt(newSL)}</b>（移至上一進場位）\n`
     : `🛑 現行止損：<b>$${fmt(trade.sl)}</b>\n`;
   const ltTarget = trade.ltTP || scaleIn.tp2 || scaleIn.tp1;
-  const siConf = scaleIn.conf || trade.conf || 0;
-  const confColor = siConf >= 85 ? '🟢' : siConf >= 75 ? '🟡' : '🔴';
   const msg =
     `📈 <b>加倉確認通知 #${scaleIn.seqNum}</b>\n\n` +
     `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
     `📍 加倉進場位：<b>$${fmt(scaleIn.entryPrice || scaleIn.entryLevel)}</b>\n` +
     `${slLine}` +
-    `🏁 長線最終目標：<b>$${fmt(ltTarget)}</b>\n` +
-    `${confColor} 本次加倉信心度：<b>${siConf}%</b>\n\n` +
+    `🏁 長線最終目標：<b>$${fmt(ltTarget)}</b>\n\n` +
     `📊 原始進場：$${fmt(trade.entry)}\n` +
     `🔔 已加倉 ${scaleIn.seqNum}/3 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
