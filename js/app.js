@@ -5377,6 +5377,7 @@ function recordSignalsFromScan(data) {
       const _ns = loadSettings();
       if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
         const _fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+        const _escHtml = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const _sym = coin.symbol.replace('/USDT', '');
         const _dir = isLong ? '▲ 做多' : '▼ 做空';
         const _ci  = setup.conf >= 85 ? '🟢' : setup.conf >= 80 ? '🟡' : '🟠';
@@ -5389,7 +5390,7 @@ function recordSignalsFromScan(data) {
           `🛑 止損：$${_fmt(setup.sl)}\n` +
           `🎯 止盈：$${_fmt(setup.tp1)}　${setup.tp2 ? `TP2：$${_fmt(setup.tp2)}` : ''}\n\n` +
           `📊 RSI ${parseFloat(coin.rsi)||50} · ADX ${parseFloat(coin.adx)||20} · 評分 ${coin.score}\n` +
-          `📌 進場理由：${setup.entryReason || '—'}\n\n` +
+          `📌 進場理由：${_escHtml(setup.entryReason) || '—'}\n\n` +
           _ltNote
         );
       }
@@ -5960,6 +5961,7 @@ function sendCancelTelegramNotification(trade, reason) {
   const s = loadSettings();
   if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+  const escHtml = str => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const sym = trade.symbol.replace('/USDT', '');
   const dir = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
   const siteUrl = window.location.origin + window.location.pathname;
@@ -5968,7 +5970,7 @@ function sendCancelTelegramNotification(trade, reason) {
     `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
     `📍 原進場位：$${fmt(trade.entry)}\n` +
     `🛑 原止損位：$${fmt(trade.sl)}\n\n` +
-    `⚠️ 取消原因：${reason}\n\n` +
+    `⚠️ 取消原因：${escHtml(reason)}\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 最新分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
