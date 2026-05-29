@@ -398,7 +398,6 @@ function navigateTo(page, coinSymbol) {
   }
   if (page === 'settings') populateSettingsPage();
   if (page === 'positions') {
-    if (state.data.length) updateOpenTrades(state.data); // 進頁前先用最新價格跑一次風控
     renderPositionsPage();
   }
   if (page === 'tradelog') renderTradeLogPage();
@@ -2254,6 +2253,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ex.refined = true;
     }
     ex.conf = conf; ex.rawConf = rawConf;
+    ex.hardAdxPenalty = hardAdxPenalty; ex.learnPenalty = learnPenalty;
+    ex.macroPenalty = macroOpposePenalty; ex.aiTrendPenalty = aiTrendPenalty;
+    ex.techPenalty = techPenalty; ex.chipsPenalty = chipsPenalty;
     ex.longTermBias = ltBias;
     ex.canScaleIn   = canScaleIn;
     ex.is4hDayAligned = is4hDayAligned;
@@ -2301,6 +2303,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         rsi: parseFloat(coin.rsi) || 50,
         adx: parseFloat(coin.adx) || 20,
         score: coin.score, trend: coin.trend, conf, rawConf,
+        hardAdxPenalty, learnPenalty, macroPenalty: macroOpposePenalty, aiTrendPenalty, techPenalty, chipsPenalty,
         entryReason: entryReasons.join('，'), slReason, tp1Reason, tp2Reason,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
@@ -7307,7 +7310,7 @@ function renderPositionsPage() {
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
       </div></div>
-      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 75% 的訊號時會自動出現</span></div>`;
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 70% 的訊號時會自動出現</span></div>`;
     return;
   }
 
