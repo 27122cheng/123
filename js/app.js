@@ -1056,7 +1056,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
       const freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow);
-      if (Math.abs((existingActive.conf || 0) - freshConf) >= 1) {
+      if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
         if (editIdx >= 0) {
@@ -7452,7 +7452,7 @@ function renderPositionsPage() {
           <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / 3</div>
         </div>
         <div class="pos-cell" style="grid-column:span 2">
-          <div class="pos-cell-lbl">最終信心度（扣分後）</div>
+          <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf}%</span>
             ${t.rawConf ? `<span style="color:var(--text3);font-size:0.7rem">原始 ${t.rawConf}% → ${[
@@ -7475,7 +7475,7 @@ function renderPositionsPage() {
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
         <div class="pos-cell" style="grid-column:span 3">
-          <div class="pos-cell-lbl">最終信心度（扣分後）</div>
+          <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf}%</span>
             ${t.rawConf ? `<span style="color:var(--text3);font-size:0.7rem">原始 ${t.rawConf}% → ${[
