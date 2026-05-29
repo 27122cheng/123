@@ -1692,25 +1692,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _ltTdAgr   = (_ltIsLong && _tBias.includes('bull'))      || (!_ltIsLong && _tBias.includes('bear'));
   const _ltAlignCnt = (_ltMacAgr ? 1 : 0) + (_ltWkAgr ? 1 : 0) + (_ltTdAgr ? 1 : 0);
 
-  // 短線單：4H + 日線同向（且非長線單）才顯示 ⚡ 短線標籤
-  const h4Sig  = mtfData['4h']?.signal;
+  // 短線單：日線同向（且非長線單）才顯示 ⚡ 短線標籤
   const dayS   = mtfData['1d']?.signal;
   const wkS    = mtfData['1w']?.signal;
-  const h4Bull = h4Sig?.signal?.includes('bull');
-  const h4Bear = h4Sig?.signal?.includes('bear');
   const dayBullSig = dayS?.signal?.includes('bull');
   const dayBearSig = dayS?.signal?.includes('bear');
   const wkBullSig  = wkS?.signal?.includes('bull');
   const wkBearSig  = wkS?.signal?.includes('bear');
-  const is4hDayAligned = isLong ? (h4Bull && dayBullSig) : (h4Bear && dayBearSig);
+  const isDayAligned = isLong ? dayBullSig : dayBearSig;
 
-  // 長線單條件：日線與週線同方向（用戶要求：去除 4H 關鍵位要求，純日線+週線決定）
+  // 長線單條件：日線 + 週線同方向即認定（純 MTF 時間框架確認，不依 ltBias/ltConf 門檻）
   const _dayWkAligned = isLong ? (dayBullSig && wkBullSig) : (dayBearSig && wkBearSig);
-  const canScaleIn = _dayWkAligned && ltBias === direction && ltConf >= 85;
+  const canScaleIn = _dayWkAligned;
   const ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
   // 根據類型更新 dirLabel，避免出現「短線做多 〔長線單〕」矛盾文字
   if (canScaleIn) dirLabel = isLong ? '長線做多' : '長線做空';
-  else if (!isRangeMode && is4hDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
+  else if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
   else if (!isRangeMode) dirLabel = isLong ? '做多' : '做空';
 
   // ── 進場點 ──
@@ -2322,7 +2319,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ex.techPenalty = techPenalty; ex.chipsPenalty = chipsPenalty;
     ex.longTermBias = ltBias;
     ex.canScaleIn   = canScaleIn;
-    ex.is4hDayAligned = is4hDayAligned;
+    ex.is4hDayAligned = isDayAligned;
     if (!ex.scaleIns) ex.scaleIns = [];
     if (ex.peakPrice == null) ex.peakPrice = null;
     // 補齊長線加倉計劃（若之前未儲存）
@@ -2373,7 +2370,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
         refined: true,
-        longTermBias: ltBias, canScaleIn, ltConf, is4hDayAligned,
+        longTermBias: ltBias, canScaleIn, ltConf, is4hDayAligned: isDayAligned,
         scaleInTargets: canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.level) : [],
         scaleInNewSLs:  canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.newSL) : [],
         maxScaleIns:    canScaleIn ? _aiScaleCount : undefined,
@@ -5513,8 +5510,8 @@ async function backgroundRefineNewTrades() {
       }
       const ltRaw  = ltBias === 'long' ? ltBull : ltBias === 'short' ? ltBear : 0;
       const ltConf = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRaw * 8)) : 0;
-      // 長線單升級：日線 AND 週線都明確確認 + computeLongTermBias 返回同方向 + ltConf 達標
-      const canScaleIn = d1OkBg && w1OkBg && ltBias === direction && ltConf >= 82;
+      // 長線單升級：日線 AND 週線同方向即認定（純 MTF 時間框架確認）
+      const canScaleIn = d1OkBg && w1OkBg;
 
       const tlogEdit = loadTradeLog();
       const idx = tlogEdit.findIndex(t => t.id === trade.id);
