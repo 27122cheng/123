@@ -7634,26 +7634,21 @@ function renderPositionsPage() {
             const dirClr  = isLong ? 'var(--bull)' : 'var(--bear)';
             const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
             const fmt     = v => v ? fmtPrice(v) : '—';
-            const isRange   = t.tradeType === 'range';
-            const isLongTermCard = !isRange && t.canScaleIn === true;
+            const isLongTermCard = t.canScaleIn === true;
             const expiry  = t.timestamp ? fmtDateTime(t.timestamp + (isLongTermCard ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2)) : '—';
             const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
             const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
-            const typeLabel = isRange
-              ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc;padding:2px 7px;border-radius:20px;margin-left:6px">🔄 震盪</span>`
-              : '';
+            const typeLabel = '';
             const ltBadgePend = isLongTermCard
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.35);color:#4ade80;padding:2px 7px;border-radius:20px;margin-left:6px">〔長線單〕</span>`
               : '';
-            const shortTermBadgePend = (!isRange && !isLongTermCard && t.is4hDayAligned !== false)
+            const shortTermBadgePend = (!isLongTermCard && t.is4hDayAligned !== false)
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:6px">⚡ 短線</span>`
               : '';
             const pendReasons = (t.entryReason || '').split('，').filter(Boolean);
-            // 最終信心度（與持倉頁開倉卡片相同邏輯：rawConf - 各懲罰項）
-            const _pConf = t.rawConf != null
-              ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0))
-              : (t.conf || t.score || 0);
+            // 最終信心度（t.conf 已是建單時完整扣分後的值，動態更新由 updateOpenTrades 負責）
+            const _pConf = t.conf != null ? t.conf : (t.score || 0);
             const _pConfClr = _pConf >= 80 ? 'var(--bull)' : _pConf >= 70 ? '#f59e0b' : 'var(--text3)';
             // 長線單：加倉位
             const _siTargets = t.scaleInTargets || [];
@@ -7824,12 +7819,9 @@ function renderTradeLogPage() {
     tableHtml = `<div class="tl-empty">暫無已結束的交易記錄。系統正在追蹤中，待交易觸及止盈或止損後會自動顯示在此。</div>`;
   } else {
     const rows = display.map(t => {
-      const tlRangeBadge = t.tradeType === 'range'
-        ? `<span style="font-size:0.65rem;font-weight:700;background:rgba(99,102,241,.18);border:1px solid rgba(99,102,241,.4);color:#a5b4fc;padding:1px 5px;border-radius:10px;margin-left:4px;vertical-align:middle">🔄</span>`
-        : '';
       const dirHtml = t.direction === 'long'
-        ? `<span class="tl-dir-long">▲ 多${tlRangeBadge}</span>`
-        : `<span class="tl-dir-short">▼ 空${tlRangeBadge}</span>`;
+        ? `<span class="tl-dir-long">▲ 多</span>`
+        : `<span class="tl-dir-short">▼ 空</span>`;
 
       let statusHtml;
       if (t.status === 'open') {
