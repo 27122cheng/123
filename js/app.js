@@ -5195,12 +5195,11 @@ function recordSignalsFromScan(data) {
     } catch(e) { /* 宏觀計算失敗 → 維持 neutral，允許記錄 */ }
   }
 
-  // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
-  // 大方向「偏空」(bear/strong_bear) → 完全不開多
-  // 大方向「偏多」(bull/strong_bull) → 完全不開空
-  // slight_bear/slight_bull：用宏觀扣分處理，不封鎖（避免所有信號被雙重攔截）
-  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
-  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
+  // ── 方向封鎖（與 buildTradeSetup macroBlockedForRecord 對齊）──
+  // 只有極端大方向（strong_bear/strong_bull）才硬封鎖；
+  // mild bear/bull 由 computeSimpleSetup conf 扣分過濾（與幣種詳情頁邏輯一致）
+  const blockLong  = macroNetDir === 'strong_bear';
+  const blockShort = macroNetDir === 'strong_bull';
   // 震盪模式（掃描路徑）：宏觀/週AI/今日AI 三指標中 2+ 個為震盪/中性 → 觸發震盪路徑
   // slight_bull/slight_bear 算震盪（僅 bull/bear/strong 視為有方向性）
   // 4H/日線代理：ADX < 22（在幣種迴圈中逐一確認）
@@ -5377,10 +5376,9 @@ function recordSignalsFromScan(data) {
 
   // ══════════════════════════════════════════════════
   // 定向行情路徑（趨勢交易，信心門檻 70%）
-  // 無論是否震盪模式均執行：宏觀逆向已反映在 computeSimpleSetup 扣分中
-  // blockLong/blockShort 處理宏觀明確封鎖；conf < 70 門檻過濾低品質信號
+  // 需要宏觀快取才能正確計算扣分；無快取時跳過，避免所有幣種因零扣分通過
   // ══════════════════════════════════════════════════
-  {
+  if (_macroCache) {
     for (const coin of data) {
       const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
       const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
@@ -5459,7 +5457,7 @@ function recordSignalsFromScan(data) {
         }
       } catch(_e) {}
     }
-  }
+  } // end if (_macroCache) — directional scan
   if (changed) {
     if (tlog.length > 500) tlog.splice(500);
     saveTradeLog(tlog);
