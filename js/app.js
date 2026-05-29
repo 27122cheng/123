@@ -5321,13 +5321,7 @@ function recordSignalsFromScan(data) {
       // 中性偏空：貼近壓力且 RSI > 48（偏高）
       if (nearRes && rsiR > 48 && !rangeLong) rangeShort = true;
 
-      // ── 備用：無明確影線區域 → 用 RSI 震盪位置判斷 ──
-      // 震盪市中 RSI 通常在 40~60 之間；42 以下偏低、58 以上偏高
-      const hasZones = wSupps.length >= 1 || wRess.length >= 1;
-      if (!hasZones) {
-        if (rsiR < 42 && adxR < 25) rangeLong  = true;  // 中性偏多
-        if (rsiR > 58 && adxR < 25) rangeShort = true;  // 中性偏空
-      }
+      // 沒有實際影線區域 → 跳過（備用路徑過於寬鬆，已移除）
 
       // 宏觀方向限制：中性偏空不做多，中性偏多不做空
       if (rangeLong  && rangeBlockLong)  continue;
@@ -5356,11 +5350,10 @@ function recordSignalsFromScan(data) {
         ? (nearSupp ? nearSupp.level - atr * 0.8 : price - atr * 0.9)
         : (nearRes  ? nearRes.level  + atr * 0.8 : price + atr * 0.9);
 
-      // ── 信心計算（震盪單門檻 75%）──
-      // 基礎：有影線區 70，無影線區（備用路徑）65，wicks 只加分不扣分
+      // ── 信心計算（震盪單門檻 70%）──
+      // 進入此處時一定有影線區（備用路徑已移除），基礎 70
       const zoneWicks = rangeLong ? (nearSupp?.wicks || 0) : (nearRes?.wicks || 0);
-      const hasNearZone = rangeLong ? !!nearSupp : !!nearRes;
-      let rawConfR = hasNearZone ? 70 : 65;
+      let rawConfR = 70;
       // wicks 次數加成（≥1 次起算，每次 +4，最多 +16）
       rawConfR += Math.min(16, Math.max(0, zoneWicks) * 4);
       // RSI 確認加成：距離 50 越遠越強（最多 +10）
@@ -5462,7 +5455,9 @@ function recordSignalsFromScan(data) {
 
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      if (setup.conf < 70) continue;  // 完全扣分後 >= 70% 才進場
+      // 門檻：結構性信心（rawConf - ADX懲罰 - 學習懲罰）>= 70%
+      const _gateConfLT = Math.max(0, (setup.rawConf || 0) - (setup.hardAdxPenalty || 0) - (setup.learnPenalty || 0));
+      if (_gateConfLT < 70) continue;
 
       const newTradeLT = {
         id: `${coin.symbol}-${Date.now()}`,
@@ -5557,8 +5552,10 @@ function recordSignalsFromScan(data) {
 
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      // 門檻：完全扣分（含宏觀/AI/技術/籌碼）後 >= 70% 才進場
-      if (setup.conf < 70) continue;
+      // 門檻：結構性信心（rawConf - ADX懲罰 - 學習懲罰）>= 70%
+      // 宏觀/AI/技術/籌碼懲罰在 UI 中完整顯示；不作為進場封鎖避免正常信號被過度過濾
+      const _gateConf2 = Math.max(0, (setup.rawConf || 0) - (setup.hardAdxPenalty || 0) - (setup.learnPenalty || 0));
+      if (_gateConf2 < 70) continue;
 
       // 掃描路徑（短線單），canScaleIn = false
       // 長線單由 Loop 1 獨立處理（日線+週線同向）
