@@ -5363,39 +5363,39 @@ function recordSignalsFromScan(data) {
   }
 
   // ══════════════════════════════════════════════════
-  // Loop 2 ── 短線單（日線同向 + 周/日AI同向，canScaleIn = false）
+  // Loop 2 ── 短線單
+  // 條件：宏觀/大方向/週預測/日預測/大時間框架，≥2 項同向
+  // 門檻：扣掉所有懲罰後的最終信心度 ≥ 70%
   // ══════════════════════════════════════════════════
   {
     for (const coin of data) {
-      if (coin.score === 50) continue;  // 完全中性，跳過
+      if (coin.score === 50) continue;
       const isLong  = coin.score > 50;
       const direction = isLong ? 'long' : 'short';
 
-      // 方向封鎖：宏觀明確反向 → 跳過
+      // 強烈宏觀大方向硬封鎖（strong_bear 封鎖多單；strong_bull 封鎖空單）
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // 三項指標全部主動逆向才跳過（宏觀「輕偏」逆向由扣分處理，不直接封鎖）
-      const _dirOppM = (isLong && (macroNetDir === 'bear' || macroNetDir === 'strong_bear')) || (!isLong && (macroNetDir === 'bull' || macroNetDir === 'strong_bull'));
-      const _dirOppW = (isLong && wBias.includes('bear'))  || (!isLong && wBias.includes('bull'));
-      const _dirOppT = (isLong && tBias.includes('bear'))  || (!isLong && tBias.includes('bull'));
-      if (_dirOppM && _dirOppW && _dirOppT) continue;  // 三項全逆向才封鎖
+      // ── 多空條件計分（5 項指標，至少 2 項同向才進入信心評估）──
+      // F1 宏觀：fear&greed + 市值變化 + BTC優勢
+      const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
+      // F2 大方向：幣種週線 K 線方向（幣種自身的大級別趨勢）
+      const _f2 = isLong ? coin.weeklySignal?.includes('bull') : coin.weeklySignal?.includes('bear');
+      // F3 週AI預測
+      const _f3 = _macroCache ? (isLong ? wBias.includes('bull') : wBias.includes('bear')) : false;
+      // F4 日AI預測
+      const _f4 = _macroCache ? (isLong ? tBias.includes('bull') : tBias.includes('bear')) : false;
+      // F5 大時間框架：幣種日線信號；neutral 或無資料時退回趨勢代理
+      const _dtBull    = coin.dailySignal?.includes('bull');
+      const _dtBear    = coin.dailySignal?.includes('bear');
+      const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
+      const _f5 = isLong
+        ? (_dtBull || (_dtNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
+        : (_dtBear || (_dtNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
 
-      // 日線同向（優先使用逐幣 dailySignal；neutral 或無資料時退回趨勢代理）
-      const _scanDayBull = coin.dailySignal?.includes('bull');
-      const _scanDayBear = coin.dailySignal?.includes('bear');
-      const _dailyNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
-      const _dailyAligned = isLong
-        ? (_scanDayBull || (_dailyNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
-        : (_scanDayBear || (_dailyNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
-      if (!_dailyAligned) continue;
-
-      // 周AI / 今日AI 兩個都主動逆向才封鎖（中性/震盪不封鎖，扣分已在 conf 中體現）
-      if (_macroCache) {
-        const _wOpposes = isLong ? wBias.includes('bear') : wBias.includes('bull');
-        const _tOpposes = isLong ? tBias.includes('bear') : tBias.includes('bull');
-        if (_wOpposes && _tOpposes) continue;
-      }
+      const _alignedCount = [_f1, _f2, _f3, _f4, _f5].filter(Boolean).length;
+      if (_alignedCount < 2) continue;  // 未達 2 項同向，繼續觀望
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
@@ -5403,10 +5403,8 @@ function recordSignalsFromScan(data) {
 
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      // 門檻：結構性信心（rawConf - ADX懲罰 - 學習懲罰）>= 70%
-      // 宏觀/AI/技術/籌碼懲罰在 UI 中完整顯示；不作為進場封鎖避免正常信號被過度過濾
-      const _gateConf2 = Math.max(0, (setup.rawConf || 0) - (setup.hardAdxPenalty || 0) - (setup.learnPenalty || 0));
-      if (_gateConf2 < 70) continue;
+      // 最終信心度門檻：扣掉技術面、基本面、籌碼面、AI分析、ADX、過往止損規則後 >= 70%
+      if (setup.conf < 70) continue;  // 未過門檻，繼續觀望
 
       // 掃描路徑（短線單），canScaleIn = false
       // 長線單由 Loop 1 獨立處理（日線+週線同向）
