@@ -2233,8 +2233,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (_macroCache) {
     try {
       const _mDir = computeMacroNetDir(_macroCache.fg, _macroCache);
-      if (direction === 'long')  macroBlockedForRecord = _mDir === 'bear' || _mDir === 'strong_bear';
-      if (direction === 'short') macroBlockedForRecord = _mDir === 'bull' || _mDir === 'strong_bull';
+      if (direction === 'long')  macroBlockedForRecord = _mDir === 'strong_bear';
+      if (direction === 'short') macroBlockedForRecord = _mDir === 'strong_bull';
     } catch(e) {}
   }
   // 封鎖原因追蹤（供模板顯示說明橫幅）
@@ -2294,7 +2294,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && !macroBlockedForRecord) {
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -2518,7 +2518,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       </div>` : ''}
   </div>
 
-  ${macroBlockedForRecord ? `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#ef4444">⚠️ 宏觀大方向${isLong ? '偏空' : '偏多'}，本次技術訊號僅供參考，<strong>未計入掛單記錄</strong>（不會出現在「未進場」）</div>` : ''}
+  ${macroBlockedForRecord ? `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⚠️ 宏觀大方向${isLong ? '極端偏空' : '極端偏多'}，信心度已扣分反映，訊號已記入持倉供參考</div>` : ''}
   ${_recordBlockedByCooldown ? (() => { const cancelledT = loadCancelCooldowns().find(c => c.symbol === coin.symbol && c.direction === direction && (Date.now() - (c.cancelTime||0)) < SIGNAL_COOLDOWN); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
   ${_recordBlockedByActive ? `<div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#818cf8">📌 此幣種已有持倉進行中，<strong>未計入掛單記錄</strong>（不重複開倉）</div>` : ''}
 
@@ -5192,12 +5192,11 @@ function recordSignalsFromScan(data) {
     } catch(e) { /* 宏觀計算失敗 → 維持 neutral，允許記錄 */ }
   }
 
-  // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
-  // 大方向「偏空」(bear/strong_bear) → 完全不開多
-  // 大方向「偏多」(bull/strong_bull) → 完全不開空
-  // slight_bear/slight_bull：用宏觀扣分處理，不封鎖（避免所有信號被雙重攔截）
-  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
-  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
+  // ── 方向封鎖（極端大方向才封鎖，mild bear 由 computeSimpleSetup 扣分處理）──
+  // 只有 strong_bear/strong_bull 才完全封鎖（與 updateOpenTrades 宏觀取消邏輯對齊）
+  // bear/slight_bear：由 conf < 70 門檻過濾，不直接封鎖（避免漏掉強信號）
+  const blockLong  = macroNetDir === 'strong_bear';
+  const blockShort = macroNetDir === 'strong_bull';
   // 震盪模式（掃描路徑）：宏觀/週AI/今日AI 三指標中 2+ 個為震盪/中性 → 觸發震盪路徑
   // slight_bull/slight_bear 算震盪（僅 bull/bear/strong 視為有方向性）
   // 4H/日線代理：ADX < 22（在幣種迴圈中逐一確認）
@@ -5596,7 +5595,7 @@ function updateOpenTrades(data) {
 
   // ── 宏觀方向反轉：取消方向衝突的未入場掛單 ──
   // 條件 A：本週 + 今日 AI 均明確反向（嚴格雙確認）
-  // 條件 B：綜合宏觀方向（computeMacroNetDir）明確反向（bear/strong_bear 取消多單；bull/strong_bull 取消空單）
+  // 條件 B：綜合宏觀方向極端反向（strong_bear/strong_bull）才取消，mild bear 由信心扣分處理
   // 震盪單（tradeType='range'）不依賴方向，豁免
   if (_macroCache) {
     try {
@@ -5606,10 +5605,10 @@ function updateOpenTrades(data) {
                          && (tb2.bias === 'bear' || tb2.bias === 'strong_bear');
       const bothClearBull = (wb2.bias === 'bull' || wb2.bias === 'strong_bull')
                          && (tb2.bias === 'bull' || tb2.bias === 'strong_bull');
-      // 條件 B：綜合大方向封鎖（與開單封鎖邏輯一致）
+      // 條件 B：只有極端大方向（strong）才直接取消，mild bear 由 freshConf 扣分處理
       const macroNetDir2 = computeMacroNetDir(_macroCache.fg, _macroCache);
-      const macroClearBear = macroNetDir2 === 'bear' || macroNetDir2 === 'strong_bear';
-      const macroClearBull = macroNetDir2 === 'bull' || macroNetDir2 === 'strong_bull';
+      const macroClearBear = macroNetDir2 === 'strong_bear';
+      const macroClearBull = macroNetDir2 === 'strong_bull';
       for (const trade of tlog) {
         if (trade.status !== 'pending' || trade.entryTime) continue;
         if (trade.tradeType === 'range') continue;
