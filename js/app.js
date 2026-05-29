@@ -5412,7 +5412,7 @@ function recordSignalsFromScan(data) {
 
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      if (setup.conf < 70) continue;  // 信心度未達 70% → 觀望，不納入持倉
+      if (setup.rawConf < 70) continue;  // 原始信心度門檻 70%（最終信心度含扣分顯示於持倉頁面）
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
