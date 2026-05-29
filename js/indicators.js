@@ -277,6 +277,9 @@ function analyzeKlines(symbol, raw) {
   /* 影線拒絕區（震盪行情關鍵支撐壓力，lookback=150根K棒） */
   const { wickSupports, wickResistances } = findWickZones(highs, lows, opens, closes, atr, 150);
 
+  const bb       = computeBBSignal(raw);
+  const patterns = detect123And2B(highs, lows, closes);
+
   return {
     symbol,
     price:      fmtDecimals(price),
@@ -294,6 +297,8 @@ function analyzeKlines(symbol, raw) {
     change24h,
     wickSupports:    wickSupports.map(z => ({ level: fmtDecimals(z.level), wicks: z.wicks })),
     wickResistances: wickResistances.map(z => ({ level: fmtDecimals(z.level), wicks: z.wicks })),
+    bb,
+    patterns,
   };
 }
 
@@ -478,14 +483,17 @@ function calcBollingerBands(closes, period = 20, mult = 2) {
   return { upper, middle: mean, lower, width, pctB, stdDev };
 }
 
-/* ── 布林通道信號分析 ─────────────────────────────────────── */
+/* ── 布林通道信號分析（含走軌/背離/收窄偵測）─────────────── */
 function computeBBSignal(raw) {
-  if (!raw || raw.length < 20) return null;
-  const { closes } = parseKlines(raw);
+  if (!raw || raw.length < 22) return null;
+  const { closes, highs, lows } = parseKlines(raw);
+  const n = closes.length;
+  if (n < 22) return null;
+
   const bb = calcBollingerBands(closes, 20, 2);
   if (!bb) return null;
   const { upper, middle, lower, pctB, width } = bb;
-  const price = closes[closes.length - 1];
+  const price = closes[n - 1];
   let bullBonus = 0, bearBonus = 0;
   const tags = [];
 
@@ -501,13 +509,108 @@ function computeBBSignal(raw) {
   if (price > middle) bullBonus += 1;
   else                bearBonus += 1;
 
-  // 布林收窄（帶寬 < 3%）→ 蓄力突破，兩方加成
-  if (width < 0.03) {
-    bullBonus += 1; bearBonus += 1;
-    tags.push('BB收窄蓄力');
+  // ── 相對收窄：與 10 根前帶寬比較（動態閾值，適配不同波動率資產）──
+  const bb10ago = n >= 30 ? calcBollingerBands(closes.slice(0, n - 10), 20, 2) : null;
+  const isSqueezing = bb10ago ? (width < bb10ago.width * 0.65) : (width < 0.03);
+  if (isSqueezing) { bullBonus += 1; bearBonus += 1; tags.push('BB收窄蓄力'); }
+
+  // ── 走軌偵測：最近 3 根 K 線持續貼近同一條布林帶 → 強勢趨勢走軌 ──
+  const pctBHist = [];
+  for (let off = 2; off >= 0; off--) {
+    if (n - off >= 20) {
+      const bbH = calcBollingerBands(closes.slice(0, n - off), 20, 2);
+      if (bbH) pctBHist.push(bbH.pctB);
+    }
+  }
+  const walkingBull = pctBHist.length >= 3 && pctBHist.every(p => p >= 0.75);
+  const walkingBear = pctBHist.length >= 3 && pctBHist.every(p => p <= 0.25);
+  if (walkingBull) { bullBonus += 2; tags.push('BB多頭走軌'); }
+  if (walkingBear) { bearBonus += 2; tags.push('BB空頭走軌'); }
+
+  // ── 背離偵測：近期新高/低但收盤未觸碰布林帶 → 動能衰竭警告 ──
+  const lookH = Math.min(n - 1, 10);
+  if (lookH >= 2) {
+    const prevHigh = Math.max(...highs.slice(-lookH, -1));
+    const prevLow  = Math.min(...lows.slice(-lookH, -1));
+    const curHigh  = highs[n - 1];
+    const curLow   = lows[n - 1];
+    const bbDivBear = curHigh > prevHigh * 1.001 && price < upper * 0.994;
+    const bbDivBull = curLow  < prevLow  * 0.999 && price > lower * 1.006;
+    if (bbDivBear) tags.push('BB頂背離');
+    if (bbDivBull) tags.push('BB底背離');
+    return { bullBonus, bearBonus, pctB, width, upper, middle, lower, tags,
+             isSqueezing, walkingBull, walkingBear, bbDivBear, bbDivBull };
   }
 
-  return { bullBonus, bearBonus, pctB, width, upper, middle, lower, tags };
+  return { bullBonus, bearBonus, pctB, width, upper, middle, lower, tags,
+           isSqueezing, walkingBull, walkingBear, bbDivBear: false, bbDivBull: false };
+}
+
+/* ── 123法則 / 2B法則 型態偵測 ───────────────────────────── */
+function detect123And2B(highs, lows, closes, lookback = 60) {
+  const n = closes.length;
+  if (n < 30) return { bull123: false, bear123: false, bull2B: false, bear2B: false };
+
+  const h = highs.slice(-lookback);
+  const l = lows.slice(-lookback);
+  const c = closes.slice(-lookback);
+  const len = h.length;
+  const price = c[len - 1];
+
+  // 偵測局部擺動高低點（左右各 3 根確認）
+  const swingHighs = [], swingLows = [];
+  for (let i = 3; i < len - 3; i++) {
+    if (h[i] >= h[i-1] && h[i] >= h[i-2] && h[i] >= h[i+1] && h[i] >= h[i+2]) {
+      swingHighs.push({ idx: i, price: h[i] });
+    }
+    if (l[i] <= l[i-1] && l[i] <= l[i-2] && l[i] <= l[i+1] && l[i] <= l[i+2]) {
+      swingLows.push({ idx: i, price: l[i] });
+    }
+  }
+
+  let bull123 = false, bear123 = false, bull2B = false, bear2B = false;
+
+  // 多頭 123：P1（前低）→ P2（中間高）→ P3（較高低點）→ 現價突破 P2
+  if (swingLows.length >= 2 && swingHighs.length >= 1) {
+    const P1 = swingLows[swingLows.length - 2];
+    const P3 = swingLows[swingLows.length - 1];
+    if (P3.price > P1.price * 1.001) {
+      const midHighs = swingHighs.filter(sh => sh.idx > P1.idx && sh.idx < P3.idx);
+      if (midHighs.length > 0) {
+        const P2 = midHighs.reduce((a, b) => a.price > b.price ? a : b);
+        if (price > P2.price) bull123 = true;
+      }
+    }
+  }
+
+  // 空頭 123：P1（前高）→ P2（中間低）→ P3（較低高點）→ 現價跌破 P2
+  if (swingHighs.length >= 2 && swingLows.length >= 1) {
+    const P1 = swingHighs[swingHighs.length - 2];
+    const P3 = swingHighs[swingHighs.length - 1];
+    if (P3.price < P1.price * 0.999) {
+      const midLows = swingLows.filter(sl => sl.idx > P1.idx && sl.idx < P3.idx);
+      if (midLows.length > 0) {
+        const P2 = midLows.reduce((a, b) => a.price < b.price ? a : b);
+        if (price < P2.price) bear123 = true;
+      }
+    }
+  }
+
+  // 多頭 2B：前低被短暫突破後迅速收回（假跌破）
+  if (swingLows.length >= 2) {
+    const prevL = swingLows[swingLows.length - 2].price;
+    const recentMinLow = Math.min(...lows.slice(-6));
+    if (recentMinLow < prevL * 0.999 && price > prevL * 1.001) bull2B = true;
+  }
+
+  // 空頭 2B：前高被短暫突破後迅速回落（假突破）
+  if (swingHighs.length >= 2) {
+    const prevH = swingHighs[swingHighs.length - 2].price;
+    const recentMaxHigh = Math.max(...highs.slice(-6));
+    if (recentMaxHigh > prevH * 1.001 && price < prevH * 0.999) bear2B = true;
+  }
+
+  return { bull123, bear123, bull2B, bear2B };
 }
 
 /* ── 籌碼分佈（Volume Profile）─────────────────────────────── */

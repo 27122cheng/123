@@ -270,6 +270,8 @@ function enrichData(raw) {
       wickResistances: item.wickResistances  ?? [],
       dailySignal:     item.dailySignal      ?? null,
       weeklySignal:    item.weeklySignal     ?? null,
+      bb:              item.bb               ?? null,
+      patterns:        item.patterns         ?? null,
     };
   });
 }

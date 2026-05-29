@@ -1759,6 +1759,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       traps4h__?.sweepBull?.label && `4H ${traps4h__?.sweepBull?.label}`,
     ].filter(Boolean);
     bullTraps.forEach(t => entryReasons.push(`📌 ${t}`));
+    // ── 布林通道型態（走軌/收窄/背離）& 123法則/2B法則 ──
+    if (bb1h_?.walkingBull)   entryReasons.push(`📈 BB多頭走軌：1H連續貼近上軌，強勢趨勢走軌延續`);
+    if (bb1h_?.isSqueezing && bb1h_?.pctB >= 0.5) entryReasons.push(`🔋 BB收窄蓄力：帶寬壓縮（上方蓄能），多頭突破準備`);
+    if (bb1h_?.bbDivBear)     entryReasons.push(`⚠️ BB頂背離：1H新高但收盤未觸上軌，注意動能衰竭`);
+    if (bb15m_?.walkingBull)  entryReasons.push(`📈 15m BB多頭走軌：短週期上軌走軌確認`);
+    // 123法則 / 2B法則（使用 coin.patterns 掃描時段數據）
+    if (coin.patterns?.bull123) entryReasons.push(`📐 123多頭型態：低點抬高後突破中高點，趨勢反轉確立`);
+    if (coin.patterns?.bull2B)  entryReasons.push(`🔄 2B多頭型態：假跌破前低後強力反彈，空頭陷阱解除`);
     // 基礎技術指標（補充或作為主要進場依據）
     const ema50L  = parseFloat(coin.ema50)  || 0;
     const ema200L = parseFloat(coin.ema200) || 0;
@@ -1828,6 +1836,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       traps4h__?.sweepBear?.label && `4H ${traps4h__?.sweepBear?.label}`,
     ].filter(Boolean);
     bearTraps.forEach(t => entryReasons.push(`📌 ${t}`));
+    // ── 布林通道型態（走軌/收窄/背離）& 123法則/2B法則 ──
+    if (bb1h_?.walkingBear)   entryReasons.push(`📉 BB空頭走軌：1H連續貼近下軌，強勢下跌趨勢確認`);
+    if (bb1h_?.isSqueezing && bb1h_?.pctB < 0.5) entryReasons.push(`🔋 BB收窄蓄力：帶寬壓縮（下方蓄能），空頭突破準備`);
+    if (bb1h_?.bbDivBull)     entryReasons.push(`⚠️ BB底背離：1H新低但收盤未觸下軌，注意下跌動能衰竭`);
+    if (bb15m_?.walkingBear)  entryReasons.push(`📉 15m BB空頭走軌：短週期下軌走軌確認`);
+    // 123法則 / 2B法則（使用 coin.patterns 掃描時段數據）
+    if (coin.patterns?.bear123) entryReasons.push(`📐 123空頭型態：高點降低後跌破中低點，趨勢反轉確立`);
+    if (coin.patterns?.bear2B)  entryReasons.push(`🔄 2B空頭型態：假突破前高後快速回落，多頭陷阱確認`);
     // 基礎技術指標（補充或作為主要進場依據）
     const ema50S  = parseFloat(coin.ema50)  || 0;
     const ema200S = parseFloat(coin.ema200) || 0;
@@ -2021,7 +2037,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
                      slReason.includes('4H') || slReason.includes('日線') || slReason.includes('週線') ||
                      slReason.includes('PO3') || slReason.includes('掃蕩')) ? 1 : 0;
   const levelQualityBonus = tp1Quality + slQuality;
-  const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus) * 6));
+  // BB走軌/123/2B 型態額外加成（確認趨勢方向）
+  const bbWalkBonus = (isLong ? (bb1h_?.walkingBull ? 1 : 0) : (bb1h_?.walkingBear ? 1 : 0));
+  const patBonus    = (isLong ? ((coin.patterns?.bull123 || coin.patterns?.bull2B) ? 1 : 0)
+                               : ((coin.patterns?.bear123 || coin.patterns?.bear2B) ? 1 : 0));
+  const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus + bbWalkBonus + patBonus) * 6));
 
   // 宏觀環境同步確認：宏觀訊號 + AI新聞 + 預測 + 今日數據事件 綜合評分
   let macroOpposePenalty = 0, macroReasons = [];
@@ -2213,6 +2233,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (h4?.signal?.includes(isLong ? 'bear' : 'bull')) { techPenalty += 4; techPenReasons.push(`4H 方向（${h4TrendLabel}）與${isLong ? '做多' : '做空'}逆勢，中週期阻力，扣 4%`); }
     if (d1sig_?.signal?.includes(isLong ? 'bear' : 'bull')) { techPenalty += 5; techPenReasons.push(`日線方向（${d1TrendLabel}）與${isLong ? '做多' : '做空'}逆勢，大週期阻力，扣 5%`); }
   }
+  // BB 背離警告（動能衰竭）
+  if (isLong  && bb1h_?.bbDivBear) { techPenalty += 5; techPenReasons.push(`BB頂背離（1H）：新高但收盤未觸上軌，多頭動能衰竭，扣 5%`); }
+  if (!isLong && bb1h_?.bbDivBull) { techPenalty += 5; techPenReasons.push(`BB底背離（1H）：新低但收盤未觸下軌，空頭動能衰竭，扣 5%`); }
+  // 逆向走軌（對手方向 BB 走軌）
+  if (isLong  && bb1h_?.walkingBear) { techPenalty += 4; techPenReasons.push(`BB空頭走軌（1H）：連續貼近下軌，逆勢做多風險，扣 4%`); }
+  if (!isLong && bb1h_?.walkingBull) { techPenalty += 4; techPenReasons.push(`BB多頭走軌（1H）：連續貼近上軌，逆勢做空風險，扣 4%`); }
   techPenalty = Math.min(18, techPenalty);
 
   // ── 籌碼面逆風扣分 (Taker比例、巨鯨方向) ──
@@ -2446,16 +2472,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const bbChipsHtml = (() => { try {
     const chips = [];
     if (bbStatus1h) {
-      const pctB = bbStatus1h.pctB;
-      const pos  = pctB <= 0.1 ? '下軌觸及 ↑' : pctB <= 0.25 ? '近下軌' : pctB >= 0.9 ? '上軌觸及 ↓' : pctB >= 0.75 ? '近上軌' : '中軌區';
-      const clr  = pctB <= 0.25 ? 'var(--bull)' : pctB >= 0.75 ? 'var(--bear)' : 'var(--text2)';
-      chips.push(`<span class="setup-macro-chip" style="color:${clr}">📊 BB(1h) ${pos}${(bbStatus1h.tags||[]).includes('BB收窄蓄力') ? ' · 收窄' : ''}</span>`);
+      const pctB  = bbStatus1h.pctB;
+      const tags1h = bbStatus1h.tags || [];
+      const pos   = pctB <= 0.1 ? '下軌觸及 ↑' : pctB <= 0.25 ? '近下軌' : pctB >= 0.9 ? '上軌觸及 ↓' : pctB >= 0.75 ? '近上軌' : '中軌區';
+      const clr   = pctB <= 0.25 ? 'var(--bull)' : pctB >= 0.75 ? 'var(--bear)' : 'var(--text2)';
+      const extra = tags1h.includes('BB多頭走軌') ? ' · 走軌▲' : tags1h.includes('BB空頭走軌') ? ' · 走軌▼'
+                  : tags1h.includes('BB收窄蓄力') ? ' · 收窄' : '';
+      const div1  = tags1h.includes('BB頂背離') ? ' ⚠️頂背離' : tags1h.includes('BB底背離') ? ' ⚠️底背離' : '';
+      chips.push(`<span class="setup-macro-chip" style="color:${clr}">📊 BB(1h) ${pos}${extra}${div1}</span>`);
     }
     if (bbStatus15m) {
-      const pctB = bbStatus15m.pctB;
-      const pos  = pctB <= 0.1 ? '下軌' : pctB <= 0.25 ? '近下' : pctB >= 0.9 ? '上軌' : pctB >= 0.75 ? '近上' : '中軌';
-      const clr  = pctB <= 0.25 ? 'var(--bull)' : pctB >= 0.75 ? 'var(--bear)' : 'var(--text3)';
-      chips.push(`<span class="setup-macro-chip" style="color:${clr}">📊 BB(15m) ${pos}</span>`);
+      const pctB   = bbStatus15m.pctB;
+      const tags15 = bbStatus15m.tags || [];
+      const pos    = pctB <= 0.1 ? '下軌' : pctB <= 0.25 ? '近下' : pctB >= 0.9 ? '上軌' : pctB >= 0.75 ? '近上' : '中軌';
+      const clr    = pctB <= 0.25 ? 'var(--bull)' : pctB >= 0.75 ? 'var(--bear)' : 'var(--text3)';
+      const extra2 = tags15.includes('BB多頭走軌') ? ' · 走軌▲' : tags15.includes('BB空頭走軌') ? ' · 走軌▼'
+                   : tags15.includes('BB收窄蓄力') ? ' · 收窄' : '';
+      chips.push(`<span class="setup-macro-chip" style="color:${clr}">📊 BB(15m) ${pos}${extra2}</span>`);
     }
     return chips.length ? `<div class="setup-macro-chips" style="margin-top:6px">${chips.join('')}</div>` : '';
   } catch(e) { return ''; } })();
@@ -8287,7 +8320,39 @@ function computeSimpleSetup(coin, isLong) {
     if (!isLong && _ssWhale.bias === 'bull' && (_ssWhale.bigBuyCount  || 0) >= 3) _sChipsPen += 4;
   }
   _sChipsPen = Math.min(10, _sChipsPen);
-  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sTechPen - _sChipsPen);
+
+  // ── 布林通道型態分析（BB走軌/收窄/背離 + 123法則/2B法則）──
+  let _sBBBonus = 0, _sBBPenalty = 0;
+  const _sBB = coin.bb;
+  const _sPat = coin.patterns;
+  if (_sBB) {
+    // BB 走軌確認趨勢方向 → +4 信心加成
+    if (isLong  && _sBB.walkingBull) _sBBBonus += 4;
+    if (!isLong && _sBB.walkingBear) _sBBBonus += 4;
+    // BB 收窄蓄力 + 方向一致（中軌上方做多/中軌下方做空）→ +2 加成
+    if (_sBB.isSqueezing) {
+      if (isLong  && price >= _sBB.middle) _sBBBonus += 2;
+      if (!isLong && price <= _sBB.middle) _sBBBonus += 2;
+    }
+    // BB 背離警告（對手方向）→ 扣分：動能衰竭風險
+    if (isLong  && _sBB.bbDivBear) _sBBPenalty += 6;
+    if (!isLong && _sBB.bbDivBull) _sBBPenalty += 6;
+    // 對手走軌（逆風走軌）→ 扣分
+    if (isLong  && _sBB.walkingBear) _sBBPenalty += 5;
+    if (!isLong && _sBB.walkingBull) _sBBPenalty += 5;
+  }
+  // 123法則確認 → +3；2B法則確認 → +3
+  if (_sPat) {
+    if (isLong  && _sPat.bull123) _sBBBonus += 3;
+    if (!isLong && _sPat.bear123) _sBBBonus += 3;
+    if (isLong  && _sPat.bull2B)  _sBBBonus += 3;
+    if (!isLong && _sPat.bear2B)  _sBBBonus += 3;
+  }
+  _sBBBonus   = Math.min(8, _sBBBonus);
+  _sBBPenalty = Math.min(10, _sBBPenalty);
+  rawConf = Math.min(92, rawConf + _sBBBonus);
+
+  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sTechPen - _sChipsPen - _sBBPenalty);
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
@@ -8348,6 +8413,25 @@ function computeSimpleSetup(coin, isLong) {
     else reasons.push(`綜合評分 ${score}，空頭信號確認`);
   }
 
+  // ── 布林通道型態說明 ──
+  if (_sBB) {
+    const bbTags = _sBB.tags || [];
+    if (isLong  && _sBB.walkingBull)  reasons.push(`📈 BB多頭走軌：連續貼近上軌，強勢趨勢延續`);
+    if (!isLong && _sBB.walkingBear)  reasons.push(`📉 BB空頭走軌：連續貼近下軌，強勢下跌趨勢`);
+    if (_sBB.isSqueezing && _sBBBonus > 0) reasons.push(`🔋 BB收窄蓄力：帶寬壓縮，即將爆發突破`);
+    if (isLong  && _sBB.bbDivBear)    reasons.push(`⚠️ BB頂背離：新高但收盤未觸上軌，動能衰竭風險`);
+    if (!isLong && _sBB.bbDivBull)    reasons.push(`⚠️ BB底背離：新低但收盤未觸下軌，動能衰竭風險`);
+    if (bbTags.includes('BB下軌觸及')) reasons.push(`布林下軌觸及（%B ${_sBB.pctB.toFixed(2)}），超賣反彈信號`);
+    if (bbTags.includes('BB上軌觸及')) reasons.push(`布林上軌觸及（%B ${_sBB.pctB.toFixed(2)}），超買壓回信號`);
+  }
+  // ── 123法則 / 2B法則 型態 ──
+  if (_sPat) {
+    if (isLong  && _sPat.bull123) reasons.push(`📐 123多頭型態確認：低點抬高後突破中間高點，趨勢反轉確認`);
+    if (!isLong && _sPat.bear123) reasons.push(`📐 123空頭型態確認：高點降低後跌破中間低點，下跌確認`);
+    if (isLong  && _sPat.bull2B)  reasons.push(`🔄 2B多頭型態：假跌破前低後強力反彈，空頭陷阱解除`);
+    if (!isLong && _sPat.bear2B)  reasons.push(`🔄 2B空頭型態：假突破前高後快速回落，多頭陷阱確認`);
+  }
+
   // 把 AI 學習警告加入進場依據
   learnWarn.forEach(w => reasons.push(`⚠️ ${w}`));
   if (hardAdxPenalty > 0) {
@@ -8382,6 +8466,7 @@ function computeSimpleSetup(coin, isLong) {
     atr, conf, rawConf, hardAdxPenalty, learnPenalty,
     macroPenalty: _sMacroPen, aiTrendPenalty: _sAIPen,
     techPenalty: _sTechPen, chipsPenalty: _sChipsPen,
+    bbBonus: _sBBBonus, bbPenalty: _sBBPenalty,
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
