@@ -2005,6 +2005,31 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     console.warn('[buildTradeSetup] macroOpposePenalty 計算失敗:', e);
   }
 
+  // 大方向分歧補扣：computeMacroNetDir 閾值低於 macroOpposePenalty 閾值，需補齊差距
+  // slight_bear for long / slight_bull for short → 最少扣 3%；bear/bull → 最少扣 7%
+  if (_btsNetDir) {
+    const _bdAgainst = (isLong && _btsNetDir.includes('bear')) || (!isLong && _btsNetDir.includes('bull'));
+    if (_bdAgainst) {
+      const _bdMin = (_btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull') ? 3 : 7;
+      if (macroOpposePenalty < _bdMin) {
+        const _bdAdd = _bdMin - macroOpposePenalty;
+        macroOpposePenalty += _bdAdd;
+        macroReasons.push(`大方向${_btsNetDir.includes('slight') ? '輕微' : ''}${isLong ? '偏空' : '偏多'}（${_btsNetDir}），補扣 ${_bdAdd}%`);
+      }
+    }
+  }
+
+  // 頂級交易員逆勢布局：taker 買賣比與宏觀方向相悖時，降低宏觀扣分
+  if (deriv && macroOpposePenalty >= 5) {
+    const _tkBull = isLong  && (deriv.takerBuySell ?? 1) > 1.15;
+    const _tkBear = !isLong && (deriv.takerBuySell ?? 1) < 0.85;
+    if (_tkBull || _tkBear) {
+      const _tkReduce = Math.min(5, macroOpposePenalty);
+      macroOpposePenalty = Math.max(0, macroOpposePenalty - _tkReduce);
+      macroReasons.push(`🏆 頂級交易員${_tkBull ? '多頭' : '空頭'}佈局（Taker ${(deriv.takerBuySell ?? 1).toFixed(2)}）逆勢進場，宏觀扣分緩減 -${_tkReduce}%`);
+    }
+  }
+
   // ── 本週 / 今日 AI 預測方向對照（_wBias / _tBias 已在函式前段提前定義）──
   const weeklyAligned = (isLong && _wBias.includes('bull')) || (!isLong && _wBias.includes('bear'));
   const weeklyNeutral = _wBias === 'neutral' || _wBias === '';
@@ -3913,6 +3938,28 @@ function buildVPPanel(coin, mtfData, whale) {
     const futInvolved   = fw && fw.takerBias !== 'neutral';
     const isInvolved    = spotInvolved || futInvolved;
 
+    // AI 巨鯨綜合判斷
+    const wSpotDir  = wPat ? (wPat.pattern === 'accumulation' || wPat.pattern === 'light_buy' ? 'bull'
+                            : wPat.pattern === 'distribution' || wPat.pattern === 'light_sell' ? 'bear' : 'neutral') : 'neutral';
+    const wFutDir   = fw ? (fw.takerBias === 'bull' ? 'bull' : fw.takerBias === 'bear' ? 'bear' : 'neutral') : 'neutral';
+    const wConsistent = wSpotDir === wFutDir;
+    const wBothNeutral = wSpotDir === 'neutral' && wFutDir === 'neutral';
+    let wAIVerdict = 'neutral', wAILabel = '◆ 無明顯訊號', wAIColor = 'var(--text3)';
+    if (!wBothNeutral) {
+      if (wConsistent && wSpotDir === 'bull') { wAIVerdict = 'strong_bull'; wAILabel = '✅ 現貨+期貨同步積累，強力多頭信號'; wAIColor = 'var(--bull)'; }
+      else if (wConsistent && wSpotDir === 'bear') { wAIVerdict = 'strong_bear'; wAILabel = '❌ 現貨+期貨同步派發，強力空頭信號'; wAIColor = 'var(--bear)'; }
+      else if (!wConsistent && wSpotDir !== 'neutral' && wFutDir !== 'neutral') { wAIVerdict = 'conflict'; wAILabel = '⚠️ 現貨/期貨巨鯨方向分歧，謹慎操作'; wAIColor = '#f59e0b'; }
+      else if (wSpotDir === 'bull' || wFutDir === 'bull') { wAIVerdict = 'bull'; wAILabel = '↑ 單邊積累跡象（多頭）'; wAIColor = 'var(--bull)'; }
+      else if (wSpotDir === 'bear' || wFutDir === 'bear') { wAIVerdict = 'bear'; wAILabel = '↓ 單邊派發跡象（空頭）'; wAIColor = 'var(--bear)'; }
+    }
+    const _wTlog = (() => { try { return loadTradeLog(); } catch(_) { return []; } })();
+    const _wActiveTrade = _wTlog.find(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+    const direction = _wActiveTrade ? _wActiveTrade.direction : (wAIVerdict === 'bull' || wAIVerdict === 'strong_bull' ? 'long' : wAIVerdict === 'bear' || wAIVerdict === 'strong_bear' ? 'short' : 'long');
+    const wAIAligned = (direction === 'long' && (wAIVerdict === 'bull' || wAIVerdict === 'strong_bull'))
+                    || (direction === 'short' && (wAIVerdict === 'bear' || wAIVerdict === 'strong_bear'));
+    const wAIOpposed = (direction === 'long' && (wAIVerdict === 'bear' || wAIVerdict === 'strong_bear'))
+                    || (direction === 'short' && (wAIVerdict === 'bull' || wAIVerdict === 'strong_bull'));
+
     // 方向：以現貨大單為主，無則看合約 Taker
     const whaleDirBias  = wPat?.pattern === 'accumulation' || wPat?.pattern === 'light_buy'  ? 'bull'
                         : wPat?.pattern === 'distribution' || wPat?.pattern === 'light_sell' ? 'bear'
@@ -3965,6 +4012,11 @@ function buildVPPanel(coin, mtfData, whale) {
       <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
         <span style="font-size:0.8rem;color:var(--text2)">巨鯨介入：</span>${involvedTag}
       </div>
+        <div style="margin-top:6px;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:6px;font-size:0.73rem">
+          <span style="color:var(--text3)">AI 研判：</span><span style="color:${wAIColor}">${wAILabel}</span>
+          ${wAIAligned ? `<span style="color:var(--bull);margin-left:8px;font-size:0.7rem">▲ 與${direction === 'long' ? '多' : '空'}單方向一致</span>` : ''}
+          ${wAIOpposed ? `<span style="color:var(--bear);margin-left:8px;font-size:0.7rem">▼ 與${direction === 'long' ? '多' : '空'}單方向相悖</span>` : ''}
+        </div>
       ${priceHtml}${spotStatsHtml}${futStatsHtml}
       ${!whale && !wPat ? '<div style="color:var(--text3);font-size:0.8rem;padding:4px 0">現貨 / 合約數據載入中，稍後重試...</div>' : ''}
     </div>`;
@@ -5244,6 +5296,7 @@ function recordSignalsFromScan(data) {
         scaleIns: [], peakPrice: null,
       });
       changed = true;
+      try { if (typeof showToast === 'function') showToast(`📡 新震盪訊號：${coin.symbol} ${direction === 'long' ? '▲做多' : '▼做空'} 信心 ${Math.round(finalConfR)}%，已加入持倉`, 'success'); } catch(_te) {}
     }
   }
 
@@ -5305,6 +5358,7 @@ function recordSignalsFromScan(data) {
       };
       tlog.unshift(newTrade);
       changed = true;
+      try { if (typeof showToast === 'function') showToast(`📡 新訊號：${newTrade.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${newTrade.conf}%，已加入持倉`, 'success'); } catch(_te) {}
       // 掃描建單後立即發 Telegram 通知
       try {
         const _ns = loadSettings();
@@ -5528,13 +5582,20 @@ function updateOpenTrades(data) {
           if (_fgV > 70) _agt++;
           if (_fgV < 25) _agt += 0.5;
         }
-        const _macP = _agt >= 3 ? 18 : _agt >= 2 ? 12 : _agt >= 1 ? 5 : 0;
+        let _macP = _agt >= 3 ? 18 : _agt >= 2 ? 12 : _agt >= 1 ? 5 : 0;
         // ADX 不列入 freshConf：建單時 ADX 是靜態品質過濾，不應在每次刷新時重複扣分
         const _wb  = computeWeeklyAIBias(_fg, _gm);
         const _tb  = computeTodayAIBias(_fg, _gm);
         const _wOp = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
         const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
         const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 8 : 4) : 0) + (_tOp ? 5 : 0);
+        // 大方向分歧補扣
+        const _fBigDir = computeMacroNetDir(_fg, _gm);
+        const _fBdAg = (_isL && _fBigDir.includes('bear')) || (!_isL && _fBigDir.includes('bull'));
+        if (_fBdAg) {
+          const _fBdMin = (_fBigDir === 'slight_bear' || _fBigDir === 'slight_bull') ? 3 : 7;
+          if (_macP < _fBdMin) _macP = _fBdMin;
+        }
         // 最終信心度 = rawConf - ADX懲罰（靜態）- 學習懲罰（靜態）- 宏觀懲罰（動態）- AI趨勢懲罰（動態）
         freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
@@ -8139,6 +8200,13 @@ function computeSimpleSetup(coin, isLong) {
       const _stOp = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
       if (_swOp) _sAIPen += _swBias.includes('strong') ? 8 : 4;
       if (_stOp) _sAIPen += 5;
+      // 大方向分歧補扣
+      const _sBigDir = computeMacroNetDir(_sfg, _sgm);
+      const _sBdAgainst = (isLong && _sBigDir.includes('bear')) || (!isLong && _sBigDir.includes('bull'));
+      if (_sBdAgainst) {
+        const _sBdMin = (_sBigDir === 'slight_bear' || _sBigDir === 'slight_bull') ? 3 : 7;
+        if (_sMacroPen < _sBdMin) _sMacroPen = _sBdMin;
+      }
     } catch(_se) {}
   }
   const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen);
