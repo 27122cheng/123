@@ -5258,210 +5258,109 @@ function recordSignalsFromScan(data) {
   // mild bear/bull 由 computeSimpleSetup conf 扣分過濾（與幣種詳情頁邏輯一致）
   const blockLong  = macroNetDir === 'strong_bear';
   const blockShort = macroNetDir === 'strong_bull';
-  // 震盪模式（掃描路徑）：宏觀/週AI/今日AI 三指標中 2+ 個為震盪/中性 → 觸發震盪路徑
-  // slight_bull/slight_bear 算震盪（僅 bull/bear/strong 視為有方向性）
-  // 4H/日線代理：ADX < 22（在幣種迴圈中逐一確認）
-  const _RS_DIR          = ['bull','bear','strong_bull','strong_bear'];
-  const _rsMacroNeutral  = !_RS_DIR.includes(macroNetDir);
-  const _rsWeeklyNeutral = !_RS_DIR.includes(wBias);
-  const _rsTodayNeutral  = !_RS_DIR.includes(tBias);
-  const _rsNeutralCnt    = (_rsMacroNeutral ? 1 : 0) + (_rsWeeklyNeutral ? 1 : 0) + (_rsTodayNeutral ? 1 : 0);
-  // 無宏觀快取時不觸發震盪模式，避免封鎖所有方向性掃描
-  const isRangeMode      = _macroCache ? (_rsNeutralCnt >= 2) : false;
-  // 震盪方向限制：三指標中 2+ 個偏空 → 禁多；2+ 個偏多 → 禁空
-  const _rsMBear = (macroNetDir === 'strong_bear' || macroNetDir === 'bear' || macroNetDir === 'slight_bear') ? 1 : 0;
-  const _rsWBear = wBias.includes('bear') ? 1 : 0;
-  const _rsTBear = tBias.includes('bear') ? 1 : 0;
-  const _rsMBull = (macroNetDir === 'strong_bull' || macroNetDir === 'bull' || macroNetDir === 'slight_bull') ? 1 : 0;
-  const _rsWBull = wBias.includes('bull') ? 1 : 0;
-  const _rsTBull = tBias.includes('bull') ? 1 : 0;
-  // 震盪方向需要 2+ 個指標同向才允許（與 buildTradeSetup 邏輯對齊）
-  const rangeBlockLong  = (_rsMBull + _rsWBull + _rsTBull) < 2;  // 需 2+ 偏多同向
-  const rangeBlockShort = (_rsMBear + _rsWBear + _rsTBear) < 2;  // 需 2+ 偏空同向
 
-  // ══════════════════════════════════════════════════
-  // Loop 1 ── 長線單（日線 + 週線同方向，canScaleIn = true）
-  // ══════════════════════════════════════════════════
-  {
-    for (const coin of data) {
-      if (coin.score === 50) continue;
-      const isLong    = coin.score > 50;
-      const direction = isLong ? 'long' : 'short';
+  // ══════════════════════════════════════════════════════════════
+  // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
+  // 短線條件：4 大指標 ≥2 項同向 + 最終信心度 ≥ 70%
+  // 長線升級：同時滿足日線信號 + 週線信號均同方向 → canScaleIn=true
+  // ══════════════════════════════════════════════════════════════
+  for (const coin of data) {
+    if (coin.score === 50) continue;
+    const isLong    = coin.score > 50;
+    const direction = isLong ? 'long' : 'short';
 
-      if (isLong  && blockLong)  continue;
-      if (!isLong && blockShort) continue;
+    // 強烈宏觀硬封鎖
+    if (isLong  && blockLong)  continue;
+    if (!isLong && blockShort) continue;
 
-      // 必須同時有日線與週線 MTF 資料，且兩者同向
-      const _ltDayBull = coin.dailySignal?.includes('bull');
-      const _ltDayBear = coin.dailySignal?.includes('bear');
-      const _ltWkBull  = coin.weeklySignal?.includes('bull');
-      const _ltWkBear  = coin.weeklySignal?.includes('bear');
-      if (!coin.dailySignal || !coin.weeklySignal) continue;
-      const _ltAligned = isLong ? (_ltDayBull && _ltWkBull) : (_ltDayBear && _ltWkBear);
-      if (!_ltAligned) continue;
+    // ── 4 項多空條件計分，至少 2 項同向才進入信心評估 ──
+    // F1 宏觀（slight_bull/bull/strong_bull 均算同向）
+    const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
+    // F2 大方向：週線 K 線同向，或幣種評分達強烈信號門檻（多頭 ≥65 / 空頭 ≤35）
+    const _f2 = isLong
+      ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 65)
+      : (!!coin.weeklySignal?.includes('bear') || coin.score <= 35);
+    // F3 週/日AI預測：週AI 或 今日AI 任一同向即計分
+    const _f3 = _macroCache
+      ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
+         (isLong ? tBias.includes('bull') : tBias.includes('bear')))
+      : false;
+    // F4 大時間框架：日線信號；neutral 或無資料時退回趨勢代理
+    const _dtBull    = coin.dailySignal?.includes('bull');
+    const _dtBear    = coin.dailySignal?.includes('bear');
+    const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
+    const _f4 = isLong
+      ? (_dtBull || (_dtNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
+      : (_dtBear || (_dtNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
 
-      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
-      if (hasOpen) continue;
-      if (inCooldown(tlog, coin.symbol, direction)) continue;
+    if ([_f1, _f2, _f3, _f4].filter(Boolean).length < 2) continue;
 
-      const setup = computeSimpleSetup(coin, isLong);
-      if (setup.hardBlocked) continue;
-      // 門檻：結構性信心（rawConf - ADX懲罰 - 學習懲罰）>= 70%
-      const _gateConfLT = Math.max(0, (setup.rawConf || 0) - (setup.hardAdxPenalty || 0) - (setup.learnPenalty || 0));
-      if (_gateConfLT < 70) continue;
+    const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
+    if (hasOpen) continue;
+    if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-      const newTradeLT = {
-        id: `${coin.symbol}-${Date.now()}`,
-        symbol: coin.symbol, direction,
-        timestamp: Date.now(),
-        entryPrice: parseFloat(coin.price) || 0,
-        entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
-        entryReason: setup.entryReason, slReason: setup.slReason,
-        tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
-        rsi: parseFloat(coin.rsi) || 50,
-        adx: parseFloat(coin.adx) || 20,
-        score: coin.score, trend: coin.trend,
-        conf: setup.conf, rawConf: setup.rawConf,
-        hardAdxPenalty: setup.hardAdxPenalty || 0,
-        learnPenalty: setup.learnPenalty || 0,
-        macroPenalty: setup.macroPenalty || 0,
-        aiTrendPenalty: setup.aiTrendPenalty || 0,
-        techPenalty: setup.techPenalty || 0,
-        chipsPenalty: setup.chipsPenalty || 0,
-        status: 'pending', outcome: null, tp1Hit: false,
-        entryTime: null,
-        exitPrice: null, exitTime: null, pnlR: null, analysis: null,
-        refined: false,
-        tradeType: 'directional',
-        longTermBias: null, canScaleIn: true,
-        scaleIns: [], peakPrice: null,
-      };
-      tlog.unshift(newTradeLT);
-      changed = true;
-      try { if (typeof showToast === 'function') showToast(`📡 長線單：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${setup.conf}%，已加入持倉`, 'success'); } catch(_te) {}
-      try {
-        const _ns = loadSettings();
-        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
-          const _fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-          const _sym = newTradeLT.symbol.replace('/USDT', '');
-          const _dir = isLong ? '▲ 做多' : '▼ 做空';
-          const _ci  = newTradeLT.conf >= 85 ? '🟢' : newTradeLT.conf >= 80 ? '🟡' : '🟠';
-          sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
-            `📡 <b>長線單信號（自動掃描）</b>\n\n` +
-            `💎 <b>${newTradeLT.symbol}</b>  ${_dir}\n` +
-            `${_ci} 信心度：<b>${newTradeLT.conf}%</b>\n` +
-            `📍 建議進場：$${_fmt(newTradeLT.entry)}\n` +
-            `🛑 止損：$${_fmt(newTradeLT.sl)}\n` +
-            `🎯 長線目標：$${_fmt(newTradeLT.tp1)}\n\n` +
-            `📊 RSI ${newTradeLT.rsi} · ADX ${newTradeLT.adx} · 評分 ${newTradeLT.score}\n` +
-            `📌 進場理由：${newTradeLT.entryReason || '—'}\n\n` +
-            `⚠️ 日線+週線同方向確認，可加倉佈局`
-          );
-        }
-      } catch(_e) {}
-    }
-  }
+    const setup = computeSimpleSetup(coin, isLong);
+    if (setup.hardBlocked) continue;
+    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 70%
+    if (setup.conf < 70) continue;
 
-  // ══════════════════════════════════════════════════
-  // Loop 2 ── 短線單
-  // 條件：4 大指標（宏觀/大方向/週日AI預測/大時間框架）≥2 項同向
-  // 門檻：扣掉所有懲罰後的最終信心度 ≥ 70%
-  // ══════════════════════════════════════════════════
-  {
-    for (const coin of data) {
-      if (coin.score === 50) continue;
-      const isLong  = coin.score > 50;
-      const direction = isLong ? 'long' : 'short';
+    // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
+    const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
+    const _ltWkOk  = isLong ? !!coin.weeklySignal?.includes('bull') : !!coin.weeklySignal?.includes('bear');
+    const canScaleIn = _ltDayOk && _ltWkOk;
 
-      // 強烈宏觀大方向硬封鎖（strong_bear 封鎖多單；strong_bull 封鎖空單）
-      if (isLong  && blockLong)  continue;
-      if (!isLong && blockShort) continue;
-
-      // ── 4 項多空條件計分，至少 2 項同向才進入信心評估 ──
-      // F1 宏觀（slight_bull/bull/strong_bull 均算同向）
-      const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
-      // F2 大方向：幣種週線 K 線同向，或幣種評分達強烈信號門檻（多頭 ≥65 / 空頭 ≤35）
-      const _f2 = isLong
-        ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 65)
-        : (!!coin.weeklySignal?.includes('bear') || coin.score <= 35);
-      // F3 週/日AI預測：週AI 或 今日AI 任一同向即計分
-      const _f3 = _macroCache
-        ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
-           (isLong ? tBias.includes('bull') : tBias.includes('bear')))
-        : false;
-      // F4 大時間框架：幣種日線信號；neutral 或無資料時退回趨勢代理
-      const _dtBull    = coin.dailySignal?.includes('bull');
-      const _dtBear    = coin.dailySignal?.includes('bear');
-      const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
-      const _f4 = isLong
-        ? (_dtBull || (_dtNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
-        : (_dtBear || (_dtNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
-
-      const _alignedCount = [_f1, _f2, _f3, _f4].filter(Boolean).length;
-      if (_alignedCount < 2) continue;  // 未達 2 項同向，繼續觀望
-
-      const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
-      if (hasOpen) continue;
-      if (inCooldown(tlog, coin.symbol, direction)) continue;
-
-      const setup = computeSimpleSetup(coin, isLong);
-      if (setup.hardBlocked) continue;
-      // 最終信心度門檻：扣掉技術面、基本面、籌碼面、AI分析、ADX、過往止損規則後 >= 70%
-      if (setup.conf < 70) continue;  // 未過門檻，繼續觀望
-
-      // 掃描路徑（短線單），canScaleIn = false
-      // 長線單由 Loop 1 獨立處理（日線+週線同向）
-      const newTrade = {
-        id: `${coin.symbol}-${Date.now()}`,
-        symbol: coin.symbol, direction,
-        timestamp: Date.now(),
-        entryPrice: parseFloat(coin.price) || 0,
-        entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
-        entryReason: setup.entryReason, slReason: setup.slReason,
-        tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
-        rsi: parseFloat(coin.rsi) || 50,
-        adx: parseFloat(coin.adx) || 20,
-        score: coin.score, trend: coin.trend,
-        conf: setup.conf, rawConf: setup.rawConf,
-        hardAdxPenalty: setup.hardAdxPenalty || 0,
-        learnPenalty: setup.learnPenalty || 0,
-        macroPenalty: setup.macroPenalty || 0,
-        aiTrendPenalty: setup.aiTrendPenalty || 0,
-        techPenalty: setup.techPenalty || 0,
-        chipsPenalty: setup.chipsPenalty || 0,
-        status: 'pending', outcome: null, tp1Hit: false,
-        entryTime: null,
-        exitPrice: null, exitTime: null, pnlR: null, analysis: null,
-        refined: false,
-        tradeType: 'directional',
-        longTermBias: null, canScaleIn: false,
-        scaleIns: [], peakPrice: null,
-      };
-      tlog.unshift(newTrade);
-      changed = true;
-      try { if (typeof showToast === 'function') showToast(`📡 新訊號：${newTrade.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${newTrade.conf}%，已加入持倉`, 'success'); } catch(_te) {}
-      // 掃描建單後立即發 Telegram 通知
-      try {
-        const _ns = loadSettings();
-        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
-          const _fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-          const _sym = newTrade.symbol.replace('/USDT', '');
-          const _dir = isLong ? '▲ 做多' : '▼ 做空';
-          const _ci  = newTrade.conf >= 85 ? '🟢' : newTrade.conf >= 80 ? '🟡' : '🟠';
-          sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
-            `📡 <b>新交易信號（自動掃描）</b>\n\n` +
-            `💎 <b>${newTrade.symbol}</b>  ${_dir}\n` +
-            `${_ci} 信心度：<b>${newTrade.conf}%</b>\n` +
-            `📍 建議進場：$${_fmt(newTrade.entry)}\n` +
-            `🛑 止損：$${_fmt(newTrade.sl)}\n` +
-            `🎯 TP1：$${_fmt(newTrade.tp1)}　TP2：$${_fmt(newTrade.tp2)}\n\n` +
-            `📊 RSI ${newTrade.rsi} · ADX ${newTrade.adx} · 評分 ${newTrade.score}\n` +
-            `📌 進場理由：${newTrade.entryReason || '—'}\n\n` +
-            `⚠️ 此為掃描自動信號，進場前請至幣種詳情頁確認 MTF 分析`
-          );
-        }
-      } catch(_e) {}
-    }
+    const newTrade = {
+      id: `${coin.symbol}-${Date.now()}`,
+      symbol: coin.symbol, direction,
+      timestamp: Date.now(),
+      entryPrice: parseFloat(coin.price) || 0,
+      entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
+      entryReason: setup.entryReason, slReason: setup.slReason,
+      tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
+      rsi: parseFloat(coin.rsi) || 50,
+      adx: parseFloat(coin.adx) || 20,
+      score: coin.score, trend: coin.trend,
+      conf: setup.conf, rawConf: setup.rawConf,
+      hardAdxPenalty: setup.hardAdxPenalty || 0,
+      learnPenalty: setup.learnPenalty || 0,
+      macroPenalty: setup.macroPenalty || 0,
+      aiTrendPenalty: setup.aiTrendPenalty || 0,
+      techPenalty: setup.techPenalty || 0,
+      chipsPenalty: setup.chipsPenalty || 0,
+      status: 'pending', outcome: null, tp1Hit: false,
+      entryTime: null,
+      exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+      refined: false,
+      tradeType: 'directional',
+      longTermBias: null, canScaleIn,
+      scaleIns: [], peakPrice: null,
+    };
+    tlog.unshift(newTrade);
+    changed = true;
+    const _tLabel = canScaleIn ? '長線單' : '短線單';
+    const _tIcon  = canScaleIn ? '💎' : '📡';
+    try { if (typeof showToast === 'function') showToast(`${_tIcon} ${_tLabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${setup.conf}%，已加入持倉`, 'success'); } catch(_te) {}
+    try {
+      const _ns = loadSettings();
+      if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+        const _fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+        const _sym = coin.symbol.replace('/USDT', '');
+        const _dir = isLong ? '▲ 做多' : '▼ 做空';
+        const _ci  = setup.conf >= 85 ? '🟢' : setup.conf >= 80 ? '🟡' : '🟠';
+        const _ltNote = canScaleIn ? '⚠️ 日線+週線同方向確認，可加倉佈局' : '⚠️ 此為掃描自動信號，進場前請至幣種詳情頁確認 MTF 分析';
+        sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
+          `${_tIcon} <b>${_tLabel}信號（自動掃描）</b>\n\n` +
+          `💎 <b>${_sym}</b>  ${_dir}\n` +
+          `${_ci} 信心度：<b>${setup.conf}%</b>\n` +
+          `📍 建議進場：$${_fmt(setup.entry)}\n` +
+          `🛑 止損：$${_fmt(setup.sl)}\n` +
+          `🎯 止盈：$${_fmt(setup.tp1)}　${setup.tp2 ? `TP2：$${_fmt(setup.tp2)}` : ''}\n\n` +
+          `📊 RSI ${parseFloat(coin.rsi)||50} · ADX ${parseFloat(coin.adx)||20} · 評分 ${coin.score}\n` +
+          `📌 進場理由：${setup.entryReason || '—'}\n\n` +
+          _ltNote
+        );
+      }
+    } catch(_e) {}
   }
 
 
