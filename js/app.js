@@ -5370,25 +5370,26 @@ function recordSignalsFromScan(data) {
   }
 
   // ══════════════════════════════════════════════════
-  // 定向行情路徑（趨勢交易，信心門檻 75%）
-  // 震盪模式下不執行，由震盪行情路徑接管
+  // 定向行情路徑（趨勢交易，信心門檻 70%）
+  // 無論是否震盪模式均執行：宏觀逆向已反映在 computeSimpleSetup 扣分中
+  // blockLong/blockShort 處理宏觀明確封鎖；conf < 70 門檻過濾低品質信號
   // ══════════════════════════════════════════════════
-  if (!isRangeMode) {
+  {
     for (const coin of data) {
       const isLong  = coin.score >= 60 && (coin.trend === '強勢看漲' || coin.trend === '看漲');
       const isShort = coin.score <= 40 && (coin.trend === '強勢看跌' || coin.trend === '看跌');
       if (!isLong && !isShort) continue;
       const direction = isLong ? 'long' : 'short';
 
-      // 方向封鎖：宏觀 + AI 均明確反向 → 跳過
+      // 方向封鎖：宏觀明確反向 → 跳過
       if (isLong  && blockLong)  continue;
       if (!isLong && blockShort) continue;
 
-      // 方向一致性：大方向宏觀、本週AI、今日AI 其中兩個需同向（slight 算同向）
-      const _smAg = (isLong && macroNetDir.includes('bull')) || (!isLong && macroNetDir.includes('bear'));
-      const _swAg = (isLong && wBias.includes('bull'))       || (!isLong && wBias.includes('bear'));
-      const _stAg = (isLong && tBias.includes('bull'))       || (!isLong && tBias.includes('bear'));
-      if ((_smAg ? 1 : 0) + (_swAg ? 1 : 0) + (_stAg ? 1 : 0) < 2) continue;
+      // 三項指標全部主動逆向才跳過（宏觀「輕偏」逆向由扣分處理，不直接封鎖）
+      const _dirOppM = (isLong && (macroNetDir === 'bear' || macroNetDir === 'strong_bear')) || (!isLong && (macroNetDir === 'bull' || macroNetDir === 'strong_bull'));
+      const _dirOppW = (isLong && wBias.includes('bear'))  || (!isLong && wBias.includes('bull'));
+      const _dirOppT = (isLong && tBias.includes('bear'))  || (!isLong && tBias.includes('bull'));
+      if (_dirOppM && _dirOppW && _dirOppT) continue;  // 三項全逆向才封鎖
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
       if (hasOpen) continue;
