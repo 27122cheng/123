@@ -179,6 +179,8 @@ function startRefreshCycle() {
     state.dataSource = source;
     hideScanBar();
     try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); }
+    // 先渲染持倉頁面（使用更新前的資料），避免 updateOpenTrades 刪除後顯示空白
+    try { if (state.currentPage === 'positions') renderPositionsPage(); } catch(e) {}
     let _cancelled1 = new Set();
     try { checkAndSendAlerts(data); } catch(e) { console.error('[refresh] checkAndSendAlerts 錯誤:', e); }
     try { _cancelled1 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[refresh] updateOpenTrades 錯誤:', e); }
@@ -192,6 +194,7 @@ function startRefreshCycle() {
     try { recordSignalsFromScan(data); } catch(e) { console.error('[refresh] recordSignalsFromScan 錯誤:', e); }
     try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
     try {
+      // 掃描完成後重新渲染持倉頁面（含新增信號），同時刷新因取消而需更新的幣種詳情
       if (state.currentPage === 'positions') renderPositionsPage();
       if (state.currentPage === 'coin' && state.currentCoin && _cancelled1.has(state.currentCoin)) {
         renderCoinDetail(state.currentCoin);
@@ -5192,11 +5195,12 @@ function recordSignalsFromScan(data) {
     } catch(e) { /* 宏觀計算失敗 → 維持 neutral，允許記錄 */ }
   }
 
-  // ── 方向封鎖（極端大方向才封鎖，mild bear 由 computeSimpleSetup 扣分處理）──
-  // 只有 strong_bear/strong_bull 才完全封鎖（與 updateOpenTrades 宏觀取消邏輯對齊）
-  // bear/slight_bear：由 conf < 70 門檻過濾，不直接封鎖（避免漏掉強信號）
-  const blockLong  = macroNetDir === 'strong_bear';
-  const blockShort = macroNetDir === 'strong_bull';
+  // ── 方向封鎖（與 UI 大方向完全對齊）──────────────────────────
+  // 大方向「偏空」(bear/strong_bear) → 完全不開多
+  // 大方向「偏多」(bull/strong_bull) → 完全不開空
+  // slight_bear/slight_bull：用宏觀扣分處理，不封鎖（避免所有信號被雙重攔截）
+  const blockLong  = macroNetDir === 'bear' || macroNetDir === 'strong_bear';
+  const blockShort = macroNetDir === 'bull' || macroNetDir === 'strong_bull';
   // 震盪模式（掃描路徑）：宏觀/週AI/今日AI 三指標中 2+ 個為震盪/中性 → 觸發震盪路徑
   // slight_bull/slight_bear 算震盪（僅 bull/bear/strong 視為有方向性）
   // 4H/日線代理：ADX < 22（在幣種迴圈中逐一確認）
@@ -5709,14 +5713,7 @@ function updateOpenTrades(data) {
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       } catch(_e) {}
     }
-    if (freshConf < 70) {
-      const _confReason = `市場波動導致信心度降至 ${freshConf}%（低於門檻 70%），自動撤單`;
-      addCancelCooldown(trade, _confReason);
-      toDeleteIds.add(trade.id);
-      changed = true;
-      cancelledSymbols.add(trade.symbol);
-      sendCancelTelegramNotification(trade, _confReason);
-    }
+    // freshConf 更新僅供顯示，不自動撤單（避免市場短暫波動清空持倉頁面）
   }
 
   for (const trade of tlog) {
@@ -5751,7 +5748,9 @@ function updateOpenTrades(data) {
       // 信號轉弱（長線單跳過；短線單以 scoreFailed 為主，避免評分短暫波動觸發過早取消）
       // 注意：signalWeak 門檻從 68 移除，改為只在 trendReversed 或 scoreFailed 時才取消
       const signalWeak = false; // 已廢棄：原 nowScore < 68 會讓剛建立的掛單立即被取消（建立門檻75 vs 取消門檻68）
-      if (trendReversed || scoreFailed || signalWeak) {
+      // 精煉單（幣種詳情頁建立，refined=true）保留至自然到期或 SL/TP 觸發；
+      // 掃描粗略單（refined=false）才依趨勢/評分自動取消
+      if (!trade.refined && (trendReversed || scoreFailed || signalWeak)) {
         const reasons = [];
         if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
