@@ -188,7 +188,8 @@ async function fetchAllFromBinance(timeframe) {
     const batchResults = await Promise.allSettled(
       batch.map(pair => {
         const sym = pair.s.replace('/', '');
-        return Promise.all([
+        // 用 Promise.allSettled 讓三份資料各自獨立，週線失敗不影響日線
+        return Promise.allSettled([
           fetchKlines(sym, interval, 220),
           fetchKlines(sym, '1d', 100),
           fetchKlines(sym, '1w', 52),
@@ -200,10 +201,14 @@ async function fetchAllFromBinance(timeframe) {
       const idx  = i + j;
       const pair = pairs[idx];
       const sym  = pair.s.replace('/', '');
-      const [mainRaw, dayRaw, wkRaw] = r.status === 'fulfilled' ? r.value : [null, null, null];
+      // r.value 是三個 SettledResult；r.status 永遠 'fulfilled'（allSettled 不 reject）
+      const settled  = r.status === 'fulfilled' ? r.value : [];
+      const mainRaw  = settled[0]?.status === 'fulfilled' ? settled[0].value : null;
+      const dayRaw   = settled[1]?.status === 'fulfilled' ? settled[1].value : null;
+      const wkRaw    = settled[2]?.status === 'fulfilled' ? settled[2].value : null;
       const analysed = mainRaw ? analyzeKlines(pair.s, mainRaw) : null;
       const daySig   = dayRaw  && dayRaw.length  >= 30 ? analyzeTimeframeSignal(dayRaw)  : null;
-      const wkSig    = wkRaw   && wkRaw.length   >= 8  ? analyzeTimeframeSignal(wkRaw)   : null;
+      const wkSig    = wkRaw   && wkRaw.length   >= 30 ? analyzeTimeframeSignal(wkRaw)   : null;
 
       if (analysed) {
         results[idx] = {

@@ -5539,11 +5539,11 @@ function recordSignalsFromScan(data) {
                   : (coin.trend === '強勢看跌' || coin.trend === '看跌'));
       if (!_dailyAligned) continue;
 
-      // 周/日 AI 預測兩個同向（有宏觀快取時）
+      // 周AI 或 今日AI 至少一個同向（有宏觀快取時）；兩個都逆向才封鎖
       if (_macroCache) {
         const _wAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
         const _tAligned = isLong ? tBias.includes('bull') : tBias.includes('bear');
-        if (!_wAligned || !_tAligned) continue;
+        if (!_wAligned && !_tAligned) continue;  // 兩個都不同向才跳過
       }
 
       const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
