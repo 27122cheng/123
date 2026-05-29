@@ -790,10 +790,14 @@ function buildOpenPositionSetup(t, currentPrice) {
   const tp1      = t.tp1  || 0;
   const tp2      = t.tp2  || 0;
   const risk     = Math.abs(entry - sl) || 1;
-  const conf     = t.conf || Math.min(90, t.score || 60);
+  // 最終信心度：由 rawConf 扣除各懲罰計算（與持倉頁一致）
+  const conf     = t.rawConf != null
+    ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0))
+    : (t.conf || Math.min(90, t.score || 60));
   const confClr  = conf >= 75 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
   const ltBias  = t.longTermBias;
   const isLong_ = t.direction === 'long';
+  const isLongTermTrade = t.canScaleIn === true;
   // 長線與短線方向一致才標示〔長線單〕
   const ltTag   = (ltBias === 'long' && isLong_) || (ltBias === 'short' && !isLong_)
                 ? ' <span class="lt-tag lt-bull">〔長線單〕</span>'
@@ -825,6 +829,32 @@ function buildOpenPositionSetup(t, currentPrice) {
     return `<span style="font-size:0.72rem;color:var(--text3);margin-left:4px">${d >= 0 ? '+' : ''}${d.toFixed(2)}%</span>`;
   };
 
+  // 長線單止盈：只顯示最終止盈位（ltTP 或 tp1）；短線單：tp1 + tp2
+  const ltFinalTP = t.ltTP || tp1;
+  const siTargets = t.scaleInTargets || [];
+  const tpRows = isLongTermTrade ? `
+    ${siTargets.map((lv, i) => `
+    <div class="level-row level-tp1" style="border-left:3px solid rgba(99,102,241,.5)">
+      <div class="level-tag">📈 加倉${i+1}</div>
+      <div class="level-desc">加倉目標位</div>
+      <div class="level-price-val" style="color:#a78bfa">${fmt(lv)}${pctStr(entry, lv)}</div>
+    </div>`).join('')}
+    <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
+      <div class="level-tag">🏁 最終止盈</div>
+      <div class="level-desc">${t.tp1Reason || '長線最終目標'}</div>
+      <div class="level-price-val" style="color:#22c55e">${fmt(ltFinalTP)}${pctStr(entry, ltFinalTP)}</div>
+    </div>` : `
+    <div class="level-row level-tp1">
+      <div class="level-tag">🎯 止盈1</div>
+      <div class="level-desc">${t.tp1Reason || '—'}</div>
+      <div class="level-price-val">${fmt(tp1)}${pctStr(entry, tp1)}</div>
+    </div>
+    <div class="level-row" style="border-left:3px solid #22c55e">
+      <div class="level-tag">🚀 止盈2</div>
+      <div class="level-desc">${t.tp2Reason || '—'}</div>
+      <div class="level-price-val">${fmt(tp2)}${pctStr(entry, tp2)}</div>
+    </div>`;
+
   return `
     <div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
       <div class="verdict-dir">
@@ -846,16 +876,7 @@ function buildOpenPositionSetup(t, currentPrice) {
         <div class="level-desc" style="flex:1">${reasonsHtml || t.entryReason || '—'}</div>
         <div class="level-price-val">${fmt(entry)}</div>
       </div>
-      <div class="level-row level-tp1">
-        <div class="level-tag">🎯 止盈1</div>
-        <div class="level-desc">${t.tp1Reason || '—'}</div>
-        <div class="level-price-val">${fmt(tp1)}${pctStr(entry, tp1)}</div>
-      </div>
-      <div class="level-row" style="border-left:3px solid #22c55e">
-        <div class="level-tag">🚀 止盈2</div>
-        <div class="level-desc">${t.tp2Reason || '—'}</div>
-        <div class="level-price-val">${fmt(tp2)}${pctStr(entry, tp2)}</div>
-      </div>
+      ${tpRows}
       <div class="level-row level-sl">
         <div class="level-tag">🛑 止損</div>
         <div class="level-desc">${t.slReason || '—'}</div>
@@ -906,6 +927,18 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-desc">${distPct !== null ? `現價距進場位 <span style="color:${distClr}">${distPct > 0 ? '+' : ''}${distPct}%</span>` : '計算中…'}</div>
       <div class="level-price-val">${fmtPrice(entry)}</div>
     </div>
+    ${t.canScaleIn ? `
+    ${(t.scaleInTargets || []).map((lv, i) => `
+    <div class="level-row level-tp1" style="border-left:3px solid rgba(99,102,241,.5)">
+      <div class="level-tag">📈 加倉${i+1}</div>
+      <div class="level-desc">加倉目標位</div>
+      <div class="level-price-val" style="color:#a78bfa">${fmtPrice(lv)}</div>
+    </div>`).join('')}
+    <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
+      <div class="level-tag">🏁 最終止盈</div>
+      <div class="level-desc">${t.tp1Reason || '長線最終目標'}</div>
+      <div class="level-price-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp1)}</div>
+    </div>` : `
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈一</div>
       <div class="level-desc">${t.tp1Reason || '短線目標'}</div>
@@ -915,7 +948,7 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-tag">🚀 止盈二</div>
       <div class="level-desc">${t.tp2Reason || '波段目標'}</div>
       <div class="level-price-val">${fmtPrice(tp2)}</div>
-    </div>
+    </div>`}
     <div class="level-row level-sl">
       <div class="level-tag">🛑 止損</div>
       <div class="level-desc">${t.slReason || '結構止損'}</div>
