@@ -1172,10 +1172,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   if (direction === 'long'  && coin.score < 60) direction = 'wait';
   if (direction === 'short' && coin.score > 40) direction = 'wait';
-  // 信號強度未達 75%（頂級交易員只取高信心設置）一律觀望
+  // 信號強度未達 70%（頂級交易員只取高信心設置）一律觀望
   if (direction !== 'wait') {
     const prelimConf = Math.min(90, Math.max(40, 40 + (direction === 'long' ? totalBull : totalBear) * 7));
-    if (prelimConf < 75) direction = 'wait';
+    if (prelimConf < 70) direction = 'wait';
   }
 
   // ── 大時間框架趨勢一致性強制篩選 ──────────────────────────────
@@ -1420,8 +1420,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       // 最終信心度：ADX不適用震盪單，扣學習+宏觀+AI
       const rConf = Math.max(0, rRawConf - rLearnPen - _rMacroPen - _rAIPen);
 
-      // 門檻檢查：扣完所有分後 < 75% 或 AI 硬封鎖 → 不顯示也不記錄
-      if (rConf >= 75 && !rHardBlocked) {
+      // 門檻檢查：扣完所有分後 < 70% 或 AI 硬封鎖 → 不顯示也不記錄
+      if (rConf >= 70 && !rHardBlocked) {
       const rIsLong  = rangeDir === 'long';
       const rIcon    = rIsLong ? '▲' : '▼';
       const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
@@ -1463,8 +1463,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ? resists.find(r => r > rEntry + atr * 0.3 && r <= rEntry + atr * 2.0)
         : supps.find(s  => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.0));
       const rTP1 = _rTP1Target || (rIsLong ? rEntry + atr * 0.8 : rEntry - atr * 0.8);
-      // TP2：BB%B 極端或信心 ≥ 75 才延伸；優先 D1/4H 引線
-      const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 75;
+      // TP2：BB%B 極端或信心 ≥ 70 才延伸；優先 D1/4H 引線
+      const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 70;
       const _rTP2WickTarget = _rHasTP2 ? (rIsLong
         ? _rWickResists.find(r => r > rTP1 + price * 0.003 && r <= rEntry + atr * 3.5)
         : _rWickSupps.find(s  => s < rTP1 - price * 0.003 && s >= rEntry - atr * 3.5)) : null;
@@ -2132,13 +2132,56 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     learnWarnings.push(`ADX ${adxVal} 過低（${adxVal < 18 ? '< 18' : '< 22'}），震盪行情信心下調 ${hardAdxPenalty}%，建議等 ADX > 22 再進場`);
   }
   if (hardBlocked) blockReasons.forEach(r => learnWarnings.push(r));
-  const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty - aiTrendPenalty - hardAdxPenalty);
+
+  // ── 技術面逆風扣分 (RSI逆向、MACD背離、成交量弱、大時框架對立) ──
+  let techPenalty = 0;
+  const techPenReasons = [];
+  if (isLong) {
+    if (rsi > 78)      { techPenalty += 7; techPenReasons.push(`RSI ${rsi} 嚴重超買，追多止損風險極高，扣 7%`); }
+    else if (rsi > 70) { techPenalty += 4; techPenReasons.push(`RSI ${rsi} 超買區間，追多逆向風險，扣 4%`); }
+  } else {
+    if (rsi < 22)      { techPenalty += 7; techPenReasons.push(`RSI ${rsi} 嚴重超賣，追空止損風險極高，扣 7%`); }
+    else if (rsi < 30) { techPenalty += 4; techPenReasons.push(`RSI ${rsi} 超賣區間，追空逆向風險，扣 4%`); }
+  }
+  const _btsMACD = parseFloat(coin.macdHist) || 0;
+  if (isLong  && _btsMACD < 0) { techPenalty += 3; techPenReasons.push(`MACD 柱狀負值，多頭動能待確認，扣 3%`); }
+  if (!isLong && _btsMACD > 0) { techPenalty += 3; techPenReasons.push(`MACD 柱狀正值，空頭動能待確認，扣 3%`); }
+  const _btsVol = coin.volumeStrength || '';
+  if (_btsVol === '低' || _btsVol.includes('弱')) { techPenalty += 3; techPenReasons.push(`成交量弱勢（${_btsVol}），突破動能不足，扣 3%`); }
+  // 大時間框架對立扣分（bigTrendBlocked 已攔截雙雙逆勢，這裡處理單邊逆勢）
+  if (!bigTrendBlocked) {
+    if (h4?.signal?.includes(isLong ? 'bear' : 'bull')) { techPenalty += 4; techPenReasons.push(`4H 方向（${h4TrendLabel}）與${isLong ? '做多' : '做空'}逆勢，中週期阻力，扣 4%`); }
+    if (d1sig_?.signal?.includes(isLong ? 'bear' : 'bull')) { techPenalty += 5; techPenReasons.push(`日線方向（${d1TrendLabel}）與${isLong ? '做多' : '做空'}逆勢，大週期阻力，扣 5%`); }
+  }
+  techPenalty = Math.min(18, techPenalty);
+
+  // ── 籌碼面逆風扣分 (Taker比例、巨鯨方向) ──
+  let chipsPenalty = 0;
+  const chipsPenReasons = [];
+  if (deriv) {
+    const _btkr = deriv.takerBuySell ?? 1;
+    if (isLong  && _btkr < 0.80)        { chipsPenalty += 5; chipsPenReasons.push(`期貨主動賣單主導（Taker ${_btkr.toFixed(2)}），空方籌碼佔優，扣 5%`); }
+    else if (isLong  && _btkr < 0.88)   { chipsPenalty += 3; chipsPenReasons.push(`期貨買賣比偏空（Taker ${_btkr.toFixed(2)}），多頭籌碼承壓，扣 3%`); }
+    else if (!isLong && _btkr > 1.20)   { chipsPenalty += 5; chipsPenReasons.push(`期貨主動買單主導（Taker ${_btkr.toFixed(2)}），多方籌碼佔優，扣 5%`); }
+    else if (!isLong && _btkr > 1.12)   { chipsPenalty += 3; chipsPenReasons.push(`期貨買賣比偏多（Taker ${_btkr.toFixed(2)}），空頭籌碼承壓，扣 3%`); }
+  }
+  if (whale) {
+    if (isLong  && whale.bias === 'bear' && (whale.bigSellCount || 0) >= 3) { chipsPenalty += 4; chipsPenReasons.push(`巨鯨持續賣出（${whale.bigSellCount} 筆大額賣單），多頭逆風，扣 4%`); }
+    if (!isLong && whale.bias === 'bull' && (whale.bigBuyCount  || 0) >= 3) { chipsPenalty += 4; chipsPenReasons.push(`巨鯨持續買入（${whale.bigBuyCount} 筆大額買單），空頭逆風，扣 4%`); }
+  }
+  chipsPenalty = Math.min(10, chipsPenalty);
+
+  // 合併扣分原因
+  techPenReasons.forEach(r => aiTrendReasons.push(`📐 技術面：${r}`));
+  chipsPenReasons.forEach(r => aiTrendReasons.push(`🐋 籌碼面：${r}`));
+
+  const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty - aiTrendPenalty - hardAdxPenalty - techPenalty - chipsPenalty);
   // 三層分析中間值（供 UI 展示決策流程用）
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
-  const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty);  // 含週/日 AI 趨勢對照
+  const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
   const finalConf = conf;
-  // 最終防線：被AI風控硬封鎖 OR 信心低於75% → 觀望
-  if (conf < 75 || hardBlocked) direction = 'wait';
+  // 最終防線：被AI風控硬封鎖 OR 信心低於70% → 觀望
+  if (conf < 70 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -2166,7 +2209,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // 三層決策資料（供 Telegram 顯示 AI 邏輯摘要）
     rawConf, macroConf, finalConf,
     bigTrend, bigTrendBlocked, h4TrendLabel, d1TrendLabel,
-    learnPenalty, hardAdxPenalty, macroOpposePenalty, aiTrendPenalty,
+    learnPenalty, hardAdxPenalty, macroOpposePenalty, aiTrendPenalty, techPenalty, chipsPenalty,
     macroReasons: macroReasons || [],
     aiTrendReasons, flipRisks,
     weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
@@ -5263,8 +5306,18 @@ function recordSignalsFromScan(data) {
       const { penalty: learnPen, hardBlocked: learnBlock } = applyLearnAdjustment(direction, rsiR, adxR, {});
       // 宏觀 + AI 逆風扣分（macroPenLong/macroPenShort 已包含 AI 趨勢懲罰）
       const macroPenR  = rangeLong ? macroPenLong : macroPenShort;
-      const finalConfR = Math.max(0, rawConfR - learnPen - macroPenR);
-      if (finalConfR < 75 || learnBlock) continue;  // 震盪單門檻：全部扣分後 ≥ 75
+      // 技術面逆風扣分（震盪路徑）
+      let techPenR = 0;
+      if (rangeLong  && rsiR > 70) techPenR += 4;
+      if (!rangeLong && rsiR < 30) techPenR += 4;
+      const _rScanMACD = parseFloat(coin.macdHist) || 0;
+      if (rangeLong  && _rScanMACD < 0) techPenR += 3;
+      if (!rangeLong && _rScanMACD > 0) techPenR += 3;
+      const _rScanVol = coin.volumeStrength || '';
+      if (_rScanVol === '低' || _rScanVol.includes('弱')) techPenR += 3;
+      techPenR = Math.min(10, techPenR);
+      const finalConfR = Math.max(0, rawConfR - learnPen - macroPenR - techPenR);
+      if (finalConfR < 70 || learnBlock) continue;  // 震盪單門檻：全部扣分後 ≥ 70
 
       // ── 進場理由 ──
       const zoneDesc = rangeLong
@@ -5300,7 +5353,7 @@ function recordSignalsFromScan(data) {
         score: coin.score, trend: coin.trend,
         conf: Math.round(finalConfR), rawConf: Math.round(rawConfR),
         learnPenalty: Math.round(learnPen), hardAdxPenalty: 0,
-        macroPenalty: Math.round(macroPenR),
+        macroPenalty: Math.round(macroPenR), techPenalty: Math.round(techPenR), chipsPenalty: 0,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5344,7 +5397,7 @@ function recordSignalsFromScan(data) {
       // 計算進場參數：減完所有懲罰後的最終信心度才做門檻判斷
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      if (setup.conf < 75) continue;  // 使用最終信心度（ADX + 學習 + 宏觀 + AI 趨勢全部扣完）
+      if (setup.conf < 70) continue;  // 使用最終信心度（ADX + 學習 + 宏觀 + AI趨勢 + 技術面 + 籌碼面全部扣完）
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
@@ -5364,6 +5417,8 @@ function recordSignalsFromScan(data) {
         learnPenalty: setup.learnPenalty || 0,
         macroPenalty: setup.macroPenalty || 0,
         aiTrendPenalty: setup.aiTrendPenalty || 0,
+        techPenalty: setup.techPenalty || 0,
+        chipsPenalty: setup.chipsPenalty || 0,
         status: 'pending', outcome: null, tp1Hit: false,
         entryTime: null,
         exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5612,14 +5667,47 @@ function updateOpenTrades(data) {
           const _fBdMin = (_fBigDir === 'slight_bear' || _fBigDir === 'slight_bull') ? 3 : 7;
           if (_macP < _fBdMin) _macP = _fBdMin;
         }
-        // 最終信心度 = rawConf - ADX懲罰（靜態）- 學習懲罰（靜態）- 宏觀懲罰（動態）- AI趨勢懲罰（動態）
-        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP);
+        // 動態技術面 + 籌碼面扣分（依最新掃描數據重算）
+        let _techP = 0, _chipsP = 0;
+        const _fCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
+        if (_fCoin) {
+          const _fRsi = parseFloat(_fCoin.rsi) || 50;
+          if (_isL) {
+            if (_fRsi > 78)      _techP += 7;
+            else if (_fRsi > 70) _techP += 4;
+          } else {
+            if (_fRsi < 22)      _techP += 7;
+            else if (_fRsi < 30) _techP += 4;
+          }
+          const _fMacd = parseFloat(_fCoin.macdHist) || 0;
+          if (_isL  && _fMacd < 0) _techP += 3;
+          if (!_isL && _fMacd > 0) _techP += 3;
+          const _fVol = _fCoin.volumeStrength || '';
+          if (_fVol === '低' || _fVol.includes('弱')) _techP += 3;
+          _techP = Math.min(15, _techP);
+          const _fDrv = _fCoin.derivData;
+          if (_fDrv) {
+            const _fTkr = _fDrv.takerBuySell ?? 1;
+            if (_isL  && _fTkr < 0.80)       _chipsP += 5;
+            else if (_isL  && _fTkr < 0.88)  _chipsP += 3;
+            else if (!_isL && _fTkr > 1.20)  _chipsP += 5;
+            else if (!_isL && _fTkr > 1.12)  _chipsP += 3;
+          }
+          const _fWhl = _fCoin.whaleData;
+          if (_fWhl) {
+            if (_isL  && _fWhl.bias === 'bear' && (_fWhl.bigSellCount || 0) >= 3) _chipsP += 4;
+            if (!_isL && _fWhl.bias === 'bull' && (_fWhl.bigBuyCount  || 0) >= 3) _chipsP += 4;
+          }
+          _chipsP = Math.min(10, _chipsP);
+        }
+        // 最終信心度 = rawConf - ADX（靜態）- 學習（靜態）- 宏觀（動態）- AI趨勢（動態）- 技術面（動態）- 籌碼面（動態）
+        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       } catch(_e) {}
     }
-    if (freshConf < 75) {
-      const _confReason = `市場波動導致信心度降至 ${freshConf}%（低於門檻 75%），自動撤單`;
+    if (freshConf < 70) {
+      const _confReason = `市場波動導致信心度降至 ${freshConf}%（低於門檻 70%），自動撤單`;
       addCancelCooldown(trade, _confReason);
       toDeleteIds.add(trade.id);
       changed = true;
@@ -6826,8 +6914,8 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       else warnings.push(`💡 改進建議未滿足：「${safeLabel.slice(0, 40)}」（歷史止損 ${count} 次，-${safePen}%）`);
       if (block) blockReasons.push(`🚫 AI最終防線：「${safeLabel.slice(0, 45)}」累計 ${count} 次/筆，已列入永久風控攔截`);
     }
-    // 只收錄有足夠數據或有觸發的項目（止損記憶需 10 次以上才顯示）
-    if (fail || (type !== 'memory' && count >= 3) || (type === 'memory' && count >= 10)) {
+    // 只收錄有足夠數據或有觸發的項目（止損記憶需 5 次以上才顯示）
+    if (fail || (type !== 'memory' && count >= 3) || (type === 'memory' && count >= 5)) {
       defenseChecks.push({ type, label: safeLabel.slice(0, 55), count, pass: !fail, penalty: fail ? safePen : 0 });
     }
   };
@@ -6861,7 +6949,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   if (mem.issues) {
     for (const issue of Object.values(mem.issues)) {
       const cnt = issue.count || 0;
-      if (cnt < 10) continue; // 低於10次不列入風控，避免過度干預
+      if (cnt < 5) continue; // 低於5次不列入風控
       const t = issue.text || '';
       const s = issue.suggestion || '';
 
@@ -6879,7 +6967,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
 
       if (matchesCurrent) {
         // 分級懲罰：次數越多懲罰越重
-        const pen = cnt >= 100 ? 15 : cnt >= 50 ? 12 : cnt >= 20 ? 9 : cnt >= 10 ? 7 : cnt >= 3 ? Math.min(10, Math.ceil(cnt / 2)) : 3;
+        const pen = cnt >= 100 ? 15 : cnt >= 50 ? 12 : cnt >= 20 ? 9 : cnt >= 10 ? 7 : cnt >= 5 ? 4 : 3;
         addCheck('memory', `📚 止損記憶：「${t.slice(0, 35)}」已出現 ${cnt} 次（-${pen}%）`, cnt, true, pen, cnt >= 100);
         continue; // 已納入，不再重複檢查建議
       }
@@ -7251,7 +7339,7 @@ function renderPositionsPage() {
     }
 
     const conf      = t.conf || Math.min(90, t.score || 60);
-    const confClr   = conf >= 75 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
+    const confClr   = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#ff6d00' : 'var(--text3)';
     const isRange   = t.tradeType === 'range';
     const isLongTermOpen = !isRange && t.canScaleIn === true;
     const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
@@ -7402,9 +7490,19 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">已加倉</div>
           <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / 3</div>
         </div>
-        <div class="pos-cell">
-          <div class="pos-cell-lbl">信心度</div>
-          <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
+        <div class="pos-cell" style="grid-column:span 2">
+          <div class="pos-cell-lbl">最終信心度（扣分後）</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf}%</span>
+            ${t.rawConf ? `<span style="color:var(--text3);font-size:0.7rem">原始 ${t.rawConf}% → ${[
+              t.hardAdxPenalty > 0 ? `ADX -${t.hardAdxPenalty}%` : '',
+              t.learnPenalty > 0 ? `風控 -${t.learnPenalty}%` : '',
+              t.macroPenalty > 0 ? `宏觀 -${t.macroPenalty}%` : '',
+              t.aiTrendPenalty > 0 ? `AI -${t.aiTrendPenalty}%` : '',
+              t.techPenalty > 0 ? `技術 -${t.techPenalty}%` : '',
+              t.chipsPenalty > 0 ? `籌碼 -${t.chipsPenalty}%` : '',
+            ].filter(Boolean).join(' ')}</span>` : ''}
+          </div>
         </div>
         ` : `
         <div class="pos-cell">
@@ -7415,9 +7513,19 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">止盈二</div>
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
-        <div class="pos-cell">
-          <div class="pos-cell-lbl">信心度</div>
-          <div class="pos-cell-val" style="color:${confClr}">${conf}%</div>
+        <div class="pos-cell" style="grid-column:span 3">
+          <div class="pos-cell-lbl">最終信心度（扣分後）</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf}%</span>
+            ${t.rawConf ? `<span style="color:var(--text3);font-size:0.7rem">原始 ${t.rawConf}% → ${[
+              t.hardAdxPenalty > 0 ? `ADX -${t.hardAdxPenalty}%` : '',
+              t.learnPenalty > 0 ? `風控 -${t.learnPenalty}%` : '',
+              t.macroPenalty > 0 ? `宏觀 -${t.macroPenalty}%` : '',
+              t.aiTrendPenalty > 0 ? `AI -${t.aiTrendPenalty}%` : '',
+              t.techPenalty > 0 ? `技術 -${t.techPenalty}%` : '',
+              t.chipsPenalty > 0 ? `籌碼 -${t.chipsPenalty}%` : '',
+            ].filter(Boolean).join(' ')}</span>` : ''}
+          </div>
         </div>
         `}
       </div>
@@ -7912,7 +8020,7 @@ function showTradeDetail(id) {
       <span style="color:var(--text3);font-size:0.78rem">信心度</span>
       <div class="td-conf-bar"><div style="width:${conf}%;background:${confColor};height:100%;border-radius:4px;transition:width .3s"></div></div>
       <span style="color:${confColor};font-weight:700">${conf}%</span>
-      ${conf >= 85 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 高信心</span>' : conf >= 75 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 達標</span>' : '<span style="font-size:0.7rem;color:#ef4444;margin-left:4px">✗ 未達標</span>'}
+      ${conf >= 85 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 高信心</span>' : conf >= 70 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 達標</span>' : '<span style="font-size:0.7rem;color:#ef4444;margin-left:4px">✗ 未達標</span>'}
     </div>
     <div class="td-grid">
       <div class="td-cell" style="grid-column:span 2">
@@ -8225,7 +8333,38 @@ function computeSimpleSetup(coin, isLong) {
       }
     } catch(_se) {}
   }
-  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen);
+  // 技術面扣分 (RSI逆向、MACD、成交量)
+  let _sTechPen = 0;
+  if (isLong) {
+    if (rsi > 78)      _sTechPen += 7;
+    else if (rsi > 70) _sTechPen += 4;
+  } else {
+    if (rsi < 22)      _sTechPen += 7;
+    else if (rsi < 30) _sTechPen += 4;
+  }
+  const _ssMacdH = parseFloat(coin.macdHist) || 0;
+  if (isLong  && _ssMacdH < 0) _sTechPen += 3;
+  if (!isLong && _ssMacdH > 0) _sTechPen += 3;
+  const _ssVolStr = coin.volumeStrength || '';
+  if (_ssVolStr === '低' || _ssVolStr.includes('弱')) _sTechPen += 3;
+  _sTechPen = Math.min(15, _sTechPen);
+  // 籌碼面扣分 (Taker比例、巨鯨)
+  let _sChipsPen = 0;
+  const _ssDeriv = coin.derivData;
+  if (_ssDeriv) {
+    const _ssTkr = _ssDeriv.takerBuySell ?? 1;
+    if (isLong  && _ssTkr < 0.80)       _sChipsPen += 5;
+    else if (isLong  && _ssTkr < 0.88)  _sChipsPen += 3;
+    else if (!isLong && _ssTkr > 1.20)  _sChipsPen += 5;
+    else if (!isLong && _ssTkr > 1.12)  _sChipsPen += 3;
+  }
+  const _ssWhale = coin.whaleData;
+  if (_ssWhale) {
+    if (isLong  && _ssWhale.bias === 'bear' && (_ssWhale.bigSellCount || 0) >= 3) _sChipsPen += 4;
+    if (!isLong && _ssWhale.bias === 'bull' && (_ssWhale.bigBuyCount  || 0) >= 3) _sChipsPen += 4;
+  }
+  _sChipsPen = Math.min(10, _sChipsPen);
+  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sTechPen - _sChipsPen);
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
@@ -8319,10 +8458,11 @@ function computeSimpleSetup(coin, isLong) {
     rr2: (Math.abs(tp2 - entry) / risk).toFixed(1),
     atr, conf, rawConf, hardAdxPenalty, learnPenalty,
     macroPenalty: _sMacroPen, aiTrendPenalty: _sAIPen,
+    techPenalty: _sTechPen, chipsPenalty: _sChipsPen,
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
-    learnFiltered: (conf < 75 || hardBlocked) && rawConf >= 75,
+    learnFiltered: (conf < 70 || hardBlocked) && rawConf >= 70,
     hardBlocked,
   };
 }
