@@ -5146,21 +5146,6 @@ function purgeSymbolData(symbol) {
   state.filtered = (state.filtered || []).filter(d => d.symbol !== symbol);
 }
 
-function cancelPendingTrade(tradeId, event) {
-  if (event) { event.stopPropagation(); event.preventDefault(); }
-  const tlog = loadTradeLog();
-  const trade = tlog.find(t => t.id === tradeId && t.status === 'pending');
-  if (!trade) return;
-  if (!confirm(`確定取消 ${trade.symbol} ${trade.direction === 'long' ? '做多' : '做空'} 掛單？`)) return;
-  const reason = '手動取消掛單';
-  addCancelCooldown(trade, reason);
-  const updated = tlog.filter(t => t.id !== tradeId);
-  saveTradeLog(updated);
-  try { sendCancelTelegramNotification(trade, reason); } catch(e) {}
-  if (typeof showToast === 'function') showToast(`已取消 ${trade.symbol} ${trade.direction === 'long' ? '多' : '空'}單掛單`, 'info');
-  if (state.currentPage === 'positions') renderPositionsPage();
-}
-
 function removePairFromList(symbol) {
   const hasTrades = loadTradeLog().some(t => t.symbol === symbol);
   if (hasTrades) {
@@ -5672,11 +5657,28 @@ function updateOpenTrades(data) {
         freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
+        // 信心度跌破 70% → 自動取消掛單並推播 Telegram
+        if (freshConf < 70 && !trade.refined && !trade.entryTime) {
+          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 70%（宏觀/AI/技術面扣分累積）`;
+          addCancelCooldown(trade, _confReason);
+          toDeleteIds.add(trade.id);
+          cancelledSymbols.add(trade.symbol);
+          changed = true;
+          sendCancelTelegramNotification(trade, _confReason);
+        }
       } catch(_e) {}
     } else {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
       const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
+      if (_structConf < 70 && !trade.refined && !trade.entryTime) {
+        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 70%（ADX/風控規則扣分）`;
+        addCancelCooldown(trade, _confReason);
+        toDeleteIds.add(trade.id);
+        cancelledSymbols.add(trade.symbol);
+        changed = true;
+        sendCancelTelegramNotification(trade, _confReason);
+      }
     }
   }
 
@@ -7641,15 +7643,9 @@ function renderPositionsPage() {
               </div>
               ${isLongTermCard && t.aiScaleReason ? `<div style="margin-top:6px;font-size:0.72rem;color:#a78bfa;padding:4px 8px;background:rgba(167,139,250,.08);border-radius:6px">🤖 ${t.aiScaleReason}</div>` : ''}
               ${pendReasons.length ? `<div class="pos-reasons" style="margin-top:8px"><div class="pos-reasons-lbl">📍 進場理由</div>${pendReasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('')}</div>` : ''}
-              <div class="pos-footer" style="display:flex;align-items:center;justify-content:space-between">
-                <div>
-                  <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
-                  <span style="color:var(--text3);font-size:0.72rem;margin-left:10px">有效期至：${expiry}</span>
-                </div>
-                <button
-                  onclick="cancelPendingTrade('${t.id}', event)"
-                  style="font-size:0.72rem;padding:3px 10px;border-radius:6px;border:1px solid rgba(239,68,68,.4);background:rgba(239,68,68,.08);color:#ef4444;cursor:pointer;white-space:nowrap"
-                  title="取消此掛單">✕ 取消掛單</button>
+              <div class="pos-footer">
+                <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
+                <span style="color:var(--text3);font-size:0.72rem">有效期至：${expiry}</span>
               </div>
             </div>`;
           }).join('')}
