@@ -5411,7 +5411,10 @@ function recordSignalsFromScan(data) {
 
       const setup = computeSimpleSetup(coin, isLong);
       if (setup.hardBlocked) continue;
-      if (setup.rawConf < 70) continue;  // 原始信心度門檻 70%（最終信心度含扣分顯示於持倉頁面）
+      // 門檻：原始信心扣除 ADX 結構懲罰與學習懲罰後 >= 70%
+      // 宏觀/AI/技術/籌碼懲罰屬情境性，在持倉頁顯示最終信心度供參考
+      const _gateConf = Math.max(0, (setup.rawConf || 0) - (setup.hardAdxPenalty || 0) - (setup.learnPenalty || 0));
+      if (_gateConf < 70) continue;
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
