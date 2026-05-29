@@ -5410,10 +5410,9 @@ function recordSignalsFromScan(data) {
       if (hasOpen) continue;
       if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-      // 計算進場參數：掃描路徑為初步信號（refined=false），不設信心門檻
-      // 信心度用於顯示參考；幣種詳情頁（buildTradeSetup）會精煉為最終建議
       const setup = computeSimpleSetup(coin, isLong);
-      if (setup.hardBlocked) continue;  // 僅 AI 學習硬封鎖才跳過
+      if (setup.hardBlocked) continue;
+      if (setup.conf < 70) continue;  // 信心度未達 70% → 觀望，不納入持倉
 
       // 掃描路徑沒有逐幣 MTF K 線，canScaleIn 一律為 false
       // buildTradeSetup（幣種詳情頁）會依日線+周線/月線精煉為長線單
