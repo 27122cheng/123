@@ -1651,13 +1651,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 短線單：4H + 日線同向（且非長線單）才顯示 ⚡ 短線標籤
   const h4Sig  = mtfData['4h']?.signal;
   const dayS   = mtfData['1d']?.signal;
+  const wkS    = mtfData['1w']?.signal;
   const h4Bull = h4Sig?.signal?.includes('bull');
   const h4Bear = h4Sig?.signal?.includes('bear');
   const dayBullSig = dayS?.signal?.includes('bull');
   const dayBearSig = dayS?.signal?.includes('bear');
+  const wkBullSig  = wkS?.signal?.includes('bull');
+  const wkBearSig  = wkS?.signal?.includes('bear');
   const is4hDayAligned = isLong ? (h4Bull && dayBullSig) : (h4Bear && dayBearSig);
 
-  // ltTag 只在真正觸發長線單（canScaleIn=true）時顯示，避免 badge 與 layout 不一致
+  // 長線單：日線 + 週線同向後，再看短線（4H）是否在關鍵位置有同向
+  const _dayWkAligned = isLong ? (dayBullSig && wkBullSig) : (dayBearSig && wkBearSig);
+  const _h4AtKey = isLong
+    ? (h4Bull && _htfSupps.some(s => Math.abs(price - s) < atr * 2.0))
+    : (h4Bear && _htfResists.some(r => Math.abs(price - r) < atr * 2.0));
+  // 若無 4H 關鍵位，退用 4H 方向對齊 + 日線週線已足夠（避免無結構資料時永遠封鎖）
+  const _h4Aligned = _h4AtKey || (isLong ? h4Bull : h4Bear);
+  const canScaleIn = _dayWkAligned && _h4Aligned && ltBias === direction && ltConf >= 85;
   const ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
   // 根據類型更新 dirLabel，避免出現「短線做多 〔長線單〕」矛盾文字
   if (canScaleIn) dirLabel = isLong ? '長線做多' : '長線做空';
@@ -7676,6 +7686,13 @@ function renderPositionsPage() {
               ? `<span style="font-size:0.72rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:6px">⚡ 短線</span>`
               : '';
             const pendReasons = (t.entryReason || '').split('，').filter(Boolean);
+            // 最終信心度（與持倉頁開倉卡片相同邏輯：rawConf - 各懲罰項）
+            const _pConf = t.rawConf != null
+              ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0))
+              : (t.conf || t.score || 0);
+            const _pConfClr = _pConf >= 80 ? 'var(--bull)' : _pConf >= 70 ? '#f59e0b' : 'var(--text3)';
+            // 長線單：加倉位
+            const _siTargets = t.scaleInTargets || [];
             return `<div class="pos-card" data-symbol="${t.symbol}" data-unreal="" onclick="navigateTo('coin','${t.symbol}')">
               <div class="pos-card-top">
                 <div class="pos-symbol">
@@ -7685,13 +7702,27 @@ function renderPositionsPage() {
                 <div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>
               </div>
               <div class="pos-grid">
-                <div class="pos-cell"><div class="pos-cell-lbl">目標進場</div><div class="pos-cell-val">${fmt(t.entry)}</div></div>
+                <div class="pos-cell"><div class="pos-cell-lbl">進場位</div><div class="pos-cell-val">${fmt(t.entry)}</div></div>
                 <div class="pos-cell"><div class="pos-cell-lbl">現價距進場</div><div class="pos-cell-val" style="color:${distClr}">${distPct !== null ? distPct + '%' : '—'}</div></div>
-                <div class="pos-cell"><div class="pos-cell-lbl">止損</div><div class="pos-cell-val" style="color:var(--bear)">${fmt(t.sl)}</div></div>
+                <div class="pos-cell"><div class="pos-cell-lbl">止損位</div><div class="pos-cell-val" style="color:var(--bear)">${fmt(t.sl)}</div></div>
+                ${isLongTermCard ? `
+                <div class="pos-cell"><div class="pos-cell-lbl">最終止盈位</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.ltTP || t.tp2 || t.tp1)}</div></div>
+                ` : `
                 <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(t.tp1)}</div></div>
                 ${t.tp2 ? `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.tp2)}</div></div>` : ''}
-                ${(t.conf || t.score) ? `<div class="pos-cell"><div class="pos-cell-lbl">信心度</div><div class="pos-cell-val" style="color:${(t.conf||t.score)>=80?'var(--bull)':(t.conf||t.score)>=75?'#f59e0b':'var(--text3)'}">${t.conf || t.score}%</div></div>` : ''}
+                `}
+                <div class="pos-cell" style="grid-column:span ${isLongTermCard ? 1 : 1}">
+                  <div class="pos-cell-lbl">最終信心度</div>
+                  <div class="pos-cell-val" style="color:${_pConfClr}">${_pConf}%</div>
+                </div>
+                ${isLongTermCard && _siTargets.length ? `
+                <div class="pos-cell" style="grid-column:span 2">
+                  <div class="pos-cell-lbl">加倉位（AI 建議 ${t.maxScaleIns || _siTargets.length} 次加倉）</div>
+                  <div class="pos-cell-val" style="color:#a78bfa">${_siTargets.map((lv, i) => `#${i+1} ${fmt(lv)}`).join('　')}</div>
+                </div>
+                ` : ''}
               </div>
+              ${isLongTermCard && t.aiScaleReason ? `<div style="margin-top:6px;font-size:0.72rem;color:#a78bfa;padding:4px 8px;background:rgba(167,139,250,.08);border-radius:6px">🤖 ${t.aiScaleReason}</div>` : ''}
               ${pendReasons.length ? `<div class="pos-reasons" style="margin-top:8px"><div class="pos-reasons-lbl">📍 進場理由</div>${pendReasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('')}</div>` : ''}
               <div class="pos-footer">
                 <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
