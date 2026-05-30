@@ -791,17 +791,17 @@ function buildOpenPositionSetup(t, currentPrice) {
   const tp2      = t.tp2  || 0;
   const risk     = Math.abs(entry - sl) || 1;
   // 最終信心度：由 rawConf 扣除各懲罰計算（與持倉頁一致）
-  const conf     = t.rawConf != null
-    ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0))
-    : (t.conf || Math.min(90, t.score || 60));
+  const conf     = t.conf != null ? t.conf
+    : (t.rawConf != null
+      ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0) - (t.dirPenalty||0))
+      : Math.min(90, t.score || 60));
   const confClr  = conf >= 75 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
   const ltBias  = t.longTermBias;
   const isLong_ = t.direction === 'long';
   const isLongTermTrade = t.canScaleIn === true;
-  // 長線與短線方向一致才標示〔長線單〕
-  const ltTag   = (ltBias === 'long' && isLong_) || (ltBias === 'short' && !isLong_)
-                ? ' <span class="lt-tag lt-bull">〔長線單〕</span>'
-                : '';
+  const ltTag = isLongTermTrade
+    ? ' <span class="lt-tag lt-bull">〔長線單〕</span>'
+    : ' <span class="lt-tag" style="background:rgba(251,191,36,.15);border-color:rgba(251,191,36,.35);color:#fbbf24">⚡ 短線單</span>';
 
   // 即時未實現損益
   let unrealHtml = '';
@@ -913,11 +913,14 @@ function buildPendingPositionSetup(t, currentPrice) {
   const tp2      = t.tp2  || 0;
   const distPct  = entry ? (((currentPrice - entry) / entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
   const distClr  = distPct === null ? 'var(--text3)' : parseFloat(distPct) <= 0.5 ? 'var(--bull)' : 'var(--bear)';
+  const _ptTag = t.canScaleIn
+    ? `<span style="font-size:0.7rem;font-weight:700;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.35);color:#4ade80;padding:2px 7px;border-radius:20px;margin-left:7px">〔長線單〕</span>`
+    : `<span style="font-size:0.7rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:7px">⚡ 短線單</span>`;
 
   return `<div class="pending-banner">
     <div class="pending-icon">⏳</div>
     <div>
-      <div class="pending-title" style="color:${dirColor}">${dirLabel}</div>
+      <div class="pending-title" style="color:${dirColor}">${dirLabel}${_ptTag}</div>
       <div class="pending-sub">等待現價觸及進場位後自動確認開倉</div>
     </div>
   </div>
@@ -5297,6 +5300,11 @@ function recordSignalsFromScan(data) {
   const blockLong  = macroNetDir === 'strong_bear';
   const blockShort = macroNetDir === 'strong_bull';
 
+  // ── 多中性封鎖：宏觀無方向 + 週/日AI均無明確偏向 → 全面觀望 ──
+  const _wNeutral = !wBias.includes('bull') && !wBias.includes('bear') || wbRangeMode;
+  const _tNeutral = !tBias.includes('bull') && !tBias.includes('bear') || tbRangeMode;
+  const blockNeutral = _macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral;
+
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
   // 短線條件：4 大指標 ≥2 項同向 + 最終信心度 ≥ 70%
@@ -5310,6 +5318,8 @@ function recordSignalsFromScan(data) {
     // 強烈宏觀硬封鎖
     if (isLong  && blockLong)  continue;
     if (!isLong && blockShort) continue;
+    // 多中性觀望封鎖（宏觀中性 + 週/日AI均無方向 → 暫無交易機會）
+    if (blockNeutral) continue;
 
     // ── 4 項多空條件計分，至少 2 項同向才進入信心評估 ──
     // F1 宏觀（slight_bull/bull/strong_bull 均算同向）
@@ -5365,6 +5375,7 @@ function recordSignalsFromScan(data) {
       aiTrendPenalty: setup.aiTrendPenalty || 0,
       techPenalty: setup.techPenalty || 0,
       chipsPenalty: setup.chipsPenalty || 0,
+      dirPenalty: setup.dirPenalty || 0,
       status: 'pending', outcome: null, tp1Hit: false,
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -5418,6 +5429,15 @@ function recordSignalsFromScan(data) {
         if (_tAIPen > 0) {
           const _tDir = isLong ? '多頭今日逆風' : '空頭今日逆風';
           _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，${_tDir}，扣 ${_tAIPen}%`);
+        }
+        const _dirPen = setup.dirPenalty || 0;
+        if (_dirPen > 0) {
+          const _dWkOp = isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull');
+          const _dDyOp = isLong ? (coin.dailySignal||'').includes('bear')  : (coin.dailySignal||'').includes('bull');
+          const _dParts = [];
+          if (_dWkOp) _dParts.push('週線逆向');
+          if (_dDyOp) _dParts.push('日線逆向');
+          _penLines.push(`   ↳ 大方向${_dParts.join('+')} -${_dirPen}%`);
         }
         const _confBlock = `📶 信心度：<b>${setup.conf}%</b>` +
           (_penLines.length ? '\n' + _penLines.join('\n') : '');
@@ -5731,8 +5751,22 @@ function updateOpenTrades(data) {
           }
           _chipsP = Math.min(10, _chipsP);
         }
-        // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 技術面（動態）- 籌碼面（動態）
-        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP);
+        // F2/F4 大方向+日線逆向動態扣分
+        let _dirP = 0;
+        if (_fCoin) {
+          const _fWkSig = (_fCoin.weeklySignal || '');
+          const _fDySig = (_fCoin.dailySignal  || '');
+          if (_isL) {
+            if (_fWkSig.includes('bear')) _dirP += 5;
+            if (_fDySig.includes('bear') && !_fDySig.includes('neutral')) _dirP += 4;
+          } else {
+            if (_fWkSig.includes('bull')) _dirP += 5;
+            if (_fDySig.includes('bull') && !_fDySig.includes('neutral')) _dirP += 4;
+          }
+          _dirP = Math.min(10, _dirP);
+        }
+        // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
+        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP - _dirP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
         // 信心度跌破 70% → 自動取消掛單並推播 Telegram
@@ -6120,6 +6154,7 @@ function sendCancelTelegramNotification(trade, reason) {
     } catch (e) {}
   }
 
+  if ((trade.dirPenalty    || 0) > 0) bullets.push(`大方向/日線逆向扣分 -${trade.dirPenalty}%`);
   if ((trade.techPenalty   || 0) > 0) bullets.push(`技術面扣分 -${trade.techPenalty}%`);
   if ((trade.chipsPenalty  || 0) > 0) bullets.push(`籌碼面扣分 -${trade.chipsPenalty}%`);
   if ((trade.hardAdxPenalty|| 0) > 0) bullets.push(`ADX 過低扣分 -${trade.hardAdxPenalty}%`);
@@ -8531,7 +8566,20 @@ function computeSimpleSetup(coin, isLong) {
   _sBBPenalty = Math.min(10, _sBBPenalty);
   rawConf = Math.min(92, rawConf + _sBBBonus);
 
-  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sTechPen - _sChipsPen - _sBBPenalty);
+  // F2 大方向逆向扣分（週線信號反向）+ F4 日線逆向扣分
+  let _sDirPen = 0;
+  const _sWkSig = (coin.weeklySignal || '');
+  const _sDySig = (coin.dailySignal  || '');
+  if (isLong) {
+    if (_sWkSig.includes('bear')) _sDirPen += 5;
+    if (_sDySig.includes('bear') && !_sDySig.includes('neutral')) _sDirPen += 4;
+  } else {
+    if (_sWkSig.includes('bull')) _sDirPen += 5;
+    if (_sDySig.includes('bull') && !_sDySig.includes('neutral')) _sDirPen += 4;
+  }
+  _sDirPen = Math.min(10, _sDirPen);
+
+  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sTechPen - _sChipsPen - _sBBPenalty - _sDirPen);
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
@@ -8645,7 +8693,7 @@ function computeSimpleSetup(coin, isLong) {
     atr, conf, rawConf, hardAdxPenalty, learnPenalty,
     macroPenalty: _sMacroPen, aiTrendPenalty: _sAIPen,
     techPenalty: _sTechPen, chipsPenalty: _sChipsPen,
-    bbBonus: _sBBBonus, bbPenalty: _sBBPenalty,
+    bbBonus: _sBBBonus, bbPenalty: _sBBPenalty, dirPenalty: _sDirPen,
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
