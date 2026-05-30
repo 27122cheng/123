@@ -5349,8 +5349,8 @@ function recordSignalsFromScan(data) {
 
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
-    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 70%
-    if (setup.conf < 70) continue;
+    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 75%
+    if (setup.conf < 75) continue;
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
@@ -5706,50 +5706,50 @@ function updateOpenTrades(data) {
           if (_fgV > 70) _agt++;
           if (_fgV < 25) _agt += 0.5;
         }
-        let _macP = _agt >= 3 ? 18 : _agt >= 2 ? 12 : _agt >= 1 ? 5 : 0;
+        let _macP = _agt >= 3 ? 22 : _agt >= 2 ? 15 : _agt >= 1 ? 8 : 0;
         // ADX 不列入 freshConf：建單時 ADX 是靜態品質過濾，不應在每次刷新時重複扣分
         const _wb  = computeWeeklyAIBias(_fg, _gm);
         const _tb  = computeTodayAIBias(_fg, _gm);
         const _wOp = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
         const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
-        const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 8 : 4) : 0) + (_tOp ? 5 : 0);
+        const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 10 : 6) : 0) + (_tOp ? 7 : 0);
         // 大方向分歧補扣
         const _fBigDir = computeMacroNetDir(_fg, _gm);
         const _fBdAg = (_isL && _fBigDir.includes('bear')) || (!_isL && _fBigDir.includes('bull'));
         if (_fBdAg) {
-          const _fBdMin = (_fBigDir === 'slight_bear' || _fBigDir === 'slight_bull') ? 3 : 7;
+          const _fBdMin = (_fBigDir === 'slight_bear' || _fBigDir === 'slight_bull') ? 4 : 9;
           if (_macP < _fBdMin) _macP = _fBdMin;
         }
         // 動態技術面 + 籌碼面扣分（依最新掃描數據重算）
         let _techP = 0, _chipsP = 0;
         if (_fCoin) {
           if (_isL) {
-            if (_curRsi > 78)      _techP += 7;
-            else if (_curRsi > 70) _techP += 4;
+            if (_curRsi > 78)      _techP += 8;
+            else if (_curRsi > 70) _techP += 5;
           } else {
-            if (_curRsi < 22)      _techP += 7;
-            else if (_curRsi < 30) _techP += 4;
+            if (_curRsi < 22)      _techP += 8;
+            else if (_curRsi < 30) _techP += 5;
           }
           const _fMacd = parseFloat(_fCoin.macdHist) || 0;
-          if (_isL  && _fMacd < 0) _techP += 3;
-          if (!_isL && _fMacd > 0) _techP += 3;
+          if (_isL  && _fMacd < 0) _techP += 4;
+          if (!_isL && _fMacd > 0) _techP += 4;
           const _fVol = _fCoin.volumeStrength || '';
-          if (_fVol === '低' || _fVol.includes('弱')) _techP += 3;
-          _techP = Math.min(15, _techP);
+          if (_fVol === '低' || _fVol.includes('弱')) _techP += 4;
+          _techP = Math.min(18, _techP);
           const _fDrv = _fCoin.derivData;
           if (_fDrv) {
             const _fTkr = _fDrv.takerBuySell ?? 1;
-            if (_isL  && _fTkr < 0.80)       _chipsP += 5;
-            else if (_isL  && _fTkr < 0.88)  _chipsP += 3;
-            else if (!_isL && _fTkr > 1.20)  _chipsP += 5;
-            else if (!_isL && _fTkr > 1.12)  _chipsP += 3;
+            if (_isL  && _fTkr < 0.80)       _chipsP += 6;
+            else if (_isL  && _fTkr < 0.88)  _chipsP += 4;
+            else if (!_isL && _fTkr > 1.20)  _chipsP += 6;
+            else if (!_isL && _fTkr > 1.12)  _chipsP += 4;
           }
           const _fWhl = _fCoin.whaleData;
           if (_fWhl) {
-            if (_isL  && _fWhl.bias === 'bear' && (_fWhl.bigSellCount || 0) >= 3) _chipsP += 4;
-            if (!_isL && _fWhl.bias === 'bull' && (_fWhl.bigBuyCount  || 0) >= 3) _chipsP += 4;
+            if (_isL  && _fWhl.bias === 'bear' && (_fWhl.bigSellCount || 0) >= 3) _chipsP += 5;
+            if (!_isL && _fWhl.bias === 'bull' && (_fWhl.bigBuyCount  || 0) >= 3) _chipsP += 5;
           }
-          _chipsP = Math.min(10, _chipsP);
+          _chipsP = Math.min(12, _chipsP);
         }
         // F2/F4 大方向+日線逆向動態扣分
         let _dirP = 0;
@@ -5757,21 +5757,21 @@ function updateOpenTrades(data) {
           const _fWkSig = (_fCoin.weeklySignal || '');
           const _fDySig = (_fCoin.dailySignal  || '');
           if (_isL) {
-            if (_fWkSig.includes('bear')) _dirP += 5;
-            if (_fDySig.includes('bear') && !_fDySig.includes('neutral')) _dirP += 4;
+            if (_fWkSig.includes('bear')) _dirP += 7;
+            if (_fDySig.includes('bear') && !_fDySig.includes('neutral')) _dirP += 5;
           } else {
-            if (_fWkSig.includes('bull')) _dirP += 5;
-            if (_fDySig.includes('bull') && !_fDySig.includes('neutral')) _dirP += 4;
+            if (_fWkSig.includes('bull')) _dirP += 7;
+            if (_fDySig.includes('bull') && !_fDySig.includes('neutral')) _dirP += 5;
           }
-          _dirP = Math.min(10, _dirP);
+          _dirP = Math.min(14, _dirP);
         }
         // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
         freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP - _dirP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 信心度跌破 70% → 自動取消掛單並推播 Telegram
-        if (freshConf < 70 && !trade.refined && !trade.entryTime) {
-          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 70%（宏觀/AI/技術面扣分累積）`;
+        // 信心度跌破 75% → 自動取消掛單並推播 Telegram
+        if (freshConf < 75 && !trade.refined && !trade.entryTime) {
+          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 75%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -5783,8 +5783,8 @@ function updateOpenTrades(data) {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
       const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
-      if (_structConf < 70 && !trade.refined && !trade.entryTime) {
-        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 70%（ADX/風控規則扣分）`;
+      if (_structConf < 75 && !trade.refined && !trade.entryTime) {
+        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 75%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -8446,18 +8446,15 @@ function computeSimpleSetup(coin, isLong) {
     slType: 'atr', // simple setup 預設使用 ATR 止損
     skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   });
-  // rawConf：以 coin.score 為基礎，加入 RSI/ADX/趨勢強度加成
-  // 目標：讓 score 68-74 的高品質信號（RSI 確認 + ADX 趨勢強）也能通過 75% 門檻
-  let rawConf = Math.min(90, coin.score || 60);
-  // RSI 確認加成（順向 RSI：做多 RSI < 50，做空 RSI > 50 各 +3；極端加 +5）
+  // rawConf：以 coin.score 為基礎，加入 RSI/ADX/趨勢強度加成（嚴格篩選：基底降低，移除中性RSI加成）
+  let rawConf = Math.min(88, coin.score || 55);
+  // RSI 確認加成（順向 RSI：做多 RSI < 50，做空 RSI > 50 各 +5；極端加 +8；移除近中性加成）
   if (isLong) {
     if (rsi < 35)       rawConf += 8;
     else if (rsi < 45)  rawConf += 5;
-    else if (rsi < 52)  rawConf += 2;
   } else {
     if (rsi > 65)       rawConf += 8;
     else if (rsi > 55)  rawConf += 5;
-    else if (rsi > 48)  rawConf += 2;
   }
   // ADX 趨勢強度加成（ADX > 25 確認趨勢）
   if (adx >= 35)      rawConf += 5;
@@ -8485,20 +8482,20 @@ function computeSimpleSetup(coin, isLong) {
         if (_sfgV > 70) _sagt++;
         if (_sfgV < 25) _sagt += 0.5;
       }
-      _sMacroPen = _sagt >= 3 ? 18 : _sagt >= 2 ? 12 : _sagt >= 1 ? 5 : 0;
+      _sMacroPen = _sagt >= 3 ? 22 : _sagt >= 2 ? 15 : _sagt >= 1 ? 8 : 0;
       const _swb = computeWeeklyAIBias(_sfg, _sgm);
       const _stb = computeTodayAIBias(_sfg, _sgm);
       const _swBias = _swb.bias || '';
       const _stBias = _stb.bias || '';
       const _swOp = isLong ? _swBias.includes('bear') : _swBias.includes('bull');
       const _stOp = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
-      if (_swOp) _sAIPen += _swBias.includes('strong') ? 8 : 4;
-      if (_stOp) _sAIPen += 5;
+      if (_swOp) _sAIPen += _swBias.includes('strong') ? 10 : 6;
+      if (_stOp) _sAIPen += 7;
       // 大方向分歧補扣
       const _sBigDir = computeMacroNetDir(_sfg, _sgm);
       const _sBdAgainst = (isLong && _sBigDir.includes('bear')) || (!isLong && _sBigDir.includes('bull'));
       if (_sBdAgainst) {
-        const _sBdMin = (_sBigDir === 'slight_bear' || _sBigDir === 'slight_bull') ? 3 : 7;
+        const _sBdMin = (_sBigDir === 'slight_bear' || _sBigDir === 'slight_bull') ? 4 : 9;
         if (_sMacroPen < _sBdMin) _sMacroPen = _sBdMin;
       }
     } catch(_se) {}
@@ -8506,34 +8503,34 @@ function computeSimpleSetup(coin, isLong) {
   // 技術面扣分 (RSI逆向、MACD、成交量)
   let _sTechPen = 0;
   if (isLong) {
-    if (rsi > 78)      _sTechPen += 7;
-    else if (rsi > 70) _sTechPen += 4;
+    if (rsi > 78)      _sTechPen += 8;
+    else if (rsi > 70) _sTechPen += 5;
   } else {
-    if (rsi < 22)      _sTechPen += 7;
-    else if (rsi < 30) _sTechPen += 4;
+    if (rsi < 22)      _sTechPen += 8;
+    else if (rsi < 30) _sTechPen += 5;
   }
   const _ssMacdH = parseFloat(coin.macdHist) || 0;
-  if (isLong  && _ssMacdH < 0) _sTechPen += 3;
-  if (!isLong && _ssMacdH > 0) _sTechPen += 3;
+  if (isLong  && _ssMacdH < 0) _sTechPen += 4;
+  if (!isLong && _ssMacdH > 0) _sTechPen += 4;
   const _ssVolStr = coin.volumeStrength || '';
-  if (_ssVolStr === '低' || _ssVolStr.includes('弱')) _sTechPen += 3;
-  _sTechPen = Math.min(15, _sTechPen);
+  if (_ssVolStr === '低' || _ssVolStr.includes('弱')) _sTechPen += 4;
+  _sTechPen = Math.min(18, _sTechPen);
   // 籌碼面扣分 (Taker比例、巨鯨)
   let _sChipsPen = 0;
   const _ssDeriv = coin.derivData;
   if (_ssDeriv) {
     const _ssTkr = _ssDeriv.takerBuySell ?? 1;
-    if (isLong  && _ssTkr < 0.80)       _sChipsPen += 5;
-    else if (isLong  && _ssTkr < 0.88)  _sChipsPen += 3;
-    else if (!isLong && _ssTkr > 1.20)  _sChipsPen += 5;
-    else if (!isLong && _ssTkr > 1.12)  _sChipsPen += 3;
+    if (isLong  && _ssTkr < 0.80)       _sChipsPen += 6;
+    else if (isLong  && _ssTkr < 0.88)  _sChipsPen += 4;
+    else if (!isLong && _ssTkr > 1.20)  _sChipsPen += 6;
+    else if (!isLong && _ssTkr > 1.12)  _sChipsPen += 4;
   }
   const _ssWhale = coin.whaleData;
   if (_ssWhale) {
-    if (isLong  && _ssWhale.bias === 'bear' && (_ssWhale.bigSellCount || 0) >= 3) _sChipsPen += 4;
-    if (!isLong && _ssWhale.bias === 'bull' && (_ssWhale.bigBuyCount  || 0) >= 3) _sChipsPen += 4;
+    if (isLong  && _ssWhale.bias === 'bear' && (_ssWhale.bigSellCount || 0) >= 3) _sChipsPen += 5;
+    if (!isLong && _ssWhale.bias === 'bull' && (_ssWhale.bigBuyCount  || 0) >= 3) _sChipsPen += 5;
   }
-  _sChipsPen = Math.min(10, _sChipsPen);
+  _sChipsPen = Math.min(12, _sChipsPen);
 
   // ── 布林通道型態分析（BB走軌/收窄/背離 + 123法則/2B法則）──
   let _sBBBonus = 0, _sBBPenalty = 0;
@@ -8549,11 +8546,11 @@ function computeSimpleSetup(coin, isLong) {
       if (!isLong && price <= _sBB.middle) _sBBBonus += 2;
     }
     // BB 背離警告（對手方向）→ 扣分：動能衰竭風險
-    if (isLong  && _sBB.bbDivBear) _sBBPenalty += 6;
-    if (!isLong && _sBB.bbDivBull) _sBBPenalty += 6;
+    if (isLong  && _sBB.bbDivBear) _sBBPenalty += 8;
+    if (!isLong && _sBB.bbDivBull) _sBBPenalty += 8;
     // 對手走軌（逆風走軌）→ 扣分
-    if (isLong  && _sBB.walkingBear) _sBBPenalty += 5;
-    if (!isLong && _sBB.walkingBull) _sBBPenalty += 5;
+    if (isLong  && _sBB.walkingBear) _sBBPenalty += 7;
+    if (!isLong && _sBB.walkingBull) _sBBPenalty += 7;
   }
   // 123法則確認 → +3；2B法則確認 → +3
   if (_sPat) {
@@ -8562,22 +8559,22 @@ function computeSimpleSetup(coin, isLong) {
     if (isLong  && _sPat.bull2B)  _sBBBonus += 3;
     if (!isLong && _sPat.bear2B)  _sBBBonus += 3;
   }
-  _sBBBonus   = Math.min(8, _sBBBonus);
-  _sBBPenalty = Math.min(10, _sBBPenalty);
-  rawConf = Math.min(92, rawConf + _sBBBonus);
+  _sBBBonus   = Math.min(6, _sBBBonus);
+  _sBBPenalty = Math.min(14, _sBBPenalty);
+  rawConf = Math.min(90, rawConf + _sBBBonus);
 
   // F2 大方向逆向扣分（週線信號反向）+ F4 日線逆向扣分
   let _sDirPen = 0;
   const _sWkSig = (coin.weeklySignal || '');
   const _sDySig = (coin.dailySignal  || '');
   if (isLong) {
-    if (_sWkSig.includes('bear')) _sDirPen += 5;
-    if (_sDySig.includes('bear') && !_sDySig.includes('neutral')) _sDirPen += 4;
+    if (_sWkSig.includes('bear')) _sDirPen += 7;
+    if (_sDySig.includes('bear') && !_sDySig.includes('neutral')) _sDirPen += 5;
   } else {
-    if (_sWkSig.includes('bull')) _sDirPen += 5;
-    if (_sDySig.includes('bull') && !_sDySig.includes('neutral')) _sDirPen += 4;
+    if (_sWkSig.includes('bull')) _sDirPen += 7;
+    if (_sDySig.includes('bull') && !_sDySig.includes('neutral')) _sDirPen += 5;
   }
-  _sDirPen = Math.min(10, _sDirPen);
+  _sDirPen = Math.min(14, _sDirPen);
 
   const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sTechPen - _sChipsPen - _sBBPenalty - _sDirPen);
 
