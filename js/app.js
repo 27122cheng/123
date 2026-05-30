@@ -5349,8 +5349,8 @@ function recordSignalsFromScan(data) {
 
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
-    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 75%
-    if (setup.conf < 75) continue;
+    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 65%
+    if (setup.conf < 65) continue;
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
@@ -5769,9 +5769,9 @@ function updateOpenTrades(data) {
         freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP - _dirP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 信心度跌破 75% → 自動取消掛單並推播 Telegram
-        if (freshConf < 75 && !trade.refined && !trade.entryTime) {
-          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 75%（宏觀/AI/技術面扣分累積）`;
+        // 信心度跌破 65% → 自動取消掛單並推播 Telegram
+        if (freshConf < 65 && !trade.refined && !trade.entryTime) {
+          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 65%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -5783,8 +5783,8 @@ function updateOpenTrades(data) {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
       const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
-      if (_structConf < 75 && !trade.refined && !trade.entryTime) {
-        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 75%（ADX/風控規則扣分）`;
+      if (_structConf < 65 && !trade.refined && !trade.entryTime) {
+        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 65%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
