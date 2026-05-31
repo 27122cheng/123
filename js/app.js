@@ -1383,7 +1383,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _alignCnt   = (_macAgrDir ? 1 : 0) + (_wkAgrDir ? 1 : 0) + (_tdAgrDir ? 1 : 0);
     if (_alignCnt < 2) {
       direction = 'wait';
-      _dirAlignMiss = `大方向宏觀/本週/今日預測僅 ${_alignCnt} 個與${_isLongDir ? '多' : '空'}方向一致（需 ≥ 2）`;
+      _dirAlignMiss = `大方向宏觀/本週/今日預測僅 ${_alignCnt} 個與${_isLongDir ? '多' : '空'}方向一致（需 ≥ 3）`;
     }
   }
 
@@ -3005,6 +3005,23 @@ function buildMarketOutlook(fg, global) {
     <div class="macro-ai-preds">
       <div class="macro-ai-title">🤖 AI 宏觀預測分析</div>
       <div class="macro-ai-subtitle">根據歷史規律、Fed政策路徑及市場反應模式推算</div>
+      <div style="background:rgba(255,255,255,.05);border-left:3px solid ${bColor};border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0 14px;font-size:0.78rem;color:var(--text2);line-height:1.6">
+        🤖 ${
+          (bias === '強烈看多')
+            ? `綜合恐慌貪婪指數、加密市值動向、BTC主導率及AI多維預測，整體宏觀環境強烈偏多。多頭動能充足，操作建議：順多方向，在關鍵支撐回測時積極佈局。`
+          : (bias === '偏多')
+            ? `整合多項宏觀指標，整體環境偏向多方，多頭力道略佔優。操作建議：可逢回測佈局多單，控制倉位並注意宏觀風險事件。`
+          : (bias === '中性偏多')
+            ? `宏觀數據整體略偏多，但多空訊號分歧，建議輕倉做多並設嚴格止損，等待趨勢進一步確立再加碼。`
+          : (bias === '強烈看空')
+            ? `綜合多項宏觀指標，市場環境空頭主導，整體結構偏空。操作建議：保守觀望為主，避免逆勢追多，等待明確企穩訊號。`
+          : (bias === '偏空')
+            ? `整合宏觀數據，整體偏空格局，賣壓較買盤更大。操作建議：減少多頭曝險，以防守為主，等待市場轉變確認後再行動。`
+          : (bias === '中性偏空')
+            ? `宏觀指標略偏空，但訊號強度不足，建議謹慎操作，優先觀望，以技術面訊號輔助判斷方向。`
+          : `各項宏觀指標分歧，市場目前無明確多空方向。建議以技術面為主、宏觀為輔，等待關鍵突破確認後再操作。`
+        }
+      </div>
       <div class="macro-ai-pred-list">
         <div class="macro-pred-item">
           <div class="macro-pred-header">
@@ -7606,7 +7623,7 @@ function renderPositionsPage() {
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
       </div></div>
-      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 70% 的訊號時會自動出現</span></div>`;
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 65% 的訊號時會自動出現</span></div>`;
     return;
   }
 
