@@ -5499,14 +5499,13 @@ function recordSignalsFromScan(data) {
   const blockLong  = macroNetDir === 'strong_bear';
   const blockShort = macroNetDir === 'strong_bull';
 
-  // ── 多中性封鎖：宏觀無方向 + 週/日AI均無明確偏向 → 全面觀望 ──
+  // ── 全中性輔助判定（用於迴圈內按幣種條件判斷）──
   const _wNeutral = !wBias.includes('bull') && !wBias.includes('bear') || wbRangeMode;
   const _tNeutral = !tBias.includes('bull') && !tBias.includes('bear') || tbRangeMode;
-  const blockNeutral = _macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral;
 
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
-  // 短線條件：4 大指標 ≥3 項同向 + 最終信心度 ≥ 65%
+  // 短線條件：宏觀有方向時 ≥3/4 同向；宏觀中性或無快取時 ≥2/4 同向 + 最終信心度 ≥ 65%
   // 長線升級：同時滿足日線信號 + 週線信號均同方向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
@@ -5517,17 +5516,15 @@ function recordSignalsFromScan(data) {
     // 強烈宏觀硬封鎖
     if (isLong  && blockLong)  continue;
     if (!isLong && blockShort) continue;
-    // 多中性觀望封鎖（宏觀中性 + 週/日AI均無方向 → 暫無交易機會）
-    if (blockNeutral) continue;
 
-    // ── 4 大方向條件計分，至少 3 項同向才進入信心評估 ──
-    // F1 宏觀（slight_bull/bull/strong_bull 均算同向）
+    // ── 4 大方向條件計分 ──
+    // F1 宏觀（slight_bull/bull/strong_bull 均算同向；neutral/無快取 → false）
     const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
     // F2 大方向：週線 K 線同向，或幣種評分達強烈信號門檻（多頭 ≥65 / 空頭 ≤35）
     const _f2 = isLong
       ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 65)
       : (!!coin.weeklySignal?.includes('bear') || coin.score <= 35);
-    // F3 周/日AI預測：周AI 或 日AI 任一明確同向即計分（AI預測已整合宏觀/技術/籌碼/財經數據）
+    // F3 周/日AI預測：周AI 或 日AI 任一明確同向即計分
     const _f3 = _macroCache
       ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
          (isLong ? tBias.includes('bull') : tBias.includes('bear')))
@@ -5540,8 +5537,12 @@ function recordSignalsFromScan(data) {
       ? (_dtBull || (_dtNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
       : (_dtBear || (_dtNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
 
-    // 短線門檻：4 大指標中至少 3 項同向，否則觀望
-    if ([_f1, _f2, _f3, _f4].filter(Boolean).length < 3) continue;
+    // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
+    if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
+
+    // 短線門檻：宏觀有方向時 ≥3/4；宏觀中性或無快取時 ≥2/4（幣種方向指標須確立）
+    const _minFactors = (!_macroCache || macroNetDir === 'neutral') ? 2 : 3;
+    if ([_f1, _f2, _f3, _f4].filter(Boolean).length < _minFactors) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
     if (hasOpen) continue;
