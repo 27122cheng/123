@@ -3005,8 +3005,10 @@ function buildMarketOutlook(fg, global) {
     <div class="macro-ai-preds">
       <div class="macro-ai-title">🤖 AI 宏觀預測分析</div>
       <div class="macro-ai-subtitle">根據歷史規律、Fed政策路徑及市場反應模式推算</div>
-      <div style="background:rgba(255,255,255,.05);border-left:3px solid ${bColor};border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0 14px;font-size:0.78rem;color:var(--text2);line-height:1.6">
-        🤖 ${
+      <div style="background:rgba(255,255,255,.05);border-left:3px solid ${bColor};border-radius:0 8px 8px 0;padding:10px 14px;margin:10px 0 14px">
+        <div style="font-size:0.7rem;color:var(--text3);margin-bottom:4px">🤖 AI 綜合研判</div>
+        <div style="font-size:1.25rem;font-weight:800;color:${bColor};margin-bottom:6px">${bIcon} ${bias}</div>
+        <div style="font-size:0.76rem;color:var(--text2);line-height:1.6">${
           (bias === '強烈看多')
             ? `綜合恐慌貪婪指數、加密市值動向、BTC主導率及AI多維預測，整體宏觀環境強烈偏多。多頭動能充足，操作建議：順多方向，在關鍵支撐回測時積極佈局。`
           : (bias === '偏多')
@@ -3020,7 +3022,7 @@ function buildMarketOutlook(fg, global) {
           : (bias === '中性偏空')
             ? `宏觀指標略偏空，但訊號強度不足，建議謹慎操作，優先觀望，以技術面訊號輔助判斷方向。`
           : `各項宏觀指標分歧，市場目前無明確多空方向。建議以技術面為主、宏觀為輔，等待關鍵突破確認後再操作。`
-        }
+        }</div>
       </div>
       <div class="macro-ai-pred-list">
         <div class="macro-pred-item">
@@ -4087,6 +4089,24 @@ function buildNewsWidget(items) {
   const sentimentLabel = { bull: '偏多', bear: '偏空', neutral: '中性' };
   const sentimentColor = { bull: 'var(--bull)', bear: 'var(--bear)', neutral: 'var(--text3)' };
 
+  // ── 整合多空判斷 ──
+  const _nBull = recent.filter(i => i.sentiment === 'bull').length;
+  const _nBear = recent.filter(i => i.sentiment === 'bear').length;
+  const _nOverall = _nBull > _nBear + 1 ? 'bull' : _nBear > _nBull + 1 ? 'bear' : 'neutral';
+  const _nIcon    = _nOverall === 'bull' ? '▲' : _nOverall === 'bear' ? '▼' : '◆';
+  const _nLabel   = sentimentLabel[_nOverall];
+  const _nColor   = sentimentColor[_nOverall];
+  const _nOpinion = _nOverall === 'bull'
+    ? `近期財經新聞多方訊號較強，機構買入、監管利好及基本面正面消息居多，短線情緒偏多。`
+    : _nOverall === 'bear'
+    ? `近期財經新聞空方訊號偏多，市場風險、監管不確定性及宏觀逆風較集中，短線情緒偏空。`
+    : `近期財經新聞多空訊號分歧，市場觀點分散，建議以技術面為主要操作依據。`;
+  const _newsSummaryHtml = `<div style="background:rgba(255,255,255,.05);border-left:3px solid ${_nColor};border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:12px">
+    <div style="font-size:0.7rem;color:var(--text3);margin-bottom:4px">🤖 新聞整合研判</div>
+    <div style="font-size:1.25rem;font-weight:800;color:${_nColor};margin-bottom:6px">${_nIcon} ${_nLabel}</div>
+    <div style="font-size:0.76rem;color:var(--text2);line-height:1.6">${_nOpinion}</div>
+  </div>`;
+
   const newsHtml = recent.slice(0, 8).map(item => {
     const sent     = item.sentiment || 'neutral';
     const sentClass = sent === 'bull' ? 'bullish' : sent === 'bear' ? 'bearish' : '';
@@ -4122,6 +4142,7 @@ function buildNewsWidget(items) {
     <span class="outlook-title">🤖 AI 財經新聞重點</span>
     <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">AI 自動分析</span>
   </div>
+  ${_newsSummaryHtml}
   ${newsHtml}`;
 }
 
