@@ -3204,6 +3204,54 @@ function computeWeeklyAIBias(fg, globalMkt) {
     else if (techBearPct > 25) { factorVotes.techScan = -1; macroBear += 1 * wTech; factors.push(`技術面 ${techBearPct}% 幣種偏弱`); }
     else                       { factorVotes.techScan =  0; factors.push(`技術面多空均衡（看漲 ${techBullPct}% / 看跌 ${techBearPct}%）`); }
   }
+  // ⑤ 週線多空分佈（幣種週線信號統計）
+  const wWkSig = _getBiasWeight(weights, 'weekly_wkSignal');
+  if (coins.length) {
+    const wkBull = coins.filter(c => c.weeklySignal?.includes('bull')).length;
+    const wkBear = coins.filter(c => c.weeklySignal?.includes('bear')).length;
+    const wkBullPct = Math.round(wkBull / coins.length * 100);
+    const wkBearPct = Math.round(wkBear / coins.length * 100);
+    if      (wkBullPct > 45) { factorVotes.wkSignal =  2; macroBull += 2 * wWkSig; factors.push(`週線 ${wkBullPct}% 幣種多頭排列，市場結構強勢`); }
+    else if (wkBullPct > 28) { factorVotes.wkSignal =  1; macroBull += 1 * wWkSig; factors.push(`週線 ${wkBullPct}% 幣種偏多`); }
+    else if (wkBearPct > 45) { factorVotes.wkSignal = -2; macroBear += 2 * wWkSig; factors.push(`週線 ${wkBearPct}% 幣種空頭排列，市場結構偏弱`); }
+    else if (wkBearPct > 28) { factorVotes.wkSignal = -1; macroBear += 1 * wWkSig; factors.push(`週線 ${wkBearPct}% 幣種偏空`); }
+    else                     { factorVotes.wkSignal =  0; factors.push(`週線多空均衡（多頭 ${wkBullPct}% / 空頭 ${wkBearPct}%）`); }
+  }
+  // ⑥ 市場RSI狀態（超買/超賣分佈）
+  const wRsiW = _getBiasWeight(weights, 'weekly_rsi');
+  if (coins.length) {
+    const rsiOBW = coins.filter(c => (parseFloat(c.rsi)||50) > 70).length;
+    const rsiOSW = coins.filter(c => (parseFloat(c.rsi)||50) < 30).length;
+    const rsiOBPct = Math.round(rsiOBW / coins.length * 100);
+    const rsiOSPct = Math.round(rsiOSW / coins.length * 100);
+    if      (rsiOBPct > 30) { factorVotes.rsiW = -1; macroBear += 1 * wRsiW; factors.push(`${rsiOBPct}% 幣種 RSI 超買（>70），市場過熱風險`); }
+    else if (rsiOSPct > 25) { factorVotes.rsiW =  1; macroBull += 1 * wRsiW; factors.push(`${rsiOSPct}% 幣種 RSI 超賣（<30），超賣反彈機會`); }
+    else                    { factorVotes.rsiW =  0; }
+  }
+  // ⑦ 籌碼資金流向（Taker 買賣比聚合均值）
+  const wChipsW = _getBiasWeight(weights, 'weekly_chips');
+  const _wDrvCoins = coins.filter(c => c.derivData?.takerBuySell != null);
+  if (_wDrvCoins.length >= 3) {
+    const avgTkrW = _wDrvCoins.reduce((s, c) => s + c.derivData.takerBuySell, 0) / _wDrvCoins.length;
+    if      (avgTkrW > 1.10) { factorVotes.chipsW =  2; macroBull += 2 * wChipsW; factors.push(`市場 Taker 買賣比 ${avgTkrW.toFixed(2)}（買方主導），資金積極流入`); }
+    else if (avgTkrW > 1.03) { factorVotes.chipsW =  1; macroBull += 1 * wChipsW; factors.push(`Taker 比 ${avgTkrW.toFixed(2)}，買方略佔優`); }
+    else if (avgTkrW < 0.90) { factorVotes.chipsW = -2; macroBear += 2 * wChipsW; factors.push(`市場 Taker 買賣比 ${avgTkrW.toFixed(2)}（賣方主導），資金明顯流出`); }
+    else if (avgTkrW < 0.97) { factorVotes.chipsW = -1; macroBear += 1 * wChipsW; factors.push(`Taker 比 ${avgTkrW.toFixed(2)}，賣方略佔優`); }
+    else                     { factorVotes.chipsW =  0; }
+  }
+  // ⑧ 巨鯨動向（多空持倉分佈）
+  const wWhaleW = _getBiasWeight(weights, 'weekly_whale');
+  const _wWhlCoins = coins.filter(c => c.whaleData?.bias);
+  if (_wWhlCoins.length >= 3) {
+    const whlBull = _wWhlCoins.filter(c => c.whaleData.bias === 'bull').length;
+    const whlBear = _wWhlCoins.filter(c => c.whaleData.bias === 'bear').length;
+    const whlBullPct = Math.round(whlBull / _wWhlCoins.length * 100);
+    const whlBearPct = Math.round(whlBear / _wWhlCoins.length * 100);
+    if      (whlBullPct > 55) { factorVotes.whaleW =  1; macroBull += 1 * wWhaleW; factors.push(`巨鯨 ${whlBullPct}% 偏多，主力資金看漲`); }
+    else if (whlBearPct > 55) { factorVotes.whaleW = -1; macroBear += 1 * wWhaleW; factors.push(`巨鯨 ${whlBearPct}% 偏空，主力資金撤退`); }
+    else                      { factorVotes.whaleW =  0; }
+  }
+
   // ⑤ 本週重大事件風險
   const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
   const highRisk   = weekEvents.length >= 2;
@@ -3373,6 +3421,51 @@ function computeTodayAIBias(fg, globalMkt) {
     else if (techBearPct > 25) { factorVotes.techScan = -1; bear += 1 * wTech; reasons.push(`技術面 ${techBearPct}% 幣種偏弱`); }
     else                       { factorVotes.techScan =  0; reasons.push(`技術面多空均衡（看漲 ${techBullPct}% / 看跌 ${techBearPct}%）`); }
   }
+  // ⑤ 日線多空分佈（幣種日線信號統計）
+  const wDySig = _getBiasWeight(weights, 'daily_daySignal');
+  if (coins.length) {
+    const dyBull = coins.filter(c => c.dailySignal?.includes('bull')).length;
+    const dyBear = coins.filter(c => c.dailySignal?.includes('bear')).length;
+    const dyBullPct = Math.round(dyBull / coins.length * 100);
+    const dyBearPct = Math.round(dyBear / coins.length * 100);
+    if      (dyBullPct > 45) { factorVotes.daySignal =  2; bull += 2 * wDySig; reasons.push(`日線 ${dyBullPct}% 幣種多頭，今日多方佔優`); }
+    else if (dyBullPct > 28) { factorVotes.daySignal =  1; bull += 1 * wDySig; reasons.push(`日線 ${dyBullPct}% 幣種偏多`); }
+    else if (dyBearPct > 45) { factorVotes.daySignal = -2; bear += 2 * wDySig; reasons.push(`日線 ${dyBearPct}% 幣種空頭，今日空方佔優`); }
+    else if (dyBearPct > 28) { factorVotes.daySignal = -1; bear += 1 * wDySig; reasons.push(`日線 ${dyBearPct}% 幣種偏空`); }
+    else                     { factorVotes.daySignal =  0; reasons.push(`日線多空均衡（多頭 ${dyBullPct}% / 空頭 ${dyBearPct}%）`); }
+  }
+  // ⑥ 今日RSI極端讀數
+  const wRsiD = _getBiasWeight(weights, 'daily_rsi');
+  if (coins.length) {
+    const rsiOBD = coins.filter(c => (parseFloat(c.rsi)||50) > 70).length;
+    const rsiOSD = coins.filter(c => (parseFloat(c.rsi)||50) < 30).length;
+    const rsiOBPct = Math.round(rsiOBD / coins.length * 100);
+    const rsiOSPct = Math.round(rsiOSD / coins.length * 100);
+    if      (rsiOBPct > 35) { factorVotes.rsiD = -1; bear += 1 * wRsiD; reasons.push(`${rsiOBPct}% 幣種 RSI 超買，短線過熱壓力`); }
+    else if (rsiOSPct > 30) { factorVotes.rsiD =  1; bull += 1 * wRsiD; reasons.push(`${rsiOSPct}% 幣種 RSI 超賣，超賣反彈動能`); }
+    else                    { factorVotes.rsiD =  0; }
+  }
+  // ⑦ 籌碼流向（Taker 買賣比聚合）
+  const wChipsD = _getBiasWeight(weights, 'daily_chips');
+  const _dDrvCoins = coins.filter(c => c.derivData?.takerBuySell != null);
+  if (_dDrvCoins.length >= 3) {
+    const avgTkrD = _dDrvCoins.reduce((s, c) => s + c.derivData.takerBuySell, 0) / _dDrvCoins.length;
+    if      (avgTkrD > 1.08) { factorVotes.chipsD =  2; bull += 2 * wChipsD; reasons.push(`Taker 買賣比 ${avgTkrD.toFixed(2)}，今日買盤主導`); }
+    else if (avgTkrD > 1.02) { factorVotes.chipsD =  1; bull += 1 * wChipsD; reasons.push(`Taker 比 ${avgTkrD.toFixed(2)}，買方小幅佔優`); }
+    else if (avgTkrD < 0.92) { factorVotes.chipsD = -2; bear += 2 * wChipsD; reasons.push(`Taker 買賣比 ${avgTkrD.toFixed(2)}，今日賣盤主導`); }
+    else if (avgTkrD < 0.98) { factorVotes.chipsD = -1; bear += 1 * wChipsD; reasons.push(`Taker 比 ${avgTkrD.toFixed(2)}，賣方小幅佔優`); }
+    else                     { factorVotes.chipsD =  0; }
+  }
+  // ⑧ 動能分佈（多空動能比例）
+  const wMomD = _getBiasWeight(weights, 'daily_momentum');
+  if (coins.length) {
+    const momBull = coins.filter(c => (parseFloat(c.momentum)||0) > 0).length;
+    const momBullPct = Math.round(momBull / coins.length * 100);
+    if      (momBullPct > 60) { factorVotes.momentum =  1; bull += 1 * wMomD; reasons.push(`${momBullPct}% 幣種動能向上，上行力道確認`); }
+    else if (momBullPct < 40) { factorVotes.momentum = -1; bear += 1 * wMomD; reasons.push(`${100-momBullPct}% 幣種動能向下，下行壓力增加`); }
+    else                      { factorVotes.momentum =  0; }
+  }
+
   // ⑤ 今日高影響數據事件（最關鍵因素）
   const todayEvs = getTodayEconEvents();
   const highEvs  = todayEvs.filter(ev => ev.impact === 'high');
@@ -5307,7 +5400,7 @@ function recordSignalsFromScan(data) {
 
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
-  // 短線條件：4 大指標 ≥2 項同向 + 最終信心度 ≥ 70%
+  // 短線條件：4 大指標 ≥3 項同向 + 最終信心度 ≥ 65%
   // 長線升級：同時滿足日線信號 + 週線信號均同方向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
@@ -5321,19 +5414,19 @@ function recordSignalsFromScan(data) {
     // 多中性觀望封鎖（宏觀中性 + 週/日AI均無方向 → 暫無交易機會）
     if (blockNeutral) continue;
 
-    // ── 4 項多空條件計分，至少 2 項同向才進入信心評估 ──
+    // ── 4 大方向條件計分，至少 3 項同向才進入信心評估 ──
     // F1 宏觀（slight_bull/bull/strong_bull 均算同向）
     const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
     // F2 大方向：週線 K 線同向，或幣種評分達強烈信號門檻（多頭 ≥65 / 空頭 ≤35）
     const _f2 = isLong
       ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 65)
       : (!!coin.weeklySignal?.includes('bear') || coin.score <= 35);
-    // F3 週/日AI預測：週AI 或 今日AI 任一同向即計分
+    // F3 周/日AI預測：周AI 或 日AI 任一明確同向即計分（AI預測已整合宏觀/技術/籌碼/財經數據）
     const _f3 = _macroCache
       ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
          (isLong ? tBias.includes('bull') : tBias.includes('bear')))
       : false;
-    // F4 大時間框架：日線信號；neutral 或無資料時退回趨勢代理
+    // F4 日線/4H盤面：日線信號同向，或 coin.trend（4H代理）確認趨勢方向
     const _dtBull    = coin.dailySignal?.includes('bull');
     const _dtBear    = coin.dailySignal?.includes('bear');
     const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
@@ -5341,7 +5434,8 @@ function recordSignalsFromScan(data) {
       ? (_dtBull || (_dtNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
       : (_dtBear || (_dtNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
 
-    if ([_f1, _f2, _f3, _f4].filter(Boolean).length < 2) continue;
+    // 短線門檻：4 大指標中至少 3 項同向，否則觀望
+    if ([_f1, _f2, _f3, _f4].filter(Boolean).length < 3) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
     if (hasOpen) continue;
