@@ -6593,6 +6593,7 @@ function buildDailyBriefingMsg(fg, mkt) {
     `📅 <b>今日 AI 多空預測</b>\n${todayAISection}\n\n` +
     `🤖 <b>宏觀 AI 預測</b>\n${macroPredSection}\n\n` +
     `📆 <b>今日重要數據</b>\n${eventSection}\n\n` +
+    (() => { const cf = buildCapitalFlowTelegramSection(fg, mkt); return cf ? `💹 <b>資金流動事件提醒</b>\n${cf}\n\n` : ''; })() +
     `<i>🤖 由 AI 自動分析生成 · 僅供參考，不構成投資建議</i>`;
 }
 
@@ -9271,22 +9272,98 @@ function formatPrice(p) {
   return parseFloat(p.toFixed(8));
 }
 
-function buildCapitalFlowEventsWidget() {
-  const EVENTS = [
-    { name: 'FIFA 2026 世界盃', startDate: '2026-06-11', endDate: '2026-07-19', type: 'sports', flow: 'slight_outflow', desc: '全球最大體育賽事，歷史上大型體育賽事期間加密交易量可能下降，博彩與預測市場資金分流' },
-    { name: '端午節假期', startDate: '2026-06-19', endDate: '2026-06-21', type: 'holiday_asia', flow: 'slight_outflow', desc: '中國及台灣節假日，亞洲市場交易量輕微下降' },
-    { name: 'EthCC 2026', startDate: '2026-07-14', endDate: '2026-07-17', type: 'conference', flow: 'slight_inflow', desc: '以太坊年度生態大會，ETH 及 DeFi 項目資金關注度提升' },
-    { name: '美國獨立日', startDate: '2026-07-04', endDate: '2026-07-04', type: 'holiday_us', flow: 'neutral', desc: '美國假日，市場流動性下降，影響整體市場深度' },
-    { name: '美股 Q2 財報季', startDate: '2026-07-08', endDate: '2026-08-14', type: 'economic', flow: 'uncertain', desc: '科技股財報影響市場風險偏好，超預期則有利加密市場情緒' },
-    { name: '中秋節假期', startDate: '2026-09-12', endDate: '2026-09-14', type: 'holiday_asia', flow: 'slight_outflow', desc: '中華圈傳統節日，亞洲交易員流動性輕微下降' },
-    { name: 'Token2049 新加坡', startDate: '2026-09-17', endDate: '2026-09-18', type: 'conference', flow: 'inflow', desc: '亞洲最大加密峰會，東南亞機構資金活躍，市場情緒通常偏多' },
-    { name: '中國國慶黃金周', startDate: '2026-10-01', endDate: '2026-10-07', type: 'holiday_asia', flow: 'outflow', desc: '中國七天長假，亞洲市場交易量大幅下降，歷史上此期間波動率可能升高' },
-    { name: 'Devcon 2026', startDate: '2026-10-22', endDate: '2026-10-25', type: 'conference', flow: 'slight_inflow', desc: '以太坊核心開發者年會，技術升級公告通常提振 ETH 生態信心' },
-    { name: '美國感恩節', startDate: '2026-11-26', endDate: '2026-11-27', type: 'holiday_us', flow: 'neutral', desc: '美國假日，但歷史上感恩節後加密市場有季節性上漲趨勢' },
-    { name: '聖誕／跨年假期', startDate: '2026-12-24', endDate: '2027-01-02', type: 'holiday_global', flow: 'slight_outflow', desc: '全球假日季，市場流動性普遍下降，但散戶資金可能在年末重新佈局' },
-    { name: '春節 2027（農曆新年）', startDate: '2027-02-06', endDate: '2027-02-15', type: 'holiday_asia', flow: 'outflow', desc: '中華圈最大傳統節日，歷史上春節前後亞洲資金獲利了結，節後資金通常回流' },
-  ];
+/* ── 加密市場資金流動事件系統 ───────────────────────────────────── */
+const CAPITAL_FLOW_EVENTS = [
+  { name: 'FIFA 2026 世界盃', startDate: '2026-06-11', endDate: '2026-07-19', type: 'sports', flow: 'slight_outflow', desc: '全球最大體育賽事，歷史上大型體育賽事期間加密交易量可能下降，博彩與預測市場資金分流' },
+  { name: '端午節假期', startDate: '2026-06-19', endDate: '2026-06-21', type: 'holiday_asia', flow: 'slight_outflow', desc: '中國及台灣節假日，亞洲市場交易量輕微下降' },
+  { name: '美國獨立日', startDate: '2026-07-04', endDate: '2026-07-04', type: 'holiday_us', flow: 'neutral', desc: '美國假日，市場流動性下降，影響整體市場深度' },
+  { name: '美股 Q2 財報季', startDate: '2026-07-08', endDate: '2026-08-14', type: 'economic', flow: 'uncertain', desc: '科技股財報影響市場風險偏好，超預期則有利加密市場情緒' },
+  { name: 'EthCC 2026', startDate: '2026-07-14', endDate: '2026-07-17', type: 'conference', flow: 'slight_inflow', desc: '以太坊年度生態大會，ETH 及 DeFi 項目資金關注度提升' },
+  { name: '中秋節假期', startDate: '2026-09-12', endDate: '2026-09-14', type: 'holiday_asia', flow: 'slight_outflow', desc: '中華圈傳統節日，亞洲交易員流動性輕微下降' },
+  { name: 'Token2049 新加坡', startDate: '2026-09-17', endDate: '2026-09-18', type: 'conference', flow: 'inflow', desc: '亞洲最大加密峰會，東南亞機構資金活躍，市場情緒通常偏多' },
+  { name: '中國國慶黃金周', startDate: '2026-10-01', endDate: '2026-10-07', type: 'holiday_asia', flow: 'outflow', desc: '中國七天長假，亞洲市場交易量大幅下降，歷史上此期間波動率可能升高' },
+  { name: 'Devcon 2026', startDate: '2026-10-22', endDate: '2026-10-25', type: 'conference', flow: 'slight_inflow', desc: '以太坊核心開發者年會，技術升級公告通常提振 ETH 生態信心' },
+  { name: '美國感恩節', startDate: '2026-11-26', endDate: '2026-11-27', type: 'holiday_us', flow: 'neutral', desc: '美國假日，但歷史上感恩節後加密市場有季節性上漲趨勢' },
+  { name: '聖誕／跨年假期', startDate: '2026-12-24', endDate: '2027-01-02', type: 'holiday_global', flow: 'slight_outflow', desc: '全球假日季，市場流動性普遍下降，但散戶資金可能在年末重新佈局' },
+  { name: '春節 2027（農曆新年）', startDate: '2027-02-06', endDate: '2027-02-15', type: 'holiday_asia', flow: 'outflow', desc: '中華圈最大傳統節日，歷史上春節前後亞洲資金獲利了結，節後資金通常回流' },
+];
 
+// 對不確定事件進行 AI 資金流向預測；對確定事件返回已知方向 + 歷史信心值
+function computeCapitalFlowAIPred(event, fg, mkt) {
+  const baseConf = { conference: 74, holiday_asia: 80, holiday_us: 72, holiday_global: 70, sports: 68, economic: 60, crypto_event: 72 };
+  if (event.flow !== 'uncertain') {
+    return { flow: event.flow, conf: baseConf[event.type] || 68, reason: null, isAI: false };
+  }
+  // AI 分析宏觀環境，預測資金流向
+  const fgVal = fg ? parseInt(fg.value || '50') : 50;
+  const chg   = mkt?.marketCapChange || 0;
+  const dom   = mkt?.btcDominance   || 50;
+  let bull = 0, bear = 0;
+  const reasons = [];
+  if (fgVal > 65)      { bull += 2; reasons.push(`恐貪 ${fgVal} 市場情緒偏多`); }
+  else if (fgVal > 55) { bull += 1; reasons.push(`恐貪 ${fgVal} 輕微偏多`); }
+  else if (fgVal < 35) { bear += 2; reasons.push(`恐貪 ${fgVal} 市場情緒偏空`); }
+  else if (fgVal < 45) { bear += 1; reasons.push(`恐貪 ${fgVal} 輕微偏空`); }
+  if (chg >  2) { bull += 2; reasons.push(`市值 +${chg.toFixed(1)}% 資金流入`); }
+  else if (chg >  0.5) { bull += 1; reasons.push(`市值 +${chg.toFixed(1)}%`); }
+  else if (chg < -2) { bear += 2; reasons.push(`市值 ${chg.toFixed(1)}% 資金流出`); }
+  else if (chg < -0.5) { bear += 1; reasons.push(`市值 ${chg.toFixed(1)}%`); }
+  if (dom < 45) { bull += 0.5; reasons.push(`BTC 主導 ${dom.toFixed(1)}% 山寨季`); }
+  else if (dom > 57) { bear += 0.5; reasons.push(`BTC 主導 ${dom.toFixed(1)}% 高集中`); }
+  const total = bull + bear || 1;
+  let flow, conf;
+  if (bull >= bear + 1.5)       { flow = 'inflow';        conf = Math.min(78, Math.round(55 + (bull / total) * 28)); }
+  else if (bull >= bear + 0.5)  { flow = 'slight_inflow'; conf = Math.min(72, Math.round(52 + (bull / total) * 22)); }
+  else if (bear >= bull + 1.5)  { flow = 'outflow';       conf = Math.min(78, Math.round(55 + (bear / total) * 28)); }
+  else if (bear >= bull + 0.5)  { flow = 'slight_outflow';conf = Math.min(72, Math.round(52 + (bear / total) * 22)); }
+  else                           { flow = 'neutral';       conf = 50; }
+  return { flow, conf, reason: reasons.slice(0, 2).join('、'), isAI: true };
+}
+
+// Telegram 每日報告用：取 5 天內 + 進行中的事件，格式化為 Telegram HTML 文字
+function buildCapitalFlowTelegramSection(fg, mkt) {
+  const now   = Date.now();
+  const MS_DAY = 86400000;
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const FLOW_TXT = {
+    inflow:        '↑ 資金流入',
+    slight_inflow: '↗ 輕微流入',
+    outflow:       '↓ 資金流出',
+    slight_outflow:'↘ 輕微流出',
+    neutral:       '— 中性',
+  };
+  const TYPE_ICON = { conference:'🏛', holiday_asia:'🏮', holiday_us:'🇺🇸', holiday_global:'🌍', sports:'⚽', economic:'📊', crypto_event:'🔗' };
+
+  const relevant = CAPITAL_FLOW_EVENTS.map(ev => {
+    const start  = new Date(ev.startDate + 'T00:00:00');
+    const end    = new Date(ev.endDate   + 'T00:00:00');
+    const endMs  = end.getTime() + MS_DAY - 1;
+    const startMs = start.getTime();
+    const isActive  = now >= startMs && now <= endMs;
+    const daysUntil = Math.round((startMs - now) / MS_DAY);
+    const daysLeft  = Math.round((endMs - now) / MS_DAY);
+    if (isActive || (daysUntil >= 0 && daysUntil <= 5)) {
+      return { ...ev, start, end, endMs, isActive, daysUntil, daysLeft };
+    }
+    return null;
+  }).filter(Boolean).sort((a, b) => a.start - b.start);
+
+  if (!relevant.length) return null;
+
+  return relevant.map(ev => {
+    const icon = TYPE_ICON[ev.type] || '📌';
+    const pred = computeCapitalFlowAIPred(ev, fg, mkt);
+    const timeStr = ev.isActive
+      ? `進行中，${ev.daysLeft <= 0 ? '今天結束' : `還有 ${ev.daysLeft} 天`}`
+      : ev.daysUntil === 0 ? '今天開始' : `${ev.daysUntil} 天後開始`;
+    const flowStr = pred.isAI
+      ? `AI預測 ${FLOW_TXT[pred.flow] || '—'}（信心 ${pred.conf}%）${pred.reason ? `，${pred.reason}` : ''}`
+      : `${FLOW_TXT[pred.flow] || pred.flow}（信心 ${pred.conf}%）`;
+    return `${icon} <b>${esc(ev.name)}</b>（${timeStr}）\n   💹 ${flowStr}`;
+  }).join('\n\n');
+}
+
+function buildCapitalFlowEventsWidget() {
   const TYPE_ICON = {
     conference:    '🏛️',
     holiday_asia:  '🏮',
@@ -9306,53 +9383,47 @@ function buildCapitalFlowEventsWidget() {
     neutral:       { label: '— 中性',      bg: 'rgba(148,163,184,.15)',color: '#94a3b8' },
   };
 
-  const now     = Date.now();
-  const MS_DAY  = 86400000;
-  const MS_90D  = 90 * MS_DAY;
-  const MS_3D   = 3  * MS_DAY;
-  const MS_7D   = 7  * MS_DAY;
-  const MS_30D  = 30 * MS_DAY;
+  const now    = Date.now();
+  const MS_DAY = 86400000;
+  const MS_3D  = 3  * MS_DAY;
+  const MS_7D  = 7  * MS_DAY;
+  const MS_30D = 30 * MS_DAY;
+  const MS_90D = 90 * MS_DAY;
 
   function parseDate(s) { return new Date(s + 'T00:00:00'); }
   function fmtMD(d) { return `${d.getMonth()+1}/${d.getDate()}`; }
 
   function getStatus(start, end) {
     const s = start.getTime(), e = end.getTime() + MS_DAY - 1;
-    if (now >= s && now <= e)           return 'active';
-    if (now > e && now - e <= MS_3D)    return 'recent';
-    if (now < s && s - now <= MS_7D)    return 'soon';
-    if (now < s && s - now <= MS_30D)   return 'near';
-    if (now < s && s - now <= MS_90D)   return 'future';
+    if (now >= s && now <= e)         return 'active';
+    if (now > e && now - e <= MS_3D)  return 'recent';
+    if (now < s && s - now <= MS_7D)  return 'soon';
+    if (now < s && s - now <= MS_30D) return 'near';
+    if (now < s && s - now <= MS_90D) return 'future';
     return null;
   }
 
   function timeLabel(start, end) {
     const s = start.getTime(), e = end.getTime() + MS_DAY - 1;
     if (now >= s && now <= e) {
-      const daysLeft = Math.round((e - now) / MS_DAY);
-      return daysLeft <= 0 ? '今天結束' : `進行中，${daysLeft}天後結束`;
+      const d = Math.round((e - now) / MS_DAY);
+      return d <= 0 ? '今天結束' : `進行中，${d}天後結束`;
     }
-    if (now > e) {
-      const daysAgo = Math.round((now - e) / MS_DAY);
-      return `${daysAgo}天前結束`;
-    }
-    const daysAhead = Math.round((s - now) / MS_DAY);
-    return daysAhead === 0 ? '今天開始' : `${daysAhead}天後開始`;
+    if (now > e) return `${Math.round((now - e) / MS_DAY)}天前結束`;
+    const d = Math.round((s - now) / MS_DAY);
+    return d === 0 ? '今天開始' : `${d}天後開始`;
   }
 
-  function flowColor(flow) {
-    return (FLOW_META[flow] || FLOW_META.neutral).color;
-  }
+  const fg  = typeof _macroCache !== 'undefined' ? _macroCache?.fg  : null;
+  const mkt = typeof _macroCache !== 'undefined' ? _macroCache : null;
 
-  const enriched = EVENTS
-    .map(ev => {
-      const start  = parseDate(ev.startDate);
-      const end    = parseDate(ev.endDate);
-      const status = getStatus(start, end);
-      return { ...ev, start, end, status };
-    })
-    .filter(ev => ev.status !== null)
-    .sort((a, b) => a.start - b.start);
+  const enriched = CAPITAL_FLOW_EVENTS.map(ev => {
+    const start  = parseDate(ev.startDate);
+    const end    = parseDate(ev.endDate);
+    const status = getStatus(start, end);
+    const pred   = computeCapitalFlowAIPred(ev, fg, mkt);
+    return { ...ev, start, end, status, pred };
+  }).filter(ev => ev.status !== null).sort((a, b) => a.start - b.start);
 
   const GROUPS = [
     { key: 'active', label: '🔴 進行中' },
@@ -9363,15 +9434,21 @@ function buildCapitalFlowEventsWidget() {
   ];
 
   function renderCard(ev) {
-    const meta    = FLOW_META[ev.flow] || FLOW_META.neutral;
-    const icon    = TYPE_ICON[ev.type] || '📌';
+    const { pred } = ev;
+    const meta     = FLOW_META[pred.flow] || FLOW_META.neutral;
+    const origMeta = FLOW_META[ev.flow] || FLOW_META.uncertain;
+    const icon     = TYPE_ICON[ev.type] || '📌';
     const isActive = ev.status === 'active';
-    const fColor  = flowColor(ev.flow);
-    const dateStr = ev.startDate === ev.endDate
-      ? fmtMD(ev.start)
-      : `${fmtMD(ev.start)} – ${fmtMD(ev.end)}`;
-    const borderLeft = isActive ? `border-left:3px solid ${fColor};` : '';
+    const dateStr  = ev.startDate === ev.endDate ? fmtMD(ev.start) : `${fmtMD(ev.start)} – ${fmtMD(ev.end)}`;
+    const borderLeft = isActive ? `border-left:3px solid ${meta.color};` : '';
     const bgExtra    = isActive ? 'background:rgba(255,255,255,.055);' : '';
+    // Badge: if AI prediction show with confidence, otherwise show known direction
+    const badge = pred.isAI
+      ? `<span style="font-size:0.66rem;padding:2px 5px;border-radius:4px;background:rgba(99,102,241,.18);color:#a5b4fc;white-space:nowrap">🤖 AI ${meta.label}（${pred.conf}%）</span>`
+      : `<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:${meta.bg};color:${meta.color};white-space:nowrap">${meta.label}（${pred.conf}%）</span>`;
+    const reasonLine = pred.isAI && pred.reason
+      ? `<div style="font-size:0.69rem;color:#a5b4fc;margin-top:2px">🤖 AI依據：${pred.reason}</div>`
+      : '';
 
     return `<div style="background:rgba(255,255,255,.03);${bgExtra}border:1px solid rgba(255,255,255,.07);${borderLeft}border-radius:8px;padding:9px 12px;margin-bottom:6px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
@@ -9382,10 +9459,11 @@ function buildCapitalFlowEventsWidget() {
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
           <span style="font-size:0.72rem;color:var(--text3);white-space:nowrap">${timeLabel(ev.start, ev.end)}</span>
-          <span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:${meta.bg};color:${meta.color};white-space:nowrap">${meta.label}</span>
+          ${badge}
         </div>
       </div>
       <div style="font-size:0.71rem;color:var(--text3);margin-top:3px">${ev.desc}</div>
+      ${reasonLine}
     </div>`;
   }
 
