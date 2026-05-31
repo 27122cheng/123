@@ -1043,22 +1043,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             if (fgVal  > 70) { against++; macroReasonsNow.push(`市場貪婪（F&G ${fgVal}）`); }
             if (fgVal  < 25) { against += 0.5; macroReasonsNow.push(`市場極度恐慌（F&G ${fgVal}）`); }
           }
-          macroPenNow = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+          macroPenNow = against >= 3 ? 22 : against >= 2 ? 15 : against >= 1 ? 8 : 0;
+          // 大方向逆向補扣（與 computeSimpleSetup 一致）
+          const _bigDirNow = computeMacroNetDir(fg, gm);
+          const _bdAgainstNow = (isLongNow && _bigDirNow.includes('bear')) || (!isLongNow && _bigDirNow.includes('bull'));
+          if (_bdAgainstNow) {
+            const _bdMinNow = (_bigDirNow === 'slight_bear' || _bigDirNow === 'slight_bull') ? 4 : 9;
+            if (macroPenNow < _bdMinNow) macroPenNow = _bdMinNow;
+          }
           const wb = computeWeeklyAIBias(fg, gm);
           const tb = computeTodayAIBias(fg, gm);
           const wkAligned = (isLongNow && wb.bias.includes('bull')) || (!isLongNow && wb.bias.includes('bear'));
           const wkOpposed = !wkAligned && wb.bias !== 'neutral';
           const tdAligned = (isLongNow && tb.bias.includes('bull')) || (!isLongNow && tb.bias.includes('bear'));
           const tdOpposed = !tdAligned && tb.bias !== 'neutral';
-          if (wkOpposed) { const p = wb.bias.includes('strong') ? 8 : 4; aiTrendPenNow += p; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，逆向 -${p}%`); }
+          if (wkOpposed) { const p = wb.bias.includes('strong') ? 10 : 6; aiTrendPenNow += p; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，逆向 -${p}%`); }
           else aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}${wkAligned ? ' ✓ 同向' : ''}`);
-          if (tdOpposed) { aiTrendPenNow += 5; aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}，逆風 -5%`); }
+          if (tdOpposed) { aiTrendPenNow += 7; aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}，逆風 -7%`); }
           else aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}${tdAligned ? ' ✓ 同向' : ''}`);
         } catch(e) {}
       }
 
+      // 技術面 / 籌碼面 / 方向面扣分：沿用信號建立時的存儲值（不隨宏觀即時更新）
+      const techPenNow  = existingActive.techPenalty  || 0;
+      const chipsPenNow = existingActive.chipsPenalty || 0;
+      const dirPenNow   = existingActive.dirPenalty   || 0;
+
       const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      const freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow);
+      const freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - techPenNow - chipsPenNow - dirPenNow);
       if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
@@ -1072,7 +1084,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
-      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow;
+      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + techPenNow + chipsPenNow + dirPenNow;
       const confPanelHtml = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
         <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:8px">📊 信心評估（動態更新）</div>
         <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.73rem;margin-bottom:8px;background:rgba(255,255,255,.02);border-radius:6px;padding:6px 8px">
@@ -1082,6 +1094,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           ${macroPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">宏觀 -${macroPenNow}</span>` : ''}
           ${aiTrendPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">AI趨勢 -${aiTrendPenNow}</span>` : ''}
           ${learnPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">風控 -${learnPenNow}</span>` : ''}
+          ${techPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">技術 -${techPenNow}</span>` : ''}
+          ${chipsPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">籌碼 -${chipsPenNow}</span>` : ''}
+          ${dirPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">方向 -${dirPenNow}</span>` : ''}
           <span style="color:var(--text3)">= 最終</span>
           <span style="font-weight:700;font-size:0.82rem;color:${_cc(freshConf)}">${freshConf}%</span>
           ${totalPenNow === 0 ? `<span style="font-size:0.7rem;color:#22c55e">（無扣分）</span>` : ''}
@@ -1099,6 +1114,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             : learnPenNow > 0
               ? `<div style="color:#f59e0b">⚠️ AI 風控：止損歷史記憶觸發，扣 -${learnPenNow}%</div>`
               : `<div style="color:#22c55e">✓ AI 風控：無止損記憶觸發</div>`}
+          ${techPenNow > 0
+            ? `<div style="color:#f59e0b">⚠️ 技術面逆風（RSI/MACD/成交量），扣 -${techPenNow}%</div>`
+            : `<div style="color:#22c55e">✓ 技術面無明顯逆風，無扣分</div>`}
+          ${chipsPenNow > 0
+            ? `<div style="color:#f59e0b">⚠️ 籌碼面逆風（Taker/巨鯨），扣 -${chipsPenNow}%</div>`
+            : `<div style="color:#22c55e">✓ 籌碼面無明顯逆風，無扣分</div>`}
+          ${dirPenNow > 0
+            ? `<div style="color:#f59e0b">⚠️ 大方向/日線逆向，扣 -${dirPenNow}%</div>`
+            : `<div style="color:#22c55e">✓ 大方向/日線同向，無扣分</div>`}
         </div>
       </div>`;
 
@@ -2269,8 +2293,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
   const finalConf = conf;
-  // 最終防線：被AI風控硬封鎖 OR 信心低於70% → 觀望
-  if (conf < 70 || hardBlocked) direction = 'wait';
+  // 最終防線：被AI風控硬封鎖 OR 信心低於65% → 觀望
+  if (conf < 65 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
