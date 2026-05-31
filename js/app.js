@@ -160,7 +160,7 @@ function startRefreshCycle() {
     if (state.currentPage === 'positions') {
       try { renderPositionsPage(); } catch(e) {}
     }
-  }, 30000);
+  }, 15000);
 
   const secs = state.settings.refreshInterval || 60;
   state.countdown = secs;
@@ -1058,9 +1058,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           const tdAligned = (isLongNow && tb.bias.includes('bull')) || (!isLongNow && tb.bias.includes('bear'));
           const tdOpposed = !tdAligned && tb.bias !== 'neutral';
           if (wkOpposed) { const p = wb.bias.includes('strong') ? 10 : 6; aiTrendPenNow += p; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，逆向 -${p}%`); }
-          else aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}${wkAligned ? ' ✓ 同向' : ''}`);
+          else if (wb.bias === 'neutral') { aiTrendPenNow += 3; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，中性不確定 -3%`); }
+          else aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel} ✓ 同向`);
           if (tdOpposed) { aiTrendPenNow += 7; aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}，逆風 -7%`); }
-          else aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}${tdAligned ? ' ✓ 同向' : ''}`);
+          else if (tb.bias === 'neutral') { aiTrendPenNow += 2; aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}，中性不確定 -2%`); }
+          else aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel} ✓ 同向`);
         } catch(e) {}
       }
 
@@ -2164,19 +2166,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   let aiTrendPenalty = 0;
   const aiTrendReasons = [];
   if (weeklyOpposed) {
-    const pen = _wBias.includes('strong') ? 8 : 4;
+    const pen = _wBias.includes('strong') ? 10 : 6;
     aiTrendPenalty += pen;
     aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
   } else if (weeklyNeutral) {
-    aiTrendReasons.push(`本週AI預測震盪中性（信心 ${weeklyBiasData.conf || 50}%），無方向加成`);
+    aiTrendPenalty += 3;
+    aiTrendReasons.push(`本週AI預測震盪中性（信心 ${weeklyBiasData.conf || 50}%），方向不明，扣 3%`);
   } else {
     aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}（信心 ${weeklyBiasData.conf || 50}%），與${isLong ? '多' : '空'}方向一致`);
   }
   if (todayOpposed) {
-    aiTrendPenalty += 5;
-    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}，${isLong ? '多頭' : '空頭'}今日逆風，扣 5%`);
+    aiTrendPenalty += 7;
+    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}，${isLong ? '多頭' : '空頭'}今日逆風，扣 7%`);
   } else if (todayNeutral) {
-    aiTrendReasons.push(`今日AI預測中性觀望（信心 ${todayBiasData.conf || 50}%），謹慎操作`);
+    aiTrendPenalty += 2;
+    aiTrendReasons.push(`今日AI預測中性觀望（信心 ${todayBiasData.conf || 50}%），方向不確定，扣 2%`);
   } else {
     aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}（信心 ${todayBiasData.conf || 50}%），今日方向一致`);
   }
@@ -4225,8 +4229,9 @@ function aiGenerateMarketInsights() {
 
 function loadDashboardNews() {
   const el = document.getElementById('news-body');
-  if (!el) return;
-  el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
+  if (el) el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
+  const cfEl = document.getElementById('capital-flow-body');
+  if (cfEl) cfEl.innerHTML = buildCapitalFlowEventsWidget();
 }
 
 /* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
@@ -5912,9 +5917,11 @@ function updateOpenTrades(data) {
         // ADX 不列入 freshConf：建單時 ADX 是靜態品質過濾，不應在每次刷新時重複扣分
         const _wb  = computeWeeklyAIBias(_fg, _gm);
         const _tb  = computeTodayAIBias(_fg, _gm);
-        const _wOp = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
-        const _tOp = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
-        const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 10 : 6) : 0) + (_tOp ? 7 : 0);
+        const _wOp   = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
+        const _tOp   = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
+        const _wNeut = _wb.bias === 'neutral';
+        const _tNeut = _tb.bias === 'neutral';
+        const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 10 : 6) : _wNeut ? 3 : 0) + (_tOp ? 7 : _tNeut ? 2 : 0);
         // 大方向分歧補扣
         const _fBigDir = computeMacroNetDir(_fg, _gm);
         const _fBdAg = (_isL && _fBigDir.includes('bear')) || (!_isL && _fBigDir.includes('bull'));
@@ -6334,14 +6341,20 @@ function sendCancelTelegramNotification(trade, reason) {
       }
       const wb = computeWeeklyAIBias(_fg, _gm);
       const tb = computeTodayAIBias(_fg, _gm);
-      const wOp = isLong ? (wb.bias||'').includes('bear') : (wb.bias||'').includes('bull');
-      const tOp = isLong ? (tb.bias||'').includes('bear') : (tb.bias||'').includes('bull');
+      const wOp   = isLong ? (wb.bias||'').includes('bear') : (wb.bias||'').includes('bull');
+      const tOp   = isLong ? (tb.bias||'').includes('bear') : (tb.bias||'').includes('bull');
+      const wNeut = (wb.bias||'') === 'neutral';
+      const tNeut = (tb.bias||'') === 'neutral';
       if (wOp) {
-        const wPen = (wb.bias||'').includes('strong') ? 8 : 4;
+        const wPen = (wb.bias||'').includes('strong') ? 10 : 6;
         bullets.push(`本週AI預測 ${esc(wb.biasLabel||'')}，${isLong ? '與做多逆向' : '與做空逆向'}，扣 ${wPen}%`);
+      } else if (wNeut) {
+        bullets.push(`本週AI預測震盪中性，方向不明，扣 3%`);
       }
       if (tOp) {
-        bullets.push(`今日AI預測 ${esc(tb.biasLabel||'')}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 5%`);
+        bullets.push(`今日AI預測 ${esc(tb.biasLabel||'')}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 7%`);
+      } else if (tNeut) {
+        bullets.push(`今日AI預測中性，方向不確定，扣 2%`);
       }
     } catch (e) {}
   }
@@ -8551,18 +8564,26 @@ async function checkAndSendAlerts(data) {
           // AI 趨勢扣分
           const weeklyAligned = (isLong && wb.bias.includes('bull')) || (!isLong && wb.bias.includes('bear'));
           const weeklyOpposed = !weeklyAligned && wb.bias !== 'neutral';
+          const weeklyNeutral = wb.bias === 'neutral';
           const todayAligned  = (isLong && tb.bias.includes('bull')) || (!isLong && tb.bias.includes('bear'));
           const todayOpposed  = !todayAligned && tb.bias !== 'neutral';
+          const todayNeutral  = tb.bias === 'neutral';
           let aiTrendPen = 0;
           const aiTrendReasons = [];
           if (weeklyOpposed) {
-            const pen = wb.bias.includes('strong') ? 8 : 4;
+            const pen = wb.bias.includes('strong') ? 10 : 6;
             aiTrendPen += pen;
             aiTrendReasons.push(`本週AI預測 ${wb.biasLabel}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
+          } else if (weeklyNeutral) {
+            aiTrendPen += 3;
+            aiTrendReasons.push(`本週AI預測震盪中性，方向不明，扣 3%`);
           }
           if (todayOpposed) {
-            aiTrendPen += 5;
-            aiTrendReasons.push(`今日AI預測 ${tb.biasLabel}，${isLong ? '多頭' : '空頭'}今日逆風，扣 5%`);
+            aiTrendPen += 7;
+            aiTrendReasons.push(`今日AI預測 ${tb.biasLabel}，${isLong ? '多頭' : '空頭'}今日逆風，扣 7%`);
+          } else if (todayNeutral) {
+            aiTrendPen += 2;
+            aiTrendReasons.push(`今日AI預測中性，方向不確定，扣 2%`);
           }
           // 總體市場扣分（簡化版，與 buildTradeSetup 邏輯一致）
           const fgVal  = fg ? parseInt(fg.value || '50') : 50;
@@ -8689,10 +8710,14 @@ function computeSimpleSetup(coin, isLong) {
       const _stb = computeTodayAIBias(_sfg, _sgm);
       const _swBias = _swb.bias || '';
       const _stBias = _stb.bias || '';
-      const _swOp = isLong ? _swBias.includes('bear') : _swBias.includes('bull');
-      const _stOp = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
-      if (_swOp) _sAIPen += _swBias.includes('strong') ? 10 : 6;
-      if (_stOp) _sAIPen += 7;
+      const _swOp   = isLong ? _swBias.includes('bear') : _swBias.includes('bull');
+      const _stOp   = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
+      const _swNeut = _swBias === 'neutral';
+      const _stNeut = _stBias === 'neutral';
+      if (_swOp)        _sAIPen += _swBias.includes('strong') ? 10 : 6;
+      else if (_swNeut) _sAIPen += 3;
+      if (_stOp)        _sAIPen += 7;
+      else if (_stNeut) _sAIPen += 2;
       // 大方向分歧補扣
       const _sBigDir = computeMacroNetDir(_sfg, _sgm);
       const _sBdAgainst = (isLong && _sBigDir.includes('bear')) || (!isLong && _sBigDir.includes('bull'));
@@ -9244,4 +9269,141 @@ function formatPrice(p) {
   if (p >= 1)     return parseFloat(p.toFixed(3));
   if (p >= 0.001) return parseFloat(p.toFixed(5));
   return parseFloat(p.toFixed(8));
+}
+
+function buildCapitalFlowEventsWidget() {
+  const EVENTS = [
+    { name: 'FIFA 2026 世界盃', startDate: '2026-06-11', endDate: '2026-07-19', type: 'sports', flow: 'slight_outflow', desc: '全球最大體育賽事，歷史上大型體育賽事期間加密交易量可能下降，博彩與預測市場資金分流' },
+    { name: '端午節假期', startDate: '2026-06-19', endDate: '2026-06-21', type: 'holiday_asia', flow: 'slight_outflow', desc: '中國及台灣節假日，亞洲市場交易量輕微下降' },
+    { name: 'EthCC 2026', startDate: '2026-07-14', endDate: '2026-07-17', type: 'conference', flow: 'slight_inflow', desc: '以太坊年度生態大會，ETH 及 DeFi 項目資金關注度提升' },
+    { name: '美國獨立日', startDate: '2026-07-04', endDate: '2026-07-04', type: 'holiday_us', flow: 'neutral', desc: '美國假日，市場流動性下降，影響整體市場深度' },
+    { name: '美股 Q2 財報季', startDate: '2026-07-08', endDate: '2026-08-14', type: 'economic', flow: 'uncertain', desc: '科技股財報影響市場風險偏好，超預期則有利加密市場情緒' },
+    { name: '中秋節假期', startDate: '2026-09-12', endDate: '2026-09-14', type: 'holiday_asia', flow: 'slight_outflow', desc: '中華圈傳統節日，亞洲交易員流動性輕微下降' },
+    { name: 'Token2049 新加坡', startDate: '2026-09-17', endDate: '2026-09-18', type: 'conference', flow: 'inflow', desc: '亞洲最大加密峰會，東南亞機構資金活躍，市場情緒通常偏多' },
+    { name: '中國國慶黃金周', startDate: '2026-10-01', endDate: '2026-10-07', type: 'holiday_asia', flow: 'outflow', desc: '中國七天長假，亞洲市場交易量大幅下降，歷史上此期間波動率可能升高' },
+    { name: 'Devcon 2026', startDate: '2026-10-22', endDate: '2026-10-25', type: 'conference', flow: 'slight_inflow', desc: '以太坊核心開發者年會，技術升級公告通常提振 ETH 生態信心' },
+    { name: '美國感恩節', startDate: '2026-11-26', endDate: '2026-11-27', type: 'holiday_us', flow: 'neutral', desc: '美國假日，但歷史上感恩節後加密市場有季節性上漲趨勢' },
+    { name: '聖誕／跨年假期', startDate: '2026-12-24', endDate: '2027-01-02', type: 'holiday_global', flow: 'slight_outflow', desc: '全球假日季，市場流動性普遍下降，但散戶資金可能在年末重新佈局' },
+    { name: '春節 2027（農曆新年）', startDate: '2027-02-06', endDate: '2027-02-15', type: 'holiday_asia', flow: 'outflow', desc: '中華圈最大傳統節日，歷史上春節前後亞洲資金獲利了結，節後資金通常回流' },
+  ];
+
+  const TYPE_ICON = {
+    conference:    '🏛️',
+    holiday_asia:  '🏮',
+    holiday_us:    '🇺🇸',
+    holiday_global:'🌍',
+    sports:        '⚽',
+    economic:      '📊',
+    crypto_event:  '🔗',
+  };
+
+  const FLOW_META = {
+    inflow:        { label: '↑ 資金流入',  bg: 'rgba(34,197,94,.18)',  color: '#4ade80' },
+    slight_inflow: { label: '↗ 輕微流入',  bg: 'rgba(34,197,94,.10)',  color: '#86efac' },
+    outflow:       { label: '↓ 資金流出',  bg: 'rgba(239,68,68,.18)',  color: '#f87171' },
+    slight_outflow:{ label: '↘ 輕微流出',  bg: 'rgba(251,146,60,.18)', color: '#fb923c' },
+    uncertain:     { label: '◆ 不確定',    bg: 'rgba(234,179,8,.18)',  color: '#facc15' },
+    neutral:       { label: '— 中性',      bg: 'rgba(148,163,184,.15)',color: '#94a3b8' },
+  };
+
+  const now     = Date.now();
+  const MS_DAY  = 86400000;
+  const MS_90D  = 90 * MS_DAY;
+  const MS_3D   = 3  * MS_DAY;
+  const MS_7D   = 7  * MS_DAY;
+  const MS_30D  = 30 * MS_DAY;
+
+  function parseDate(s) { return new Date(s + 'T00:00:00'); }
+  function fmtMD(d) { return `${d.getMonth()+1}/${d.getDate()}`; }
+
+  function getStatus(start, end) {
+    const s = start.getTime(), e = end.getTime() + MS_DAY - 1;
+    if (now >= s && now <= e)           return 'active';
+    if (now > e && now - e <= MS_3D)    return 'recent';
+    if (now < s && s - now <= MS_7D)    return 'soon';
+    if (now < s && s - now <= MS_30D)   return 'near';
+    if (now < s && s - now <= MS_90D)   return 'future';
+    return null;
+  }
+
+  function timeLabel(start, end) {
+    const s = start.getTime(), e = end.getTime() + MS_DAY - 1;
+    if (now >= s && now <= e) {
+      const daysLeft = Math.round((e - now) / MS_DAY);
+      return daysLeft <= 0 ? '今天結束' : `進行中，${daysLeft}天後結束`;
+    }
+    if (now > e) {
+      const daysAgo = Math.round((now - e) / MS_DAY);
+      return `${daysAgo}天前結束`;
+    }
+    const daysAhead = Math.round((s - now) / MS_DAY);
+    return daysAhead === 0 ? '今天開始' : `${daysAhead}天後開始`;
+  }
+
+  function flowColor(flow) {
+    return (FLOW_META[flow] || FLOW_META.neutral).color;
+  }
+
+  const enriched = EVENTS
+    .map(ev => {
+      const start  = parseDate(ev.startDate);
+      const end    = parseDate(ev.endDate);
+      const status = getStatus(start, end);
+      return { ...ev, start, end, status };
+    })
+    .filter(ev => ev.status !== null)
+    .sort((a, b) => a.start - b.start);
+
+  const GROUPS = [
+    { key: 'active', label: '🔴 進行中' },
+    { key: 'soon',   label: '⚡ 即將到來（7天內）' },
+    { key: 'near',   label: '📅 近期（30天內）' },
+    { key: 'future', label: '🗓 未來三個月' },
+    { key: 'recent', label: '🕐 剛結束' },
+  ];
+
+  function renderCard(ev) {
+    const meta    = FLOW_META[ev.flow] || FLOW_META.neutral;
+    const icon    = TYPE_ICON[ev.type] || '📌';
+    const isActive = ev.status === 'active';
+    const fColor  = flowColor(ev.flow);
+    const dateStr = ev.startDate === ev.endDate
+      ? fmtMD(ev.start)
+      : `${fmtMD(ev.start)} – ${fmtMD(ev.end)}`;
+    const borderLeft = isActive ? `border-left:3px solid ${fColor};` : '';
+    const bgExtra    = isActive ? 'background:rgba(255,255,255,.055);' : '';
+
+    return `<div style="background:rgba(255,255,255,.03);${bgExtra}border:1px solid rgba(255,255,255,.07);${borderLeft}border-radius:8px;padding:9px 12px;margin-bottom:6px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <span style="font-size:1rem;flex-shrink:0">${icon}</span>
+          <span style="font-weight:600;font-size:0.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ev.name}</span>
+          <span style="font-size:0.75rem;color:var(--text3);white-space:nowrap">${dateStr}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <span style="font-size:0.72rem;color:var(--text3);white-space:nowrap">${timeLabel(ev.start, ev.end)}</span>
+          <span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:${meta.bg};color:${meta.color};white-space:nowrap">${meta.label}</span>
+        </div>
+      </div>
+      <div style="font-size:0.71rem;color:var(--text3);margin-top:3px">${ev.desc}</div>
+    </div>`;
+  }
+
+  let body = '';
+  for (const grp of GROUPS) {
+    const items = enriched.filter(ev => ev.status === grp.key);
+    if (!items.length) continue;
+    body += `<div style="font-size:0.72rem;color:var(--text3);font-weight:600;margin:10px 0 6px;text-transform:uppercase;letter-spacing:0.05em">${grp.label}</div>`;
+    body += items.map(renderCard).join('');
+  }
+
+  if (!body) {
+    body = `<div style="font-size:0.8rem;color:var(--text3);padding:12px 0">目前 90 天內無重大資金流動事件</div>`;
+  }
+
+  return `<div class="outlook-header" style="margin-bottom:10px">
+    <span class="outlook-title">📊 加密市場資金流動事件</span>
+    <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">節假日・賽事・會議・總經</span>
+  </div>
+  ${body}`;
 }
