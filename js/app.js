@@ -1155,8 +1155,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // 若冷卻期內有同方向取消記錄（含飛越止盈），顯示機會已過提示
+  // 只檢查與幣種目前訊號相同的方向；若反向被取消，不阻止新方向分析
+  const _estCancelDir = coin.score > 50 ? 'long' : 'short';
   const recentCancel = loadCancelCooldowns()
-    .filter(c => c.symbol === coin.symbol && (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN)
+    .filter(c => c.symbol === coin.symbol && c.direction === _estCancelDir && (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN)
     .sort((a, b) => (b.cancelTime || 0) - (a.cancelTime || 0))[0];
   if (recentCancel) {
     const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
@@ -2429,9 +2431,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   } else {
     // ── 反方向未入場掛單自動取消（方向改變時更新方向）──
     // 例：之前是空單 pending，現在訊號改為多方 → 自動取消舊空單，建立新多單
-    const oppIdx = tlog.findIndex(t =>
-      t.symbol === coin.symbol && t.status === 'pending' && t.direction !== direction && !t.entryTime
-    );
+    // 注意：direction='wait' 時不取消任何現有掛單，避免誤刪掃描加入的有效信號
+    const oppIdx = direction !== 'wait' ? tlog.findIndex(t =>
+      t.symbol === coin.symbol && t.status === 'pending' &&
+      (t.direction === 'long' || t.direction === 'short') &&
+      t.direction !== direction && !t.entryTime
+    ) : -1;
     if (oppIdx >= 0) {
       const oppDir = tlog[oppIdx].direction;
       const _oppReason = `技術訊號方向由${oppDir === 'long' ? '多' : '空'}轉${direction === 'long' ? '多' : '空'}，幣種詳情頁自動更新掛單方向`;
