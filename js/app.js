@@ -3301,7 +3301,17 @@ function computeWeeklyAIBias(fg, globalMkt) {
 /* ── 本週 AI 走勢 UI Widget（使用 computeWeeklyAIBias 快取結果）── */
 function buildWeeklyAIOutlook(fg, globalMkt) {
   const d = computeWeeklyAIBias(fg, globalMkt);
-  const { biasLabel, biasColor, conf: confScore, confColor, factors, riskNote, highRisk, aiOpinion } = d;
+  const { biasLabel, biasColor, conf: confScore, confColor, factors, riskNote, highRisk } = d;
+  // 每次從 bias 重新生成（避免舊快取無此欄位）
+  const aiOpinion = d.bias === 'strong_bull'
+    ? `綜合市場情緒、週線技術面、籌碼流向及巨鯨動向，AI 研判本週市場多頭動能強勁，整體結構有利做多，高風險數據公布前注意倉位管理。`
+    : d.bias === 'bull'
+    ? `整合多維度市場數據（情緒/技術/籌碼/主力），AI 研判本週整體偏多，多方力道佔優，可考慮逢回測佈局多單，注意大方向風險。`
+    : d.bias === 'strong_bear'
+    ? `宏觀逆風加技術面空頭排列，AI 研判本週市場空頭主導，整體結構偏空，建議保守觀望或輕倉做空，避免逆勢追多。`
+    : d.bias === 'bear'
+    ? `整合多維度數據，AI 研判本週整體偏空，空方壓力較大，建議減少多頭曝險，等待市場企穩訊號後再操作。`
+    : `各項指標分歧，AI 研判本週市場缺乏明確方向，多空力量相當，建議以觀望為主，等待突破訊號確立後再操作。`;
 
   const factorsHtml = factors.slice(0, 6).map(f => {
     const isBull = f.includes('偏多') || f.includes('看漲') || f.includes('淨流入') || f.includes('積極') || f.includes('動能升溫') || f.includes('多頭');
@@ -3531,7 +3541,14 @@ function computeTodayAIBias(fg, globalMkt) {
 }
 
 function buildTodayAIBiasHtml(fg, globalMkt) {
-  const { biasLabel, biasColor, conf, confColor, reasons, riskNote, aiOpinion } = computeTodayAIBias(fg, globalMkt);
+  const _td = computeTodayAIBias(fg, globalMkt);
+  const { biasLabel, biasColor, conf, confColor, reasons, riskNote } = _td;
+  // 每次從 bias 重新生成（確保不依賴快取欄位）
+  const aiOpinion = (_td.bias === 'bull' || _td.bias === 'slight_bull')
+    ? `整合今日情緒、技術面、籌碼及動能數據，AI 研判今日市場${_td.bias === 'bull' ? '明確偏多' : '小幅偏多'}，買方力道佔優，可關注做多機會。`
+    : (_td.bias === 'bear' || _td.bias === 'slight_bear')
+    ? `整合今日多維數據，AI 研判今日市場${_td.bias === 'bear' ? '明確偏空' : '小幅偏空'}，賣方壓力較大，建議謹慎操作，控制多頭倉位。`
+    : `今日多項指標中性，AI 研判市場無明確方向，建議觀望，等待日線/4H訊號確立後再操作。`;
   const reasonsHtml = reasons.slice(0, 5).map(r => {
     const isBull = /偏多|看漲|積極|多頭|活躍/.test(r);
     const isBear = /偏空|看跌|流出|空頭|承壓|受壓|賣壓/.test(r);
@@ -8524,7 +8541,7 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 75) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
+    if (notifConf < 65) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
 
     // 信心度達標 → 完整交易信號通知
     if (s.notifBrowser) {
