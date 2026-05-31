@@ -3269,7 +3269,18 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const conf = Math.min(88, 50 + absScore * 8 + (fgValNow != null ? 5 : 0));
   const confColor = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
 
-  const result = { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents, rangeMode: bias === 'neutral' };
+  const _wTopFacts = factors.slice(0, 2).map(f => f.split('，')[0]).join('；');
+  const aiOpinion = bias === 'strong_bull'
+    ? `綜合市場情緒、週線技術面、籌碼流向及巨鯨動向，AI 研判本週市場多頭動能強勁，整體結構有利做多，高風險數據公布前注意倉位管理。`
+    : bias === 'bull'
+    ? `整合多維度市場數據（情緒/技術/籌碼/主力），AI 研判本週整體偏多，多方力道佔優，可考慮逢回測佈局多單，注意大方向風險。`
+    : bias === 'strong_bear'
+    ? `宏觀逆風加技術面空頭排列，AI 研判本週市場空頭主導，整體結構偏空，建議保守觀望或輕倉做空，避免逆勢追多。`
+    : bias === 'bear'
+    ? `整合多維度數據，AI 研判本週整體偏空，空方壓力較大，建議減少多頭曝險，等待市場企穩訊號後再操作。`
+    : `各項指標分歧，AI 研判本週市場缺乏明確方向，多空力量相當，建議以觀望為主，等待突破訊號確立後再操作。`;
+
+  const result = { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents, rangeMode: bias === 'neutral', aiOpinion };
 
   // ── 學習記錄 + 寫入快取 ──
   try {
@@ -3290,7 +3301,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
 /* ── 本週 AI 走勢 UI Widget（使用 computeWeeklyAIBias 快取結果）── */
 function buildWeeklyAIOutlook(fg, globalMkt) {
   const d = computeWeeklyAIBias(fg, globalMkt);
-  const { biasLabel, biasColor, conf: confScore, confColor, factors, riskNote, highRisk } = d;
+  const { biasLabel, biasColor, conf: confScore, confColor, factors, riskNote, highRisk, aiOpinion } = d;
 
   const factorsHtml = factors.slice(0, 6).map(f => {
     const isBull = f.includes('偏多') || f.includes('看漲') || f.includes('淨流入') || f.includes('積極') || f.includes('動能升溫') || f.includes('多頭');
@@ -3340,6 +3351,7 @@ function buildWeeklyAIOutlook(fg, globalMkt) {
       <span style="font-size:0.82rem;font-weight:700;color:var(--text2)">🤖 AI 本週走勢預測</span>
       <span style="font-size:0.7rem;color:var(--text3)" title="每週日 8:00 刷新">🔄 週日 8:00 更新</span>
     </div>
+    ${aiOpinion ? `<div style="font-size:0.74rem;color:var(--text2);background:rgba(255,255,255,.05);border-left:3px solid ${biasColor};border-radius:0 7px 7px 0;padding:8px 12px;margin-bottom:10px;line-height:1.55">🤖 ${aiOpinion}</div>` : ''}
     <div style="font-size:0.68rem;color:var(--text3);margin-bottom:10px">📅 預測週期：${weekRange}　建立：${createdAt}</div>
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
       <div style="font-size:1.4rem;font-weight:800;color:${biasColor}">${biasLabel}</div>
@@ -3509,11 +3521,17 @@ function computeTodayAIBias(fg, globalMkt) {
     _saveBiasLearning(learn);
   } catch(e) {}
 
-  return { bias, biasLabel, biasColor, conf, confColor, reasons, highEvs, riskNote, rangeMode: bias === 'neutral' || bias === 'slight_bull' || bias === 'slight_bear' };
+  const aiOpinion = (bias === 'bull' || bias === 'slight_bull')
+    ? `整合今日情緒、技術面、籌碼及動能數據，AI 研判今日市場${bias === 'bull' ? '明確偏多' : '小幅偏多'}，買方力道佔優，可關注做多機會。`
+    : (bias === 'bear' || bias === 'slight_bear')
+    ? `整合今日多維數據，AI 研判今日市場${bias === 'bear' ? '明確偏空' : '小幅偏空'}，賣方壓力較大，建議謹慎操作，控制多頭倉位。`
+    : `今日多項指標中性，AI 研判市場無明確方向，建議觀望，等待日線/4H訊號確立後再操作。`;
+
+  return { bias, biasLabel, biasColor, conf, confColor, reasons, highEvs, riskNote, rangeMode: bias === 'neutral' || bias === 'slight_bull' || bias === 'slight_bear', aiOpinion };
 }
 
 function buildTodayAIBiasHtml(fg, globalMkt) {
-  const { biasLabel, biasColor, conf, confColor, reasons, riskNote } = computeTodayAIBias(fg, globalMkt);
+  const { biasLabel, biasColor, conf, confColor, reasons, riskNote, aiOpinion } = computeTodayAIBias(fg, globalMkt);
   const reasonsHtml = reasons.slice(0, 5).map(r => {
     const isBull = /偏多|看漲|積極|多頭|活躍/.test(r);
     const isBear = /偏空|看跌|流出|空頭|承壓|受壓|賣壓/.test(r);
@@ -3525,6 +3543,7 @@ function buildTodayAIBiasHtml(fg, globalMkt) {
       <span style="font-size:0.82rem;font-weight:700;color:var(--text2)">📅 今日 AI 多空預測</span>
       <span style="font-size:0.72rem;color:var(--text3)">${new Date().toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'})}</span>
     </div>
+    ${aiOpinion ? `<div style="font-size:0.74rem;color:var(--text2);background:rgba(255,255,255,.05);border-left:3px solid ${biasColor};border-radius:0 7px 7px 0;padding:8px 12px;margin-bottom:12px;line-height:1.55">🤖 ${aiOpinion}</div>` : ''}
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
       <div style="font-size:1.4rem;font-weight:800;color:${biasColor}">${biasLabel}</div>
       <div>
@@ -5339,6 +5358,7 @@ function recordSignalsFromScan(data) {
   let macroNetDir = 'neutral';  // 預設：無快取時全放行
   let wBias = 'neutral', tBias = 'neutral';
   let wBiasLabel = '', wBiasConf = 0, tBiasLabel = '', tBiasConf = 0;
+  let wBiasOpinion = '', tBiasOpinion = '';
   let wbRangeMode = false, tbRangeMode = false;  // 本週/今日預測是否為中性/震盪
   let macroPenLong = 0, macroPenShort = 0;
   if (_macroCache) {
@@ -5350,12 +5370,14 @@ function recordSignalsFromScan(data) {
       const tb = computeTodayAIBias(fg, gm);
       wBias = wb.bias;
       tBias = tb.bias;
-      wBiasLabel = wb.biasLabel || '';
-      wBiasConf  = wb.conf      || 0;
-      tBiasLabel = tb.biasLabel || '';
-      tBiasConf  = tb.conf      || 0;
-      wbRangeMode = wb.rangeMode || false;
-      tbRangeMode = tb.rangeMode || false;
+      wBiasLabel   = wb.biasLabel  || '';
+      wBiasConf    = wb.conf       || 0;
+      wBiasOpinion = wb.aiOpinion  || '';
+      tBiasLabel   = tb.biasLabel  || '';
+      tBiasConf    = tb.conf       || 0;
+      tBiasOpinion = tb.aiOpinion  || '';
+      wbRangeMode  = wb.rangeMode  || false;
+      tbRangeMode  = tb.rangeMode  || false;
 
       // 計算宏觀逆風扣分
       const fgVal  = fg ? parseInt(fg.value || '50') : 50;
@@ -5566,19 +5588,26 @@ function recordSignalsFromScan(data) {
                      ' ' + _now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
         const _tags = `#${_sym.toLowerCase()} #crypto #${isLong ? 'long' : 'short'}`;
 
+        // ── AI 多空看法（周AI優先，fallback 今日AI）──
+        const _aiOpinionLine = (wBiasOpinion || tBiasOpinion)
+          ? `🤖 <i>${_esc(wBiasOpinion || tBiasOpinion)}</i>\n\n`
+          : '';
+
         const _msg =
           `🚨 <b>加密掃描 Pro — ${_tLabel}信號</b>\n\n` +
           `${_dirLabel}：<b>${coin.symbol}</b>\n` +
           `📊 RSI ${parseFloat(coin.rsi)||50} ｜ ADX ${parseFloat(coin.adx)||20}\n\n` +
           `${_confBlock}\n\n` +
+          `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
+          `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
+          `   ↳ ${_esc(setup.slReason)}\n` +
+          `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
+          `   ↳ ${_esc(setup.tp1Reason)}\n` +
+          (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n   ↳ ${_esc(setup.tp2Reason)}\n` : '') +
+          `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n\n` +
+          _aiOpinionLine +
           (_biasBlock ? `${_biasBlock}\n` : '') +
           (_aiWarn    ? `${_aiWarn}\n\n` : (_biasBlock ? '\n' : '')) +
-          `📍 <b>進場：$${_fmt(setup.entry)}</b>\n${_reasonsBullets}\n\n` +
-          `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
-          `   ↳ ${_esc(setup.tp1Reason)}\n\n` +
-          (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n   ↳ ${_esc(setup.tp2Reason)}\n\n` : '') +
-          `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
-          `   ↳ ${_esc(setup.slReason)}\n\n` +
           `⏰ ${_ts}\n` +
           `${_tags}\n\n` +
           `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`;
