@@ -526,6 +526,11 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
       } else if (setup.aiTrendPenalty > 0) {
         msg += `   ↳ AI趨勢逆向 -${setup.aiTrendPenalty}%\n`;
       }
+      if ((setup.capitalFlowReasons || []).length) {
+        setup.capitalFlowReasons.forEach(r => { msg += `   ↳ 💹 ${r}\n`; });
+      } else if ((setup.capitalFlowPenalty || 0) > 0) {
+        msg += `   ↳ 💹 資金流動事件逆風 -${setup.capitalFlowPenalty}%\n`;
+      }
     }
 
     // ── 本週 / 今日 AI 走勢預測 ──
@@ -550,7 +555,7 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     const h4lbl = setup.h4TrendLabel || '';
     const d1lbl = setup.d1TrendLabel || '';
     if (bt) {
-      const totalL1Pen = (setup.hardAdxPenalty || 0) + (setup.macroOpposePenalty || 0) + (setup.aiTrendPenalty || 0);
+      const totalL1Pen = (setup.hardAdxPenalty || 0) + (setup.macroOpposePenalty || 0) + (setup.aiTrendPenalty || 0) + (setup.capitalFlowPenalty || 0);
       const l1ok = totalL1Pen === 0;
       const l2ok = bt === (isLong ? 'bull' : 'bear');
       const l2mixed = bt === 'mixed';

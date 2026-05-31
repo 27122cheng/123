@@ -1071,8 +1071,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const chipsPenNow = existingActive.chipsPenalty || 0;
       const dirPenNow   = existingActive.dirPenalty   || 0;
 
+      // 資金流動事件動態扣分（confPanelHtml 同步）
+      let cfPenNow = 0;
+      const cfEventsNow = [];
+      try {
+        const _cfNow = getCapitalFlowBias();
+        for (const ev of _cfNow.events) {
+          if (isLongNow  && ev.bear > 0) { cfPenNow += ev.bear >= 1.2 ? 8 : 4; cfEventsNow.push(ev); }
+          if (!isLongNow && ev.bull > 0) { cfPenNow += ev.bull >= 1.2 ? 8 : 4; cfEventsNow.push(ev); }
+        }
+        cfPenNow = Math.min(16, cfPenNow);
+      } catch(_e) {}
+
       const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      const freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - techPenNow - chipsPenNow - dirPenNow);
+      const freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow);
       if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
@@ -1086,7 +1098,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
-      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + techPenNow + chipsPenNow + dirPenNow;
+      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + cfPenNow + techPenNow + chipsPenNow + dirPenNow;
       const confPanelHtml = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
         <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:8px">📊 信心評估（動態更新）</div>
         <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.73rem;margin-bottom:8px;background:rgba(255,255,255,.02);border-radius:6px;padding:6px 8px">
@@ -1096,6 +1108,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           ${macroPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">宏觀 -${macroPenNow}</span>` : ''}
           ${aiTrendPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">AI趨勢 -${aiTrendPenNow}</span>` : ''}
           ${learnPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">風控 -${learnPenNow}</span>` : ''}
+          ${cfPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">資金流 -${cfPenNow}</span>` : ''}
           ${techPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">技術 -${techPenNow}</span>` : ''}
           ${chipsPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">籌碼 -${chipsPenNow}</span>` : ''}
           ${dirPenNow > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">方向 -${dirPenNow}</span>` : ''}
@@ -1116,6 +1129,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             : learnPenNow > 0
               ? `<div style="color:#f59e0b">⚠️ AI 風控：止損歷史記憶觸發，扣 -${learnPenNow}%</div>`
               : `<div style="color:#22c55e">✓ AI 風控：無止損記憶觸發</div>`}
+          ${cfPenNow > 0
+            ? cfEventsNow.map(ev => {
+                const timeStr = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
+                const aiTag   = ev.isAI ? 'AI預測 ' : '';
+                return `<div style="color:#f59e0b">⚠️ 💹 ${ev.name}（${timeStr}）：${aiTag}${ev.bear > 0 ? '資金流出' : '資金流入'}逆風，扣 -${ev.bear >= 1.2 || ev.bull >= 1.2 ? 8 : 4}%</div>`;
+              }).join('')
+            : `<div style="color:#22c55e">✓ 資金流動：無近期逆向事件</div>`}
           ${techPenNow > 0
             ? `<div style="color:#f59e0b">⚠️ 技術面逆風（RSI/MACD/成交量），扣 -${techPenNow}%</div>`
             : `<div style="color:#22c55e">✓ 技術面無明顯逆風，無扣分</div>`}
@@ -2119,6 +2139,24 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         }
       } catch(e) {}
 
+      // ④ 資金流動事件（近期或進行中的大型事件影響資金情緒）
+      try {
+        const _cfB = getCapitalFlowBias();
+        for (const ev of _cfB.events) {
+          const timeStr = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
+          const aiTag   = ev.isAI ? 'AI預測' : '';
+          if (isLong && ev.bear > 0) {
+            const agn = ev.bear >= 1.2 ? 1 : 0.5;
+            against += agn;
+            reasons.push(`${ev.name}（${timeStr}）：${aiTag}資金流出壓制市場，多頭逆風（信心 ${ev.conf}%）`);
+          } else if (!isLong && ev.bull > 0) {
+            const agn = ev.bull >= 1.2 ? 1 : 0.5;
+            against += agn;
+            reasons.push(`${ev.name}（${timeStr}）：${aiTag}資金流入推升市場，空頭逆風（信心 ${ev.conf}%）`);
+          }
+        }
+      } catch(_e) {}
+
       const total = against;
       const penalty = total >= 3 ? 18 : total >= 2 ? 12 : total >= 1 ? 5 : 0;
       return { macroOpposePenalty: penalty, macroReasons: reasons };
@@ -2884,6 +2922,37 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
    用於 recordSignalsFromScan 及 updateOpenTrades 的封鎖判斷，
    確保持倉邏輯與 UI 顯示的大方向完全對齊。
    ─────────────────────────────────────────────────────────── */
+
+// 資金流動事件偏向計算（供大方向、宏觀評分、交易建議共用）
+// 返回 { bull, bear, events[] }  —— events 含 name/flow/isActive/daysUntil/conf/isAI/bull/bear
+function getCapitalFlowBias() {
+  const fg  = (typeof _macroCache !== 'undefined') ? _macroCache?.fg  : null;
+  const mkt = (typeof _macroCache !== 'undefined') ? _macroCache : null;
+  const now = Date.now(), MS_DAY = 86400000;
+  let bull = 0, bear = 0;
+  const events = [];
+  for (const ev of CAPITAL_FLOW_EVENTS) {
+    const startMs = new Date(ev.startDate + 'T00:00:00').getTime();
+    const endMs   = new Date(ev.endDate   + 'T00:00:00').getTime() + MS_DAY - 1;
+    const isActive  = now >= startMs && now <= endMs;
+    const daysUntil = (startMs - now) / MS_DAY;
+    if (!isActive && (daysUntil < 0 || daysUntil > 5)) continue;
+    const pred   = computeCapitalFlowAIPred(ev, fg, mkt);
+    const flow   = pred.flow;
+    // 距離衰減：進行中 weight=1.0；5天後 weight=0.5，1天後 weight=0.9
+    const weight = isActive ? 1.0 : Math.max(0.5, 1 - daysUntil * 0.1);
+    let b = 0, be = 0;
+    if      (flow === 'inflow')         { b  = 1.5 * weight; }
+    else if (flow === 'slight_inflow')  { b  = 0.8 * weight; }
+    else if (flow === 'outflow')        { be = 1.5 * weight; }
+    else if (flow === 'slight_outflow') { be = 0.8 * weight; }
+    bull += b; bear += be;
+    events.push({ name: ev.name, type: ev.type, flow, isActive,
+      daysUntil: Math.round(daysUntil), conf: pred.conf, isAI: pred.isAI, bull: b, bear: be });
+  }
+  return { bull, bear, events };
+}
+
 function computeMacroNetDir(fg, gm) {
   const fgVal = fg ? parseInt(fg.value) : null;
   const chg   = gm?.marketCapChange || 0;
@@ -2917,6 +2986,13 @@ function computeMacroNetDir(fg, gm) {
   };
   addBias(wb.bias, 2, 2);
   addBias(tb.bias, 2, 2);
+
+  // 資金流動事件（進行中或 5 天內開始）
+  try {
+    const _cf = getCapitalFlowBias();
+    bull += _cf.bull;
+    bear += _cf.bear;
+  } catch(_e) {}
 
   // 與 buildMarketOutlook 相同的閾值（含強烈層級）
   if      (bull > bear + 3)  return 'strong_bull';
@@ -2969,6 +3045,24 @@ function buildMarketOutlook(fg, global) {
   else if (tbData.bias === 'strong_bear') { bearPts += 2; bearArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
   else if (tbData.bias === 'bear')   { bearPts++;    bearArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
   else if (tbData.bias === 'slight_bear') { bearPts += 0.5; bearArgs.push(`今日AI走勢：${tbData.biasLabel}（信心 ${tbData.conf}%）`); }
+
+  // 資金流動事件（進行中或 5 天內開始）
+  try {
+    const CF_TYPE_ICON = { conference:'🏛', holiday_asia:'🏮', holiday_us:'🇺🇸', holiday_global:'🌍', sports:'⚽', economic:'📊', crypto_event:'🔗' };
+    const _cfData = getCapitalFlowBias();
+    for (const ev of _cfData.events) {
+      const icon     = CF_TYPE_ICON[ev.type] || '💹';
+      const aiTag    = ev.isAI ? 'AI預測 ' : '';
+      const timeStr  = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
+      if (ev.bull > 0) {
+        bullPts += ev.bull;
+        bullArgs.push(`${icon}${ev.name}（${timeStr}）：${aiTag}${ev.flow === 'inflow' ? '資金流入' : '輕微流入'}，利好市場情緒（信心 ${ev.conf}%）`);
+      } else if (ev.bear > 0) {
+        bearPts += ev.bear;
+        bearArgs.push(`${icon}${ev.name}（${timeStr}）：${aiTag}${ev.flow === 'outflow' ? '資金流出' : '輕微流出'}，資金可能分流（信心 ${ev.conf}%）`);
+      }
+    }
+  } catch(_e) {}
 
   // 靜態宏觀背景（2026 Q2）
   bullArgs.push('比特幣現貨 ETF 持續吸引機構配置資金');
@@ -5975,8 +6069,18 @@ function updateOpenTrades(data) {
           }
           _dirP = Math.min(14, _dirP);
         }
-        // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
-        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _techP - _chipsP - _dirP);
+        // 資金流動事件動態扣分
+        let _cfP = 0;
+        try {
+          const _cfB = getCapitalFlowBias();
+          for (const ev of _cfB.events) {
+            if (_isL  && ev.bear > 0) _cfP += ev.bear >= 1.2 ? 8 : 4;
+            if (!_isL && ev.bull > 0) _cfP += ev.bull >= 1.2 ? 8 : 4;
+          }
+          _cfP = Math.min(16, _cfP);
+        } catch(_e) {}
+        // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 資金流動（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
+        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
         // 信心度跌破 65% → 自動取消掛單並推播 Telegram
@@ -6357,6 +6461,14 @@ function sendCancelTelegramNotification(trade, reason) {
       } else if (tNeut) {
         bullets.push(`今日AI預測中性，方向不確定，扣 2%`);
       }
+      // 資金流動事件
+      try {
+        const _cfC = getCapitalFlowBias();
+        for (const ev of _cfC.events) {
+          if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 8 : 4; bullets.push(`💹 ${ev.name}：資金流出逆風 -${p}%`); }
+          if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 8 : 4; bullets.push(`💹 ${ev.name}：資金流入逆風 -${p}%`); }
+        }
+      } catch(_e) {}
     } catch (e) {}
   }
 
@@ -8605,11 +8717,24 @@ async function checkAndSendAlerts(data) {
             if (fgVal  < 25)  { against += 0.5; macroReasons.push(`市場極度恐慌（F&G ${fgVal}）`); }
           }
           const macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+          // 資金流動事件扣分
+          let cfPen = 0;
+          const cfReasons = [];
+          try {
+            const _cfN = getCapitalFlowBias();
+            for (const ev of _cfN.events) {
+              if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 8 : 4; cfPen += p; cfReasons.push(`${ev.name}：資金流出逆風 -${p}%`); }
+              if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 8 : 4; cfPen += p; cfReasons.push(`${ev.name}：資金流入逆風 -${p}%`); }
+            }
+            cfPen = Math.min(16, cfPen);
+          } catch(_e) {}
           notifSetup.macroOpposePenalty = macroPen;
           notifSetup.aiTrendPenalty     = aiTrendPen;
           notifSetup.aiTrendReasons     = aiTrendReasons;
           notifSetup.macroReasons       = macroReasons;
-          notifSetup.conf = Math.max(0, notifSetup.conf - macroPen - aiTrendPen);
+          notifSetup.capitalFlowPenalty = cfPen;
+          notifSetup.capitalFlowReasons = cfReasons;
+          notifSetup.conf = Math.max(0, notifSetup.conf - macroPen - aiTrendPen - cfPen);
         } catch (e) { /* macro enrichment failed, keep simple conf */ }
       }
     }
@@ -8805,7 +8930,18 @@ function computeSimpleSetup(coin, isLong) {
   }
   _sDirPen = Math.min(14, _sDirPen);
 
-  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sTechPen - _sChipsPen - _sBBPenalty - _sDirPen);
+  // 資金流動事件扣分
+  let _sCFPen = 0;
+  try {
+    const _cf = getCapitalFlowBias();
+    for (const ev of _cf.events) {
+      if (isLong  && ev.bear > 0) _sCFPen += ev.bear >= 1.2 ? 8 : 4;
+      if (!isLong && ev.bull > 0) _sCFPen += ev.bull >= 1.2 ? 8 : 4;
+    }
+    _sCFPen = Math.min(16, _sCFPen);
+  } catch(_e) {}
+
+  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sCFPen - _sTechPen - _sChipsPen - _sBBPenalty - _sDirPen);
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const ema50  = parseFloat(coin.ema50)  || 0;
