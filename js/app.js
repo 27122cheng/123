@@ -6271,8 +6271,17 @@ function updateOpenTrades(data) {
       if (Date.now() - pendingSI.timestamp > 2 * 60 * 60 * 1000) {
         pendingSI.status = 'expired'; changed = true;
       } else {
-        const siTouched = isLong ? cur <= pendingSI.entryLevel * 1.005 : cur >= pendingSI.entryLevel * 0.995;
-        if (siTouched) {
+        // 步驟1：等回踩觸及進場位（多頭：現價 ≤ 進場位；空頭：現價 ≥ 進場位）
+        if (!pendingSI.touched) {
+          const touchedLevel = isLong ? cur <= pendingSI.entryLevel : cur >= pendingSI.entryLevel;
+          if (touchedLevel) { pendingSI.touched = true; changed = true; }
+        }
+        // 步驟2：回踩到位後等反彈確認（多頭反彈 0.3%；空頭回落 0.3%）才進場
+        const bounceConfirm = pendingSI.touched && (
+          isLong  ? cur >= pendingSI.entryLevel * 1.003
+                  : cur <= pendingSI.entryLevel * 0.997
+        );
+        if (bounceConfirm) {
           pendingSI.status     = 'open';
           pendingSI.entryTime  = Date.now();
           pendingSI.entryPrice = cur;
@@ -6337,6 +6346,7 @@ function updateOpenTrades(data) {
           status: 'pending',
           entryTime: null,
           entryPrice: null,
+          touched: true, // 建立時現價即為回踩位，標記已觸及，等待反彈確認進場
           conf: trade.conf || 0,
         });
         changed = true;
