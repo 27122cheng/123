@@ -5698,7 +5698,7 @@ function recordSignalsFromScan(data) {
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
     // 短線門檻：宏觀有方向時 ≥3/4；宏觀中性或無快取時 ≥2/4（幣種方向指標須確立）
-    const _minFactors = 2;
+    const _minFactors = (!_macroCache || macroNetDir === 'neutral') ? 2 : 3;
     if ([_f1, _f2, _f3, _f4].filter(Boolean).length < _minFactors) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
@@ -5853,7 +5853,7 @@ function recordSignalsFromScan(data) {
             `🏁 <b>最終止盈：$${_ltTPFmt}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n`;
         }
 
-        // ── 新格式 Telegram 訊息 ──
+        // ── 新格式 Telegram 訊息（進場位 → 止損位 → 止盈 → 進場理由 → 止損理由）──
         const _msg = canScaleIn
           ? (
             `💎 <b>加密掃描 Pro — 長線單信號</b>\n\n` +
@@ -5863,11 +5863,11 @@ function recordSignalsFromScan(data) {
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
             `${_confBlock}\n\n` +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
-            `📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
             `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
-            `   ↳ ${_esc(setup.slReason)}\n` +
             _scaleBlock +
-            `\n${_tags}\n` +
+            `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
+            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n\n` +
+            `${_tags}\n` +
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           )
           : (
@@ -5877,12 +5877,12 @@ function recordSignalsFromScan(data) {
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
             `${_confBlock}\n\n` +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
-            `📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
             `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
-            `   ↳ ${_esc(setup.slReason)}\n` +
             `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
             (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n` : '') +
-            `\n${_tags}\n` +
+            `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
+            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n\n` +
+            `${_tags}\n` +
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           );
 
