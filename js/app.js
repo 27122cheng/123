@@ -1130,7 +1130,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             <div><span style="color:var(--text3)">滿分</span> <strong>100%</strong></div>
             ${_baseDeduct > 0 ? `<div style="color:#f59e0b">　基礎評估 <strong>-${_baseDeduct}%</strong>（入場條件綜合評分）</div>` : ''}
             ${_adxPen   > 0 ? `<div style="color:#f59e0b">　ADX <strong>-${_adxPen}%</strong>（趨勢強度不足）</div>` : ''}
-            ${_learnPen > 0 ? `<div style="color:#f59e0b">　AI風控 <strong>-${_learnPen}%</strong>（歷史止損改進建議未遵守）</div>` : ''}
             ${_macroPen > 0 ? `<div style="color:#f59e0b">　宏觀 <strong>-${_macroPen}%</strong>（宏觀環境逆風）</div>` : ''}
             ${_aiPen    > 0 ? `<div style="color:#f59e0b">　AI趨勢 <strong>-${_aiPen}%</strong>（週/日方向逆向）</div>` : ''}
             ${_techPen  > 0 ? `<div style="color:#f59e0b">　技術 <strong>-${_techPen}%</strong>（RSI/MACD/BB 逆風）</div>` : ''}
@@ -1155,7 +1154,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           ${hardAdxNow > 0 ? `<div style="color:#f59e0b">　ADX <strong>-${hardAdxNow}%</strong>（趨勢強度不足）</div>` : ''}
           ${macroPenNow > 0 ? `<div style="color:#f59e0b">　宏觀 <strong>-${macroPenNow}%</strong>（宏觀環境逆風）</div>` : ''}
           ${aiTrendPenNow > 0 ? `<div style="color:#f59e0b">　AI趨勢 <strong>-${aiTrendPenNow}%</strong>（週/日方向逆向）</div>` : ''}
-          ${learnPenNow > 0 ? `<div style="color:#f59e0b">　AI風控 <strong>-${learnPenNow}%</strong>（改進建議未遵守）</div>` : ''}
           ${cfPenNow > 0 ? `<div style="color:#f59e0b">　資金流 <strong>-${cfPenNow}%</strong>（近期資金流逆向）</div>` : ''}
           ${techPenNow > 0 ? `<div style="color:#f59e0b">　技術 <strong>-${techPenNow}%</strong>（RSI/MACD/BB 逆風）</div>` : ''}
           ${chipsPenNow > 0 ? `<div style="color:#f59e0b">　籌碼 <strong>-${chipsPenNow}%</strong>（Taker/巨鯨 逆向）</div>` : ''}
@@ -1175,9 +1173,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           ${aiTrendReasonsNow.map(r => `<div style="color:${r.includes('逆') || r.includes('逆風') ? '#f59e0b' : '#22c55e'}">${r.includes('逆') ? '⚠️' : '✓'} ${r}</div>`).join('')}
           ${learnResultNow.hardBlocked
             ? learnResultNow.blockReasons.slice(0, 2).map(r => `<div style="color:var(--bear)">🚫 ${r}</div>`).join('')
-            : learnPenNow > 0
-              ? learnResultNow.warnings.map(w => `<div style="color:#f59e0b">⚠️ AI風控：${w}</div>`).join('') || `<div style="color:#f59e0b">⚠️ AI 風控：改進建議未遵守，扣 -${learnPenNow}%</div>`
-              : `<div style="color:#22c55e">✓ AI 風控：改進建議均已遵守</div>`}
+            : `<div style="color:#22c55e">✓ AI 學習：止損歷史模式已作為交易建議參考（不影響信心評分）</div>`}
           ${cfPenNow > 0
             ? cfEventsNow.map(ev => {
                 const timeStr = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
@@ -2814,11 +2810,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   ${(() => { try {
     // ── AI 交易決策三層邏輯面板 ──
     const { defenseChecks = [] } = learnResult || {};
-    const failChecks  = defenseChecks.filter(c => !c.pass && c.type !== 'rule_ref');
-    const passChecks  = defenseChecks.filter(c =>  c.pass && c.type !== 'rule_ref');
-    const refChecks   = defenseChecks.filter(c => c.type === 'rule_ref' && !c.pass); // 僅顯示當前適用的參考規則
-    const typeLabel = { rule: '規則', rule_ref: '參考', memory: '止損記憶', suggestion: '改進建議' };
-    const typeColor = { rule: '#818cf8', rule_ref: '#64748b', memory: '#f59e0b', suggestion: '#34d399' };
+    const failChecks  = defenseChecks.filter(c => !c.pass && c.type !== 'rule_ref' && c.type !== 'sugg_ref');
+    const passChecks  = defenseChecks.filter(c =>  c.pass && c.type !== 'rule_ref' && c.type !== 'sugg_ref');
+    const refChecks   = defenseChecks.filter(c => (c.type === 'rule_ref' || c.type === 'sugg_ref') && !c.pass);
+    const typeLabel = { rule: '規則', rule_ref: '參考', sugg_ref: '改進建議', memory: '止損記憶', suggestion: '改進建議' };
+    const typeColor = { rule: '#818cf8', rule_ref: '#64748b', sugg_ref: '#34d399', memory: '#f59e0b', suggestion: '#34d399' };
 
     // 各層狀態顏色
     const l1Warn   = macroOpposePenalty > 0 || hardAdxPenalty > 0;
@@ -2827,9 +2823,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const l2Status = bigTrendBlocked ? 'block' : bigTrend === 'mixed' ? 'warn' : 'pass';
     const l2Color  = l2Status === 'block' ? '#ef4444' : l2Status === 'warn' ? '#f59e0b' : '#22c55e';
     const l2Icon   = l2Status === 'block' ? '🚫' : l2Status === 'warn' ? '⚠️' : '✅';
-    const l3Status = hardBlocked ? 'block' : learnPenalty > 0 ? 'warn' : 'pass';
-    const l3Color  = l3Status === 'block' ? '#ef4444' : l3Status === 'warn' ? '#f59e0b' : '#22c55e';
-    const l3Icon   = l3Status === 'block' ? '🚫' : l3Status === 'warn' ? '⚠️' : '✅';
+    const l3Status = hardBlocked ? 'block' : 'pass';
+    const l3Color  = l3Status === 'block' ? '#ef4444' : '#22c55e';
+    const l3Icon   = l3Status === 'block' ? '🚫' : '✅';
 
     // 信心分數顏色輔助
     const cColor = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 70 ? '#f59e0b' : '#ef4444';
@@ -2857,7 +2853,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         <span style="color:var(--text3)">→</span>
         <span style="color:var(--text3);font-size:0.7rem">② 後</span>
         <span style="font-weight:700;color:${l2Status === 'block' ? '#ef4444' : cColor(macroConf)}">${l2Status === 'block' ? '攔截' : macroConf + '%'}</span>
-        ${learnPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">風控 -${learnPenalty}</span>` : ''}
         <span style="color:var(--text3)">→</span>
         <span style="color:var(--text3);font-size:0.7rem">最終</span>
         <span style="font-weight:700;font-size:0.85rem;color:${l2Status === 'block' ? '#ef4444' : cColor(finalConf)}">${l2Status === 'block' ? '❌' : finalConf + '%'}</span>
@@ -2922,20 +2917,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
       </div>
 
-      <!-- 第③層：AI 風控（止損歷史記憶） -->
+      <!-- 第③層：AI 學習（止損歷史模式與改進建議參考） -->
       <div style="border:1px solid rgba(255,255,255,.08);border-radius:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:rgba(255,255,255,.04)">
           <span style="font-size:0.88rem">${l3Icon}</span>
-          <span style="font-size:0.78rem;font-weight:600;color:var(--text1);flex:1">③ AI 風控（止損歷史記憶）</span>
+          <span style="font-size:0.78rem;font-weight:600;color:var(--text1);flex:1">③ AI 學習（止損模式與改進建議）</span>
           <span style="font-size:0.72rem;color:${l3Color}">${
             hardBlocked ? `❌ 硬性攔截（${blockReasons.length}項觸發）`
-            : learnPenalty > 0 ? `扣分 -${learnPenalty}%`
-            : '✓ 無扣分'
+            : refChecks.length > 0 ? `${refChecks.length} 項參考提示`
+            : '✓ 無相關歷史模式'
           }</span>
         </div>
         <div style="padding:7px 12px;font-size:0.73rem;line-height:1.6">
           ${!aiReady
-            ? `<div style="color:var(--text3)">歷史交易 < 3 筆，AI 止損記憶風控暫不啟用，以人工判斷為主</div>`
+            ? `<div style="color:var(--text3)">歷史交易 < 3 筆，AI 學習模式暫不啟用，以人工判斷為主</div>`
             : ''
           }
           ${hardBlocked
@@ -2956,14 +2951,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
                   <span class="ai-defense-text">${c.label}</span>
                   <span class="ai-defense-meta">${c.count}次 ✓</span>
                 </div>`).join('')}
-              ${refChecks.map(c => `
-                <div class="ai-defense-item" style="background:rgba(100,116,139,.08);border-color:rgba(100,116,139,.2)">
-                  <span class="ai-defense-type" style="color:${typeColor.rule_ref}">參考</span>
-                  <span class="ai-defense-text" style="color:var(--text2)">${c.label}</span>
-                  <span class="ai-defense-meta" style="color:var(--text3)">${c.count}筆 · 僅參考</span>
-                </div>`).join('')}
+              ${refChecks.map(c => {
+                const isSugg = c.type === 'sugg_ref';
+                return `<div class="ai-defense-item" style="background:${isSugg ? 'rgba(52,211,153,.06)' : 'rgba(100,116,139,.08)'};border-color:${isSugg ? 'rgba(52,211,153,.2)' : 'rgba(100,116,139,.2)'}">
+                  <span class="ai-defense-type" style="color:${isSugg ? '#34d399' : typeColor.rule_ref}">${isSugg ? '改進建議' : '歷史模式'}</span>
+                  <span class="ai-defense-text" style="color:${isSugg ? 'var(--text1)' : 'var(--text2)'}">${c.label}</span>
+                  <span class="ai-defense-meta" style="color:var(--text3)">${c.count}次 · 僅參考</span>
+                </div>`;
+              }).join('')}
             </div>`
-            : (aiReady ? `<div style="color:#22c55e">✓ 無改進建議觸發，AI 風控通過</div>` : '')
+            : (aiReady ? `<div style="color:#22c55e">✓ 無相關歷史止損模式，分析通過</div>` : '')
           }
           ${(aiReady && profile.bestConditions?.length) ? `
             <div class="setup-ai-bests" style="margin-top:6px">
@@ -5040,33 +5037,28 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。`;
   }
 
-  // ── AI 風控整合段落（有資料才顯示）──
+  // ── 風控扣分整合段落（僅顯示結構性風控，AI學習為參考不扣分）──
   let p5 = '';
-  const totalPen = learnPen + adxPen + macroPen + aiPen;
+  const totalPen = adxPen + macroPen + aiPen;
   if (riskBlocked) {
     const brList = blockReasons.slice(0, 2).map(r => `<li>${r}</li>`).join('');
     p5 = `<div style="background:rgba(239,68,68,.08);border-left:3px solid #ef4444;padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
       <strong style="color:#ef4444">🚫 AI 風控：硬性攔截</strong>
       <ul style="margin:4px 0 0 16px;font-size:0.82em;color:var(--text2)">${brList}</ul>
     </div>`;
-  } else if (totalPen > 0 || learnWarn.length > 0) {
+  } else if (totalPen > 0) {
     const penDetail = [
       adxPen  > 0 ? `ADX 過低 -${adxPen}%` : '',
       macroPen > 0 ? `宏觀逆風 -${macroPen}%` : '',
       aiPen   > 0 ? `AI趨勢逆向 -${aiPen}%` : '',
-      learnPen > 0 ? `止損記憶 -${learnPen}%` : '',
     ].filter(Boolean).join('　');
-    const warnList = learnWarn.slice(0, 3).map(w => `<li>${w}</li>`).join('');
-    const failChecksHtml = defChecks.filter(c => !c.pass).slice(0, 3)
-      .map(c => `<li><span style="color:#f59e0b">${c.label}</span>（歷史 ${c.count} 次，-${c.penalty}%）</li>`).join('');
     p5 = `<div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
-      <strong style="color:#f59e0b">⚠️ AI 風控：信心扣分 -${totalPen}%</strong>
+      <strong style="color:#f59e0b">⚠️ 風控扣分 -${totalPen}%</strong>
       ${rawConf != null ? `<span style="color:var(--text3);font-size:0.8em;margin-left:6px">${rawConf}% → 最終 ${finalConf ?? '--'}%</span>` : ''}
       <div style="font-size:0.8em;color:var(--text3);margin-top:2px">${penDetail}</div>
-      ${warnList || failChecksHtml ? `<ul style="margin:4px 0 0 16px;font-size:0.8em;color:var(--text2)">${warnList}${failChecksHtml}</ul>` : ''}
     </div>`;
   } else if (cached) {
-    p5 = `<div style="font-size:0.8em;color:#22c55e;margin-top:4px">✅ AI 風控通過：無歷史止損記憶觸發，信心度 ${finalConf ?? '--'}%（原始 ${rawConf ?? '--'}%，無扣分）</div>`;
+    p5 = `<div style="font-size:0.8em;color:#22c55e;margin-top:4px">✅ 風控通過：無結構性扣分，信心度 ${finalConf ?? '--'}%（原始 ${rawConf ?? '--'}%）</div>`;
   }
 
   return `<div class="ai-analysis-body">
@@ -7492,7 +7484,8 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1);
       // 規則僅作參考提示，不扣信心分（用 'rule_ref' 型別標記為參考）
       if ((rule.total || 0) >= 3) {
-        defenseChecks.push({ type: 'rule_ref', label: (rule.warning || '').slice(0, 55), count: rule.total || 0, pass: !match, penalty: 0, rate: rule.rate });
+        const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
+        defenseChecks.push({ type: 'rule_ref', label: _rLabel, count: rule.total || 0, pass: !match, penalty: 0, rate: rule.rate });
       }
     }
   }
@@ -7506,8 +7499,8 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       const t = issue.text || '';
       const s = issue.suggestion || '';
 
-      // ③ 改進建議比對（學習改進方案而非原始止損原因：若歷史建議未被遵守則扣分）
-      if (cnt >= 2 && s) {
+      // ③ 改進建議：作為 AI 交易建議的參考資訊，不扣信心分
+      if (cnt >= 5 && s) {
         const suggViolated =
           (s.includes('RSI') && (s.includes('50-55') || s.includes('50 以下') || s.includes('回落')) && direction === 'long'  && rsi > 60) ||
           (s.includes('RSI') && (s.includes('45-50') || s.includes('50 以上') || s.includes('回升')) && direction === 'short' && rsi < 40) ||
@@ -7526,13 +7519,8 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
           (s.includes('量能') && s.includes('確認') && ctx.volDivergence === 'bearish_div' && direction === 'long') ||
           (s.includes('多週期') && (ctx.mtfAlign ?? 99) <= 1) ||
           ((s.includes('週期') && s.includes('信號一致')) && (ctx.mtfAlign ?? 99) <= 1);
-        if (suggViolated) {
-          const pen = Math.min(8, Math.ceil(cnt / 3));
-          addCheck('suggestion', s, cnt, true, pen, false);
-        } else if (cnt >= 5) {
-          // 建議存在且本次未違反 → 通過
-          addCheck('suggestion', `✔ 已遵守：「${s.slice(0, 40)}」`, cnt, false, 0, false);
-        }
+        // 改進建議僅作為 AI 交易建議參考，不影響信心評分
+        defenseChecks.push({ type: 'sugg_ref', label: s.slice(0, 55), count: cnt, pass: !suggViolated, penalty: 0 });
       }
     }
   }
