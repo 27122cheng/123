@@ -1096,6 +1096,25 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         }
       }
 
+      // 同步更新快取：確保 generateAIAnalysis 讀到的值與 confPanelHtml 顯示一致
+      _tradeSetupCache[coin.symbol] = Object.assign(
+        _tradeSetupCache[coin.symbol] || {},
+        {
+          learnPenalty:        learnPenNow,
+          hardAdxPenalty:      hardAdxNow,
+          macroOpposePenalty:  macroPenNow,
+          aiTrendPenalty:      aiTrendPenNow,
+          hardBlocked:         learnResultNow.hardBlocked || false,
+          blockReasons:        learnResultNow.blockReasons || [],
+          learnWarnings:       learnResultNow.warnings || [],
+          defenseChecks:       learnResultNow.defenseChecks || [],
+          conf:                freshConf,
+          rawConf:             rawConfNow,
+          finalConf:           freshConf,
+          direction:           existingActive.direction,
+        }
+      );
+
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
       const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + cfPenNow + techPenNow + chipsPenNow + dirPenNow;
