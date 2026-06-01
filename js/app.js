@@ -1006,6 +1006,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         volDivergence: mtfData['1h']?.volAI?.divergence || null,
         mtfAlign:      mtfAlignNow,
         slType:        existingActive.entrySlType || 'atr',
+        score:         parseFloat(existingActive.score) || 50,
         skipAdxRule:   true,
       };
 
@@ -2274,6 +2275,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     volDivergence: mtfData['1h']?.volAI?.divergence || null,
     mtfAlign: entryMTFAlign,
     slType,
+    score: parseFloat(coin.score) || 50,
     skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   };
   const adxVal = parseFloat(coin.adx) || 20;
@@ -6098,7 +6100,7 @@ function updateOpenTrades(data) {
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
         // 信心度跌破 60% → 自動取消掃描粗估單（!refined）
-        if (freshConf < 60 && !trade.refined && !trade.entryTime) {
+        if (freshConf < 60 && !trade.entryTime) {
           const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 60%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
@@ -6111,7 +6113,7 @@ function updateOpenTrades(data) {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
       const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
-      if (_structConf < 60 && !trade.refined && !trade.entryTime) {
+      if (_structConf < 60 && !trade.entryTime) {
         const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 60%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
@@ -7259,7 +7261,7 @@ function computeLearnProfile() {
   const check = (cond, subLoss, subAll, penaltyConf, warnTpl) => {
     if (subAll.length < 3) return null;
     const rate = subLoss.length / subAll.length;
-    if (rate < 0.20) return null; // AI 目標勝率 80%+，止損率 > 20% 即觸發規則
+    if (rate < 0.05) return null; // AI 目標勝率 95%+，止損率 > 5% 即觸發規則
     const scaledPenalty = rate >= 0.6 ? penaltyConf + 15 : rate >= 0.4 ? penaltyConf + 5 : penaltyConf;
     return { condition: cond, lossCount: subLoss.length, total: subAll.length,
       rate, penaltyConf: scaledPenalty, warning: warnTpl(Math.round(rate * 100)) };
@@ -7468,11 +7470,18 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
 
       // 比對止損原因是否在當前交易中重演
       const matchesCurrent =
-        (t.includes('RSI') && t.includes('偏高') && direction === 'long'  && rsi > 65) ||
-        (t.includes('RSI') && t.includes('偏低') && direction === 'short' && rsi < 35) ||
+        (t.includes('RSI') && t.includes('偏高') && direction === 'long'  && rsi > 60) ||
+        (t.includes('RSI') && t.includes('偏低') && direction === 'short' && rsi < 40) ||
         (t.includes('ADX') && t.includes('過低') && adx < 20) ||
         (t.includes('PO3') && ctx.slType === 'po3') ||
-        (t.includes('支撐結構') && ctx.slType === 'structural') ||
+        (t.includes('支撐結構') && (ctx.slType === 'structural' || ctx.slType === 'atr')) ||
+        (t.includes('ATR/百分比') && ctx.slType === 'atr') ||
+        (t.includes('假突破') && ((t.includes('多頭') && direction === 'long') || (t.includes('空頭') && direction === 'short'))) ||
+        (t.includes('評分') && t.includes('偏低') && direction === 'long'  && (ctx.score || 100) < 65) ||
+        (t.includes('評分') && t.includes('偏高') && direction === 'short' && (ctx.score || 0)   > 35) ||
+        (t.includes('POC') && t.includes('下方') && direction === 'long'  && ctx.abovePOC === false) ||
+        (t.includes('POC') && t.includes('上方') && direction === 'short' && ctx.abovePOC === true) ||
+        (t.includes('成交量') && t.includes('背離') && direction === 'long' && ctx.volDivergence === 'bearish_div') ||
         (t.includes('巨鯨') && t.includes('賣出') && direction === 'long'  && ctx.whaleBias === 'bear') ||
         (t.includes('巨鯨') && t.includes('買入') && direction === 'short' && ctx.whaleBias === 'bull') ||
         (t.includes('MTF') && (ctx.mtfAlign ?? 99) <= 1) ||
@@ -7488,14 +7497,23 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       // ③ 改進建議比對（止損後的改進建議是否未被遵守）
       if (cnt >= 2 && s) {
         const suggViolated =
-          (s.includes('RSI') && (s.includes('50-55') || s.includes('回落')) && direction === 'long'  && rsi > 62) ||
-          (s.includes('RSI') && (s.includes('45-50') || s.includes('回升')) && direction === 'short' && rsi < 38) ||
-          (s.includes('ADX') && s.includes('22') && adx < 22) ||
+          (s.includes('RSI') && (s.includes('50-55') || s.includes('50 以下') || s.includes('回落')) && direction === 'long'  && rsi > 60) ||
+          (s.includes('RSI') && (s.includes('45-50') || s.includes('50 以上') || s.includes('回升')) && direction === 'short' && rsi < 40) ||
+          (s.includes('ADX') && (s.includes('20') || s.includes('22')) && adx < 22) ||
           (s.includes('掃蕩') && s.includes('確認') && ctx.slType === 'po3') ||
+          (s.includes('ATR') && (s.includes('倍數') || s.includes('更大')) && ctx.slType === 'atr') ||
+          (s.includes('更低一層') && ctx.slType === 'structural') ||
+          (s.includes('評分') && s.includes('65') && direction === 'long'  && (ctx.score || 100) < 65) ||
+          (s.includes('評分') && s.includes('35') && direction === 'short' && (ctx.score || 0)   > 35) ||
+          (s.includes('POC') && s.includes('突破') && direction === 'long'  && ctx.abovePOC === false) ||
+          (s.includes('POC') && s.includes('跌破') && direction === 'short' && ctx.abovePOC === true) ||
+          (s.includes('巨鯨') && direction === 'long'  && ctx.whaleBias === 'bear') ||
+          (s.includes('巨鯨') && direction === 'short' && ctx.whaleBias === 'bull') ||
           (s.includes('主力') && direction === 'long'  && ctx.whaleBias === 'bear') ||
           (s.includes('主力') && direction === 'short' && ctx.whaleBias === 'bull') ||
+          (s.includes('量能') && s.includes('確認') && ctx.volDivergence === 'bearish_div' && direction === 'long') ||
           (s.includes('多週期') && (ctx.mtfAlign ?? 99) <= 1) ||
-          (s.includes('更低一層') && ctx.slType === 'structural');
+          ((s.includes('週期') && s.includes('信號一致')) && (ctx.mtfAlign ?? 99) <= 1);
         if (suggViolated) {
           const pen = Math.min(8, Math.ceil(cnt / 3));
           addCheck('suggestion', s, cnt, true, pen, false);
@@ -7651,7 +7669,7 @@ function buildAILearnPanel(closed) {
     ? ((mem.cumStats.totalWins / (mem.cumStats.totalClosed || 1)) * 100)
     : parseFloat(profile.winRate || 0);
   const winRate = winRateNum.toFixed(1);
-  const winRateColor = winRateNum >= 80 ? 'var(--bull)' : winRateNum >= 60 ? '#f59e0b' : 'var(--bear)';
+  const winRateColor = winRateNum >= 95 ? 'var(--bull)' : winRateNum >= 80 ? '#f59e0b' : 'var(--bear)';
 
   // ── 目前的風控規則（含記憶）──
   const rules = profile.rules || [];
@@ -7670,7 +7688,7 @@ function buildAILearnPanel(closed) {
   // ── RSI / ADX 熱力圖（僅有實際數據時才渲染）──
   const makeZoneBar = stats => (stats || []).filter(z => z.total > 0).map(z => {
     const lr  = z.lossRate;
-    const clr = lr === null ? 'var(--text3)' : lr > 0.2 ? (lr > 0.4 ? 'var(--bear)' : '#f59e0b') : 'var(--bull)';
+    const clr = lr === null ? 'var(--text3)' : lr > 0.05 ? (lr > 0.2 ? 'var(--bear)' : '#f59e0b') : 'var(--bull)';
     return `<div class="ai-zone-cell" style="border-color:${clr}20">
       <div class="ai-zone-label">${z.label}</div>
       <div class="ai-zone-rate" style="color:${clr}">${lr === null ? '—' : Math.round(lr*100)+'%'}</div>
@@ -7718,10 +7736,10 @@ function buildAILearnPanel(closed) {
       <span class="ai-goal-lbl">🎯 AI 目標勝率</span>
       <div class="ai-goal-track">
         <div class="ai-goal-fill" style="width:${Math.min(winRateNum,100)}%;background:${winRateColor}"></div>
-        <div class="ai-goal-mark80"></div>
+        <div class="ai-goal-mark95"></div>
       </div>
       <span class="ai-goal-pct" style="color:${winRateColor}">${winRate}%</span>
-      <span class="ai-goal-target">目標 80%</span>
+      <span class="ai-goal-target">目標 95%</span>
     </div>
 
     ${notReadyNote}

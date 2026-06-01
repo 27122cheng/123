@@ -1672,7 +1672,7 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .ai-goal-lbl { font-size:0.78rem; color:var(--text3); white-space:nowrap; }
 .ai-goal-track { flex:1; min-width:80px; height:8px; background:rgba(255,255,255,.1); border-radius:4px; position:relative; overflow:visible; }
 .ai-goal-fill { height:100%; border-radius:4px; transition:width .6s; }
-.ai-goal-mark80 { position:absolute; top:-3px; left:80%; width:2px; height:14px; background:rgba(255,255,255,.4); border-radius:1px; }
+.ai-goal-mark95 { position:absolute; top:-3px; left:95%; width:2px; height:14px; background:rgba(255,255,255,.4); border-radius:1px; }
 .ai-goal-pct { font-size:0.88rem; font-weight:700; white-space:nowrap; }
 .ai-goal-target { font-size:0.7rem; color:var(--text3); white-space:nowrap; }
 .ai-learn-ok { color:var(--bull); font-size:0.83rem; padding:6px 0; }
