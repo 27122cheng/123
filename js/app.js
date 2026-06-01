@@ -1110,6 +1110,30 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
       const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + cfPenNow + techPenNow + chipsPenNow + dirPenNow;
+
+      // 已進場：顯示進場時鎖定的信心度，不再動態重算（進場後市況變化不影響已開倉決策）
+      if (existingActive.entryTime) {
+        const _lockedConf = existingActive.conf || 0;
+        const _rawC = existingActive.rawConf || _lockedConf;
+        const _clr = _cc(_lockedConf);
+        const _penParts = [
+          existingActive.hardAdxPenalty > 0 ? `ADX -${existingActive.hardAdxPenalty}` : '',
+          existingActive.learnPenalty   > 0 ? `風控 -${existingActive.learnPenalty}`  : '',
+          existingActive.macroPenalty   > 0 ? `宏觀 -${existingActive.macroPenalty}`  : '',
+          existingActive.aiTrendPenalty > 0 ? `AI -${existingActive.aiTrendPenalty}`  : '',
+          existingActive.techPenalty    > 0 ? `技術 -${existingActive.techPenalty}`   : '',
+          existingActive.chipsPenalty   > 0 ? `籌碼 -${existingActive.chipsPenalty}`  : '',
+          existingActive.dirPenalty     > 0 ? `方向 -${existingActive.dirPenalty}`    : '',
+        ].filter(Boolean).join('　');
+        const lockedConfPanel = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
+          <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:6px">📊 信心評估（進場時已鎖定）</div>
+          <div style="font-size:0.73rem;color:var(--text3)">原始 ${_rawC}%${_penParts ? ' → ' + _penParts : ''} → <strong style="color:${_clr}">${_lockedConf}%</strong></div>
+          <div style="font-size:0.68rem;color:var(--text3);margin-top:4px">已進場，信心評估以進場時為準，不隨市況動態變動</div>
+        </div>`;
+        if (existingActive.status === 'open')    return buildOpenPositionSetup(existingActive, price) + lockedConfPanel;
+        if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price) + lockedConfPanel;
+      }
+
       const confPanelHtml = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
         <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:8px">📊 信心評估（動態更新）</div>
         <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.73rem;margin-bottom:8px;background:rgba(255,255,255,.02);border-radius:6px;padding:6px 8px">
@@ -7474,8 +7498,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (t.includes('RSI') && t.includes('偏低') && direction === 'short' && rsi < 40) ||
         (t.includes('ADX') && t.includes('過低') && adx < 20) ||
         (t.includes('PO3') && ctx.slType === 'po3') ||
-        (t.includes('支撐結構') && (ctx.slType === 'structural' || ctx.slType === 'atr')) ||
-        (t.includes('ATR/百分比') && ctx.slType === 'atr') ||
+        (t.includes('支撐結構') && ctx.slType === 'structural') ||
         (t.includes('假突破') && ((t.includes('多頭') && direction === 'long') || (t.includes('空頭') && direction === 'short'))) ||
         (t.includes('評分') && t.includes('偏低') && direction === 'long'  && (ctx.score || 100) < 65) ||
         (t.includes('評分') && t.includes('偏高') && direction === 'short' && (ctx.score || 0)   > 35) ||
@@ -7550,8 +7573,10 @@ function generateTradeAnalysis(trade) {
       issues.push('止損設於 PO3/掃蕩結構位，該位置被突破通常代表主力完成吸籌後反向洗盤，或信號本身為誘多/誘空');
       suggestions.push('PO3 結構失守後需重新評估主力意圖，下次等掃蕩確認方向後再進場，避免在掃蕩前入場');
     }
-    // ATR / 百分比止損
-    if (slReason.includes('ATR') || slReason.includes('%') || slReason.includes('結構止損')) {
+    // ATR / 百分比止損（只針對純 ATR 止損，排除已由結構/PO3 覆蓋的情形）
+    if (!slReason.includes('PO3') && !slReason.includes('掃蕩') &&
+        !slReason.includes('支撐結構') && !slReason.includes('壓力結構') &&
+        (slReason.includes('ATR') || slReason.includes('結構止損') || slReason.includes('動能失效'))) {
       issues.push(`止損以 ATR/百分比設置，觸發代表市場波動超出預期範圍（進場時 ATR 或波動估算可能不足）`);
       suggestions.push('波動大時應使用更大的 ATR 倍數或調整倉位大小，避免被正常波動震出');
     }
