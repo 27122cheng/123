@@ -2814,10 +2814,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   ${(() => { try {
     // ── AI 交易決策三層邏輯面板 ──
     const { defenseChecks = [] } = learnResult || {};
-    const failChecks  = defenseChecks.filter(c => !c.pass);
-    const passChecks  = defenseChecks.filter(c =>  c.pass);
-    const typeLabel = { rule: '規則', memory: '止損記憶', suggestion: '改進建議' };
-    const typeColor = { rule: '#818cf8', memory: '#f59e0b', suggestion: '#34d399' };
+    const failChecks  = defenseChecks.filter(c => !c.pass && c.type !== 'rule_ref');
+    const passChecks  = defenseChecks.filter(c =>  c.pass && c.type !== 'rule_ref');
+    const refChecks   = defenseChecks.filter(c => c.type === 'rule_ref' && !c.pass); // 僅顯示當前適用的參考規則
+    const typeLabel = { rule: '規則', rule_ref: '參考', memory: '止損記憶', suggestion: '改進建議' };
+    const typeColor = { rule: '#818cf8', rule_ref: '#64748b', memory: '#f59e0b', suggestion: '#34d399' };
 
     // 各層狀態顏色
     const l1Warn   = macroOpposePenalty > 0 || hardAdxPenalty > 0;
@@ -2941,7 +2942,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             ? blockReasons.map(r => `<div style="color:var(--bear);margin-bottom:2px">🚫 ${r}</div>`).join('')
             : ''
           }
-          ${defenseChecks.length ? `
+          ${(failChecks.length || passChecks.length || refChecks.length) ? `
             <div class="ai-defense-list" style="margin-top:${aiReady ? '0' : '4px'}">
               ${failChecks.map(c => `
                 <div class="ai-defense-item ai-defense-fail">
@@ -2955,8 +2956,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
                   <span class="ai-defense-text">${c.label}</span>
                   <span class="ai-defense-meta">${c.count}次 ✓</span>
                 </div>`).join('')}
+              ${refChecks.map(c => `
+                <div class="ai-defense-item" style="background:rgba(100,116,139,.08);border-color:rgba(100,116,139,.2)">
+                  <span class="ai-defense-type" style="color:${typeColor.rule_ref}">參考</span>
+                  <span class="ai-defense-text" style="color:var(--text2)">${c.label}</span>
+                  <span class="ai-defense-meta" style="color:var(--text3)">${c.count}筆 · 僅參考</span>
+                </div>`).join('')}
             </div>`
-            : (aiReady ? `<div style="color:#22c55e">✓ 無歷史止損觸發警告，AI 風控通過</div>` : '')
+            : (aiReady ? `<div style="color:#22c55e">✓ 無改進建議觸發，AI 風控通過</div>` : '')
           }
           ${(aiReady && profile.bestConditions?.length) ? `
             <div class="setup-ai-bests" style="margin-top:6px">
@@ -7316,51 +7323,51 @@ function computeLearnProfile() {
     check('long_high_rsi',
       longLosses.filter(t => (t.rsi||50) > 65),
       longClosed.filter(t => (t.rsi||50) > 65),
-      15, r => `RSI > 65 做多歷史止損率 ${r}%，AI 已下調信心`),
+      15, r => `RSI > 65 做多歷史止損率 ${r}%，建議留意動能過熱`),
     check('short_low_rsi',
       shortLosses.filter(t => (t.rsi||50) < 35),
       shortClosed.filter(t => (t.rsi||50) < 35),
-      15, r => `RSI < 35 做空歷史止損率 ${r}%，AI 已下調信心`),
+      15, r => `RSI < 35 做空歷史止損率 ${r}%，建議留意超賣反彈`),
     check('low_adx',
       losses.filter(t => (t.adx||20) < 20),
       closed.filter(t => (t.adx||20) < 20),
-      10, r => `ADX < 20 震盪市止損率 ${r}%，AI 已下調信心`),
+      10, r => `ADX < 20 震盪市止損率 ${r}%，建議等趨勢確立再進`),
     check('long_high_score_rsi',
       longLosses.filter(t => (t.rsi||50) > 72),
       longClosed.filter(t => (t.rsi||50) > 72),
-      20, r => `RSI > 72 超買做多止損率 ${r}%，AI 建議等回調`),
+      20, r => `RSI > 72 超買做多止損率 ${r}%，建議等回調再入`),
     check('short_oversold',
       shortLosses.filter(t => (t.rsi||50) < 28),
       shortClosed.filter(t => (t.rsi||50) < 28),
-      20, r => `RSI < 28 超賣做空止損率 ${r}%，AI 建議等反彈後追空`),
+      20, r => `RSI < 28 超賣做空止損率 ${r}%，建議等反彈後再追空`),
     // VP 位置規則
     check('long_below_poc',
       longLosses.filter(t => t.entryAbovePOC === false),
       longClosed.filter(t => t.entryAbovePOC === false && t.entryAbovePOC !== null),
-      12, r => `POC 下方做多止損率 ${r}%，AI 建議等突破籌碼密集區`),
+      12, r => `POC 下方做多止損率 ${r}%，建議等突破籌碼密集區`),
     check('short_above_poc',
       shortLosses.filter(t => t.entryAbovePOC === true),
       shortClosed.filter(t => t.entryAbovePOC === true && t.entryAbovePOC !== null),
-      12, r => `POC 上方做空止損率 ${r}%，AI 建議等跌破籌碼密集區`),
+      12, r => `POC 上方做空止損率 ${r}%，建議等跌破籌碼密集區`),
     // 巨鯨方向規則
     check('whale_against_long',
       longLosses.filter(t => t.entryWhaleBias === 'bear'),
       longClosed.filter(t => t.entryWhaleBias === 'bear'),
-      15, r => `巨鯨偏空時做多止損率 ${r}%，AI 建議順應主力方向`),
+      15, r => `巨鯨偏空時做多止損率 ${r}%，建議順應主力方向`),
     check('whale_against_short',
       shortLosses.filter(t => t.entryWhaleBias === 'bull'),
       shortClosed.filter(t => t.entryWhaleBias === 'bull'),
-      15, r => `巨鯨偏多時做空止損率 ${r}%，AI 建議順應主力方向`),
+      15, r => `巨鯨偏多時做空止損率 ${r}%，建議順應主力方向`),
     // 成交量規則
     check('bearish_div_long',
       longLosses.filter(t => t.entryVolDivergence === 'bearish_div'),
       longClosed.filter(t => t.entryVolDivergence === 'bearish_div'),
-      15, r => `看跌背離做多止損率 ${r}%，AI 建議量價背離時謹慎追多`),
+      15, r => `看跌背離做多止損率 ${r}%，建議量價背離時謹慎追多`),
     // 多週期共振
     check('low_mtf_align',
       losses.filter(t => (t.entryMTFAlign || 0) <= 1),
       closed.filter(t => t.entryMTFAlign != null && t.entryMTFAlign <= 1),
-      10, r => `僅1個週期對齊入場止損率 ${r}%，AI 建議等多週期共振`),
+      10, r => `僅1個週期對齊入場止損率 ${r}%，建議等多週期共振`),
   ].filter(Boolean);
 
   // ── 最佳進場條件（從盈利交易學習）──
@@ -7483,8 +7490,10 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
         (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
         (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1);
-      const isHardBlock = match && (rule.total || 0) >= 100 && (rule.rate || 0) >= 0.6;
-      addCheck('rule', rule.warning, rule.total || 0, match, rule.penaltyConf, isHardBlock);
+      // 規則僅作參考提示，不扣信心分（用 'rule_ref' 型別標記為參考）
+      if ((rule.total || 0) >= 3) {
+        defenseChecks.push({ type: 'rule_ref', label: (rule.warning || '').slice(0, 55), count: rule.total || 0, pass: !match, penalty: 0, rate: rule.rate });
+      }
     }
   }
 
@@ -7684,7 +7693,7 @@ function buildAILearnPanel(closed) {
         const memBadge = !r.active ? `<span class="ai-mem-badge">記憶</span>` : '';
         return `<div class="ai-rule-item">
           <div class="ai-rule-cond">⚡ ${r.warning} ${memBadge}</div>
-          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · 下調信心 <strong>${r.penaltyConf}%</strong>${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
+          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · 僅參考${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
         </div>`;
       }).join('')
     : `<div class="ai-learn-ok">✅ 目前無高風險模式，歷史條件均衡</div>`;
@@ -7749,7 +7758,7 @@ function buildAILearnPanel(closed) {
     ${notReadyNote}
 
     <div class="ai-learn-section">
-      <div class="ai-section-title">⚙️ 已學習並套用的風控規則</div>
+      <div class="ai-section-title">📋 歷史止損模式參考（僅供分析參考，不影響信心評分）</div>
       ${rulesHtml}
     </div>
 
