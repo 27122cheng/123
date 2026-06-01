@@ -5617,10 +5617,9 @@ function recordSignalsFromScan(data) {
   const _tNeutral = !tBias.includes('bull') && !tBias.includes('bear') || tbRangeMode;
 
   // ══════════════════════════════════════════════════════════════
-  // 統一掃描迴圈 ── coin.score ≥ 65（多頭）/ ≤ 35（空頭）為品質門檻
-  // 與詳情頁一致：score 已是綜合評分，computeSimpleSetup 因只用列表資料
-  // 系統性低估 conf，改用 score 作為自動加倉的門檻
-  // F2/F4 保留用於長線升級（canScaleIn）判斷
+  // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
+  // 短線條件：宏觀有方向時 ≥3/4 同向；宏觀中性或無快取時 ≥2/4 同向 + 最終信心度 ≥ 65%
+  // 長線升級：同時滿足日線信號 + 週線信號均同方向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
     if (coin.score === 50) continue;
@@ -5631,14 +5630,19 @@ function recordSignalsFromScan(data) {
     if (isLong  && blockLong)  continue;
     if (!isLong && blockShort) continue;
 
-    // 品質門檻：score ≥ 65（多頭）/ ≤ 35（空頭），與 buildTradeSetup 信心 ≥ 65% 對齊
-    if (isLong  && coin.score < 65) continue;
-    if (!isLong && coin.score > 35) continue;
-
-    // F2 大方向 / F4 日線（保留供長線升級判斷）
+    // ── 4 大方向條件計分 ──
+    // F1 宏觀（slight_bull/bull/strong_bull 均算同向；neutral/無快取 → false）
+    const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
+    // F2 大方向：週線 K 線同向，或幣種評分達強烈信號門檻（多頭 ≥65 / 空頭 ≤35）
     const _f2 = isLong
       ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 65)
       : (!!coin.weeklySignal?.includes('bear') || coin.score <= 35);
+    // F3 周/日AI預測：周AI 或 日AI 任一明確同向即計分
+    const _f3 = _macroCache
+      ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
+         (isLong ? tBias.includes('bull') : tBias.includes('bear')))
+      : false;
+    // F4 日線/4H盤面：日線信號同向，或 coin.trend（4H代理）確認趨勢方向
     const _dtBull    = coin.dailySignal?.includes('bull');
     const _dtBear    = coin.dailySignal?.includes('bear');
     const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
@@ -5649,12 +5653,18 @@ function recordSignalsFromScan(data) {
     // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
+    // 短線門檻：宏觀有方向時 ≥3/4；宏觀中性或無快取時 ≥2/4（幣種方向指標須確立）
+    const _minFactors = (!_macroCache || macroNetDir === 'neutral') ? 2 : 3;
+    if ([_f1, _f2, _f3, _f4].filter(Boolean).length < _minFactors) continue;
+
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
 
     const setup = computeSimpleSetup(coin, isLong);
-    if (setup.hardBlocked) continue; // AI 風控硬性封鎖
+    if (setup.hardBlocked) continue;
+    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 65%
+    if (setup.conf < 65) continue;
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
