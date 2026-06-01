@@ -7361,19 +7361,6 @@ function computeLearnProfile() {
       losses.filter(t => (t.entryMTFAlign || 0) <= 1),
       closed.filter(t => t.entryMTFAlign != null && t.entryMTFAlign <= 1),
       10, r => `僅1個週期對齊入場止損率 ${r}%，AI 建議等多週期共振`),
-    // 止損設置類型
-    check('po3_sl_type',
-      losses.filter(t => t.entrySlType === 'po3'),
-      closed.filter(t => t.entrySlType === 'po3'),
-      12, r => `PO3/掃蕩型止損歷史觸發率 ${r}%，AI 建議等掃蕩完成後再進場`),
-    check('structural_sl_breach',
-      losses.filter(t => t.entrySlType === 'structural'),
-      closed.filter(t => t.entrySlType === 'structural'),
-      10, r => `結構位止損歷史失守率 ${r}%，AI 建議在更低一層結構設止損`),
-    check('atr_sl_breach',
-      losses.filter(t => t.entrySlType === 'atr'),
-      closed.filter(t => t.entrySlType === 'atr'),
-      8, r => `ATR止損歷史觸發率 ${r}%，AI 建議在高波動期擴大ATR倍數`),
   ].filter(Boolean);
 
   // ── 最佳進場條件（從盈利交易學習）──
@@ -7495,10 +7482,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'whale_against_long'   && direction === 'long'  && ctx.whaleBias === 'bear') ||
         (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
         (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
-        (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
-        (rule.condition === 'po3_sl_type'          && ctx.slType === 'po3') ||
-        (rule.condition === 'structural_sl_breach' && ctx.slType === 'structural') ||
-        (rule.condition === 'atr_sl_breach'        && ctx.slType === 'atr');
+        (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1);
       const isHardBlock = match && (rule.total || 0) >= 100 && (rule.rate || 0) >= 0.6;
       addCheck('rule', rule.warning, rule.total || 0, match, rule.penaltyConf, isHardBlock);
     }
@@ -7662,9 +7646,6 @@ function generateTradeAnalysis(trade) {
         case 'whale_against_short': return !isLong && trade.entryWhaleBias === 'bull';
         case 'bearish_div_long':    return isLong  && trade.entryVolDivergence === 'bearish_div';
         case 'low_mtf_align':       return (trade.entryMTFAlign ?? 99) <= 1;
-        case 'po3_sl_type':         return trade.entrySlType === 'po3';
-        case 'structural_sl_breach':return trade.entrySlType === 'structural';
-        case 'atr_sl_breach':       return trade.entrySlType === 'atr';
         default: return false;
       }
     });
@@ -8876,6 +8857,11 @@ function computeSimpleSetup(coin, isLong) {
   else if (adx >= 25) rawConf += 3;
   // 趨勢強度加成（強勢看漲/看跌）
   if (coin.trend === '強勢看漲' || coin.trend === '強勢看跌') rawConf += 4;
+  // 日線 + 週線方向確認加成（對應 buildTradeSetup 的 h4Conf + ltBias 加成）
+  const _sDayAlignTmp = isLong ? (coin.dailySignal  || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
+  const _sWkAlignTmp  = isLong ? (coin.weeklySignal || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
+  if (_sDayAlignTmp) rawConf += 5;  // 日線同向：補充 buildTradeSetup 的 h4Conf/d1Conf
+  if (_sWkAlignTmp)  rawConf += 4;  // 週線同向：補充 ltBias 加成（長線候選）
   rawConf = Math.min(90, rawConf);
   // 宏觀逆風懲罰（與 buildTradeSetup 相同邏輯，使用全域 _macroCache）
   let _sMacroPen = 0, _sAIPen = 0;
