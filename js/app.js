@@ -829,16 +829,9 @@ function buildOpenPositionSetup(t, currentPrice) {
     return `<span style="font-size:0.72rem;color:var(--text3);margin-left:4px">${d >= 0 ? '+' : ''}${d.toFixed(2)}%</span>`;
   };
 
-  // 長線單止盈：只顯示最終止盈位（ltTP 或 tp1）；短線單：tp1 + tp2
+  // 長線單止盈：只顯示最終止盈位（ltTP 或 tp1）；加倉位在回踩後由下方加倉進度區塊顯示
   const ltFinalTP = t.ltTP || tp1;
-  const siTargets = t.scaleInTargets || [];
   const tpRows = isLongTermTrade ? `
-    ${siTargets.map((lv, i) => `
-    <div class="level-row level-tp1" style="border-left:3px solid rgba(99,102,241,.5)">
-      <div class="level-tag">📈 加倉${i+1}</div>
-      <div class="level-desc">加倉目標位</div>
-      <div class="level-price-val" style="color:#a78bfa">${fmt(lv)}${pctStr(entry, lv)}</div>
-    </div>`).join('')}
     <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
       <div class="level-tag">🏁 最終止盈</div>
       <div class="level-desc">${t.tp1Reason || '長線最終目標'}</div>
@@ -868,6 +861,7 @@ function buildOpenPositionSetup(t, currentPrice) {
         <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confClr}"></div></div>
         <span style="color:${confClr};font-weight:700;font-size:0.9rem">${conf}%</span>
       </div>
+      ${isLongTermTrade ? `<div style="font-size:0.7rem;color:#4ade80;margin-top:4px">✅ 日線信號 + 週線信號均同向確認</div>` : ''}
     </div>
     ${unrealHtml}
     <div class="setup-levels">
@@ -931,16 +925,13 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-price-val">${fmtPrice(entry)}</div>
     </div>
     ${t.canScaleIn ? `
-    ${(t.scaleInTargets || []).map((lv, i) => `
-    <div class="level-row level-tp1" style="border-left:3px solid rgba(99,102,241,.5)">
-      <div class="level-tag">📈 加倉${i+1}</div>
-      <div class="level-desc">加倉目標位</div>
-      <div class="level-price-val" style="color:#a78bfa">${fmtPrice(lv)}</div>
-    </div>`).join('')}
     <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
       <div class="level-tag">🏁 最終止盈</div>
       <div class="level-desc">${t.tp1Reason || '長線最終目標'}</div>
       <div class="level-price-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp1)}</div>
+    </div>
+    <div style="font-size:0.7rem;color:var(--text3);margin-top:4px;padding:5px 10px;background:rgba(99,102,241,.06);border-radius:6px">
+      📈 加倉計劃：進場後偵測到回踩時自動顯示，最多 ${t.maxScaleIns || 3} 次
     </div>` : `
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈一</div>
@@ -2432,7 +2423,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ex.macroPenalty = macroOpposePenalty; ex.aiTrendPenalty = aiTrendPenalty;
     ex.techPenalty = techPenalty; ex.chipsPenalty = chipsPenalty;
     ex.longTermBias = ltBias;
-    ex.canScaleIn   = canScaleIn;
+    if (!ex.entryTime) ex.canScaleIn = canScaleIn; // only update for pending (not yet entered) trades
     ex.is4hDayAligned = isDayAligned;
     if (!ex.scaleIns) ex.scaleIns = [];
     if (ex.peakPrice == null) ex.peakPrice = null;
@@ -5802,6 +5793,7 @@ function recordSignalsFromScan(data) {
           `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
           `   ↳ ${_esc(setup.tp1Reason)}\n` +
           (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n   ↳ ${_esc(setup.tp2Reason)}\n` : '') +
+          (canScaleIn ? `\n🔑 <b>長線確認</b>：日線 ✅ 週線 ✅ 均同向，後台計算加倉計劃中\n` : '') +
           `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n\n` +
           _aiOpinionLine +
           (_biasBlock ? `${_biasBlock}\n` : '') +
@@ -5869,6 +5861,7 @@ async function backgroundRefineNewTrades() {
       const idx = tlogEdit.findIndex(t => t.id === trade.id);
       if (idx < 0) continue;
 
+      const _wasLongTermAlready = tlogEdit[idx].canScaleIn === true; // already notified as long-term in scan
       tlogEdit[idx].longTermBias = ltBias;
       tlogEdit[idx].canScaleIn   = canScaleIn;
       tlogEdit[idx].ltConf       = ltConf;
@@ -5913,23 +5906,25 @@ async function backgroundRefineNewTrades() {
         tlogEdit[idx].aiScaleReason  = _bgScaleReason;
         tlogEdit[idx].scaleInTargets = bgScaleInLevels.map(s => s.level);
         tlogEdit[idx].scaleInNewSLs  = bgScaleInLevels.map(s => s.newSL);
-        // 發送長線升級通知
-        try {
-          const s = loadSettings();
-          if (s.notifTelegram && s.tgToken && s.tgChatId) {
-            const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-            const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
-            const confIcon = ltConf >= 90 ? '🟢' : ltConf >= 85 ? '🟡' : '🟠';
-            sendTelegramMessage(s.tgToken, s.tgChatId,
-              `🏆 <b>長線單升級通知</b>\n\n` +
-              `💎 <b>${tlogEdit[idx].symbol}</b>  ${dirLabel}\n` +
-              `${confIcon} 長線信心度：<b>${ltConf}%</b>\n` +
-              `🏁 長線目標：<b>$${fmt(ltTP)}</b>\n` +
-              `📍 進場位：$${fmt(tlogEdit[idx].entry)}\n\n` +
-              `🤖 ${_bgScaleReason}`
-            );
-          }
-        } catch(e) {}
+        // 發送長線升級通知（僅在從短線升級為長線時才發送；已是長線單時掃描通知已覆蓋，不重複通知）
+        if (!_wasLongTermAlready) {
+          try {
+            const s = loadSettings();
+            if (s.notifTelegram && s.tgToken && s.tgChatId) {
+              const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+              const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
+              const confIcon = ltConf >= 90 ? '🟢' : ltConf >= 85 ? '🟡' : '🟠';
+              sendTelegramMessage(s.tgToken, s.tgChatId,
+                `🏆 <b>長線單升級通知</b>\n\n` +
+                `💎 <b>${tlogEdit[idx].symbol}</b>  ${dirLabel}\n` +
+                `${confIcon} 長線信心度：<b>${ltConf}%</b>\n` +
+                `🏁 長線目標：<b>$${fmt(ltTP)}</b>\n` +
+                `📍 進場位：$${fmt(tlogEdit[idx].entry)}\n\n` +
+                `🤖 ${_bgScaleReason}`
+              );
+            }
+          } catch(e) {}
+        }
       }
 
       saveTradeLog(tlogEdit);
@@ -6567,7 +6562,7 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
     `${slLine}` +
     `🏁 長線最終目標：<b>$${fmt(ltTarget)}</b>\n\n` +
     `📊 原始進場：$${fmt(trade.entry)}\n` +
-    `🔔 已加倉 ${scaleIn.seqNum}/3 次\n\n` +
+    `🔔 已加倉 ${scaleIn.seqNum}/${trade.maxScaleIns || 3} 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
@@ -8003,7 +7998,7 @@ function renderPositionsPage() {
         </div>
         <div class="pos-cell">
           <div class="pos-cell-lbl">已加倉</div>
-          <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / 3</div>
+          <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / ${t.maxScaleIns || 3}</div>
         </div>
         <div class="pos-cell" style="grid-column:span 2">
           <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
