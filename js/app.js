@@ -2234,6 +2234,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   }
 
+  // 宏觀中性或無資料：方向不明確，仍扣分（反向扣更多，中性扣少一點）
+  const _hasMacroData = !!(globalMkt || fearGreed);
+  const _bdAgainstFlag = _btsNetDir && ((isLong && _btsNetDir.includes('bear')) || (!isLong && _btsNetDir.includes('bull')));
+  if (!_hasMacroData) {
+    macroOpposePenalty += 3;
+    macroReasons.push(`宏觀資料暫無，方向不確定，扣 3%`);
+  } else if (_btsNetDir === 'neutral' && !_bdAgainstFlag) {
+    macroOpposePenalty += 4;
+    macroReasons.push(`宏觀大方向中性（多空分歧），方向不明，扣 4%`);
+  }
+
   // 頂級交易員逆勢布局：taker 買賣比與宏觀方向相悖時，降低宏觀扣分
   if (deriv && macroOpposePenalty >= 5) {
     const _tkBull = isLong  && (deriv.takerBuySell ?? 1) > 1.15;
@@ -8776,19 +8787,19 @@ async function checkAndSendAlerts(data) {
           let aiTrendPen = 0;
           const aiTrendReasons = [];
           if (weeklyOpposed) {
-            const pen = wb.bias.includes('strong') ? 10 : 6;
+            const pen = wb.bias.includes('strong') ? 8 : 5;
             aiTrendPen += pen;
             aiTrendReasons.push(`本週AI預測 ${wb.biasLabel}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
           } else if (weeklyNeutral) {
-            aiTrendPen += 3;
-            aiTrendReasons.push(`本週AI預測震盪中性，方向不明，扣 3%`);
+            aiTrendPen += 2;
+            aiTrendReasons.push(`本週AI預測震盪中性，方向不明，扣 2%`);
           }
           if (todayOpposed) {
-            aiTrendPen += 7;
-            aiTrendReasons.push(`今日AI預測 ${tb.biasLabel}，${isLong ? '多頭' : '空頭'}今日逆風，扣 7%`);
+            aiTrendPen += 5;
+            aiTrendReasons.push(`今日AI預測 ${tb.biasLabel}，${isLong ? '多頭' : '空頭'}今日逆風，扣 5%`);
           } else if (todayNeutral) {
-            aiTrendPen += 2;
-            aiTrendReasons.push(`今日AI預測中性，方向不確定，扣 2%`);
+            aiTrendPen += 1;
+            aiTrendReasons.push(`今日AI預測中性，方向不確定，扣 1%`);
           }
           // 總體市場扣分（簡化版，與 buildTradeSetup 邏輯一致）
           const fgVal  = fg ? parseInt(fg.value || '50') : 50;
@@ -8807,7 +8818,14 @@ async function checkAndSendAlerts(data) {
             if (fgVal  > 70)  { against++;    macroReasons.push(`市場貪婪（F&G ${fgVal}）`); }
             if (fgVal  < 25)  { against += 0.5; macroReasons.push(`市場極度恐慌（F&G ${fgVal}）`); }
           }
-          const macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+          let macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+          // 宏觀中性或無資料補扣
+          if (!gm) {
+            macroPen += 3;  // 無資料
+          } else if (against === 0) {
+            const _bdN = computeMacroNetDir(fg, gm);
+            if (_bdN === 'neutral') macroPen += 4;  // 宏觀中性
+          }
           // 資金流動事件扣分
           let cfPen = 0;
           const cfReasons = [];
@@ -8937,18 +8955,22 @@ function computeSimpleSetup(coin, isLong) {
       const _stOp   = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
       const _swNeut = _swBias === 'neutral';
       const _stNeut = _stBias === 'neutral';
-      if (_swOp)        _sAIPen += _swBias.includes('strong') ? 10 : 6;
-      else if (_swNeut) _sAIPen += 3;
-      if (_stOp)        _sAIPen += 7;
-      else if (_stNeut) _sAIPen += 2;
+      if (_swOp)        _sAIPen += _swBias.includes('strong') ? 8 : 5;
+      else if (_swNeut) _sAIPen += 2;
+      if (_stOp)        _sAIPen += 5;
+      else if (_stNeut) _sAIPen += 1;
       // 大方向分歧補扣
       const _sBigDir = computeMacroNetDir(_sfg, _sgm);
       const _sBdAgainst = (isLong && _sBigDir.includes('bear')) || (!isLong && _sBigDir.includes('bull'));
       if (_sBdAgainst) {
         const _sBdMin = (_sBigDir === 'slight_bear' || _sBigDir === 'slight_bull') ? 4 : 9;
         if (_sMacroPen < _sBdMin) _sMacroPen = _sBdMin;
+      } else if (_sBigDir === 'neutral') {
+        _sMacroPen += 4;  // 宏觀中性：方向不明，扣 4%（比反向少）
       }
     } catch(_se) {}
+  } else {
+    _sMacroPen += 3;  // 無宏觀資料：方向不確定，扣 3%
   }
   // 技術面扣分 (RSI逆向、MACD、成交量)
   let _sTechPen = 0;
