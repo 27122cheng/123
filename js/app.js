@@ -1315,10 +1315,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   if (direction === 'long'  && coin.score < 60) direction = 'wait';
   if (direction === 'short' && coin.score > 40) direction = 'wait';
-  // 信號強度未達 70%（頂級交易員只取高信心設置）一律觀望
+  // 信號強度未達 60%（與掃描門檻一致）一律觀望
   if (direction !== 'wait') {
     const prelimConf = Math.min(90, Math.max(40, 40 + (direction === 'long' ? totalBull : totalBear) * 7));
-    if (prelimConf < 70) direction = 'wait';
+    if (prelimConf < 60) direction = 'wait';
   }
 
   // ── 大時間框架趨勢一致性強制篩選 ──────────────────────────────
@@ -2371,8 +2371,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
   const finalConf = conf;
-  // 最終防線：被AI風控硬封鎖 OR 信心低於65% → 觀望
-  if (conf < 65 || hardBlocked) direction = 'wait';
+  // 最終防線：被AI風控硬封鎖 OR 信心低於60% → 觀望
+  if (conf < 60 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -7499,7 +7499,6 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (t.includes('ADX') && t.includes('過低') && adx < 20) ||
         (t.includes('PO3') && ctx.slType === 'po3') ||
         (t.includes('支撐結構') && ctx.slType === 'structural') ||
-        (t.includes('假突破') && ((t.includes('多頭') && direction === 'long') || (t.includes('空頭') && direction === 'short'))) ||
         (t.includes('評分') && t.includes('偏低') && direction === 'long'  && (ctx.score || 100) < 65) ||
         (t.includes('評分') && t.includes('偏高') && direction === 'short' && (ctx.score || 0)   > 35) ||
         (t.includes('POC') && t.includes('下方') && direction === 'long'  && ctx.abovePOC === false) ||
@@ -7585,7 +7584,9 @@ function generateTradeAnalysis(trade) {
       issues.push(`進場依據含 RSI ${trade.rsi}，${isLong ? '偏高進場' : '偏低進場'}後被止損，動能判斷失準`);
       suggestions.push(`${isLong ? 'RSI > 65' : 'RSI < 35'} 時順勢追入風險較高，建議在 RSI ${isLong ? '回落至 50-55' : '回升至 45-50'} 後等確認再入場`);
     }
-    if (entryReason.includes('多頭信號') || entryReason.includes('空頭信號')) {
+    // 進場原因回顧（止損後的逆向分析：僅在有明確進場條件描述時才分析）
+    if ((entryReason.includes('多頭信號') || entryReason.includes('空頭信號')) &&
+        !entryReason.includes('15m/1h 多頭信號共振') && !entryReason.includes('15m/1h 空頭信號共振')) {
       issues.push(`進場依據為${isLong ? '多頭' : '空頭'}信號共振，止損觸發說明信號出現假突破或方向判斷錯誤`);
       suggestions.push('信號共振後需等待 K 棒收線確認，不要在信號剛出現時立即入場');
     }
