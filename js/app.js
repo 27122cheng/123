@@ -10044,7 +10044,7 @@ function buildCapitalFlowTelegramSection(fg, mkt) {
     const isActive  = now >= startMs && now <= endMs;
     const daysUntil = Math.round((startMs - now) / MS_DAY);
     const daysLeft  = Math.round((endMs - now) / MS_DAY);
-    if (isActive || (daysUntil >= 0 && daysUntil <= 5)) {
+    if (isActive || (daysUntil >= 0 && daysUntil <= 10)) {
       return { ...ev, start, end, endMs, isActive, daysUntil, daysLeft };
     }
     return null;
@@ -10061,7 +10061,12 @@ function buildCapitalFlowTelegramSection(fg, mkt) {
     const flowStr = pred.isAI
       ? `AI預測 ${FLOW_TXT[pred.flow] || '—'}（信心 ${pred.conf}%）${pred.reason ? `，${pred.reason}` : ''}`
       : `${FLOW_TXT[pred.flow] || pred.flow}（信心 ${pred.conf}%）`;
-    return `${icon} <b>${esc(ev.name)}</b>（${timeStr}）\n   💹 ${flowStr}`;
+    const mktDir = (pred.flow === 'inflow' || pred.flow === 'slight_inflow')
+      ? '▲ 偏多'
+      : (pred.flow === 'outflow' || pred.flow === 'slight_outflow')
+        ? '▼ 偏空'
+        : '◆ 中性';
+    return `${icon} <b>${esc(ev.name)}</b>（${timeStr}）\n   💹 資金流動：${flowStr}\n   📊 市場方向：${mktDir}`;
   }).join('\n\n');
 }
 
