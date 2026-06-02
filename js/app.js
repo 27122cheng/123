@@ -5144,9 +5144,9 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。`;
   }
 
-  // ── 風控扣分整合段落（僅顯示結構性風控，AI學習為參考不扣分）──
+  // ── 風控扣分整合段落（ADX + 宏觀 + AI趨勢 + AI風控規則）──
   let p5 = '';
-  const totalPen = adxPen + macroPen + aiPen;
+  const totalPen = adxPen + macroPen + aiPen + learnPen;
   if (riskBlocked) {
     const brList = blockReasons.slice(0, 2).map(r => `<li>${r}</li>`).join('');
     p5 = `<div style="background:rgba(239,68,68,.08);border-left:3px solid #ef4444;padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
@@ -5155,9 +5155,10 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     </div>`;
   } else if (totalPen > 0) {
     const penDetail = [
-      adxPen  > 0 ? `ADX 過低 -${adxPen}%` : '',
+      adxPen   > 0 ? `ADX 過低 -${adxPen}%` : '',
       macroPen > 0 ? `宏觀逆風 -${macroPen}%` : '',
-      aiPen   > 0 ? `AI趨勢逆向 -${aiPen}%` : '',
+      aiPen    > 0 ? `AI趨勢逆向 -${aiPen}%` : '',
+      learnPen > 0 ? `AI風控規則 -${learnPen}%` : '',
     ].filter(Boolean).join('　');
     p5 = `<div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
       <strong style="color:#f59e0b">⚠️ 風控扣分 -${totalPen}%</strong>
@@ -5165,7 +5166,7 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
       <div style="font-size:0.8em;color:var(--text3);margin-top:2px">${penDetail}</div>
     </div>`;
   } else if (cached) {
-    p5 = `<div style="font-size:0.8em;color:#22c55e;margin-top:4px">✅ 風控通過：無結構性扣分，信心度 ${finalConf ?? '--'}%（原始 ${rawConf ?? '--'}%）</div>`;
+    p5 = `<div style="font-size:0.8em;color:#22c55e;margin-top:4px">✅ 風控通過：無扣分，信心度 ${finalConf ?? '--'}%（原始 ${rawConf ?? '--'}%）</div>`;
   }
 
   return `<div class="ai-analysis-body">
@@ -7835,9 +7836,10 @@ function buildAILearnPanel(closed) {
         const fd = r.firstDetected ? `首次發現 ${fmtDate(r.firstDetected)}` : '';
         const occ = (r.occurrences || 0) > 1 ? `· 出現 ${r.occurrences} 次` : '';
         const memBadge = !r.active ? `<span class="ai-mem-badge">記憶</span>` : '';
+        const _pen = Math.max(1, Math.min(6, Math.round((r.rate || 0) * 8)));
         return `<div class="ai-rule-item">
           <div class="ai-rule-cond">⚡ ${r.warning} ${memBadge}</div>
-          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · 僅參考${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
+          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · <span style="color:#f59e0b">觸發扣 -${_pen}%</span>${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
         </div>`;
       }).join('')
     : `<div class="ai-learn-ok">✅ 目前無高風險模式，歷史條件均衡</div>`;
@@ -7902,7 +7904,7 @@ function buildAILearnPanel(closed) {
     ${notReadyNote}
 
     <div class="ai-learn-section">
-      <div class="ai-section-title">📋 歷史止損模式參考（僅供分析參考，不影響信心評分）</div>
+      <div class="ai-section-title">📋 AI 風控規則（觸發時自動扣減信心度）</div>
       ${rulesHtml}
     </div>
 
