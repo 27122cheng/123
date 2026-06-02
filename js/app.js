@@ -6932,7 +6932,7 @@ function buildDailyBriefingMsg(fg, mkt) {
     `📅 <b>今日 AI 多空預測</b>\n${todayAISection}\n\n` +
     `🤖 <b>宏觀 AI 預測</b>\n${macroPredSection}\n\n` +
     `📆 <b>今日重要數據</b>\n${eventSection}\n\n` +
-    (() => { try { const cf = buildCapitalFlowTelegramSection(fg, mkt); return cf ? `💹 <b>資金流動事件提醒</b>\n${cf}\n\n` : ''; } catch { return ''; } })() +
+    (() => { try { const cf = buildCapitalFlowTelegramSection(fg, mkt); return `💹 <b>資金流動事件提醒</b>\n${cf || '• 本月無近期資金流動事件'}\n\n`; } catch { return ''; } })() +
     `<i>🤖 由 AI 自動分析生成 · 僅供參考，不構成投資建議</i>`;
 }
 
