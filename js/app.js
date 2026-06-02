@@ -6766,7 +6766,19 @@ const WEEKLY_ECON_EVENTS = {
 };
 
 function startDailyBriefingCheck() {
-  // 每分鐘檢查一次，到早上 9 點時發送
+  // 開啟 App 時立即補發（若今日 9 點後尚未發送）
+  (async () => {
+    const now   = new Date();
+    const today = now.toDateString();
+    if (now.getHours() >= 9) {
+      const lastSent = localStorage.getItem(DAILY_BRIEF_KEY);
+      if (lastSent !== today) {
+        localStorage.setItem(DAILY_BRIEF_KEY, today);
+        await sendDailyBriefing();
+      }
+    }
+  })();
+  // 每分鐘持續監聽，準時 9 點觸發
   setInterval(async () => {
     const now   = new Date();
     const hour  = now.getHours();
