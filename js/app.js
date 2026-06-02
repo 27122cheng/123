@@ -5681,8 +5681,7 @@ function inCooldown(tlog, symbol, direction) {
   const anyOpen = tlog.some(t =>
     t.symbol === symbol &&
     t.direction !== 'wait' &&
-    (t.status === 'open' || t.status === 'pending') &&
-    t.entry
+    (t.status === 'open' || t.status === 'pending')
   );
   return sameDir || cancelledRecently || anyOpen;
 }
@@ -5798,7 +5797,7 @@ function recordSignalsFromScan(data) {
     const _minFactors = (!_macroCache || macroNetDir === 'neutral') ? 2 : 3;
     if ([_f1, _f2, _f3, _f4].filter(Boolean).length < _minFactors) continue;
 
-    const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
+    const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
 
