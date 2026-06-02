@@ -4438,11 +4438,11 @@ async function manualSendDailyBriefing() {
   const s = loadSettings();
   if (!s.tgToken || !s.tgChatId) { showToast('請先在設定中填入 Telegram Bot Token 和 Chat ID', 'error'); return; }
   showToast('正在發送每日市場簡報...', 'info');
-  try {
-    await sendDailyBriefing();
+  const ok = await sendDailyBriefing();
+  if (ok) {
     showToast('每日市場簡報已發送至 Telegram ✅', 'success');
-  } catch(e) {
-    showToast('發送失敗，請確認 Telegram 設定', 'error');
+  } else {
+    showToast('發送失敗，請確認 Telegram Bot Token 和 Chat ID 是否正確', 'error');
   }
 }
 
@@ -6794,14 +6794,15 @@ function startDailyBriefingCheck() {
 
 async function sendDailyBriefing() {
   const s = loadSettings();
-  if (!s.tgToken || !s.tgChatId) return;  // only need token+chatId, not toggle
+  if (!s.tgToken || !s.tgChatId) return false;  // only need token+chatId, not toggle
   try {
     const [fg, globalMkt] = await Promise.allSettled([fetchFearGreed(), fetchGlobalMarket()]);
     const fgData  = fg.status === 'fulfilled' ? fg.value : null;
     const mktData = globalMkt.status === 'fulfilled' ? globalMkt.value : null;
     const msg = buildDailyBriefingMsg(fgData, mktData);
-    sendTelegramMessage(s.tgToken, s.tgChatId, msg);
-  } catch {}
+    const ok = await sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+    return ok;
+  } catch { return false; }
 }
 
 function buildDailyBriefingMsg(fg, mkt) {
