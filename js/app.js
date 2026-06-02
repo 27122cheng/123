@@ -6799,7 +6799,8 @@ async function sendDailyBriefing() {
     const [fg, globalMkt] = await Promise.allSettled([fetchFearGreed(), fetchGlobalMarket()]);
     const fgData  = fg.status === 'fulfilled' ? fg.value : null;
     const mktData = globalMkt.status === 'fulfilled' ? globalMkt.value : null;
-    const msg = buildDailyBriefingMsg(fgData, mktData);
+    let msg = buildDailyBriefingMsg(fgData, mktData);
+    if (msg.length > 4000) msg = msg.slice(0, 3980) + '\n…（訊息過長已截斷）';
     const ok = await sendTelegramMessage(s.tgToken, s.tgChatId, msg);
     return ok;
   } catch { return false; }
@@ -6875,6 +6876,9 @@ function buildDailyBriefingMsg(fg, mkt) {
     '• 全球流動性擴張：信心 74%，M2 增長歷史上與加密牛市高度相關',
   ].join('\n');
 
+  // HTML-escape helper（避免 < > & 破壞 Telegram HTML 解析）
+  const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
   // 今日重要數據公布（含 AI 預測多空方向 + 信心值）
   const todayEconEvents = getTodayEconEvents();
   const eventSection = todayEconEvents.length
@@ -6882,12 +6886,12 @@ function buildDailyBriefingMsg(fg, mkt) {
         const timeStr = `${ev.twHour}:${String(ev.twMin).padStart(2,'0')}`;
         const impactTag = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
         const aiLine = ev.aiPred
-          ? `   🤖 AI 預測：${ev.aiPred}（信心 ${ev.aiConf}%）`
+          ? `   🤖 AI 預測：${esc(ev.aiPred)}（信心 ${ev.aiConf}%）`
           : '';
         const dirLine = ev.bullIf
-          ? `   📈 偏多條件：${ev.bullIf.slice(0,60)}`
+          ? `   📈 偏多條件：${esc(ev.bullIf.slice(0,60))}`
           : '';
-        return `${impactTag} <b>${ev.name}</b>（台灣時間 ${timeStr}）${aiLine ? '\n'+aiLine : ''}${dirLine ? '\n'+dirLine : ''}`;
+        return `${impactTag} <b>${esc(ev.name)}</b>（台灣時間 ${timeStr}）${aiLine ? '\n'+aiLine : ''}${dirLine ? '\n'+dirLine : ''}`;
       }).join('\n\n')
     : '⏰ 今日無重大預定數據';
 
@@ -6915,7 +6919,7 @@ function buildDailyBriefingMsg(fg, mkt) {
       todayAISection += '\n\n   ⚡ <b>數據翻轉風險</b>\n' + flips.map(ev => {
         const m = (ev.eventTime.getTime() - nowMs) / 60000;
         const tl = m < 0 ? '剛公布' : m < 60 ? `${Math.round(m)}分鐘後` : `${(m/60).toFixed(1)}小時後`;
-        return `   🕐 ${tl} ${ev.name}${ev.aiPred ? `：AI預測 ${ev.aiPred}（信心 ${ev.aiConf}%）` : ''}`;
+        return `   🕐 ${tl} ${esc(ev.name)}${ev.aiPred ? `：AI預測 ${esc(ev.aiPred)}（信心 ${ev.aiConf}%）` : ''}`;
       }).join('\n');
     }
   } catch (e) { todayAISection = '（計算失敗）'; }
@@ -6928,7 +6932,7 @@ function buildDailyBriefingMsg(fg, mkt) {
     `📅 <b>今日 AI 多空預測</b>\n${todayAISection}\n\n` +
     `🤖 <b>宏觀 AI 預測</b>\n${macroPredSection}\n\n` +
     `📆 <b>今日重要數據</b>\n${eventSection}\n\n` +
-    (() => { const cf = buildCapitalFlowTelegramSection(fg, mkt); return cf ? `💹 <b>資金流動事件提醒</b>\n${cf}\n\n` : ''; })() +
+    (() => { try { const cf = buildCapitalFlowTelegramSection(fg, mkt); return cf ? `💹 <b>資金流動事件提醒</b>\n${cf}\n\n` : ''; } catch { return ''; } })() +
     `<i>🤖 由 AI 自動分析生成 · 僅供參考，不構成投資建議</i>`;
 }
 
