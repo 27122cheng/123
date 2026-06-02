@@ -24,6 +24,7 @@ const state = {
     ranking: { key: 'score', dir: 'desc' },
   },
   tvWidget:     null,
+  reportYear:   new Date().getFullYear(),
   refreshTimer:    null,
   countdownTimer:  null,
   countdown:    60,
@@ -428,6 +429,7 @@ function navigateTo(page, coinSymbol) {
     _positionsScanTimer = null;
   }
   if (page === 'tradelog') renderTradeLogPage();
+  if (page === 'report')   renderReportPage();
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -8644,6 +8646,251 @@ function importAIMemory() {
     reader.readAsText(file);
   };
   input.click();
+}
+
+/* ── 策略報表頁面 ─────────────────────────────────────────────── */
+function renderReportPage(year) {
+  const container = document.getElementById('report-content');
+  if (!container) return;
+
+  const currentYear = new Date().getFullYear();
+  if (year == null) year = state.reportYear || currentYear;
+  state.reportYear = year;
+
+  const trades   = loadTradeLog();
+  const yearStart = new Date(year, 0, 1).getTime();
+  const yearEnd   = new Date(year, 11, 31, 23, 59, 59, 999).getTime();
+
+  // Closed trades with entry (or signal) timestamp in selected year, sorted by exit time
+  const yearTrades = trades.filter(t => {
+    if (t.status !== 'closed') return false;
+    const ts = t.entryTime || t.timestamp || 0;
+    return ts >= yearStart && ts <= yearEnd;
+  }).sort((a, b) => (a.exitTime || a.entryTime || a.timestamp || 0) - (b.exitTime || b.entryTime || b.timestamp || 0));
+
+  const wins   = yearTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+  const losses = yearTrades.filter(t => t.outcome === 'sl');
+  const winRate = yearTrades.length > 0 ? (wins.length / yearTrades.length * 100).toFixed(1) : '--';
+  const totalR  = yearTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
+  const avgR    = yearTrades.length > 0 ? (totalR / yearTrades.length) : null;
+
+  // Average daily entries: group by entry date, divide by days elapsed
+  const isLeap = new Date(year, 1, 29).getDate() === 29;
+  const daysInYear = isLeap ? 366 : 365;
+  const daysElapsed = year < currentYear
+    ? daysInYear
+    : Math.max(1, Math.ceil((Date.now() - yearStart) / 86400000));
+  const avgDaily = yearTrades.length > 0 ? (yearTrades.length / daysElapsed).toFixed(2) : '--';
+
+  // Year selector
+  const yearsSet = new Set([currentYear]);
+  trades.forEach(t => {
+    const ts = t.entryTime || t.timestamp || 0;
+    if (ts) yearsSet.add(new Date(ts).getFullYear());
+  });
+  const yearOpts = [...yearsSet].sort((a, b) => b - a)
+    .map(y => `<option value="${y}"${y === year ? ' selected' : ''}>${y} 年</option>`).join('');
+
+  // Chart and monthly breakdown
+  const chartData    = _rptBuildCumData(yearTrades, year);
+  const chartSvg     = _rptBuildChartSVG(chartData, year, currentYear);
+  const monthlyRows  = _rptBuildMonthly(yearTrades, year);
+
+  const wrColor = winRate === '--' ? 'var(--text)' : parseFloat(winRate) >= 60 ? 'var(--bull)' : parseFloat(winRate) >= 40 ? 'var(--text)' : 'var(--bear)';
+  const totalRColor = totalR > 0 ? 'var(--bull)' : totalR < 0 ? 'var(--bear)' : 'var(--text)';
+  const avgRColor   = avgR != null ? (avgR >= 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text)';
+
+  container.innerHTML = `
+    <div class="page-header" style="margin-bottom:20px">
+      <div>
+        <h1 class="page-title">📊 策略報表</h1>
+        <p class="page-subtitle">全年交易績效統計分析</p>
+      </div>
+      <select class="setting-select" onchange="renderReportPage(parseInt(this.value))" style="padding:6px 14px;font-size:0.85rem;min-width:100px">
+        ${yearOpts}
+      </select>
+    </div>
+    ${yearTrades.length === 0
+      ? `<div style="text-align:center;padding:80px 20px;color:var(--text3);font-size:0.95rem">${year} 年尚無已結算的交易記錄</div>`
+      : `
+      <div class="rpt-stats">
+        <div class="rpt-stat-card">
+          <div class="rpt-stat-val" style="color:${wrColor}">${winRate}${winRate !== '--' ? '%' : ''}</div>
+          <div class="rpt-stat-lbl">勝率</div>
+        </div>
+        <div class="rpt-stat-card">
+          <div class="rpt-stat-val">${yearTrades.length}</div>
+          <div class="rpt-stat-lbl">總交易筆數</div>
+        </div>
+        <div class="rpt-stat-card">
+          <div class="rpt-stat-val" style="color:var(--bear)">${losses.length}</div>
+          <div class="rpt-stat-lbl">止損筆數</div>
+        </div>
+        <div class="rpt-stat-card">
+          <div class="rpt-stat-val">${avgDaily}</div>
+          <div class="rpt-stat-lbl">平均每日入場</div>
+        </div>
+        <div class="rpt-stat-card">
+          <div class="rpt-stat-val" style="color:${avgRColor}">${avgR != null ? (avgR >= 0 ? '+' : '') + avgR.toFixed(2) + ' R' : '--'}</div>
+          <div class="rpt-stat-lbl">平均每筆獲利</div>
+        </div>
+        <div class="rpt-stat-card">
+          <div class="rpt-stat-val" style="color:${totalRColor}">${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R</div>
+          <div class="rpt-stat-lbl">全年總獲利</div>
+        </div>
+      </div>
+
+      <div class="rpt-chart-card">
+        <div class="rpt-chart-title">帳戶成長曲線（累計 R，從零起算）</div>
+        <div class="rpt-chart-wrap">${chartSvg}</div>
+      </div>
+
+      <div class="rpt-monthly-card">
+        <div class="rpt-chart-title">月度明細</div>
+        <div style="overflow-x:auto">
+        <table class="rpt-month-tbl">
+          <thead><tr>
+            <th style="text-align:left">月份</th>
+            <th>筆數</th><th>勝率</th><th>止盈</th><th>止損</th><th>月盈虧</th><th>累計 R</th>
+          </tr></thead>
+          <tbody>${monthlyRows}</tbody>
+        </table>
+        </div>
+      </div>
+    `}
+  `;
+}
+
+function _rptBuildCumData(trades, year) {
+  const isLeap = new Date(year, 1, 29).getDate() === 29;
+  const daysInYear = isLeap ? 366 : 365;
+  const yearStart = new Date(year, 0, 1).getTime();
+  const now = new Date();
+  const isCurrentYear = now.getFullYear() === year;
+  const lastDay = isCurrentYear
+    ? Math.min(daysInYear, Math.ceil((Date.now() - yearStart) / 86400000) + 1)
+    : daysInYear;
+
+  // Map exit date → total pnlR that day
+  const byDay = {};
+  for (const t of trades) {
+    const ts = t.exitTime || t.entryTime || t.timestamp || 0;
+    if (!ts) continue;
+    const d = new Date(ts);
+    if (d.getFullYear() !== year) continue;
+    const key = Math.floor((new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() - yearStart) / 86400000);
+    byDay[key] = (byDay[key] || 0) + parseFloat(t.pnlR || 0);
+  }
+
+  const data = [];
+  let cum = 0;
+  for (let day = 0; day < lastDay; day++) {
+    if (byDay[day] !== undefined) cum += byDay[day];
+    data.push({ day, cumR: cum });
+  }
+  return data;
+}
+
+function _rptBuildChartSVG(data, year, currentYear) {
+  const W = 760, H = 180, PL = 48, PR = 16, PT = 12, PB = 28;
+  const CW = W - PL - PR, CH = H - PT - PB;
+  const isLeap = new Date(year, 1, 29).getDate() === 29;
+  const daysInYear = isLeap ? 366 : 365;
+
+  if (data.length < 2) return `<div style="text-align:center;padding:40px;color:var(--text3);font-size:0.85rem">本年尚無足夠數據繪製圖表</div>`;
+
+  const vals = data.map(d => d.cumR);
+  const minV = Math.min(0, ...vals);
+  const maxV = Math.max(0, ...vals);
+  const range = maxV - minV || 1;
+  const lastDay = data[data.length - 1].day || 1;
+
+  const xS = day  => PL + (day / lastDay) * CW;
+  const yS = v    => PT + CH - ((v - minV) / range) * CH;
+  const y0 = yS(0);
+
+  // Polyline
+  const pts = data.map(d => `${xS(d.day).toFixed(1)},${yS(d.cumR).toFixed(1)}`).join(' ');
+
+  // Area polygon
+  const firstX = xS(data[0].day).toFixed(1);
+  const lastX  = xS(data[data.length - 1].day).toFixed(1);
+  const areaPts = `${firstX},${y0.toFixed(1)} ${pts} ${lastX},${y0.toFixed(1)}`;
+  const finalVal = vals[vals.length - 1];
+  const lineCol  = finalVal >= 0 ? '#00e676' : '#ff1744';
+
+  // Month grid lines
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const monthGrids = monthNames.map((m, i) => {
+    const dayOfYear = [0,31,59,90,120,151,181,212,243,273,304,334][i] + (i > 1 && isLeap ? 1 : 0);
+    const x = xS(dayOfYear);
+    return `<line x1="${x.toFixed(1)}" y1="${PT}" x2="${x.toFixed(1)}" y2="${PT+CH}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+      <text x="${(x+3).toFixed(1)}" y="${PT+CH+16}" font-size="8.5" fill="rgba(148,163,184,0.6)">${m}</text>`;
+  }).join('');
+
+  // Y-axis labels (4 levels)
+  const yLevels = [minV, minV + range*0.25, minV + range*0.5, minV + range*0.75, maxV];
+  const yGrid = yLevels.map(v => {
+    const y = yS(v).toFixed(1);
+    const sign = v > 0 ? '+' : '';
+    return `<line x1="${PL}" y1="${y}" x2="${PL+CW}" y2="${y}" stroke="rgba(255,255,255,0.04)" stroke-width="1" stroke-dasharray="3,5"/>
+      <text x="${PL-4}" y="${parseFloat(y)+3.5}" font-size="8.5" fill="rgba(148,163,184,0.55)" text-anchor="end">${sign}${v.toFixed(1)}</text>`;
+  }).join('');
+
+  // Tooltip-friendly last point marker
+  const lx = xS(data[data.length-1].day).toFixed(1);
+  const ly = yS(finalVal).toFixed(1);
+  const labelAnchor = parseFloat(lx) > W - 80 ? 'end' : 'start';
+  const labelOff = labelAnchor === 'end' ? -7 : 7;
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block">
+    <defs>
+      <linearGradient id="rptGrad${year}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${lineCol}" stop-opacity="0.22"/>
+        <stop offset="100%" stop-color="${lineCol}" stop-opacity="0.01"/>
+      </linearGradient>
+    </defs>
+    ${yGrid}
+    ${monthGrids}
+    <line x1="${PL}" y1="${y0.toFixed(1)}" x2="${PL+CW}" y2="${y0.toFixed(1)}" stroke="rgba(255,255,255,0.18)" stroke-width="1.5"/>
+    <polygon points="${areaPts}" fill="url(#rptGrad${year})"/>
+    <polyline points="${pts}" fill="none" stroke="${lineCol}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lx}" cy="${ly}" r="4" fill="${lineCol}" stroke="var(--bg)" stroke-width="2"/>
+    <text x="${parseFloat(lx)+labelOff}" y="${parseFloat(ly)-7}" font-size="10" fill="${lineCol}" font-weight="600" text-anchor="${labelAnchor}">${finalVal >= 0 ? '+' : ''}${finalVal.toFixed(2)} R</text>
+  </svg>`;
+}
+
+function _rptBuildMonthly(trades, year) {
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const today = new Date();
+  let cumR = 0;
+  return monthNames.map((mName, m) => {
+    const mStart = new Date(year, m, 1).getTime();
+    const mEnd   = new Date(year, m + 1, 0, 23, 59, 59, 999).getTime();
+    const mt = trades.filter(t => {
+      const ts = t.exitTime || t.entryTime || t.timestamp || 0;
+      return ts >= mStart && ts <= mEnd;
+    });
+    const mWin = mt.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
+    const mSL  = mt.filter(t => t.outcome === 'sl').length;
+    const mR   = mt.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
+    cumR += mR;
+    const mWR   = mt.length ? Math.round(mWin / mt.length * 100) : null;
+    const isCur = today.getFullYear() === year && today.getMonth() === m;
+    const isFut = new Date(year, m) > today;
+    const mRC   = mR > 0 ? 'var(--bull)' : mR < 0 ? 'var(--bear)' : 'var(--text3)';
+    const cRC   = cumR > 0 ? 'var(--bull)' : cumR < 0 ? 'var(--bear)' : 'var(--text3)';
+    const wrStyle = mWR != null ? (mWR >= 60 ? 'color:var(--bull)' : mWR >= 40 ? '' : 'color:var(--bear)') : '';
+    return `<tr style="${isFut ? 'opacity:0.3;' : ''}${isCur ? 'background:rgba(0,212,255,0.04);' : ''}">
+      <td style="font-weight:600">${mName}${isCur ? ' <span style="font-size:0.68rem;color:var(--blue)">本月</span>' : ''}</td>
+      <td>${mt.length > 0 ? mt.length : '—'}</td>
+      <td style="${wrStyle}">${mWR != null ? mWR + '%' : '—'}</td>
+      <td style="color:var(--bull)">${mWin > 0 ? mWin : '—'}</td>
+      <td style="color:var(--bear)">${mSL > 0 ? mSL : '—'}</td>
+      <td style="color:${mRC}">${mt.length > 0 ? (mR >= 0 ? '+' : '') + mR.toFixed(2) + ' R' : '—'}</td>
+      <td style="color:${cRC};font-weight:600">${cumR >= 0 ? '+' : ''}${cumR.toFixed(2)} R</td>
+    </tr>`;
+  }).join('');
 }
 
 /* ── 交易詳情彈窗 ─────────────────────────────────────────────── */

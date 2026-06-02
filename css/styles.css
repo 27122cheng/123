@@ -1773,3 +1773,77 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
 .scalein-num { font-weight: 700; color: var(--blue); min-width: 22px; }
 .scalein-badge { font-size: 0.7rem; padding: 1px 5px; border-radius: 4px; }
 .scalein-pending { opacity: 0.75; }
+
+/* ── 策略報表頁面 ─────────────────────────────────────────────── */
+.rpt-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+@media (max-width: 600px) {
+  .rpt-stats { grid-template-columns: repeat(2, 1fr); }
+}
+.rpt-stat-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 18px 14px;
+  text-align: center;
+}
+.rpt-stat-val {
+  font-size: 1.55rem;
+  font-weight: 800;
+  margin-bottom: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.rpt-stat-lbl {
+  font-size: 0.72rem;
+  color: var(--text3);
+  letter-spacing: 0.02em;
+}
+.rpt-chart-card,
+.rpt-monthly-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 18px 16px;
+  margin-bottom: 16px;
+}
+.rpt-chart-title {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--text2);
+  margin-bottom: 14px;
+}
+.rpt-chart-wrap {
+  width: 100%;
+  overflow: hidden;
+}
+.rpt-month-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.rpt-month-tbl th {
+  text-align: right;
+  color: var(--text3);
+  font-weight: 600;
+  font-size: 0.72rem;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+.rpt-month-tbl td {
+  text-align: right;
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+}
+.rpt-month-tbl td:first-child {
+  text-align: left;
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+.rpt-month-tbl tr:hover td { background: rgba(255,255,255,0.025); }
