@@ -4361,7 +4361,6 @@ async function loadDashboardMacro() {
   } catch {
     if (el) el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
   }
-  renderDailyBriefCard(fg, global);
   loadDashboardNews();
 }
 
@@ -4437,7 +4436,7 @@ function renderDailyBriefCard(fg, mkt) {
 
 async function manualSendDailyBriefing() {
   const s = loadSettings();
-  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) { showToast('請先在設定中啟用 Telegram 通知', 'error'); return; }
+  if (!s.tgToken || !s.tgChatId) { showToast('請先在設定中填入 Telegram Bot Token 和 Chat ID', 'error'); return; }
   showToast('正在發送每日市場簡報...', 'info');
   try {
     await sendDailyBriefing();
@@ -6782,7 +6781,7 @@ function startDailyBriefingCheck() {
 
 async function sendDailyBriefing() {
   const s = loadSettings();
-  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  if (!s.tgToken || !s.tgChatId) return;  // only need token+chatId, not toggle
   try {
     const [fg, globalMkt] = await Promise.allSettled([fetchFearGreed(), fetchGlobalMarket()]);
     const fgData  = fg.status === 'fulfilled' ? fg.value : null;
@@ -8661,42 +8660,45 @@ function renderReportPage(year) {
   const yearStart = new Date(year, 0, 1).getTime();
   const yearEnd   = new Date(year, 11, 31, 23, 59, 59, 999).getTime();
 
-  // Closed trades with entry (or signal) timestamp in selected year, sorted by exit time
+  // Closed trades in selected year (by entryTime or signal timestamp)
   const yearTrades = trades.filter(t => {
     if (t.status !== 'closed') return false;
     const ts = t.entryTime || t.timestamp || 0;
     return ts >= yearStart && ts <= yearEnd;
   }).sort((a, b) => (a.exitTime || a.entryTime || a.timestamp || 0) - (b.exitTime || b.entryTime || b.timestamp || 0));
 
-  const wins   = yearTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
-  const losses = yearTrades.filter(t => t.outcome === 'sl');
-  const winRate = yearTrades.length > 0 ? (wins.length / yearTrades.length * 100).toFixed(1) : '--';
-  const totalR  = yearTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
-  const avgR    = yearTrades.length > 0 ? (totalR / yearTrades.length) : null;
+  // tp2 = win; tp1+be = break-even (保本); sl = loss
+  const wins     = yearTrades.filter(t => t.outcome === 'tp2');
+  const losses   = yearTrades.filter(t => t.outcome === 'sl');
+  const beCount  = yearTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length;
+  const winRate  = yearTrades.length > 0 ? (wins.length / yearTrades.length * 100).toFixed(1) : '--';
+  const totalR   = yearTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
+  const avgR     = yearTrades.length > 0 ? (totalR / yearTrades.length) : null;
 
-  // Average daily entries: group by entry date, divide by days elapsed
-  const isLeap = new Date(year, 1, 29).getDate() === 29;
-  const daysInYear = isLeap ? 366 : 365;
-  const daysElapsed = year < currentYear
-    ? daysInYear
-    : Math.max(1, Math.ceil((Date.now() - yearStart) / 86400000));
-  const avgDaily = yearTrades.length > 0 ? (yearTrades.length / daysElapsed).toFixed(2) : '--';
+  // Average daily entries: count by entryTime date (pending→open transitions)
+  const entryDays = {};
+  for (const t of yearTrades) {
+    if (!t.entryTime) continue;  // only count confirmed entries
+    const d = new Date(t.entryTime);
+    const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    entryDays[k] = (entryDays[k] || 0) + 1;
+  }
+  const activeDays = Object.keys(entryDays).length;
+  const enteredCount = yearTrades.filter(t => t.entryTime).length;
+  const avgDaily = activeDays > 0 ? (enteredCount / activeDays).toFixed(2) : '--';
 
   // Year selector
   const yearsSet = new Set([currentYear]);
-  trades.forEach(t => {
-    const ts = t.entryTime || t.timestamp || 0;
-    if (ts) yearsSet.add(new Date(ts).getFullYear());
-  });
+  trades.forEach(t => { const ts = t.entryTime || t.timestamp || 0; if (ts) yearsSet.add(new Date(ts).getFullYear()); });
   const yearOpts = [...yearsSet].sort((a, b) => b - a)
     .map(y => `<option value="${y}"${y === year ? ' selected' : ''}>${y} 年</option>`).join('');
 
-  // Chart and monthly breakdown
-  const chartData    = _rptBuildCumData(yearTrades, year);
-  const chartSvg     = _rptBuildChartSVG(chartData, year, currentYear);
-  const monthlyRows  = _rptBuildMonthly(yearTrades, year);
+  const chartData   = _rptBuildCumData(yearTrades, year);
+  const chartSvg    = _rptBuildChartSVG(chartData, year, currentYear);
+  const barSvg      = _rptBuildBarSVG(yearTrades, year);
+  const monthlyRows = _rptBuildMonthly(yearTrades, year);
 
-  const wrColor = winRate === '--' ? 'var(--text)' : parseFloat(winRate) >= 60 ? 'var(--bull)' : parseFloat(winRate) >= 40 ? 'var(--text)' : 'var(--bear)';
+  const wrColor    = winRate === '--' ? 'var(--text)' : parseFloat(winRate) >= 60 ? 'var(--bull)' : parseFloat(winRate) >= 40 ? 'var(--text)' : 'var(--bear)';
   const totalRColor = totalR > 0 ? 'var(--bull)' : totalR < 0 ? 'var(--bear)' : 'var(--text)';
   const avgRColor   = avgR != null ? (avgR >= 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text)';
 
@@ -8716,15 +8718,17 @@ function renderReportPage(year) {
       <div class="rpt-stats">
         <div class="rpt-stat-card">
           <div class="rpt-stat-val" style="color:${wrColor}">${winRate}${winRate !== '--' ? '%' : ''}</div>
-          <div class="rpt-stat-lbl">勝率</div>
+          <div class="rpt-stat-lbl">勝率（止盈二）</div>
         </div>
         <div class="rpt-stat-card">
           <div class="rpt-stat-val">${yearTrades.length}</div>
           <div class="rpt-stat-lbl">總交易筆數</div>
         </div>
         <div class="rpt-stat-card">
-          <div class="rpt-stat-val" style="color:var(--bear)">${losses.length}</div>
-          <div class="rpt-stat-lbl">止損筆數</div>
+          <div class="rpt-stat-val">
+            <span style="color:var(--bull)">${wins.length}</span><span style="color:var(--text3);font-weight:400;margin:0 3px">/</span><span style="color:var(--bear)">${losses.length}</span>
+          </div>
+          <div class="rpt-stat-lbl">獲利 / 止損</div>
         </div>
         <div class="rpt-stat-card">
           <div class="rpt-stat-val">${avgDaily}</div>
@@ -8745,13 +8749,25 @@ function renderReportPage(year) {
         <div class="rpt-chart-wrap">${chartSvg}</div>
       </div>
 
+      <div class="rpt-chart-card">
+        <div class="rpt-chart-title" style="display:flex;align-items:center;justify-content:space-between">
+          <span>月度獲利 / 止損分佈</span>
+          <span style="font-size:0.75rem;font-weight:400;color:var(--text3)">
+            <span style="display:inline-block;width:8px;height:8px;background:var(--bull);border-radius:2px;margin-right:3px"></span>獲利(tp2)
+            <span style="display:inline-block;width:8px;height:8px;background:rgba(148,163,184,0.4);border-radius:2px;margin:0 3px 0 8px"></span>保本
+            <span style="display:inline-block;width:8px;height:8px;background:var(--bear);border-radius:2px;margin:0 3px 0 8px"></span>止損
+          </span>
+        </div>
+        <div class="rpt-chart-wrap">${barSvg}</div>
+      </div>
+
       <div class="rpt-monthly-card">
         <div class="rpt-chart-title">月度明細</div>
         <div style="overflow-x:auto">
         <table class="rpt-month-tbl">
           <thead><tr>
             <th style="text-align:left">月份</th>
-            <th>筆數</th><th>勝率</th><th>止盈</th><th>止損</th><th>月盈虧</th><th>累計 R</th>
+            <th>筆數</th><th>勝率</th><th>獲利/保本/止損</th><th>月盈虧</th><th>累計 R</th>
           </tr></thead>
           <tbody>${monthlyRows}</tbody>
         </table>
@@ -8860,6 +8876,70 @@ function _rptBuildChartSVG(data, year, currentYear) {
   </svg>`;
 }
 
+function _rptBuildBarSVG(trades, year) {
+  const W = 760, H = 130, PL = 28, PR = 12, PT = 14, PB = 24;
+  const CW = W - PL - PR, CH = H - PT - PB;
+  const months = ['1','2','3','4','5','6','7','8','9','10','11','12'];
+  const yearStart = new Date(year, 0, 1).getTime();
+
+  // Per-month counts
+  const data = months.map((_, m) => {
+    const mStart = new Date(year, m, 1).getTime();
+    const mEnd   = new Date(year, m + 1, 0, 23, 59, 59, 999).getTime();
+    const mt = trades.filter(t => { const ts = t.exitTime || t.entryTime || t.timestamp || 0; return ts >= mStart && ts <= mEnd; });
+    return {
+      win: mt.filter(t => t.outcome === 'tp2').length,
+      be:  mt.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length,
+      sl:  mt.filter(t => t.outcome === 'sl').length,
+    };
+  });
+
+  const maxVal = Math.max(1, ...data.map(d => d.win + d.be + d.sl));
+  const slotW  = CW / 12;
+  const barW   = Math.max(4, slotW * 0.55);
+  const gap    = (slotW - barW) / 2;
+
+  const today = new Date();
+  const isCurrentYear = today.getFullYear() === year;
+
+  let bars = '';
+  data.forEach((d, m) => {
+    const x = PL + m * slotW + gap;
+    const isFut = isCurrentYear && new Date(year, m) > today;
+    const total = d.win + d.be + d.sl;
+    if (total === 0) {
+      bars += `<text x="${(x + barW/2).toFixed(1)}" y="${PT + CH - 2}" font-size="8" fill="rgba(71,85,105,0.5)" text-anchor="middle">·</text>`;
+    } else {
+      // Stacked: win (bottom), be (middle), sl (top)
+      const winH = (d.win / maxVal) * CH;
+      const beH  = (d.be  / maxVal) * CH;
+      const slH  = (d.sl  / maxVal) * CH;
+      const baseY = PT + CH;
+      const alpha = isFut ? '0.3' : '1';
+      if (winH > 0) bars += `<rect x="${x.toFixed(1)}" y="${(baseY - winH).toFixed(1)}" width="${barW.toFixed(1)}" height="${winH.toFixed(1)}" fill="var(--bull)" opacity="${alpha}" rx="2"/>`;
+      if (beH  > 0) bars += `<rect x="${x.toFixed(1)}" y="${(baseY - winH - beH).toFixed(1)}" width="${barW.toFixed(1)}" height="${beH.toFixed(1)}" fill="rgba(148,163,184,0.4)" opacity="${alpha}" rx="2"/>`;
+      if (slH  > 0) bars += `<rect x="${x.toFixed(1)}" y="${(baseY - winH - beH - slH).toFixed(1)}" width="${barW.toFixed(1)}" height="${slH.toFixed(1)}" fill="var(--bear)" opacity="${alpha}" rx="2"/>`;
+      // Count label on top
+      const topY = baseY - winH - beH - slH - 2;
+      if (topY > PT + 2) bars += `<text x="${(x + barW/2).toFixed(1)}" y="${topY.toFixed(1)}" font-size="8" fill="rgba(148,163,184,0.7)" text-anchor="middle">${total}</text>`;
+    }
+    // Month label
+    bars += `<text x="${(x + barW/2).toFixed(1)}" y="${PT + CH + 14}" font-size="8.5" fill="rgba(148,163,184,0.6)" text-anchor="middle">${months[m]}月</text>`;
+  });
+
+  // Y-axis reference lines
+  const yLines = [0.25, 0.5, 0.75, 1].map(pct => {
+    const v = Math.round(maxVal * pct);
+    const y = (PT + CH * (1 - pct)).toFixed(1);
+    return `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="rgba(255,255,255,0.04)" stroke-width="1" stroke-dasharray="3,5"/>
+      <text x="${PL - 3}" y="${parseFloat(y) + 3}" font-size="8" fill="rgba(148,163,184,0.4)" text-anchor="end">${v}</text>`;
+  }).join('');
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block">
+    ${yLines}${bars}
+  </svg>`;
+}
+
 function _rptBuildMonthly(trades, year) {
   const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
   const today = new Date();
@@ -8871,7 +8951,8 @@ function _rptBuildMonthly(trades, year) {
       const ts = t.exitTime || t.entryTime || t.timestamp || 0;
       return ts >= mStart && ts <= mEnd;
     });
-    const mWin = mt.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
+    const mWin = mt.filter(t => t.outcome === 'tp2').length;
+    const mBE  = mt.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length;
     const mSL  = mt.filter(t => t.outcome === 'sl').length;
     const mR   = mt.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
     cumR += mR;
@@ -8881,12 +8962,14 @@ function _rptBuildMonthly(trades, year) {
     const mRC   = mR > 0 ? 'var(--bull)' : mR < 0 ? 'var(--bear)' : 'var(--text3)';
     const cRC   = cumR > 0 ? 'var(--bull)' : cumR < 0 ? 'var(--bear)' : 'var(--text3)';
     const wrStyle = mWR != null ? (mWR >= 60 ? 'color:var(--bull)' : mWR >= 40 ? '' : 'color:var(--bear)') : '';
+    const wbLabel = mt.length > 0
+      ? `<span style="color:var(--bull)">${mWin}</span><span style="color:var(--text3)"> / </span><span style="color:rgba(148,163,184,0.6)">${mBE}</span><span style="color:var(--text3)"> / </span><span style="color:var(--bear)">${mSL}</span>`
+      : '—';
     return `<tr style="${isFut ? 'opacity:0.3;' : ''}${isCur ? 'background:rgba(0,212,255,0.04);' : ''}">
       <td style="font-weight:600">${mName}${isCur ? ' <span style="font-size:0.68rem;color:var(--blue)">本月</span>' : ''}</td>
       <td>${mt.length > 0 ? mt.length : '—'}</td>
       <td style="${wrStyle}">${mWR != null ? mWR + '%' : '—'}</td>
-      <td style="color:var(--bull)">${mWin > 0 ? mWin : '—'}</td>
-      <td style="color:var(--bear)">${mSL > 0 ? mSL : '—'}</td>
+      <td>${wbLabel}</td>
       <td style="color:${mRC}">${mt.length > 0 ? (mR >= 0 ? '+' : '') + mR.toFixed(2) + ' R' : '—'}</td>
       <td style="color:${cRC};font-weight:600">${cumR >= 0 ? '+' : ''}${cumR.toFixed(2)} R</td>
     </tr>`;

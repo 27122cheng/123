@@ -196,11 +196,6 @@
         </div>
       </div>
 
-      <!-- 每日市場簡報 -->
-      <div class="market-outlook-card">
-        <div id="daily-brief-body"><div class="adv-loading">載入每日市場簡報...</div></div>
-      </div>
-
       <!-- 市場大方向 -->
       <div class="market-outlook-card">
         <div id="market-outlook-body"><div class="adv-loading">載入市場大方向分析...</div></div>
@@ -703,7 +698,10 @@
               <input id="s-tg-chatid" type="text" class="setting-input" placeholder="123456789" autocomplete="off" />
             </div>
           </div>
-          <button class="btn-ghost" onclick="testTelegramNotif()" style="align-self:flex-start;font-size:0.82rem">📨 發送測試訊息</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-ghost" onclick="testTelegramNotif()" style="font-size:0.82rem">📨 發送測試訊息</button>
+            <button class="btn-ghost" onclick="manualSendDailyBriefing()" style="font-size:0.82rem">📊 立即發送每日市場簡報</button>
+          </div>
           <div class="tg-guide">
             <div class="tg-guide-title">📖 Telegram 設定步驟</div>
             <ol class="tg-guide-steps">
