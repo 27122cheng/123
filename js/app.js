@@ -2145,104 +2145,107 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
                                : ((coin.patterns?.bear123 || coin.patterns?.bear2B) ? 1 : 0));
   const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus + bbWalkBonus + patBonus) * 6));
 
-  // 宏觀環境同步確認：宏觀訊號 + AI新聞 + 預測 + 今日數據事件 綜合評分
+  // 宏觀環境同步確認：六大因子各自獨立扣分（反向扣較多，中性扣少一點）
   let macroOpposePenalty = 0, macroReasons = [];
   try {
-    const _macroResult = (() => {
-      const reasons = [];
-      let against = 0;
-
-      // ① 宏觀訊號（F&G + 市值 + BTC 主導）
-      if (globalMkt || fearGreed) {
-        const fgNow  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
-        const chgNow = globalMkt?.marketCapChange || 0;
-        const domNow = globalMkt?.btcDominance   || 50;
-        if (isLong) {
-          if (chgNow < -2) { against++;   reasons.push(`市值 ${chgNow.toFixed(1)}% 下跌，多頭逆風`); }
-          if (domNow > 58) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏高），山寨承壓`); }
-          if (fgNow < 30)  { against++;   reasons.push(`恐貪 ${fgNow}（極度恐慌），不宜追多`); }
-          if (fgNow > 75)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極度貪婪），短線追高風險`); }
-        } else {
-          if (chgNow > 2)  { against++;   reasons.push(`市值 +${chgNow.toFixed(1)}%，空頭逆風`); }
-          if (domNow < 44) { against++;   reasons.push(`BTC 主導 ${domNow.toFixed(1)}%（偏低），山寨季偏多`); }
-          if (fgNow > 70)  { against++;   reasons.push(`恐貪 ${fgNow}（貪婪），不宜追空`); }
-          if (fgNow < 25)  { against += 0.5; reasons.push(`恐貪 ${fgNow}（極恐），逢低布局偏多`); }
-        }
+    // ① 宏觀市場（F&G + 市值 + BTC 主導）
+    if (globalMkt || fearGreed) {
+      const fgNow  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+      const chgNow = globalMkt?.marketCapChange || 0;
+      const domNow = globalMkt?.btcDominance   || 50;
+      const f1Labels = [];
+      let f1Oppose = false;
+      if (isLong) {
+        if (chgNow < -2) { f1Oppose = true; f1Labels.push(`市值 ${chgNow.toFixed(1)}% 下跌`); }
+        if (domNow > 58) { f1Oppose = true; f1Labels.push(`BTC主導 ${domNow.toFixed(1)}%（偏高）`); }
+        if (fgNow < 30)  { f1Oppose = true; f1Labels.push(`恐貪 ${fgNow}（極恐）`); }
+        if (fgNow > 75)  { f1Oppose = true; f1Labels.push(`恐貪 ${fgNow}（極貪）`); }
+      } else {
+        if (chgNow > 2)  { f1Oppose = true; f1Labels.push(`市值 +${chgNow.toFixed(1)}%`); }
+        if (domNow < 44) { f1Oppose = true; f1Labels.push(`BTC主導 ${domNow.toFixed(1)}%（偏低）`); }
+        if (fgNow > 70)  { f1Oppose = true; f1Labels.push(`恐貪 ${fgNow}（貪婪）`); }
+        if (fgNow < 25)  { f1Oppose = true; f1Labels.push(`恐貪 ${fgNow}（極恐）`); }
       }
+      const f1Neutral = !f1Oppose && (fgNow >= 40 && fgNow <= 60) && Math.abs(chgNow) < 2;
+      if (f1Oppose) {
+        macroOpposePenalty += 8;
+        macroReasons.push(`宏觀市場逆風（${f1Labels.join('、')}），扣 8%`);
+      } else if (f1Neutral) {
+        macroOpposePenalty += 3;
+        macroReasons.push(`宏觀市場中性（F&G ${fgNow}，市值 ${chgNow >= 0 ? '+' : ''}${chgNow.toFixed(1)}%），方向不明，扣 3%`);
+      }
+    } else {
+      macroOpposePenalty += 3;
+      macroReasons.push(`宏觀資料暫無，方向不確定，扣 3%`);
+    }
 
-      // ② AI 財經新聞偏向分析
-      try {
-        const topInsight = aiGenerateMarketInsights()[0];
-        if (topInsight) {
-          const sentiment = topInsight.sentiment || '';
-          if (isLong  && (sentiment === 'bearish' || sentiment === 'bear')) { against += 0.5; reasons.push(`AI新聞偏空：${(topInsight.zhTitle||'').slice(0,20)}`); }
-          if (!isLong && (sentiment === 'bullish' || sentiment === 'bull')) { against += 0.5; reasons.push(`AI新聞偏多：${(topInsight.zhTitle||'').slice(0,20)}`); }
-        }
-      } catch(e) {}
-
-      // ③ 今日重要數據事件（高影響 + 未公布且在1小時內）
-      try {
-        const nearEvents = getTodayEconEvents().filter(ev => {
-          const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
-          return ev.impact === 'high' && mins >= -15 && mins <= 75;
-        });
-        if (nearEvents.length > 0) {
-          against += 1;
-          reasons.push(`高影響數據即將/剛公布：${nearEvents.map(e => e.name).join('、')}，不確定性高`);
-        }
-      } catch(e) {}
-
-      // ④ 資金流動事件（近期或進行中的大型事件影響資金情緒）
-      try {
-        const _cfB = getCapitalFlowBias();
-        for (const ev of _cfB.events) {
-          const timeStr = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
-          const aiTag   = ev.isAI ? 'AI預測' : '';
-          if (isLong && ev.bear > 0) {
-            const agn = ev.bear >= 1.2 ? 1 : 0.5;
-            against += agn;
-            reasons.push(`${ev.name}（${timeStr}）：${aiTag}資金流出壓制市場，多頭逆風（信心 ${ev.conf}%）`);
-          } else if (!isLong && ev.bull > 0) {
-            const agn = ev.bull >= 1.2 ? 1 : 0.5;
-            against += agn;
-            reasons.push(`${ev.name}（${timeStr}）：${aiTag}資金流入推升市場，空頭逆風（信心 ${ev.conf}%）`);
-          }
-        }
-      } catch(_e) {}
-
-      const total = against;
-      const penalty = total >= 3 ? 18 : total >= 2 ? 12 : total >= 1 ? 5 : 0;
-      return { macroOpposePenalty: penalty, macroReasons: reasons };
-    })();
-    macroOpposePenalty = _macroResult.macroOpposePenalty;
-    macroReasons       = _macroResult.macroReasons;
-  } catch(e) {
-    console.warn('[buildTradeSetup] macroOpposePenalty 計算失敗:', e);
-  }
-
-  // 大方向分歧補扣：computeMacroNetDir 閾值低於 macroOpposePenalty 閾值，需補齊差距
-  // slight_bear for long / slight_bull for short → 最少扣 3%；bear/bull → 最少扣 7%
-  if (_btsNetDir) {
-    const _bdAgainst = (isLong && _btsNetDir.includes('bear')) || (!isLong && _btsNetDir.includes('bull'));
-    if (_bdAgainst) {
-      const _bdMin = (_btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull') ? 3 : 7;
-      if (macroOpposePenalty < _bdMin) {
-        const _bdAdd = _bdMin - macroOpposePenalty;
-        macroOpposePenalty += _bdAdd;
-        macroReasons.push(`大方向${_btsNetDir.includes('slight') ? '輕微' : ''}${isLong ? '偏空' : '偏多'}（${_btsNetDir}），補扣 ${_bdAdd}%`);
+    // ② 加密大方向（computeMacroNetDir）— 獨立扣分
+    if (_btsNetDir) {
+      const f2Oppose = (isLong && _btsNetDir.includes('bear')) || (!isLong && _btsNetDir.includes('bull'));
+      if (f2Oppose) {
+        const f2Pen = (_btsNetDir === 'slight_bear' || _btsNetDir === 'slight_bull') ? 5 : 9;
+        macroOpposePenalty += f2Pen;
+        macroReasons.push(`加密大方向${_btsNetDir.includes('slight') ? '輕微' : ''}${isLong ? '偏空' : '偏多'}（${_btsNetDir}），扣 ${f2Pen}%`);
+      } else if (_btsNetDir === 'neutral') {
+        macroOpposePenalty += 4;
+        macroReasons.push(`加密大方向中性（多空分歧），方向不明，扣 4%`);
       }
     }
-  }
 
-  // 宏觀中性或無資料：方向不明確，仍扣分（反向扣更多，中性扣少一點）
-  const _hasMacroData = !!(globalMkt || fearGreed);
-  const _bdAgainstFlag = _btsNetDir && ((isLong && _btsNetDir.includes('bear')) || (!isLong && _btsNetDir.includes('bull')));
-  if (!_hasMacroData) {
-    macroOpposePenalty += 3;
-    macroReasons.push(`宏觀資料暫無，方向不確定，扣 3%`);
-  } else if (_btsNetDir === 'neutral' && !_bdAgainstFlag) {
-    macroOpposePenalty += 4;
-    macroReasons.push(`宏觀大方向中性（多空分歧），方向不明，扣 4%`);
+    // ⑤ AI 財經新聞偏向（獨立扣分）
+    try {
+      const _insights = aiGenerateMarketInsights();
+      const _bearCnt  = _insights.filter(i => i.sentiment === 'bearish' || i.sentiment === 'bear').length;
+      const _bullCnt  = _insights.filter(i => i.sentiment === 'bullish' || i.sentiment === 'bull').length;
+      if (isLong && _bearCnt > _bullCnt) {
+        macroOpposePenalty += 3;
+        macroReasons.push(`AI財經新聞偏空（${_bearCnt}/${_insights.length} 條），多頭逆風，扣 3%`);
+      } else if (!isLong && _bullCnt > _bearCnt) {
+        macroOpposePenalty += 3;
+        macroReasons.push(`AI財經新聞偏多（${_bullCnt}/${_insights.length} 條），空頭逆風，扣 3%`);
+      } else if (_bearCnt > 0 || _bullCnt > 0) {
+        macroOpposePenalty += 1;
+        macroReasons.push(`AI財經新聞多空均衡，方向不確定，扣 1%`);
+      }
+    } catch(e) {}
+
+    // ④ 今日重要數據事件（高影響 + 即將公布）
+    try {
+      const _nearEvs = getTodayEconEvents().filter(ev => {
+        const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+        return ev.impact === 'high' && mins >= -15 && mins <= 75;
+      });
+      if (_nearEvs.length > 0) {
+        macroOpposePenalty += 5;
+        macroReasons.push(`高影響數據即將/剛公布：${_nearEvs.map(e => e.name).join('、')}，不確定性高，扣 5%`);
+      }
+    } catch(e) {}
+
+    // ⑥ 資金流動事件（獨立扣分，中性事件也微扣）
+    try {
+      const _cfB = getCapitalFlowBias();
+      let _cfPen = 0;
+      for (const ev of _cfB.events) {
+        const timeStr = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
+        const aiTag   = ev.isAI ? 'AI預測' : '';
+        if (isLong && ev.bear > 0) {
+          const pen = ev.bear >= 1.2 ? 5 : 3;
+          _cfPen += pen;
+          macroReasons.push(`${ev.name}（${timeStr}）：${aiTag}資金流出，多頭逆風，扣 ${pen}%`);
+        } else if (!isLong && ev.bull > 0) {
+          const pen = ev.bull >= 1.2 ? 5 : 3;
+          _cfPen += pen;
+          macroReasons.push(`${ev.name}（${timeStr}）：${aiTag}資金流入，空頭逆風，扣 ${pen}%`);
+        } else if (ev.bull === 0 && ev.bear === 0) {
+          _cfPen += 2;
+          macroReasons.push(`${ev.name}（${timeStr}）：資金方向中性，扣 2%`);
+        }
+      }
+      macroOpposePenalty += Math.min(_cfPen, 10);
+    } catch(_e) {}
+
+  } catch(e) {
+    console.warn('[buildTradeSetup] macroOpposePenalty 計算失敗:', e);
   }
 
   // 頂級交易員逆勢布局：taker 買賣比與宏觀方向相悖時，降低宏觀扣分
@@ -4349,16 +4352,97 @@ function buildNewsWidget(items) {
 
 async function loadDashboardMacro() {
   const el = document.getElementById('market-outlook-body');
-  if (el) {
-    try {
-      const [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-      // buildMarketOutlook 已內嵌呼叫 buildWeeklyAIOutlook，不需再獨立更新
-      el.innerHTML = buildMarketOutlook(fg, global);
-    } catch {
-      el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
-    }
+  let fg = null, global = null;
+  try {
+    [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
+    if (el) el.innerHTML = buildMarketOutlook(fg, global);
+  } catch {
+    if (el) el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
   }
+  renderDailyBriefCard(fg, global);
   loadDashboardNews();
+}
+
+function renderDailyBriefCard(fg, mkt) {
+  const el = document.getElementById('daily-brief-body');
+  if (!el) return;
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short' });
+  const fgVal = fg ? parseInt(fg.value) : null;
+  const fgZh = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg?.value_classification] || '';
+  const mktChg = mkt?.marketCapChange != null ? mkt.marketCapChange : null;
+  const btcDom = mkt?.btcDominance   != null ? mkt.btcDominance   : null;
+
+  const tlog = loadTradeLog();
+  const yStart = new Date(now); yStart.setDate(yStart.getDate() - 1); yStart.setHours(0,0,0,0);
+  const yEnd   = new Date(now); yEnd.setDate(yEnd.getDate() - 1);     yEnd.setHours(23,59,59,999);
+  const yClosed = tlog.filter(t => t.status === 'closed' && t.exitTime >= yStart.getTime() && t.exitTime <= yEnd.getTime());
+  const yrTP = yClosed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
+  const yrSL = yClosed.filter(t => t.outcome === 'sl'  || t.outcome === 'be').length;
+  const totalR = yClosed.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
+  const wr = yClosed.length > 0 ? Math.round(yrTP / yClosed.length * 100) : null;
+
+  let wbLabel = '--', tbLabel = '--';
+  try { wbLabel = computeWeeklyAIBias(fg, mkt).biasLabel || '--'; } catch(e) {}
+  try { tbLabel = computeTodayAIBias(fg, mkt).biasLabel || '--'; } catch(e) {}
+
+  const highEvs = getTodayEconEvents().filter(e => e.impact === 'high');
+  const chgColor = mktChg != null ? (mktChg >= 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text2)';
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <span style="font-weight:700;font-size:0.9rem">📊 每日市場簡報</span>
+      <span style="color:var(--text3);font-size:0.78rem">${dateStr}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:2px">恐慌貪婪</div>
+        <div style="font-weight:700;font-size:0.9rem">${fgVal != null ? fgVal : '--'}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${fgZh}</span></div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:2px">加密市值 24h</div>
+        <div style="font-weight:700;font-size:0.9rem;color:${chgColor}">${mktChg != null ? (mktChg >= 0 ? '+' : '') + mktChg.toFixed(2) + '%' : '--'}</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:2px">BTC 主導</div>
+        <div style="font-weight:700;font-size:0.9rem">${btcDom != null ? btcDom.toFixed(1) + '%' : '--'}</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:2px">本週 AI 走勢</div>
+        <div style="font-weight:600;font-size:0.82rem">${wbLabel}</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:2px">今日 AI 走勢</div>
+        <div style="font-weight:600;font-size:0.82rem">${tbLabel}</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:8px;text-align:center">
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:2px">昨日盈虧</div>
+        <div style="font-weight:600;font-size:0.78rem">${yClosed.length > 0 ? `勝率 ${wr}% · ${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R` : '無結算'}</div>
+      </div>
+    </div>
+    ${highEvs.length > 0 ? `<div style="margin-bottom:8px">
+      <div style="font-size:0.78rem;font-weight:600;margin-bottom:4px;color:var(--text2)">🔴 今日重大數據</div>
+      ${highEvs.map(ev => `<div style="display:flex;justify-content:space-between;font-size:0.78rem;padding:2px 0;color:var(--text3)">
+        <span>${ev.name}</span>
+        <span>${ev.twHour}:${String(ev.twMin).padStart(2,'0')}</span>
+      </div>`).join('')}
+    </div>` : ''}
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button class="btn-ghost" onclick="manualSendDailyBriefing()" style="font-size:0.76rem;padding:4px 10px">📨 發送至 Telegram</button>
+    </div>
+  `;
+}
+
+async function manualSendDailyBriefing() {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) { showToast('請先在設定中啟用 Telegram 通知', 'error'); return; }
+  showToast('正在發送每日市場簡報...', 'info');
+  try {
+    await sendDailyBriefing();
+    showToast('每日市場簡報已發送至 Telegram ✅', 'success');
+  } catch(e) {
+    showToast('發送失敗，請確認 Telegram 設定', 'error');
+  }
 }
 
 const _INSIGHT_THEMES = [
@@ -8926,7 +9010,7 @@ function computeSimpleSetup(coin, isLong) {
   if (_sDayAlignTmp) rawConf += 5;  // 日線同向：補充 buildTradeSetup 的 h4Conf/d1Conf
   if (_sWkAlignTmp)  rawConf += 4;  // 週線同向：補充 ltBias 加成（長線候選）
   rawConf = Math.min(90, rawConf);
-  // 宏觀逆風懲罰（與 buildTradeSetup 相同邏輯，使用全域 _macroCache）
+  // 宏觀逆風懲罰：六大因子各自獨立扣分（與 buildTradeSetup 一致）
   let _sMacroPen = 0, _sAIPen = 0;
   if (typeof _macroCache !== 'undefined' && _macroCache) {
     try {
@@ -8934,19 +9018,34 @@ function computeSimpleSetup(coin, isLong) {
       const _sfgV = parseInt(_sfg?.value || '50');
       const _schg = _sgm?.marketCapChange || 0;
       const _sdom = _sgm?.btcDominance   || 50;
-      let _sagt = 0;
+      // ① 宏觀市場（F&G + 市值 + BTC 主導）
+      let _sf1Opp = false;
       if (isLong) {
-        if (_schg < -2) _sagt++;
-        if (_sdom > 58) _sagt++;
-        if (_sfgV < 30) _sagt++;
-        if (_sfgV > 75) _sagt += 0.5;
+        if (_schg < -2 || _sdom > 58 || _sfgV < 30 || _sfgV > 75) _sf1Opp = true;
       } else {
-        if (_schg > 2)  _sagt++;
-        if (_sdom < 44) _sagt++;
-        if (_sfgV > 70) _sagt++;
-        if (_sfgV < 25) _sagt += 0.5;
+        if (_schg > 2 || _sdom < 44 || _sfgV > 70 || _sfgV < 25) _sf1Opp = true;
       }
-      _sMacroPen = _sagt >= 3 ? 22 : _sagt >= 2 ? 15 : _sagt >= 1 ? 8 : 0;
+      const _sf1Neut = !_sf1Opp && (_sfgV >= 40 && _sfgV <= 60) && Math.abs(_schg) < 2;
+      if (_sf1Opp)       _sMacroPen += 8;
+      else if (_sf1Neut) _sMacroPen += 3;
+      // ② 加密大方向（computeMacroNetDir）
+      const _sBigDir = computeMacroNetDir(_sfg, _sgm);
+      const _sBdOpp = (isLong && _sBigDir.includes('bear')) || (!isLong && _sBigDir.includes('bull'));
+      if (_sBdOpp) {
+        _sMacroPen += (_sBigDir === 'slight_bear' || _sBigDir === 'slight_bull') ? 5 : 9;
+      } else if (_sBigDir === 'neutral') {
+        _sMacroPen += 4;
+      }
+      // ⑤ AI 財經新聞
+      try {
+        const _sIns = aiGenerateMarketInsights();
+        const _sBrCnt = _sIns.filter(i => i.sentiment === 'bearish' || i.sentiment === 'bear').length;
+        const _sBuCnt = _sIns.filter(i => i.sentiment === 'bullish' || i.sentiment === 'bull').length;
+        if (isLong && _sBrCnt > _sBuCnt) _sMacroPen += 3;
+        else if (!isLong && _sBuCnt > _sBrCnt) _sMacroPen += 3;
+        else if (_sBrCnt > 0 || _sBuCnt > 0) _sMacroPen += 1;
+      } catch(_sie) {}
+      // 週線/日線 AI 預測（factors ③④）
       const _swb = computeWeeklyAIBias(_sfg, _sgm);
       const _stb = computeTodayAIBias(_sfg, _sgm);
       const _swBias = _swb.bias || '';
@@ -8959,15 +9058,6 @@ function computeSimpleSetup(coin, isLong) {
       else if (_swNeut) _sAIPen += 2;
       if (_stOp)        _sAIPen += 5;
       else if (_stNeut) _sAIPen += 1;
-      // 大方向分歧補扣
-      const _sBigDir = computeMacroNetDir(_sfg, _sgm);
-      const _sBdAgainst = (isLong && _sBigDir.includes('bear')) || (!isLong && _sBigDir.includes('bull'));
-      if (_sBdAgainst) {
-        const _sBdMin = (_sBigDir === 'slight_bear' || _sBigDir === 'slight_bull') ? 4 : 9;
-        if (_sMacroPen < _sBdMin) _sMacroPen = _sBdMin;
-      } else if (_sBigDir === 'neutral') {
-        _sMacroPen += 4;  // 宏觀中性：方向不明，扣 4%（比反向少）
-      }
     } catch(_se) {}
   } else {
     _sMacroPen += 3;  // 無宏觀資料：方向不確定，扣 3%
@@ -9053,10 +9143,11 @@ function computeSimpleSetup(coin, isLong) {
   try {
     const _cf = getCapitalFlowBias();
     for (const ev of _cf.events) {
-      if (isLong  && ev.bear > 0) _sCFPen += ev.bear >= 1.2 ? 8 : 4;
-      if (!isLong && ev.bull > 0) _sCFPen += ev.bull >= 1.2 ? 8 : 4;
+      if (isLong  && ev.bear > 0) _sCFPen += ev.bear >= 1.2 ? 5 : 3;
+      else if (!isLong && ev.bull > 0) _sCFPen += ev.bull >= 1.2 ? 5 : 3;
+      else if (ev.bull === 0 && ev.bear === 0) _sCFPen += 2;
     }
-    _sCFPen = Math.min(16, _sCFPen);
+    _sCFPen = Math.min(10, _sCFPen);
   } catch(_e) {}
 
   const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sCFPen - _sTechPen - _sChipsPen - _sBBPenalty - _sDirPen);
