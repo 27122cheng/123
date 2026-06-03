@@ -2437,11 +2437,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── AI 風險評估（本地計算，不需 API Key）──
-  const _risk = computeFullRisk(coin, {
-    conf, macroPenalty: macroOpposePenalty, aiTrendPenalty, learnPenalty,
-    techPenalty, chipsPenalty, rr1: rr1str,
-    flipRisks, isRangeMode, bigTrendBlocked,
-  }, isLong);
+  let _risk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
+  try {
+    _risk = computeFullRisk(coin, {
+      conf, macroPenalty: macroOpposePenalty, aiTrendPenalty, learnPenalty,
+      techPenalty, chipsPenalty, rr1: rr1str,
+      flipRisks, isRangeMode, bigTrendBlocked,
+    }, isLong);
+  } catch(_re) { console.warn('[buildTradeSetup risk]', coin?.symbol, _re); }
 
   // 高風險及以上（≥60）→ 觀望，不顯示進場建議
   if (_risk.score >= 60) {
@@ -5530,12 +5533,14 @@ async function renderCoinDetail(symbol) {
   const _frEl = document.getElementById('full-risk-body');
   if (_frEl) {
     try {
-      const _frLong  = computeFullRisk(coin, computeSimpleSetup(coin, true),  true);
-      const _frShort = computeFullRisk(coin, computeSimpleSetup(coin, false), false);
+      const _frLSetup = computeSimpleSetup(coin, true);
+      const _frSSetup = computeSimpleSetup(coin, false);
+      const _frLong   = computeFullRisk(coin, _frLSetup, true);
+      const _frShort  = computeFullRisk(coin, _frSSetup, false);
       _frEl.innerHTML = buildFullRiskCard(_frLong, '📈 做多') + buildFullRiskCard(_frShort, '📉 做空');
     } catch(_fe) {
       console.warn('[full-risk]', _fe);
-      _frEl.innerHTML = '';
+      _frEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:8px">10因子評估暫時無法載入</div>';
     }
   }
 }
