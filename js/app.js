@@ -6161,6 +6161,19 @@ function recordSignalsFromScan(data) {
                      ' ' + _now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
         const _tags = `#${_sym.toLowerCase()} #crypto #${isLong ? 'long' : 'short'}`;
 
+        // ── 風險警示橫幅（中風險及以上顯示在訊號最頂部）──
+        const _riskScore = setup.riskScore ?? null;
+        const _riskLevel = setup.riskLevel ?? '';
+        const _riskRecs  = setup.riskRecs  ?? [];
+        let _riskBanner  = '';
+        if (_riskScore !== null && _riskScore >= 28) {
+          const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 50 ? '⛔⛔' : '⚠️';
+          const _riskHdr   = _riskScore >= 75 ? '極高風險警示' : _riskScore >= 50 ? '高風險警示' : '中風險提示';
+          const _recLine   = _riskRecs.length ? `\n   ▸ ${_esc(_riskRecs[0])}` : '';
+          const _rec2      = _riskRecs[1]     ? `\n   ▸ ${_esc(_riskRecs[1])}` : '';
+          _riskBanner = `${_riskEmoji} <b>${_riskHdr}（${_riskScore}/100）</b>：${_esc(_riskLevel)}${_recLine}${_rec2}\n\n`;
+        }
+
         // ── 長線加倉計劃（掃描版，用 ATR 估算）──
         let _scaleBlock = '';
         if (canScaleIn) {
@@ -6187,7 +6200,7 @@ function recordSignalsFromScan(data) {
         // ── 新格式 Telegram 訊息（進場位 → 止損位 → 止盈 → 進場理由 → 止損理由）──
         const _msg = canScaleIn
           ? (
-            `💎 <b>加密掃描 Pro — 長線單信號</b>\n\n` +
+            `${_riskBanner}💎 <b>加密掃描 Pro — 長線單信號</b>\n\n` +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
             `⏰ ${_ts}\n` +
             `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` +
@@ -6202,7 +6215,7 @@ function recordSignalsFromScan(data) {
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           )
           : (
-            `🚨 <b>加密掃描 Pro — 短線單信號</b>\n\n` +
+            `${_riskBanner}🚨 <b>加密掃描 Pro — 短線單信號</b>\n\n` +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
             `⏰ ${_ts}\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
