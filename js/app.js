@@ -9512,8 +9512,7 @@ async function checkAndSendAlerts(data) {
     try {
       const _tlog = loadTradeLog();
       const _hasOpen = _tlog.some(t => t.symbol === coin.symbol && t.direction === dir
-        && (t.status === 'open' || t.status === 'pending')
-        && (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN);
+        && (t.status === 'open' || t.status === 'pending'));
       if (_hasOpen) {
         next[coin.symbol] = { dir, sentAt: now }; // 記入快取，避免下次也重複
         continue;
