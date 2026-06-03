@@ -3955,6 +3955,40 @@ async function autoFetchEconActual(eventName, dateKey) {
       return display;
     } catch(e) { /* try next proxy */ }
   }
+  // FOMC 紀要：改抓 FRED 聯邦基金利率方向（升息/降息/不動）
+  if (eventName === 'FOMC 紀要') {
+    const fredUrl = 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=FEDFUNDS';
+    const proxies = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(fredUrl)}`,
+      `https://corsproxy.io/?${encodeURIComponent(fredUrl)}`,
+    ];
+    for (const proxyUrl of proxies) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        const res = await fetch(proxyUrl, { signal: ctrl.signal });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        const csv = await res.text();
+        const lines = csv.trim().split('\n').slice(1).filter(l => l.trim());
+        if (lines.length < 2) continue;
+        const rows = lines.map(l => { const [d, v] = l.split(','); return { date: d?.trim(), value: parseFloat(v) }; }).filter(r => !isNaN(r.value));
+        if (rows.length < 2) continue;
+        const latest = rows[rows.length - 1];
+        const prev   = rows[rows.length - 2];
+        const diff   = +(latest.value - prev.value).toFixed(2);
+        let display;
+        if (diff > 0.1)       display = `升息至 ${latest.value}%（鷹派，加密偏空；前值 ${prev.value}%）`;
+        else if (diff < -0.1) display = `降息至 ${latest.value}%（鴿派，加密偏多；前值 ${prev.value}%）`;
+        else                  display = `維持 ${latest.value}%（不動，中性；前值 ${prev.value}%）`;
+        localStorage.setItem(cacheKey, display);
+        setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
+        setEconActualValue(eventName, dateKey, display);
+        return display;
+      } catch(e) { /* try next proxy */ }
+    }
+  }
+
   _econFetchFailed.add(lookupKey);
   return null;
 }
@@ -4072,7 +4106,7 @@ function buildTodayEconWidget() {
       </div>` : '';
     const dateKey = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
     const actualVal = published ? getEconActualValue(ev.name, dateKey) : '';
-    const hasBLS = !!BLS_SERIES_MAP[ev.name] || !!KNOWN_ACTUALS[`${ev.name}_${dateKey}`];
+    const hasBLS = !!BLS_SERIES_MAP[ev.name] || ev.name === 'FOMC 紀要' || !!KNOWN_ACTUALS[`${ev.name}_${dateKey}`];
     const fetchFailed = _econFetchFailed.has(`${ev.name}_${dateKey}`);
     if (published && !actualVal && hasBLS && !fetchFailed) {
       autoFetchEconActual(ev.name, dateKey).then(v => {
@@ -5793,8 +5827,9 @@ function recordSignalsFromScan(data) {
     // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
-    // 短線門檻：宏觀有方向時 ≥3/4；宏觀中性或無快取時 ≥2/4（幣種方向指標須確立）
-    const _minFactors = (!_macroCache || macroNetDir === 'neutral') ? 2 : 3;
+    // 短線門檻：有宏觀快取時一律 ≥3/4（含中性市場），無快取才降為 2/4
+    // 宏觀中性 + 只靠幣種自身分數的 2-factor 信號勝率極低，已改為統一要求 3 個確認
+    const _minFactors = !_macroCache ? 2 : 3;
     if ([_f1, _f2, _f3, _f4].filter(Boolean).length < _minFactors) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
@@ -9325,7 +9360,7 @@ function computeSimpleSetup(coin, isLong) {
   const atrPct = adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009;
   const atr    = price * atrPct;
   const entry  = isLong ? Math.min(price, ema20 * 1.002) : Math.max(price, ema20 * 0.998);
-  const sl     = isLong ? entry - atr * 1.8 : entry + atr * 1.8;
+  const sl     = isLong ? entry - atr * 2.5 : entry + atr * 2.5; // 加寬止損：1.8→2.5 ATR，避免正常回踩觸發
   const risk   = Math.abs(entry - sl);
   const tp1    = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
   const tp2    = isLong ? entry + risk * 2.5 : entry - risk * 2.5;
