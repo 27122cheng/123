@@ -9667,8 +9667,11 @@ function computeFullRisk(coin, params, isLong) {
     } catch(_e) { flipRisks = []; }
   }
 
-  // isRangeMode: use provided OR read from weeklyBiasData global
-  const isRangeMode = params.isRangeMode ?? (weeklyBiasData?.rangeMode ?? false);
+  // isRangeMode: use provided OR read from weeklyBiasData (local to buildTradeSetup, may not be in scope)
+  let isRangeMode = params.isRangeMode;
+  if (isRangeMode === undefined) {
+    try { isRangeMode = weeklyBiasData?.rangeMode ?? false; } catch(_) { isRangeMode = false; }
+  }
 
   // bigTrendBlocked: use provided OR estimate from weekly + daily signals
   let bigTrendBlocked = params.bigTrendBlocked;
@@ -10043,6 +10046,9 @@ function computeSimpleSetup(coin, isLong) {
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
     learnFiltered: (conf < 70 || hardBlocked) && rawConf >= 70,
     hardBlocked,
+    isRangeMode: false,   // computeSimpleSetup 無宏觀週期判斷，預設非震盪模式
+    flipRisks:   [],      // computeSimpleSetup 不計算即時事件風險
+    bigTrendBlocked: (_sWkSig.includes(isLong ? 'bear' : 'bull') && _sDySig.includes(isLong ? 'bear' : 'bull') && !_sDySig.includes('neutral')),
   };
 }
 
