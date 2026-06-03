@@ -2443,8 +2443,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     flipRisks, isRangeMode, bigTrendBlocked,
   }, isLong);
 
-  // 高風險及以上（≥50）→ 觀望，不顯示進場建議
-  if (_risk.score >= 50) {
+  // 高風險及以上（≥60）→ 觀望，不顯示進場建議
+  if (_risk.score >= 60) {
     _tradeSetupCache[coin.symbol] = {
       direction: 'wait',
       riskScore: _risk.score, riskLevel: _risk.level,
@@ -5341,7 +5341,7 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   // 風險等級對操作強度的調節詞
   const riskTag = riskScore !== null
     ? (riskScore >= 75 ? '⛔ 極高風險，強烈建議觀望'
-    : riskScore >= 50 ? '⚠️ 高風險，大幅縮倉謹慎操作'
+    : riskScore >= 60 ? '⚠️ 高風險，大幅縮倉謹慎操作'
     : riskScore >= 28 ? '🟡 中風險，適度降低倉位'
     : '🟢 低風險，可正常倉位操作')
     : '';
@@ -5365,7 +5365,7 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   // ── 風險評估整合段落（只在有 buildTradeSetup 快取時顯示）──
   let p6 = '';
   if (riskScore !== null && riskFactors.length > 0) {
-    const riskColor = riskScore >= 75 ? '#ef4444' : riskScore >= 50 ? '#f97316' : riskScore >= 28 ? '#f59e0b' : '#22c55e';
+    const riskColor = riskScore >= 75 ? '#ef4444' : riskScore >= 60 ? '#f97316' : riskScore >= 28 ? '#f59e0b' : '#22c55e';
     const factorItems = riskFactors.slice(0, 3).map(f => `<li>${f}</li>`).join('');
     const recItems    = riskRecs.slice(0, 3).map(r => `<li style="color:#a5f3fc">${r}</li>`).join('');
     p6 = `<div style="background:${riskColor}11;border-left:3px solid ${riskColor};padding:8px 12px;border-radius:0 6px 6px 0;margin-top:4px">
@@ -6051,8 +6051,8 @@ function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 高風險及以上（≥50）→ 觀望，不產生進場訊號
-    if (_scanRisk.score >= 50) continue;
+    // 高風險及以上（≥60）→ 觀望，不產生進場訊號
+    if (_scanRisk.score >= 60) continue;
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
@@ -6180,8 +6180,8 @@ function recordSignalsFromScan(data) {
         const _riskRecs  = _scanRisk.recs;
         let _riskBanner = '';
         if (_riskScore >= 28) {
-          const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 50 ? '⛔⛔' : '⚠️';
-          const _riskHdr   = _riskScore >= 75 ? '極高風險警示' : _riskScore >= 50 ? '高風險警示' : '中風險提示';
+          const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 60 ? '⛔⛔' : '⚠️';
+          const _riskHdr   = _riskScore >= 75 ? '極高風險警示' : _riskScore >= 60 ? '高風險警示' : '中風險提示';
           const _recLine   = _riskRecs[0] ? `\n   ▸ ${_esc(_riskRecs[0])}` : '';
           const _rec2      = _riskRecs[1] ? `\n   ▸ ${_esc(_riskRecs[1])}` : '';
           _riskBanner = `${_riskEmoji} <b>${_riskHdr}（${_riskScore}/100）</b>：${_esc(_riskLevel)}${_recLine}${_rec2}\n\n`;
@@ -6567,13 +6567,13 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
-    // 風險評估升至高風險（≥50）→ 取消未入場掛單
+    // 風險評估升至高風險（≥60）→ 取消未入場掛單
     // 使用 computeSimpleSetup 確保與掃描/UI 顯示結果一致（不依賴 _macroCache 是否存在）
     if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin) {
       try {
         const _frSetup = computeSimpleSetup(_fCoin, _isL);
         const _frRisk  = computeFullRisk(_fCoin, _frSetup, _isL);
-        if (_frRisk.score >= 50) {
+        if (_frRisk.score >= 60) {
           const _frReason = `AI 風險評估升至${_frRisk.level}（${_frRisk.score}/100）：${_frRisk.factors.slice(0, 2).join('、')}`;
           addCancelCooldown(trade, _frReason);
           toDeleteIds.add(trade.id);
@@ -9679,8 +9679,8 @@ function computeFullRisk(coin, params, isLong) {
   else if (_tcSum > 5){ score += 5;  factors.push('輕微技術/籌碼逆風'); }
 
   score = Math.min(100, score);
-  const level      = score >= 75 ? '極高風險' : score >= 50 ? '高風險' : score >= 28 ? '中風險' : '低風險';
-  const levelColor = score >= 75 ? '#ef4444'  : score >= 50 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
+  const level      = score >= 75 ? '極高風險' : score >= 60 ? '高風險' : score >= 28 ? '中風險' : '低風險';
+  const levelColor = score >= 75 ? '#ef4444'  : score >= 60 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
   if (factors.length === 0) { factors.push('各項指標正常，無明顯風險'); recs.push('可按計劃正常倉位進場'); }
   if (recs.length === 0) recs.push('各項指標良好，按計劃執行');
   return { score, level, levelColor, factors, recs };
