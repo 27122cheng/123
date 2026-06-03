@@ -6449,6 +6449,7 @@ function updateOpenTrades(data) {
       _learnPen = _lrFresh.penalty || 0;
     } catch(_le) { /* 保留靜態值 */ }
 
+    const _isL = trade.direction === 'long';
     let freshConf = baseConf;
     if (_macroCache) {
       try {
@@ -6456,7 +6457,6 @@ function updateOpenTrades(data) {
         const _fgV = parseInt(_fg?.value || '50');
         const _chg = _gm?.marketCapChange || 0;
         const _dom = _gm?.btcDominance   || 50;
-        const _isL = trade.direction === 'long';
         let _agt = 0;
         if (_isL) {
           if (_chg < -2) _agt++;
@@ -6553,29 +6553,6 @@ function updateOpenTrades(data) {
           changed = true;
           sendCancelTelegramNotification(trade, _confReason);
         }
-        // 風險評估升至高風險（≥50）→ 取消未入場掛單（使用剛算好的即時扣分值）
-        if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin) {
-          const _frRR1 = (trade.tp1 && trade.entry && trade.sl)
-            ? Math.abs(trade.tp1 - trade.entry) / (Math.abs(trade.entry - trade.sl) || 1)
-            : 1.5;
-          const _frRisk = computeFullRisk(_fCoin, {
-            conf:           freshConf,
-            macroPenalty:   _macP,
-            aiTrendPenalty: _aiP,
-            learnPenalty:   _learnPen,
-            techPenalty:    _techP,
-            chipsPenalty:   _chipsP,
-            rr1:            _frRR1.toFixed(1),
-          }, _isL);
-          if (_frRisk.score >= 50) {
-            const _frReason = `AI 風險評估升至${_frRisk.level}（${_frRisk.score}/100）：${_frRisk.factors.slice(0, 2).join('、')}`;
-            addCancelCooldown(trade, _frReason);
-            toDeleteIds.add(trade.id);
-            cancelledSymbols.add(trade.symbol);
-            changed = true;
-            sendCancelTelegramNotification(trade, _frReason);
-          }
-        }
       } catch(_e) {}
     } else {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
@@ -6589,6 +6566,22 @@ function updateOpenTrades(data) {
         changed = true;
         sendCancelTelegramNotification(trade, _confReason);
       }
+    }
+    // 風險評估升至高風險（≥50）→ 取消未入場掛單
+    // 使用 computeSimpleSetup 確保與掃描/UI 顯示結果一致（不依賴 _macroCache 是否存在）
+    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin) {
+      try {
+        const _frSetup = computeSimpleSetup(_fCoin, _isL);
+        const _frRisk  = computeFullRisk(_fCoin, _frSetup, _isL);
+        if (_frRisk.score >= 50) {
+          const _frReason = `AI 風險評估升至${_frRisk.level}（${_frRisk.score}/100）：${_frRisk.factors.slice(0, 2).join('、')}`;
+          addCancelCooldown(trade, _frReason);
+          toDeleteIds.add(trade.id);
+          cancelledSymbols.add(trade.symbol);
+          changed = true;
+          sendCancelTelegramNotification(trade, _frReason);
+        }
+      } catch(_frErr) { console.warn('[risk-cancel]', trade.symbol, _frErr); }
     }
   }
 
