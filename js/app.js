@@ -2075,30 +2075,55 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 觸發條件：ltBias === direction && ltConf >= 85（canScaleIn = true）
   let ltTP = null, ltTPReason = '', scaleInLevels = [], _aiScaleCount = 1, _aiScaleReason = '';
   if (canScaleIn) {
-    const minLtTP = isLong ? entry + risk * 4 : entry - risk * 4; // 至少 4:1 R/R
-    const maxDist  = price * 0.30; // 長線上限擴展至 30%（週線目標可能較遠）
+    const minLtRR  = 3.0; // 最低 R/R 要求：低於此值不做長線單
+    const minLtTP  = isLong ? entry + risk * minLtRR : entry - risk * minLtRR;
+    const maxDist  = price * 0.35; // 長線上限擴展至 35%
     if (isLong) {
-      const cap     = entry + maxDist;
-      // 優先：週線壓力 > 日線/4H 壓力 > 計算值（取最遠的有效結構位）
-      const wkCands  = _w1Resists.filter(r => r >= minLtTP && r <= cap);
-      const htfCands = _htfResists.filter(r => r >= minLtTP && r <= cap);
-      const allCands = [...new Set([...wkCands, ...htfCands, ...resists.filter(r => r >= minLtTP && r <= cap)])].sort((a,b)=>a-b);
-      ltTP = allCands.length ? allCands[allCands.length - 1] : Math.min(entry + risk * 5, cap);
-      const ltRRv = ((ltTP - entry) / risk).toFixed(1);
-      const ltTfLabel = _htfTfLabel(ltTP);
-      ltTPReason = `${ltTfLabel}關鍵壓力 ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
+      const cap = entry + maxDist;
+      // 優先使用週線 swingHigh，其次週線壓力，再次日線/4H 壓力
+      const _wkSwHigh = _plw1.swingHigh;
+      const wkSwCand  = _wkSwHigh && _wkSwHigh >= minLtTP && _wkSwHigh <= cap ? _wkSwHigh : null;
+      const wkCands   = _w1Resists.filter(r => r >= minLtTP && r <= cap);
+      const htfCands  = _htfResists.filter(r => r >= minLtTP && r <= cap);
+      const allCands  = [...new Set([
+        ...(wkSwCand ? [wkSwCand] : []),
+        ...wkCands, ...htfCands,
+        ...resists.filter(r => r >= minLtTP && r <= cap)
+      ])].sort((a, b) => a - b);
+      ltTP = allCands.length ? allCands[allCands.length - 1] : null;
+      if (!ltTP) { canScaleIn = false; } // 找不到有效目標 → 降回短線
+      else {
+        const ltRRv = ((ltTP - entry) / risk).toFixed(1);
+        if (parseFloat(ltRRv) < minLtRR) { canScaleIn = false; ltTP = null; } // R/R 不足 → 觀望
+        else {
+          const _isWkSw = wkSwCand && Math.abs(ltTP - wkSwCand) < price * 0.005;
+          ltTPReason = `${_isWkSw ? '週線擺動高點' : _htfTfLabel(ltTP)} ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
+        }
+      }
     } else {
-      const cap     = entry - maxDist;
-      const wkCands  = _w1Supps.filter(s => s <= minLtTP && s >= cap);
-      const htfCands = _htfSupps.filter(s => s <= minLtTP && s >= cap);
-      const allCands = [...new Set([...wkCands, ...htfCands, ...supps.filter(s => s <= minLtTP && s >= cap)])].sort((a,b)=>b-a);
-      ltTP = allCands.length ? allCands[allCands.length - 1] : Math.max(entry - risk * 5, cap);
-      const ltRRv = ((entry - ltTP) / risk).toFixed(1);
-      const ltTfLabel = _htfTfLabel(ltTP);
-      ltTPReason = `${ltTfLabel}關鍵支撐 ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
+      const cap = entry - maxDist;
+      const _wkSwLow  = _plw1.swingLow;
+      const wkSwCand  = _wkSwLow && _wkSwLow <= minLtTP && _wkSwLow >= cap ? _wkSwLow : null;
+      const wkCands   = _w1Supps.filter(s => s <= minLtTP && s >= cap);
+      const htfCands  = _htfSupps.filter(s => s <= minLtTP && s >= cap);
+      const allCands  = [...new Set([
+        ...(wkSwCand ? [wkSwCand] : []),
+        ...wkCands, ...htfCands,
+        ...supps.filter(s => s <= minLtTP && s >= cap)
+      ])].sort((a, b) => b - a);
+      ltTP = allCands.length ? allCands[allCands.length - 1] : null;
+      if (!ltTP) { canScaleIn = false; }
+      else {
+        const ltRRv = ((entry - ltTP) / risk).toFixed(1);
+        if (parseFloat(ltRRv) < minLtRR) { canScaleIn = false; ltTP = null; }
+        else {
+          const _isWkSw = wkSwCand && Math.abs(ltTP - wkSwCand) < price * 0.005;
+          ltTPReason = `${_isWkSw ? '週線擺動低點' : _htfTfLabel(ltTP)} ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
+        }
+      }
     }
     // AI 自行判斷加倉次數（最多 3 次）：依長線信心度和 R/R 決定
-    const ltRRraw = risk > 0 ? Math.abs(ltTP - entry) / risk : 0;
+    const ltRRraw = (canScaleIn && ltTP && risk > 0) ? Math.abs(ltTP - entry) / risk : 0;
     _aiScaleCount = (ltConf >= 90 && ltRRraw >= 5.0) ? 3
                   : (ltConf >= 87 && ltRRraw >= 4.0) ? 2
                   : 1;
@@ -6161,16 +6186,34 @@ function recordSignalsFromScan(data) {
                      ' ' + _now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
         const _tags = `#${_sym.toLowerCase()} #crypto #${isLong ? 'long' : 'short'}`;
 
-        // ── 風險警示橫幅（中風險及以上顯示在訊號最頂部）──
-        const _riskScore = setup.riskScore ?? null;
-        const _riskLevel = setup.riskLevel ?? '';
-        const _riskRecs  = setup.riskRecs  ?? [];
-        let _riskBanner  = '';
-        if (_riskScore !== null && _riskScore >= 28) {
+        // ── 風險警示橫幅（中風險及以上顯示在訊號標題下方）──
+        // 優先使用 buildTradeSetup 快取（用戶點擊過幣種才有），否則用掃描即時計算
+        const _cachedRisk = _tradeSetupCache[coin.symbol];
+        let _riskScore = _cachedRisk?.riskScore ?? null;
+        let _riskLevel = _cachedRisk?.riskLevel ?? '';
+        let _riskRecs  = _cachedRisk?.riskRecs  ?? [];
+        if (_riskScore === null) {
+          // 掃描即時簡易計算：ADX + conf + R/R
+          let _rs = 0, _rl = [];
+          const _adxV = parseFloat(coin.adx) || 0;
+          if (setup.conf < 65)       { _rs += 18; _rl.push('建議縮小倉位至正常 40%'); }
+          else if (setup.conf < 72)  { _rs += 9;  _rl.push('建議倉位不超過正常 70%'); }
+          if (_adxV < 18)            { _rs += 26; _rl.push('ADX 極弱，趨勢不明確，強烈建議觀望'); }
+          else if (_adxV < 22)       { _rs += 16; _rl.push('趨勢動能不足，適合小倉試單'); }
+          else if (_adxV < 25)       { _rs += 7; }
+          const _rrV = parseFloat(setup.rr1) || 0;
+          if (_rrV < 1.2)            { _rs += 16; _rl.push('R/R 不足 1.2:1，風險報酬不划算'); }
+          else if (_rrV < 1.5)       { _rs += 7; }
+          _riskScore = Math.min(100, _rs);
+          _riskLevel = _riskScore >= 75 ? '極高風險' : _riskScore >= 50 ? '高風險' : _riskScore >= 28 ? '中風險' : '低風險';
+          _riskRecs  = _rl;
+        }
+        let _riskBanner = '';
+        if (_riskScore >= 28) {
           const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 50 ? '⛔⛔' : '⚠️';
           const _riskHdr   = _riskScore >= 75 ? '極高風險警示' : _riskScore >= 50 ? '高風險警示' : '中風險提示';
-          const _recLine   = _riskRecs.length ? `\n   ▸ ${_esc(_riskRecs[0])}` : '';
-          const _rec2      = _riskRecs[1]     ? `\n   ▸ ${_esc(_riskRecs[1])}` : '';
+          const _recLine   = _riskRecs[0] ? `\n   ▸ ${_esc(_riskRecs[0])}` : '';
+          const _rec2      = _riskRecs[1] ? `\n   ▸ ${_esc(_riskRecs[1])}` : '';
           _riskBanner = `${_riskEmoji} <b>${_riskHdr}（${_riskScore}/100）</b>：${_esc(_riskLevel)}${_recLine}${_rec2}\n\n`;
         }
 
@@ -6200,7 +6243,8 @@ function recordSignalsFromScan(data) {
         // ── 新格式 Telegram 訊息（進場位 → 止損位 → 止盈 → 進場理由 → 止損理由）──
         const _msg = canScaleIn
           ? (
-            `${_riskBanner}💎 <b>加密掃描 Pro — 長線單信號</b>\n\n` +
+            `💎 <b>加密掃描 Pro — 長線單信號</b>\n` +
+            (_riskBanner ? `${_riskBanner}` : '\n') +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
             `⏰ ${_ts}\n` +
             `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` +
@@ -6215,7 +6259,8 @@ function recordSignalsFromScan(data) {
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           )
           : (
-            `${_riskBanner}🚨 <b>加密掃描 Pro — 短線單信號</b>\n\n` +
+            `🚨 <b>加密掃描 Pro — 短線單信號</b>\n` +
+            (_riskBanner ? `${_riskBanner}` : '\n') +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
             `⏰ ${_ts}\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
