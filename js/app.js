@@ -9508,9 +9508,22 @@ async function checkAndSendAlerts(data) {
     // 同一方向且在冷卻期內（2小時）→ 跳過，不重複通知
     if (cached && cached.dir === dir && (now - (cached.sentAt || 0)) < SIGNAL_COOLDOWN) continue;
 
+    // recordSignalsFromScan 已為此幣種/方向建立交易記錄 → 不重複通知
+    try {
+      const _tlog = loadTradeLog();
+      const _hasOpen = _tlog.some(t => t.symbol === coin.symbol && t.direction === dir
+        && (t.status === 'open' || t.status === 'pending')
+        && (now - (t.timestamp || 0)) < SIGNAL_COOLDOWN);
+      if (_hasOpen) {
+        next[coin.symbol] = { dir, sentAt: now }; // 記入快取，避免下次也重複
+        continue;
+      }
+    } catch(_e) {}
+
     // 準備 setup（優先用快取，fallback 補上 macro+AI 扣分的完整版本）
     let notifSetup = _tradeSetupCache[coin.symbol] || null;
-    if (!notifSetup) {
+    // 快取缺少進場價格資料（監控更新覆蓋）→ 重新計算
+    if (!notifSetup || !notifSetup.entry) {
       notifSetup = computeSimpleSetup(coin, isLong);
       if (_macroCache) {
         try {

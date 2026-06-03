@@ -484,9 +484,12 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     return p >= 1000 ? v.toFixed(1) : p >= 1 ? v.toFixed(3) : v.toFixed(6);
   };
   const pct = (a, b) => {
+    if (!a || !b) return '--';
     const d = ((b - a) / Math.abs(a) * 100);
+    if (!isFinite(d)) return '--';
     return (d >= 0 ? '+' : '') + d.toFixed(2) + '%';
   };
+  const rr = v => (v != null && v !== undefined && String(v) !== 'undefined') ? v : '--';
 
   const isRange = setup?.tradeType === 'range';
   let msg = isRange
@@ -664,16 +667,21 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     msg += `\n`;
 
     const tp1Pct = pct(setup.entry, setup.tp1);
-    msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${setup.rr1}:1)\n`;
-    msg += `   ↳ ${setup.tp1Reason}\n\n`;
+    msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${rr(setup.rr1)}:1)\n`;
+    if (setup.tp1Reason) msg += `   ↳ ${setup.tp1Reason}\n`;
+    msg += `\n`;
 
-    const tp2Pct = pct(setup.entry, setup.tp2);
-    msg += `🚀 <b>止盈二：$${fmt(setup.tp2)}</b>  (${tp2Pct} | R:R ${setup.rr2}:1)\n`;
-    msg += `   ↳ ${setup.tp2Reason}\n\n`;
+    if (setup.tp2) {
+      const tp2Pct = pct(setup.entry, setup.tp2);
+      msg += `🚀 <b>止盈二：$${fmt(setup.tp2)}</b>  (${tp2Pct} | R:R ${rr(setup.rr2)}:1)\n`;
+      if (setup.tp2Reason) msg += `   ↳ ${setup.tp2Reason}\n`;
+      msg += `\n`;
+    }
 
     const slPct = pct(setup.entry, setup.sl);
     msg += `🛑 <b>止損：$${fmt(setup.sl)}</b>  (${slPct})\n`;
-    msg += `   ↳ ${setup.slReason}\n\n`;
+    if (setup.slReason) msg += `   ↳ ${setup.slReason}\n`;
+    msg += `\n`;
   } else {
     msg += `💰 現價：<b>$${coin.price}</b>  ｜  趨勢：${coin.trend}\n\n`;
   }
