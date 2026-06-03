@@ -6567,14 +6567,18 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
-    // 風險評估升至高風險（≥60）→ 取消未入場掛單
-    // 使用 computeSimpleSetup 確保與掃描/UI 顯示結果一致（不依賴 _macroCache 是否存在）
+    // 風險評估升至高風險 → 取消未入場掛單
+    // 雙重檢查：buildRisk（UI 顯示）或 computeFullRisk（10因子）任一達高風險即取消
     if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin) {
       try {
-        const _frSetup = computeSimpleSetup(_fCoin, _isL);
-        const _frRisk  = computeFullRisk(_fCoin, _frSetup, _isL);
-        if (_frRisk.score >= 60) {
-          const _frReason = `AI 風險評估升至${_frRisk.level}（${_frRisk.score}/100）：${_frRisk.factors.slice(0, 2).join('、')}`;
+        const _brResult = buildRisk(_fCoin);                          // UI 顯示的風險（≥55 = 高風險）
+        const _frSetup  = computeSimpleSetup(_fCoin, _isL);
+        const _frRisk   = computeFullRisk(_fCoin, _frSetup, _isL);   // 10因子風險（≥60 = 高風險）
+        const _isHighRisk = _brResult.pct >= 55 || _frRisk.score >= 60;
+        if (_isHighRisk) {
+          const _rLabel  = _frRisk.score >= 60 ? `${_frRisk.level}（${_frRisk.score}/100）` : `${_brResult.level}（${_brResult.pct}/100）`;
+          const _rDetail = _frRisk.score >= 60 ? _frRisk.factors.slice(0, 2).join('、') : '市場高波動性，RSI 或趨勢評分處於極端區間';
+          const _frReason = `AI 風險評估升至${_rLabel}：${_rDetail}`;
           addCancelCooldown(trade, _frReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
