@@ -2437,60 +2437,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── AI 風險評估（本地計算，不需 API Key）──
-  const _risk = (() => {
-    let score = 0;
-    const factors = [], recs = [];
-
-    // 1. 信心度
-    if (conf < 65)      { score += 20; factors.push(`信心偏低（${conf}%）`); recs.push('考慮縮小倉位至正常的 40-50%'); }
-    else if (conf < 72) { score += 10; factors.push(`信心中等（${conf}%）`); recs.push('建議倉位不超過正常的 70%'); }
-
-    // 2. ADX 趨勢強度
-    const _adx = typeof adxVal === 'number' ? adxVal : parseFloat(adxVal) || 0;
-    if (_adx < 18)      { score += 28; factors.push(`ADX ${_adx.toFixed(1)} 極弱，無趨勢`); recs.push('ADX 過低，趨勢不明確，強烈建議觀望'); }
-    else if (_adx < 22) { score += 18; factors.push(`ADX ${_adx.toFixed(1)} 偏弱`); recs.push('趨勢動能不足，易被洗出，適合小倉試單'); }
-    else if (_adx < 25) { score += 8;  factors.push(`ADX ${_adx.toFixed(1)} 略低`); }
-
-    // 3. 宏觀逆風
-    if (macroOpposePenalty > 15)     { score += 22; factors.push(`宏觀強逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀方向明顯相反，強烈建議降低倉位或觀望'); }
-    else if (macroOpposePenalty > 8) { score += 12; factors.push(`宏觀中等逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀有逆風，建議縮小倉位並設嚴格止損'); }
-    else if (macroOpposePenalty > 3) { score += 5;  factors.push(`宏觀輕微逆風（扣 ${macroOpposePenalty}%）`); }
-
-    // 4. AI 趨勢預測逆向
-    if (aiTrendPenalty > 10)    { score += 15; factors.push(`AI 趨勢預測逆向（扣 ${aiTrendPenalty}%）`); recs.push('AI 週/日預測與進場方向相反，謹慎操作'); }
-    else if (aiTrendPenalty > 4) { score += 7;  factors.push(`AI 趨勢預測輕微逆向（扣 ${aiTrendPenalty}%）`); }
-
-    // 5. AI 風控歷史記憶
-    if (learnPenalty > 10)   { score += 18; factors.push(`AI 風控記憶觸發（扣 ${learnPenalty}%）`); recs.push('此幣種歷史止損模式頻繁，建議跳過或等更好進場點'); }
-    else if (learnPenalty > 5){ score += 9;  factors.push(`AI 風控記憶輕微觸發（扣 ${learnPenalty}%）`); recs.push('歷史有止損記錄，降低倉位比例'); }
-
-    // 6. R/R 比率
-    const _rr1 = parseFloat(rr1str) || 0;
-    if (_rr1 < 1.2)        { score += 18; factors.push(`R/R 過低（${_rr1}:1）`); recs.push('R/R 不足 1.2:1，風險報酬不划算，建議跳過'); }
-    else if (_rr1 < 1.5)   { score += 8;  factors.push(`R/R 偏低（${_rr1}:1）`); recs.push('R/R 略低，止損設定要精確'); }
-
-    // 7. 即將發布的高影響經濟數據
-    if (flipRisks.length >= 3)      { score += 20; factors.push(`${flipRisks.length} 個高衝擊數據即將發布`); recs.push(`${flipRisks.map(r=>r.name).join('、')} 即將公布，可能造成劇烈波動，建議等數據後再進場`); }
-    else if (flipRisks.length >= 1) { score += 10; factors.push(`${flipRisks.length} 個高衝擊數據（${flipRisks.map(r=>r.name).join('、')}）`); recs.push('數據公布前後波動大，設好止損再進場'); }
-
-    // 8. 區間模式
-    if (isRangeMode) { score += 10; factors.push('目前為區間震盪模式'); recs.push('區間模式建議縮短持倉時間，遇壓力/支撐快速獲利了結'); }
-
-    // 9. 4H+日線趨勢對齊
-    if (bigTrendBlocked) { score += 15; factors.push('4H+日線趨勢未對齊'); recs.push('大週期趨勢不確認，謹慎持倉，避免重倉'); }
-
-    // 10. 技術面/籌碼面扣分
-    if (techPenalty + chipsPenalty > 12)  { score += 10; factors.push(`技術/籌碼逆風（扣 ${techPenalty + chipsPenalty}%）`); }
-    else if (techPenalty + chipsPenalty > 5) { score += 5; factors.push(`輕微技術/籌碼逆風（扣 ${techPenalty + chipsPenalty}%）`); }
-
-    score = Math.min(100, score);
-    const level = score >= 75 ? '極高風險' : score >= 50 ? '高風險' : score >= 28 ? '中風險' : '低風險';
-    const levelColor = score >= 75 ? '#ef4444' : score >= 50 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
-    // 若無特別因素，加入正面評估
-    if (factors.length === 0) { factors.push('各項指標正常，無明顯風險'); recs.push('可按計劃正常倉位進場'); }
-    if (recs.length === 0) recs.push('各項指標良好，按計劃執行');
-    return { score, level, levelColor, factors, recs };
-  })();
+  const _risk = computeFullRisk(coin, {
+    conf, macroPenalty: macroOpposePenalty, aiTrendPenalty, learnPenalty,
+    techPenalty, chipsPenalty, rr1: rr1str,
+    flipRisks, isRangeMode, bigTrendBlocked,
+  }, isLong);
   // 即使是觀望，也記錄最終防線原因供顯示
   if (hardBlocked && direction === 'wait') {
     learnWarnings.forEach(w => entryReasons.push(w));
@@ -6066,6 +6017,15 @@ function recordSignalsFromScan(data) {
     // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 60%
     if (setup.conf < 60) continue;
 
+    // 完整風險評估（10 因子，與詳情頁相同邏輯）
+    const _scanRisk = computeFullRisk(coin, setup, isLong);
+    // 寫入快取，確保 generateAIAnalysis 也能取用
+    if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
+    Object.assign(_tradeSetupCache[coin.symbol], {
+      riskScore: _scanRisk.score, riskLevel: _scanRisk.level,
+      riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
+    });
+
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
     const _ltWkOk  = isLong ? !!coin.weeklySignal?.includes('bull') : !!coin.weeklySignal?.includes('bear');
@@ -6186,28 +6146,10 @@ function recordSignalsFromScan(data) {
                      ' ' + _now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
         const _tags = `#${_sym.toLowerCase()} #crypto #${isLong ? 'long' : 'short'}`;
 
-        // ── 風險警示橫幅（中風險及以上顯示在訊號標題下方）──
-        // 優先使用 buildTradeSetup 快取（用戶點擊過幣種才有），否則用掃描即時計算
-        const _cachedRisk = _tradeSetupCache[coin.symbol];
-        let _riskScore = _cachedRisk?.riskScore ?? null;
-        let _riskLevel = _cachedRisk?.riskLevel ?? '';
-        let _riskRecs  = _cachedRisk?.riskRecs  ?? [];
-        if (_riskScore === null) {
-          // 掃描即時簡易計算：ADX + conf + R/R
-          let _rs = 0, _rl = [];
-          const _adxV = parseFloat(coin.adx) || 0;
-          if (setup.conf < 65)       { _rs += 18; _rl.push('建議縮小倉位至正常 40%'); }
-          else if (setup.conf < 72)  { _rs += 9;  _rl.push('建議倉位不超過正常 70%'); }
-          if (_adxV < 18)            { _rs += 26; _rl.push('ADX 極弱，趨勢不明確，強烈建議觀望'); }
-          else if (_adxV < 22)       { _rs += 16; _rl.push('趨勢動能不足，適合小倉試單'); }
-          else if (_adxV < 25)       { _rs += 7; }
-          const _rrV = parseFloat(setup.rr1) || 0;
-          if (_rrV < 1.2)            { _rs += 16; _rl.push('R/R 不足 1.2:1，風險報酬不划算'); }
-          else if (_rrV < 1.5)       { _rs += 7; }
-          _riskScore = Math.min(100, _rs);
-          _riskLevel = _riskScore >= 75 ? '極高風險' : _riskScore >= 50 ? '高風險' : _riskScore >= 28 ? '中風險' : '低風險';
-          _riskRecs  = _rl;
-        }
+        // ── 風險警示橫幅（完整 10 因子評估，與幣種詳情頁相同）──
+        const _riskScore = _scanRisk.score;
+        const _riskLevel = _scanRisk.level;
+        const _riskRecs  = _scanRisk.recs;
         let _riskBanner = '';
         if (_riskScore >= 28) {
           const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 50 ? '⛔⛔' : '⚠️';
@@ -9609,6 +9551,95 @@ async function checkAndSendAlerts(data) {
   if (navigator.serviceWorker?.controller) {
     navigator.serviceWorker.controller.postMessage({ type: 'SYNC_CACHE', cache: next });
   }
+}
+
+function computeFullRisk(coin, params, isLong) {
+  const conf               = params.conf               ?? 60;
+  const macroOpposePenalty = params.macroPenalty       ?? 0;
+  const aiTrendPenalty     = params.aiTrendPenalty     ?? 0;
+  const learnPenalty       = params.learnPenalty       ?? 0;
+  const techPenalty        = params.techPenalty        ?? 0;
+  const chipsPenalty       = params.chipsPenalty       ?? 0;
+  const rr1                = parseFloat(params.rr1)   || 0;
+
+  // flipRisks: use explicitly provided OR derive from todayBiasData global
+  let flipRisks = params.flipRisks;
+  if (!flipRisks) {
+    try {
+      const nowMs = Date.now();
+      flipRisks = (todayBiasData?.highEvs || [])
+        .map(ev => ({ ev, mins: (ev.eventTime?.getTime() - nowMs) / 60000 }))
+        .filter(({ mins }) => mins > -60 && mins < 480)
+        .map(({ ev }) => ({ name: ev.name }));
+    } catch(_e) { flipRisks = []; }
+  }
+
+  // isRangeMode: use provided OR read from weeklyBiasData global
+  const isRangeMode = params.isRangeMode ?? (weeklyBiasData?.rangeMode ?? false);
+
+  // bigTrendBlocked: use provided OR estimate from weekly + daily signals
+  let bigTrendBlocked = params.bigTrendBlocked;
+  if (bigTrendBlocked === undefined) {
+    const _wkSig = (coin.weeklySignal || '');
+    const _dySig = (coin.dailySignal  || '');
+    const _wkOpp = isLong ? _wkSig.includes('bear') : _wkSig.includes('bull');
+    const _dyOpp = isLong
+      ? _dySig.includes('bear') && !_dySig.includes('neutral')
+      : _dySig.includes('bull') && !_dySig.includes('neutral');
+    bigTrendBlocked = _wkOpp && _dyOpp;
+  }
+
+  let score = 0;
+  const factors = [], recs = [];
+
+  // 1. 信心度
+  if (conf < 65)      { score += 20; factors.push(`信心偏低（${conf}%）`); recs.push('考慮縮小倉位至正常的 40-50%'); }
+  else if (conf < 72) { score += 10; factors.push(`信心中等（${conf}%）`); recs.push('建議倉位不超過正常的 70%'); }
+
+  // 2. ADX 趨勢強度
+  const _adx = parseFloat(coin.adx) || 0;
+  if (_adx < 18)      { score += 28; factors.push(`ADX ${_adx.toFixed(1)} 極弱，無趨勢`); recs.push('ADX 過低，趨勢不明確，強烈建議觀望'); }
+  else if (_adx < 22) { score += 18; factors.push(`ADX ${_adx.toFixed(1)} 偏弱`); recs.push('趨勢動能不足，易被洗出，適合小倉試單'); }
+  else if (_adx < 25) { score += 8;  factors.push(`ADX ${_adx.toFixed(1)} 略低`); }
+
+  // 3. 宏觀逆風
+  if (macroOpposePenalty > 15)     { score += 22; factors.push(`宏觀強逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀方向明顯相反，強烈建議降低倉位或觀望'); }
+  else if (macroOpposePenalty > 8) { score += 12; factors.push(`宏觀中等逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀有逆風，建議縮小倉位並設嚴格止損'); }
+  else if (macroOpposePenalty > 3) { score += 5;  factors.push(`宏觀輕微逆風（扣 ${macroOpposePenalty}%）`); }
+
+  // 4. AI 趨勢預測逆向
+  if (aiTrendPenalty > 10)     { score += 15; factors.push(`AI 趨勢預測逆向（扣 ${aiTrendPenalty}%）`); recs.push('AI 週/日預測與進場方向相反，謹慎操作'); }
+  else if (aiTrendPenalty > 4) { score += 7;  factors.push(`AI 趨勢預測輕微逆向（扣 ${aiTrendPenalty}%）`); }
+
+  // 5. AI 風控歷史記憶
+  if (learnPenalty > 10)    { score += 18; factors.push(`AI 風控記憶觸發（扣 ${learnPenalty}%）`); recs.push('此幣種歷史止損模式頻繁，建議跳過或等更好進場點'); }
+  else if (learnPenalty > 5){ score += 9;  factors.push(`AI 風控記憶輕微觸發（扣 ${learnPenalty}%）`); recs.push('歷史有止損記錄，降低倉位比例'); }
+
+  // 6. R/R 比率
+  if (rr1 < 1.2)      { score += 18; factors.push(`R/R 過低（${rr1}:1）`); recs.push('R/R 不足 1.2:1，風險報酬不划算，建議跳過'); }
+  else if (rr1 < 1.5) { score += 8;  factors.push(`R/R 偏低（${rr1}:1）`); recs.push('R/R 略低，止損設定要精確'); }
+
+  // 7. 即將發布的高影響經濟數據
+  if (flipRisks.length >= 3)      { score += 20; factors.push(`${flipRisks.length} 個高衝擊數據即將發布`); recs.push(`${flipRisks.map(r=>r.name).join('、')} 即將公布，可能造成劇烈波動，建議等數據後再進場`); }
+  else if (flipRisks.length >= 1) { score += 10; factors.push(`${flipRisks.length} 個高衝擊數據（${flipRisks.map(r=>r.name).join('、')}）`); recs.push('數據公布前後波動大，設好止損再進場'); }
+
+  // 8. 區間模式
+  if (isRangeMode) { score += 10; factors.push('目前為區間震盪模式'); recs.push('區間模式建議縮短持倉時間，遇壓力/支撐快速獲利了結'); }
+
+  // 9. 4H+日線趨勢對齊
+  if (bigTrendBlocked) { score += 15; factors.push('4H+日線趨勢未對齊'); recs.push('大週期趨勢不確認，謹慎持倉，避免重倉'); }
+
+  // 10. 技術面/籌碼面扣分
+  const _tcSum = techPenalty + chipsPenalty;
+  if (_tcSum > 12)    { score += 10; factors.push(`技術/籌碼逆風（扣 ${_tcSum}%）`); }
+  else if (_tcSum > 5){ score += 5;  factors.push(`輕微技術/籌碼逆風（扣 ${_tcSum}%）`); }
+
+  score = Math.min(100, score);
+  const level      = score >= 75 ? '極高風險' : score >= 50 ? '高風險' : score >= 28 ? '中風險' : '低風險';
+  const levelColor = score >= 75 ? '#ef4444'  : score >= 50 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
+  if (factors.length === 0) { factors.push('各項指標正常，無明顯風險'); recs.push('可按計劃正常倉位進場'); }
+  if (recs.length === 0) recs.push('各項指標良好，按計劃執行');
+  return { score, level, levelColor, factors, recs };
 }
 
 function computeSimpleSetup(coin, isLong) {
