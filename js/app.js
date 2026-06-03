@@ -2869,6 +2869,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   <div class="setup-risk-card" style="margin:10px 0;padding:14px 16px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-left:3px solid ${_risk.levelColor};border-radius:10px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <span style="font-size:0.78rem;font-weight:600;color:var(--text2);letter-spacing:.5px">🛡️ AI 風險評估</span>
+      <span style="font-size:0.68rem;color:var(--text3);margin-left:6px">（僅供參考，不影響進場訊號）</span>
       <span style="font-size:0.72rem;font-weight:700;color:${_risk.levelColor};background:${_risk.levelColor}22;padding:2px 8px;border-radius:20px">${_risk.level}</span>
     </div>
     <!-- 風險分數進度條 -->
@@ -6017,14 +6018,16 @@ function recordSignalsFromScan(data) {
     // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 60%
     if (setup.conf < 60) continue;
 
-    // 完整風險評估（10 因子，與詳情頁相同邏輯）
-    const _scanRisk = computeFullRisk(coin, setup, isLong);
-    // 寫入快取，確保 generateAIAnalysis 也能取用
-    if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
-    Object.assign(_tradeSetupCache[coin.symbol], {
-      riskScore: _scanRisk.score, riskLevel: _scanRisk.level,
-      riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
-    });
+    // 完整風險評估（10 因子，僅供參考，不影響進場訊號）
+    let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
+    try {
+      _scanRisk = computeFullRisk(coin, setup, isLong);
+      if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
+      Object.assign(_tradeSetupCache[coin.symbol], {
+        riskScore: _scanRisk.score, riskLevel: _scanRisk.level,
+        riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
+      });
+    } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
@@ -9603,36 +9606,36 @@ function computeFullRisk(coin, params, isLong) {
   else if (_adx < 25) { score += 8;  factors.push(`ADX ${_adx.toFixed(1)} 略低`); }
 
   // 3. 宏觀逆風
-  if (macroOpposePenalty > 15)     { score += 22; factors.push(`宏觀強逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀方向明顯相反，強烈建議降低倉位或觀望'); }
-  else if (macroOpposePenalty > 8) { score += 12; factors.push(`宏觀中等逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀有逆風，建議縮小倉位並設嚴格止損'); }
-  else if (macroOpposePenalty > 3) { score += 5;  factors.push(`宏觀輕微逆風（扣 ${macroOpposePenalty}%）`); }
+  if (macroOpposePenalty > 15)     { score += 22; factors.push('宏觀強逆風'); recs.push('宏觀方向明顯相反，可考慮降低倉位'); }
+  else if (macroOpposePenalty > 8) { score += 12; factors.push('宏觀中等逆風'); recs.push('宏觀有逆風，可縮小倉位並設止損'); }
+  else if (macroOpposePenalty > 3) { score += 5;  factors.push('宏觀輕微逆風'); }
 
   // 4. AI 趨勢預測逆向
-  if (aiTrendPenalty > 10)     { score += 15; factors.push(`AI 趨勢預測逆向（扣 ${aiTrendPenalty}%）`); recs.push('AI 週/日預測與進場方向相反，謹慎操作'); }
-  else if (aiTrendPenalty > 4) { score += 7;  factors.push(`AI 趨勢預測輕微逆向（扣 ${aiTrendPenalty}%）`); }
+  if (aiTrendPenalty > 10)     { score += 15; factors.push('AI 趨勢預測逆向'); recs.push('AI 週/日預測與進場方向相反，可謹慎操作'); }
+  else if (aiTrendPenalty > 4) { score += 7;  factors.push('AI 趨勢預測輕微逆向'); }
 
   // 5. AI 風控歷史記憶
-  if (learnPenalty > 10)    { score += 18; factors.push(`AI 風控記憶觸發（扣 ${learnPenalty}%）`); recs.push('此幣種歷史止損模式頻繁，建議跳過或等更好進場點'); }
-  else if (learnPenalty > 5){ score += 9;  factors.push(`AI 風控記憶輕微觸發（扣 ${learnPenalty}%）`); recs.push('歷史有止損記錄，降低倉位比例'); }
+  if (learnPenalty > 10)    { score += 18; factors.push('AI 風控記憶觸發'); recs.push('此幣種歷史止損模式頻繁，可等更好進場點'); }
+  else if (learnPenalty > 5){ score += 9;  factors.push('AI 風控記憶輕微觸發'); recs.push('歷史有止損記錄，可降低倉位比例'); }
 
   // 6. R/R 比率
-  if (rr1 < 1.2)      { score += 18; factors.push(`R/R 過低（${rr1}:1）`); recs.push('R/R 不足 1.2:1，風險報酬不划算，建議跳過'); }
+  if (rr1 < 1.2)      { score += 18; factors.push(`R/R 過低（${rr1}:1）`); recs.push('R/R 不足 1.2:1，風險報酬偏低，可評估是否進場'); }
   else if (rr1 < 1.5) { score += 8;  factors.push(`R/R 偏低（${rr1}:1）`); recs.push('R/R 略低，止損設定要精確'); }
 
   // 7. 即將發布的高影響經濟數據
-  if (flipRisks.length >= 3)      { score += 20; factors.push(`${flipRisks.length} 個高衝擊數據即將發布`); recs.push(`${flipRisks.map(r=>r.name).join('、')} 即將公布，可能造成劇烈波動，建議等數據後再進場`); }
-  else if (flipRisks.length >= 1) { score += 10; factors.push(`${flipRisks.length} 個高衝擊數據（${flipRisks.map(r=>r.name).join('、')}）`); recs.push('數據公布前後波動大，設好止損再進場'); }
+  if (flipRisks.length >= 3)      { score += 20; factors.push(`${flipRisks.length} 個高衝擊數據即將發布`); recs.push(`${flipRisks.map(r=>r.name).join('、')} 即將公布，可能造成波動，注意風控`); }
+  else if (flipRisks.length >= 1) { score += 10; factors.push(`${flipRisks.length} 個高衝擊數據（${flipRisks.map(r=>r.name).join('、')}）`); recs.push('數據公布前後波動大，設好止損'); }
 
   // 8. 區間模式
-  if (isRangeMode) { score += 10; factors.push('目前為區間震盪模式'); recs.push('區間模式建議縮短持倉時間，遇壓力/支撐快速獲利了結'); }
+  if (isRangeMode) { score += 10; factors.push('目前為區間震盪模式'); recs.push('區間模式可縮短持倉時間，遇壓力/支撐快速獲利了結'); }
 
   // 9. 4H+日線趨勢對齊
-  if (bigTrendBlocked) { score += 15; factors.push('4H+日線趨勢未對齊'); recs.push('大週期趨勢不確認，謹慎持倉，避免重倉'); }
+  if (bigTrendBlocked) { score += 15; factors.push('4H+日線趨勢未對齊'); recs.push('大週期趨勢未確認，可謹慎持倉、避免重倉'); }
 
-  // 10. 技術面/籌碼面扣分
+  // 10. 技術面/籌碼面
   const _tcSum = techPenalty + chipsPenalty;
-  if (_tcSum > 12)    { score += 10; factors.push(`技術/籌碼逆風（扣 ${_tcSum}%）`); }
-  else if (_tcSum > 5){ score += 5;  factors.push(`輕微技術/籌碼逆風（扣 ${_tcSum}%）`); }
+  if (_tcSum > 12)    { score += 10; factors.push('技術/籌碼逆風'); }
+  else if (_tcSum > 5){ score += 5;  factors.push('輕微技術/籌碼逆風'); }
 
   score = Math.min(100, score);
   const level      = score >= 75 ? '極高風險' : score >= 50 ? '高風險' : score >= 28 ? '中風險' : '低風險';
