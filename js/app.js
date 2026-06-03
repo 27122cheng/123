@@ -2503,6 +2503,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     blockReasons: blockReasons || [],
     learnWarnings: learnWarnings || [],
     defenseChecks: learnResult?.defenseChecks || [],
+    // AI 風險評估（供 generateAIAnalysis 整合進操作建議）
+    riskScore: _risk.score, riskLevel: _risk.level, riskFactors: _risk.factors, riskRecs: _risk.recs,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -5297,6 +5299,11 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   const finalConf    = cached?.finalConf       ?? cached?.conf;
   const rawConf      = cached?.rawConf;
   const tradeDir     = cached?.direction;      // 'long' | 'short' | 'wait'
+  // 風險評估
+  const riskScore    = cached?.riskScore   ?? null;
+  const riskLevel    = cached?.riskLevel   ?? '';
+  const riskFactors  = cached?.riskFactors ?? [];
+  const riskRecs     = cached?.riskRecs    ?? [];
 
   let p1;
   if (bullTFs.length >= bearTFs.length + 2)
@@ -5331,21 +5338,43 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   let p4;
   const h1Swing = mtfData['1h']?.signal?.swingHigh;
   const h1Low   = mtfData['1h']?.signal?.swingLow;
-  // 整合 AI 風控狀態到操作建議
+  // 風險等級對操作強度的調節詞
+  const riskTag = riskScore !== null
+    ? (riskScore >= 75 ? '⛔ 極高風險，強烈建議觀望'
+    : riskScore >= 50 ? '⚠️ 高風險，大幅縮倉謹慎操作'
+    : riskScore >= 28 ? '🟡 中風險，適度降低倉位'
+    : '🟢 低風險，可正常倉位操作')
+    : '';
+  // 整合 AI 風控狀態與風險評估到操作建議
   if (riskBlocked) {
     p4 = `🚫 <strong>操作建議</strong>：AI 風控硬性攔截（${blockReasons[0]?.slice(0, 60) || '歷史止損條件觸發'}），本次不建議進場，等待市場條件改善。`;
   } else if (tradeDir === 'wait') {
-    p4 = `⏸ <strong>操作建議</strong>：當前信號不足或條件受限（信心度 ${finalConf ?? '--'}%），建議觀望，等待更強確認信號。`;
+    p4 = `⏸ <strong>操作建議</strong>：當前信號不足或條件受限（信心度 ${finalConf ?? '--'}%），建議觀望，等待更強確認信號。${riskTag ? ` ${riskTag}。` : ''}`;
   } else if (rsi > 70 && adx > 30) {
-    p4 = `⚠️ <strong>操作建議</strong>：RSI 超買（${rsi}）且趨勢強勁（ADX ${adx}），不宜追高，等待回調至 EMA20（${fmtPrice(coin.ema20)}）附近再考慮介入，設置嚴格止損。`;
+    p4 = `⚠️ <strong>操作建議</strong>：RSI 超買（${rsi}）且趨勢強勁（ADX ${adx}），不宜追高，等待回調至 EMA20（${fmtPrice(coin.ema20)}）附近再考慮介入，設置嚴格止損。${riskTag ? ` 風險評估：${riskTag}。` : ''}`;
   } else if (rsi < 30 && adx > 25) {
-    p4 = `💡 <strong>操作建議</strong>：RSI 超賣（${rsi}），若出現帶量反彈K棒可輕倉試多，止損設於近期低點下方。`;
+    p4 = `💡 <strong>操作建議</strong>：RSI 超賣（${rsi}），若出現帶量反彈K棒可輕倉試多，止損設於近期低點下方。${riskTag ? ` 風險評估：${riskTag}。` : ''}`;
   } else if (bullTFs.length > bearTFs.length && adx > 22) {
-    p4 = `✅ <strong>操作建議</strong>：多頭趨勢中（ADX ${adx}），可在回撤至 EMA20（${fmtPrice(coin.ema20)}）附近結合訂單流確認後介入，風險收益比較佳。`;
+    p4 = `✅ <strong>操作建議</strong>：多頭趨勢中（ADX ${adx}），可在回撤至 EMA20（${fmtPrice(coin.ema20)}）附近結合訂單流確認後介入，風險收益比較佳。${riskTag ? ` 風險評估：${riskTag}。` : ''}`;
   } else if (bearTFs.length > bullTFs.length && adx > 22) {
-    p4 = `📉 <strong>操作建議</strong>：空頭趨勢中（ADX ${adx}），避免逆勢做多，等待 RSI 底部背離或帶量止跌K棒信號出現後再考慮布局。`;
+    p4 = `📉 <strong>操作建議</strong>：空頭趨勢中（ADX ${adx}），避免逆勢做多，等待 RSI 底部背離或帶量止跌K棒信號出現後再考慮布局。${riskTag ? ` 風險評估：${riskTag}。` : ''}`;
   } else {
-    p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。`;
+    p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。${riskTag ? ` 風險評估：${riskTag}。` : ''}`;
+  }
+
+  // ── 風險評估整合段落（只在有 buildTradeSetup 快取時顯示）──
+  let p6 = '';
+  if (riskScore !== null && riskFactors.length > 0) {
+    const riskColor = riskScore >= 75 ? '#ef4444' : riskScore >= 50 ? '#f97316' : riskScore >= 28 ? '#f59e0b' : '#22c55e';
+    const factorItems = riskFactors.slice(0, 3).map(f => `<li>${f}</li>`).join('');
+    const recItems    = riskRecs.slice(0, 3).map(r => `<li style="color:#a5f3fc">${r}</li>`).join('');
+    p6 = `<div style="background:${riskColor}11;border-left:3px solid ${riskColor};padding:8px 12px;border-radius:0 6px 6px 0;margin-top:4px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">
+        <strong style="color:${riskColor}">🛡️ AI 風險評估：${riskLevel}（${riskScore}/100）</strong>
+      </div>
+      <ul style="margin:0 0 4px 16px;font-size:0.82em;color:var(--text2)">${factorItems}</ul>
+      ${recItems ? `<ul style="margin:4px 0 0 16px;font-size:0.82em">${recItems}</ul>` : ''}
+    </div>`;
   }
 
   // ── 風控扣分整合段落（ADX + 宏觀 + AI趨勢 + AI風控規則）──
@@ -5378,6 +5407,7 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     ${p2 ? `<div class="ai-para">${p2}</div>` : ''}
     ${p3 ? `<div class="ai-para">${p3}</div>` : ''}
     <div class="ai-para">${p4}</div>
+    ${p6 ? `<div class="ai-para">${p6}</div>` : ''}
     ${p5 ? `<div class="ai-para">${p5}</div>` : ''}
   </div>`;
 }
