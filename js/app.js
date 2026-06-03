@@ -3903,6 +3903,13 @@ const BLS_SERIES_MAP = {
   '美國生產者物價指數（PPI）': { id: 'WPU000000000', type: 'yoy_pct', unit: '%', dp: 1 },
 };
 
+const FRED_SERIES_MAP = {
+  '美國初請失業金人數': { id: 'IC4WSA',   type: 'level_K',      unit: 'K',   dp: 0 },
+  'EIA 原油庫存':       { id: 'WCESTUS1', type: 'weekly_change', unit: 'M桶', dp: 3 },
+  '美國零售銷售':       { id: 'RSAFS',    type: 'mom_pct',       unit: '%',   dp: 1 },
+  'ADP 就業人數':       { id: 'ADPCHNG',  type: 'level_K',       unit: 'K',   dp: 0 },
+};
+
 const _econFetchFailed = new Set(); // 追蹤 BLS 抓取失敗的事件，避免無限 Loading
 
 async function autoFetchEconActual(eventName, dateKey) {
@@ -3954,6 +3961,58 @@ async function autoFetchEconActual(eventName, dateKey) {
       setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
       return display;
     } catch(e) { /* try next proxy */ }
+  }
+  // 4. FRED API（初請失業金、EIA原油、零售銷售、ADP 等）
+  const fredMapping = FRED_SERIES_MAP[eventName];
+  if (fredMapping) {
+    const fredUrl = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${fredMapping.id}&vintage_date=${new Date().toISOString().slice(0,10)}`;
+    const fredProxies = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(fredUrl)}`,
+      `https://corsproxy.io/?${encodeURIComponent(fredUrl)}`,
+    ];
+    for (const proxyUrl of fredProxies) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        const res = await fetch(proxyUrl, { signal: ctrl.signal });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        const csv = await res.text();
+        const lines = csv.trim().split('\n');
+        if (lines.length < 3) continue; // need header + at least 2 data rows
+        const rows = lines.slice(1)
+          .map(l => { const [d, v] = l.split(','); return { date: d?.trim(), value: parseFloat(v) }; })
+          .filter(r => !isNaN(r.value));
+        if (rows.length < 1) continue;
+        const latest = rows[rows.length - 1];
+        const prev   = rows.length >= 2 ? rows[rows.length - 2] : null;
+        let display;
+        if (fredMapping.type === 'level_K') {
+          // Value is raw number, convert to K
+          const k = latest.value / 1000;
+          display = `${k >= 0 ? '+' : ''}${k.toFixed(fredMapping.dp)}${fredMapping.unit}`;
+          if (prev) {
+            const prevK = prev.value / 1000;
+            display += `（前值 ${prevK >= 0 ? '+' : ''}${prevK.toFixed(fredMapping.dp)}${fredMapping.unit}）`;
+          }
+        } else if (fredMapping.type === 'weekly_change') {
+          if (!prev) continue;
+          const change = latest.value - prev.value;
+          display = `${change >= 0 ? '+' : ''}${change.toFixed(fredMapping.dp)}${fredMapping.unit}`;
+          display += `（前值 ${prev.value.toFixed(1)}M桶）`;
+        } else if (fredMapping.type === 'mom_pct') {
+          if (!prev || prev.value === 0) continue;
+          const pct = ((latest.value - prev.value) / prev.value) * 100;
+          display = `${pct >= 0 ? '+' : ''}${pct.toFixed(fredMapping.dp)}${fredMapping.unit}`;
+        }
+        if (display) {
+          localStorage.setItem(cacheKey, display);
+          setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
+          setEconActualValue(eventName, dateKey, display);
+          return display;
+        }
+      } catch(e) { /* try next proxy */ }
+    }
   }
   _econFetchFailed.add(lookupKey);
   return null;
@@ -4072,7 +4131,7 @@ function buildTodayEconWidget() {
       </div>` : '';
     const dateKey = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
     const actualVal = published ? getEconActualValue(ev.name, dateKey) : '';
-    const hasBLS = !!BLS_SERIES_MAP[ev.name] || !!KNOWN_ACTUALS[`${ev.name}_${dateKey}`];
+    const hasBLS = !!BLS_SERIES_MAP[ev.name] || !!FRED_SERIES_MAP[ev.name] || !!KNOWN_ACTUALS[`${ev.name}_${dateKey}`];
     const fetchFailed = _econFetchFailed.has(`${ev.name}_${dateKey}`);
     if (published && !actualVal && hasBLS && !fetchFailed) {
       autoFetchEconActual(ev.name, dateKey).then(v => {
@@ -5793,9 +5852,14 @@ function recordSignalsFromScan(data) {
     // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
-    // 短線門檻：宏觀有方向時 ≥3/4；宏觀中性或無快取時 ≥2/4（幣種方向指標須確立）
-    const _minFactors = (!_macroCache || macroNetDir === 'neutral') ? 2 : 3;
+    // 短線門檻：API無快取時允許 ≥2/4；其他情況（含宏觀中性）一律需 ≥3/4，減少假突破
+    const _minFactors = !_macroCache ? 2 : 3;
     if ([_f1, _f2, _f3, _f4].filter(Boolean).length < _minFactors) continue;
+
+    // RSI 防追高/追低：多頭RSI>75或空頭RSI<25時拒絕進場（動能耗盡風險）
+    const _rsiVal = parseFloat(coin.rsi) || 50;
+    if (isLong  && _rsiVal > 75) continue;
+    if (!isLong && _rsiVal < 25) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
@@ -5803,8 +5867,8 @@ function recordSignalsFromScan(data) {
 
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
-    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 60%
-    if (setup.conf < 60) continue;
+    // 最終信心度門檻提高至 63%，減少低品質信號
+    if (setup.conf < 63) continue;
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
@@ -6522,7 +6586,9 @@ function updateOpenTrades(data) {
       const newPeak = isLong ? Math.max(trade.peakPrice, cur) : Math.min(trade.peakPrice, cur);
       if (newPeak !== trade.peakPrice) { trade.peakPrice = newPeak; changed = true; }
 
-      const inProfit   = isLong ? cur > trade.entry * 1.003 : cur < trade.entry * 0.997;
+      // 加倉安全條件：需止盈一已觸及（止損已移至成本保本）或至少盈利1.5%，避免加倉放大虧損
+      const inProfit   = trade.tp1Hit ||
+        (isLong ? cur > trade.entry * 1.015 : cur < trade.entry * 0.985);
       const peakRef    = trade.peakPrice || trade.entry;
       const fromPeak   = peakRef > 0
         ? Math.abs(peakRef - cur) / peakRef
@@ -6530,7 +6596,7 @@ function updateOpenTrades(data) {
       const lastSIAt   = confirmedSIs.at(-1)?.entryTime ?? trade.entryTime ?? trade.timestamp ?? 0;
       const hasTimeGap = Date.now() - lastSIAt > 60 * 60 * 1000; // 最少 1 小時間隔
 
-      if (inProfit && fromPeak > 0.008 && hasTimeGap) {
+      if (inProfit && fromPeak > 0.012 && hasTimeGap) {
         const siNum   = confirmedSIs.length + 1;
         const origRisk = Math.abs(trade.entry - trade.sl) || 1;
         trade.scaleIns.push({
