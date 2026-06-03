@@ -3905,53 +3905,60 @@ const BLS_SERIES_MAP = {
 
 const _econFetchFailed = new Set(); // 追蹤 BLS 抓取失敗的事件，避免無限 Loading
 
-async function analyzeFOMCWithAI(docText, apiKey) {
-  const prompt = `以下是聯準會（Fed）最新聲明或FOMC紀要節錄，請用繁體中文回答：
+function analyzeFOMCText(text) {
+  const lc = text.toLowerCase();
 
-【${docText.slice(0, 4000)}】
+  const hawkKws = ['higher for longer','rate increase','raise rates','tighten','restrictive',
+    'inflation elevated','above 2 percent','above target','quantitative tightening',
+    'balance sheet reduction','hike','hiking','hawkish','keep rates high','strong labor'];
+  const doveKws = ['rate cut','lower rates','easing','accommodative','dovish','pause',
+    'below target','cooling','reduction in rates','quantitative easing','cut rates',
+    'slow the pace','slower growth','labor market softening'];
+  const holdKws = ['maintain','unchanged','hold','data dependent','patient','monitor','cautious'];
 
-請給我：
-1️⃣ 三個關鍵重點（每點30字以內）
-2️⃣ 聯準會政策立場：鷹派 / 鴿派 / 中性（附簡短理由）
-3️⃣ 對加密貨幣市場的多空影響（60字以內，說明原因）
+  let hawkScore = 0, doveScore = 0;
+  const matchedHawk = [], matchedDove = [];
+  for (const kw of hawkKws) { if (lc.includes(kw)) { hawkScore++; matchedHawk.push(kw); } }
+  for (const kw of doveKws) { if (lc.includes(kw)) { doveScore++; matchedDove.push(kw); } }
+  let holdScore = 0;
+  for (const kw of holdKws) { if (lc.includes(kw)) holdScore++; }
 
-請直接輸出，不要前言，使用簡潔的條列格式。`;
+  // Extract rate level (e.g. "5.25 percent" or "4.5%")
+  const rateMatch = text.match(/(\d+\.?\d*)\s*(?:percent|%)/i);
+  const rateStr = rateMatch ? ` 利率 ${rateMatch[1]}%` : '';
 
-  const isAnthropic = apiKey.startsWith('sk-ant-');
-  try {
-    if (isAnthropic) {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 600,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.content?.[0]?.text || null;
-    } else {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          max_tokens: 600,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.choices?.[0]?.message?.content || null;
-    }
-  } catch(e) { return null; }
+  // Extract up to 3 key sentences containing signal keywords
+  const allKws = [...hawkKws, ...doveKws, 'inflation', 'interest rate', 'employment', 'economy', 'target', 'growth'];
+  const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 30 && s.length < 220);
+  const keySentences = [];
+  for (const s of sentences) {
+    if (keySentences.length >= 3) break;
+    if (allKws.some(kw => s.toLowerCase().includes(kw))) keySentences.push(s);
+  }
+
+  // Determine stance
+  let stance, emoji, impact;
+  if (hawkScore > doveScore + 1) {
+    stance = '鷹派'; emoji = '🔴';
+    impact = '偏空 ── 高利率持續壓制風險資產，加密流動性收緊';
+  } else if (doveScore > hawkScore) {
+    stance = '鴿派'; emoji = '🟢';
+    impact = '偏多 ── 降息/寬鬆釋放流動性，有利加密等風險資產';
+  } else if (holdScore > 0) {
+    stance = '按兵不動'; emoji = '⚪';
+    impact = '中性 ── 政策維持不變，加密短線觀望震盪';
+  } else {
+    stance = '中性'; emoji = '⚪';
+    impact = '中性 ── 方向不明，加密市場短期波動';
+  }
+
+  let out = `${emoji} ${stance}${rateStr}（鷹×${hawkScore} 鴿×${doveScore}）\n`;
+  out    += `📊 多空影響：${impact}\n`;
+  if (keySentences.length > 0) {
+    out += `📌 關鍵摘句：\n`;
+    for (const s of keySentences) out += `• ${s.slice(0, 90)}${s.length > 90 ? '…' : ''}\n`;
+  }
+  return out.trim();
 }
 
 async function autoFetchEconActual(eventName, dateKey) {
@@ -4024,27 +4031,11 @@ async function autoFetchEconActual(eventName, dateKey) {
         const descMatch  = xmlText.match(/<item[^>]*>[\s\S]*?<description[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/description>/);
         const linkMatch  = xmlText.match(/<item[^>]*>[\s\S]*?<link[^>]*>([\s\S]*?)<\/link>/);
         const title = (titleMatch?.[1] || '').trim();
-        const desc  = (descMatch?.[1]  || '').replace(/<[^>]+>/g, ' ').trim();
+        const desc  = (descMatch?.[1]  || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         if (!title && !desc) continue;
         const docText = `${title}\n\n${desc}`;
-
-        // Try AI analysis if key is set
-        const _aiKey = loadSettings().aiApiKey || '';
-        let display;
-        if (_aiKey) {
-          const aiResult = await analyzeFOMCWithAI(docText, _aiKey);
-          if (aiResult) {
-            display = `🤖 AI分析（${title.slice(0,30)}...）\n${aiResult}`;
-          }
-        }
-        // Fallback: show title + hawkish/dovish keyword detection
-        if (!display) {
-          const lc = docText.toLowerCase();
-          const isHawk = lc.includes('higher for longer') || lc.includes('inflation') || lc.includes('restrictive') || lc.includes('raise');
-          const isDove = lc.includes('cut') || lc.includes('reduction') || lc.includes('easing') || lc.includes('slower');
-          const stance = isHawk ? '鷹派（加密偏空）' : isDove ? '鴿派（加密偏多）' : '中性';
-          display = `${title.slice(0, 60)} → ${stance}`;
-        }
+        const analysis = analyzeFOMCText(docText);
+        const display = `📰 ${title.slice(0, 50)}\n${analysis}`;
         localStorage.setItem(cacheKey, display);
         setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
         setEconActualValue(eventName, dateKey, display);
@@ -9866,9 +9857,6 @@ function populateSettingsPage() {
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
 
-  const aiApiKey = document.getElementById('s-ai-api-key');
-  if (aiApiKey) aiApiKey.value = s.aiApiKey || '';
-
   renderPairsList();
 }
 
@@ -9887,7 +9875,6 @@ function saveAllSettings() {
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
     notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
-    aiApiKey: document.getElementById('s-ai-api-key')?.value.trim() || '',
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();
