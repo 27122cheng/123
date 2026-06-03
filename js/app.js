@@ -5478,37 +5478,6 @@ async function renderCoinDetail(symbol) {
   rbar.style.background = cls === 'risk-low' ? 'var(--bull)' : cls === 'risk-medium' ? 'var(--neutral)' : cls === 'risk-high' ? '#ff6d00' : 'var(--bear)';
   document.getElementById('risk-desc').textContent = desc;
 
-  // 10因子 AI 風險評估（做多 + 做空）
-  const _frEl = document.getElementById('full-risk-body');
-  if (_frEl) {
-    try {
-      const _frLong  = computeFullRisk(coin, computeSimpleSetup(coin, true),  true);
-      const _frShort = computeFullRisk(coin, computeSimpleSetup(coin, false), false);
-      const _frRow = (r) => `
-        <div style="display:flex;align-items:flex-start;gap:6px;margin:3px 0;font-size:0.78rem;color:var(--text2)">
-          <span style="color:${r.score>=60?'#f97316':r.score>=28?'#f59e0b':'#22c55e'};flex-shrink:0">●</span>
-          <span>${r.text}</span>
-        </div>`;
-      const _frCard = (label, icon, fr, isLong) => `
-        <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <span style="font-size:0.8rem;font-weight:600;color:var(--text2)">${icon} 10因子評估 · ${label}</span>
-            <span style="font-size:0.78rem;font-weight:700;color:${fr.levelColor};background:${fr.levelColor}22;padding:2px 8px;border-radius:20px">${fr.level}（${fr.score}/100）</span>
-          </div>
-          <div style="background:var(--bg);border-radius:4px;height:6px;margin-bottom:10px;overflow:hidden">
-            <div style="height:100%;width:${fr.score}%;background:${fr.levelColor};border-radius:4px;transition:width .4s"></div>
-          </div>
-          ${fr.factors.map(f => _frRow({score: fr.score, text: f})).join('')}
-          ${fr.recs.length ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:0.74rem;color:var(--text3)">
-            ${fr.recs.slice(0,2).map(r => `<div style="margin:2px 0">💡 ${r}</div>`).join('')}
-          </div>` : ''}
-        </div>`;
-      _frEl.innerHTML =
-        _frCard('做多', '📈', _frLong,  true) +
-        _frCard('做空', '📉', _frShort, false);
-    } catch(_fe) { _frEl.innerHTML = ''; }
-  }
-
   setTimeout(() => loadTradingViewChart(symbol, tfToTV(state.timeframe)), 50);
 
   // 重置所有異步區塊
@@ -5556,6 +5525,19 @@ async function renderCoinDetail(symbol) {
   setSafe('ai-body',        () => generateAIAnalysis(coin, mtfData, fearGreed));
   setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
   setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
+
+  // 10因子 AI 風險評估（宏觀資料就緒後渲染，確保準確度）
+  const _frEl = document.getElementById('full-risk-body');
+  if (_frEl) {
+    try {
+      const _frLong  = computeFullRisk(coin, computeSimpleSetup(coin, true),  true);
+      const _frShort = computeFullRisk(coin, computeSimpleSetup(coin, false), false);
+      _frEl.innerHTML = buildFullRiskCard(_frLong, '📈 做多') + buildFullRiskCard(_frShort, '📉 做空');
+    } catch(_fe) {
+      console.warn('[full-risk]', _fe);
+      _frEl.innerHTML = '';
+    }
+  }
 }
 
 function setTag(id, text, color) {
@@ -5771,6 +5753,33 @@ function buildStrengthAnalysis(coin) {
     ['24小時成交量', fmtVolume(coin.volume)],
   ];
   return buildRows(rows);
+}
+
+function buildFullRiskCard(fr, label) {
+  const barColor = fr.levelColor;
+  let factorsHtml = '';
+  for (const f of fr.factors) {
+    const dot = fr.score >= 60 ? '#f97316' : fr.score >= 28 ? '#f59e0b' : '#22c55e';
+    factorsHtml += '<div style="display:flex;align-items:flex-start;gap:6px;margin:3px 0;font-size:0.78rem;color:var(--text2)">'
+      + '<span style="color:' + dot + ';flex-shrink:0">●</span>'
+      + '<span>' + f + '</span></div>';
+  }
+  let recsHtml = '';
+  for (let i = 0; i < Math.min(2, fr.recs.length); i++) {
+    recsHtml += '<div style="margin:2px 0">💡 ' + fr.recs[i] + '</div>';
+  }
+  const recBlock = recsHtml
+    ? '<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:0.74rem;color:var(--text3)">' + recsHtml + '</div>'
+    : '';
+  return '<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+    + '<span style="font-size:0.8rem;font-weight:600;color:var(--text2)">' + label + ' · 10因子評估</span>'
+    + '<span style="font-size:0.78rem;font-weight:700;color:' + barColor + ';background:' + barColor + '22;padding:2px 8px;border-radius:20px">' + fr.level + '（' + fr.score + '/100）</span>'
+    + '</div>'
+    + '<div style="background:var(--bg);border-radius:4px;height:6px;margin-bottom:10px;overflow:hidden">'
+    + '<div style="height:100%;width:' + fr.score + '%;background:' + barColor + ';border-radius:4px;transition:width .4s"></div>'
+    + '</div>'
+    + factorsHtml + recBlock + '</div>';
 }
 
 function buildRisk(coin) {
