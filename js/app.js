@@ -2442,6 +2442,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     techPenalty, chipsPenalty, rr1: rr1str,
     flipRisks, isRangeMode, bigTrendBlocked,
   }, isLong);
+
+  // 高風險及以上（≥50）→ 觀望，不顯示進場建議
+  if (_risk.score >= 50) {
+    _tradeSetupCache[coin.symbol] = {
+      direction: 'wait',
+      riskScore: _risk.score, riskLevel: _risk.level,
+      riskFactors: _risk.factors, riskRecs: _risk.recs,
+    };
+    const _rIconMap = { '極高風險': '🚨', '高風險': '⛔' };
+    const _rIcon = _rIconMap[_risk.level] || '⛔';
+    return `<div class="setup-wait">
+      <div class="setup-wait-icon">${_rIcon}</div>
+      <div class="setup-wait-title" style="color:${_risk.levelColor}">${_risk.level}（${_risk.score}/100）— AI 評估建議觀望</div>
+      <ul class="setup-wait-reasons">
+        ${_risk.factors.map(f => `<li>${f}</li>`).join('')}
+      </ul>
+      <div style="margin-top:12px;padding:10px 12px;background:${_risk.levelColor}11;border:1px solid ${_risk.levelColor}44;border-radius:9px">
+        <div style="font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px">💡 AI 建議（僅供參考）</div>
+        ${_risk.recs.map(r => `<div style="font-size:0.73rem;color:#a5f3fc;padding:2px 0">→ ${r}</div>`).join('')}
+      </div>
+    </div>`;
+  }
+
   // 即使是觀望，也記錄最終防線原因供顯示
   if (hardBlocked && direction === 'wait') {
     learnWarnings.forEach(w => entryReasons.push(w));
@@ -6018,7 +6041,7 @@ function recordSignalsFromScan(data) {
     // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 60%
     if (setup.conf < 60) continue;
 
-    // 完整風險評估（10 因子，僅供參考，不影響進場訊號）
+    // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
     try {
       _scanRisk = computeFullRisk(coin, setup, isLong);
@@ -6028,6 +6051,8 @@ function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
+    // 高風險及以上（≥50）→ 觀望，不產生進場訊號
+    if (_scanRisk.score >= 50) continue;
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
