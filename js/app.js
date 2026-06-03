@@ -8468,10 +8468,10 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">最終目標</div>
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&(t.ltTP||tp2) ? ((isLong?(t.ltTP||tp2)-entry:entry-(t.ltTP||tp2))/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
-        ${(t.scaleIns||[]).filter(s=>s.status==='open').length > 0 ? `
+        ${t.maxScaleIns > 0 ? `
         <div class="pos-cell">
           <div class="pos-cell-lbl">已加倉</div>
-          <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / ${t.maxScaleIns || 3}</div>
+          <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / ${t.maxScaleIns}</div>
         </div>` : ''}
         <div class="pos-cell" style="grid-column:span 2">
           <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
