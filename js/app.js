@@ -2410,6 +2410,62 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
+
+  // ── AI 風險評估（本地計算，不需 API Key）──
+  const _risk = (() => {
+    let score = 0;
+    const factors = [], recs = [];
+
+    // 1. 信心度
+    if (conf < 65)      { score += 20; factors.push(`信心偏低（${conf}%）`); recs.push('考慮縮小倉位至正常的 40-50%'); }
+    else if (conf < 72) { score += 10; factors.push(`信心中等（${conf}%）`); recs.push('建議倉位不超過正常的 70%'); }
+
+    // 2. ADX 趨勢強度
+    const _adx = typeof adxVal === 'number' ? adxVal : parseFloat(adxVal) || 0;
+    if (_adx < 18)      { score += 28; factors.push(`ADX ${_adx.toFixed(1)} 極弱，無趨勢`); recs.push('ADX 過低，趨勢不明確，強烈建議觀望'); }
+    else if (_adx < 22) { score += 18; factors.push(`ADX ${_adx.toFixed(1)} 偏弱`); recs.push('趨勢動能不足，易被洗出，適合小倉試單'); }
+    else if (_adx < 25) { score += 8;  factors.push(`ADX ${_adx.toFixed(1)} 略低`); }
+
+    // 3. 宏觀逆風
+    if (macroOpposePenalty > 15)     { score += 22; factors.push(`宏觀強逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀方向明顯相反，強烈建議降低倉位或觀望'); }
+    else if (macroOpposePenalty > 8) { score += 12; factors.push(`宏觀中等逆風（扣 ${macroOpposePenalty}%）`); recs.push('宏觀有逆風，建議縮小倉位並設嚴格止損'); }
+    else if (macroOpposePenalty > 3) { score += 5;  factors.push(`宏觀輕微逆風（扣 ${macroOpposePenalty}%）`); }
+
+    // 4. AI 趨勢預測逆向
+    if (aiTrendPenalty > 10)    { score += 15; factors.push(`AI 趨勢預測逆向（扣 ${aiTrendPenalty}%）`); recs.push('AI 週/日預測與進場方向相反，謹慎操作'); }
+    else if (aiTrendPenalty > 4) { score += 7;  factors.push(`AI 趨勢預測輕微逆向（扣 ${aiTrendPenalty}%）`); }
+
+    // 5. AI 風控歷史記憶
+    if (learnPenalty > 10)   { score += 18; factors.push(`AI 風控記憶觸發（扣 ${learnPenalty}%）`); recs.push('此幣種歷史止損模式頻繁，建議跳過或等更好進場點'); }
+    else if (learnPenalty > 5){ score += 9;  factors.push(`AI 風控記憶輕微觸發（扣 ${learnPenalty}%）`); recs.push('歷史有止損記錄，降低倉位比例'); }
+
+    // 6. R/R 比率
+    const _rr1 = parseFloat(rr1str) || 0;
+    if (_rr1 < 1.2)        { score += 18; factors.push(`R/R 過低（${_rr1}:1）`); recs.push('R/R 不足 1.2:1，風險報酬不划算，建議跳過'); }
+    else if (_rr1 < 1.5)   { score += 8;  factors.push(`R/R 偏低（${_rr1}:1）`); recs.push('R/R 略低，止損設定要精確'); }
+
+    // 7. 即將發布的高影響經濟數據
+    if (flipRisks.length >= 3)      { score += 20; factors.push(`${flipRisks.length} 個高衝擊數據即將發布`); recs.push(`${flipRisks.map(r=>r.name).join('、')} 即將公布，可能造成劇烈波動，建議等數據後再進場`); }
+    else if (flipRisks.length >= 1) { score += 10; factors.push(`${flipRisks.length} 個高衝擊數據（${flipRisks.map(r=>r.name).join('、')}）`); recs.push('數據公布前後波動大，設好止損再進場'); }
+
+    // 8. 區間模式
+    if (isRangeMode) { score += 10; factors.push('目前為區間震盪模式'); recs.push('區間模式建議縮短持倉時間，遇壓力/支撐快速獲利了結'); }
+
+    // 9. 4H+日線趨勢對齊
+    if (bigTrendBlocked) { score += 15; factors.push('4H+日線趨勢未對齊'); recs.push('大週期趨勢不確認，謹慎持倉，避免重倉'); }
+
+    // 10. 技術面/籌碼面扣分
+    if (techPenalty + chipsPenalty > 12)  { score += 10; factors.push(`技術/籌碼逆風（扣 ${techPenalty + chipsPenalty}%）`); }
+    else if (techPenalty + chipsPenalty > 5) { score += 5; factors.push(`輕微技術/籌碼逆風（扣 ${techPenalty + chipsPenalty}%）`); }
+
+    score = Math.min(100, score);
+    const level = score >= 75 ? '極高風險' : score >= 50 ? '高風險' : score >= 28 ? '中風險' : '低風險';
+    const levelColor = score >= 75 ? '#ef4444' : score >= 50 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
+    // 若無特別因素，加入正面評估
+    if (factors.length === 0) { factors.push('各項指標正常，無明顯風險'); recs.push('可按計劃正常倉位進場'); }
+    if (recs.length === 0) recs.push('各項指標良好，按計劃執行');
+    return { score, level, levelColor, factors, recs };
+  })();
   // 即使是觀望，也記錄最終防線原因供顯示
   if (hardBlocked && direction === 'wait') {
     learnWarnings.forEach(w => entryReasons.push(w));
@@ -2830,6 +2886,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
   `}
+
+  <!-- ═══ AI 風險評估 ═══ -->
+  <div class="setup-risk-card" style="margin:10px 0;padding:14px 16px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-left:3px solid ${_risk.levelColor};border-radius:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <span style="font-size:0.78rem;font-weight:600;color:var(--text2);letter-spacing:.5px">🛡️ AI 風險評估</span>
+      <span style="font-size:0.72rem;font-weight:700;color:${_risk.levelColor};background:${_risk.levelColor}22;padding:2px 8px;border-radius:20px">${_risk.level}</span>
+    </div>
+    <!-- 風險分數進度條 -->
+    <div style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:0.68rem;color:var(--text3)">風險分數</span>
+        <span style="font-size:0.72rem;font-weight:700;color:${_risk.levelColor}">${_risk.score} / 100</span>
+      </div>
+      <div style="height:5px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${_risk.score}%;background:${_risk.levelColor};border-radius:3px;transition:width .4s"></div>
+      </div>
+    </div>
+    <!-- 風險因素 -->
+    <div style="margin-bottom:8px">
+      <div style="font-size:0.68rem;color:var(--text3);margin-bottom:4px">⚠️ 風險因素</div>
+      ${_risk.factors.map(f => `<div style="font-size:0.72rem;color:var(--text2);padding:2px 0;line-height:1.5">• ${f}</div>`).join('')}
+    </div>
+    <!-- AI 建議 -->
+    <div>
+      <div style="font-size:0.68rem;color:var(--text3);margin-bottom:4px">💡 AI 建議</div>
+      ${_risk.recs.map(r => `<div style="font-size:0.72rem;color:#a5f3fc;padding:2px 0;line-height:1.5">→ ${r}</div>`).join('')}
+    </div>
+  </div>
 
   ${(() => { try {
     // ── AI 交易決策三層邏輯面板 ──
