@@ -3905,54 +3905,6 @@ const BLS_SERIES_MAP = {
 
 const _econFetchFailed = new Set(); // 追蹤 BLS 抓取失敗的事件，避免無限 Loading
 
-async function analyzeFOMCWithAI(docText, apiKey) {
-  const prompt = `以下是聯準會（Fed）最新聲明或FOMC紀要節錄，請用繁體中文回答：
-
-【${docText.slice(0, 4000)}】
-
-請給我：
-1️⃣ 三個關鍵重點（每點30字以內）
-2️⃣ 聯準會政策立場：鷹派 / 鴿派 / 中性（附簡短理由）
-3️⃣ 對加密貨幣市場的多空影響（60字以內，說明原因）
-
-請直接輸出，不要前言，使用簡潔的條列格式。`;
-
-  const isAnthropic = apiKey.startsWith('sk-ant-');
-  try {
-    if (isAnthropic) {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 600,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.content?.[0]?.text || null;
-    } else {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          max_tokens: 600,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data.choices?.[0]?.message?.content || null;
-    }
-  } catch(e) { return null; }
-}
 
 async function autoFetchEconActual(eventName, dateKey) {
   const lookupKey = `${eventName}_${dateKey}`;
@@ -4024,27 +3976,15 @@ async function autoFetchEconActual(eventName, dateKey) {
         const descMatch  = xmlText.match(/<item[^>]*>[\s\S]*?<description[^>]*><!\[CDATA\[([\s\S]*?)\]\]><\/description>/);
         const linkMatch  = xmlText.match(/<item[^>]*>[\s\S]*?<link[^>]*>([\s\S]*?)<\/link>/);
         const title = (titleMatch?.[1] || '').trim();
-        const desc  = (descMatch?.[1]  || '').replace(/<[^>]+>/g, ' ').trim();
+        const desc  = (descMatch?.[1]  || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         if (!title && !desc) continue;
-        const docText = `${title}\n\n${desc}`;
+        const lc = `${title} ${desc}`.toLowerCase();
+        const isHawk = lc.includes('higher for longer') || lc.includes('inflation') || lc.includes('restrictive') || lc.includes('raise') || lc.includes('hawkish');
+        const isDove = lc.includes('cut') || lc.includes('reduction') || lc.includes('easing') || lc.includes('slower') || lc.includes('dovish');
+        const stance = isHawk ? '🔴鷹派（加密偏空）' : isDove ? '🟢鴿派（加密偏多）' : '⚪中性';
+        const excerpt = desc.slice(0, 120).replace(/\s+/g, ' ');
+        const display = `${stance} | ${title.slice(0, 50)}\n"${excerpt}${desc.length > 120 ? '…' : ''}"`;
 
-        // Try AI analysis if key is set
-        const _aiKey = loadSettings().aiApiKey || '';
-        let display;
-        if (_aiKey) {
-          const aiResult = await analyzeFOMCWithAI(docText, _aiKey);
-          if (aiResult) {
-            display = `🤖 AI分析（${title.slice(0,30)}...）\n${aiResult}`;
-          }
-        }
-        // Fallback: show title + hawkish/dovish keyword detection
-        if (!display) {
-          const lc = docText.toLowerCase();
-          const isHawk = lc.includes('higher for longer') || lc.includes('inflation') || lc.includes('restrictive') || lc.includes('raise');
-          const isDove = lc.includes('cut') || lc.includes('reduction') || lc.includes('easing') || lc.includes('slower');
-          const stance = isHawk ? '鷹派（加密偏空）' : isDove ? '鴿派（加密偏多）' : '中性';
-          display = `${title.slice(0, 60)} → ${stance}`;
-        }
         localStorage.setItem(cacheKey, display);
         setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
         setEconActualValue(eventName, dateKey, display);
@@ -9866,9 +9806,6 @@ function populateSettingsPage() {
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
 
-  const aiApiKey = document.getElementById('s-ai-api-key');
-  if (aiApiKey) aiApiKey.value = s.aiApiKey || '';
-
   renderPairsList();
 }
 
@@ -9887,7 +9824,6 @@ function saveAllSettings() {
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
     notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
-    aiApiKey: document.getElementById('s-ai-api-key')?.value.trim() || '',
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();
