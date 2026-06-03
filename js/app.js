@@ -6553,29 +6553,6 @@ function updateOpenTrades(data) {
           changed = true;
           sendCancelTelegramNotification(trade, _confReason);
         }
-        // 風險評估使用最新計算的扣分值（避免用建單時的靜態值）
-        if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin) {
-          const _frRR1 = (trade.tp1 && trade.entry && trade.sl)
-            ? Math.abs(trade.tp1 - trade.entry) / (Math.abs(trade.entry - trade.sl) || 1)
-            : 1.5;
-          const _frRisk = computeFullRisk(_fCoin, {
-            conf:           freshConf,
-            macroPenalty:   _macP,
-            aiTrendPenalty: _aiP,
-            learnPenalty:   _learnPen,
-            techPenalty:    _techP,
-            chipsPenalty:   _chipsP,
-            rr1:            _frRR1.toFixed(1),
-          }, _isL);
-          if (_frRisk.score >= 50) {
-            const _frReason = `AI 風險評估升至${_frRisk.level}（${_frRisk.score}/100）：${_frRisk.factors.slice(0, 2).join('、')}`;
-            addCancelCooldown(trade, _frReason);
-            toDeleteIds.add(trade.id);
-            cancelledSymbols.add(trade.symbol);
-            changed = true;
-            sendCancelTelegramNotification(trade, _frReason);
-          }
-        }
       } catch(_e) {}
     } else {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
@@ -6590,6 +6567,34 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
+  }
+
+  // ── 風險評估升至高風險（≥50）→ 取消未入場掛單並通知 Telegram ──
+  for (const trade of tlog) {
+    if (toDeleteIds.has(trade.id)) continue;
+    if (trade.status !== 'pending' || trade.entryTime) continue;
+    const _rCoin = data?.find(d => d.symbol === trade.symbol);
+    if (!_rCoin) continue;
+    try {
+      const _isLongR = trade.direction === 'long';
+      const _rRisk = computeFullRisk(_rCoin, {
+        conf:            trade.conf          ?? 60,
+        macroPenalty:    trade.macroPenalty  ?? 0,
+        aiTrendPenalty:  trade.aiTrendPenalty ?? 0,
+        learnPenalty:    trade.learnPenalty  ?? 0,
+        techPenalty:     trade.techPenalty   ?? 0,
+        chipsPenalty:    trade.chipsPenalty  ?? 0,
+        rr1:             trade.rr1           ?? '1.5',
+      }, _isLongR);
+      if (_rRisk.score >= 50) {
+        const _rReason = `AI 風險評估升至${_rRisk.level}（${_rRisk.score}/100）：${_rRisk.factors.slice(0, 2).join('、')}`;
+        addCancelCooldown(trade, _rReason);
+        toDeleteIds.add(trade.id);
+        cancelledSymbols.add(trade.symbol);
+        changed = true;
+        sendCancelTelegramNotification(trade, _rReason);
+      }
+    } catch(_re) { console.warn('[risk-cancel]', trade.symbol, _re); }
   }
 
   for (const trade of tlog) {
