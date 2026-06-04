@@ -1078,7 +1078,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       } catch(_e) {}
 
       const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      const freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow);
+      let freshConf    = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow);
+      // 統一使用 computeSimpleSetup 計算最終信心度，與 Telegram 通知公式一致（包含 bbPenalty/宏觀淨方向等）
+      try {
+        const _ssNow = computeSimpleSetup(coin, isLongNow);
+        if (_ssNow?.conf != null) freshConf = _ssNow.conf;
+      } catch(_sse) {}
       if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
@@ -1111,7 +1116,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
-      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + cfPenNow + techPenNow + chipsPenNow + dirPenNow;
+      const bbPenNow    = existingActive.bbPenalty || 0;
+      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + cfPenNow + techPenNow + chipsPenNow + dirPenNow + bbPenNow;
 
       // 已進場：顯示進場時鎖定的信心度，不再動態重算（進場後市況變化不影響已開倉決策）
       if (existingActive.entryTime) {
@@ -1126,6 +1132,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         const _techPen  = existingActive.techPenalty    || 0;
         const _chipsPen = existingActive.chipsPenalty   || 0;
         const _dirPen   = existingActive.dirPenalty     || 0;
+        const _bbPen    = existingActive.bbPenalty      || 0;
         const lockedConfPanel = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
           <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:6px">📊 信心評估（進場時已鎖定）</div>
           <div style="font-size:0.73rem;line-height:2">
@@ -1138,6 +1145,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             ${_techPen  > 0 ? `<div style="color:#f59e0b">　技術 <strong>-${_techPen}%</strong>（RSI/MACD/BB 逆風）</div>` : ''}
             ${_chipsPen > 0 ? `<div style="color:#f59e0b">　籌碼 <strong>-${_chipsPen}%</strong>（Taker/巨鯨 逆向）</div>` : ''}
             ${_dirPen   > 0 ? `<div style="color:#f59e0b">　方向 <strong>-${_dirPen}%</strong>（大方向逆向）</div>` : ''}
+            ${_bbPen    > 0 ? `<div style="color:#f59e0b">　BB型態 <strong>-${_bbPen}%</strong>（布林通道逆風）</div>` : ''}
             <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px">
               <span style="color:var(--text3)">最終信心</span> <strong style="color:${_clr};font-size:1rem">${_lockedConf}%</strong>
             </div>
@@ -1162,6 +1170,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           ${techPenNow > 0 ? `<div style="color:#f59e0b">　技術 <strong>-${techPenNow}%</strong>（RSI/MACD/BB 逆風）</div>` : ''}
           ${chipsPenNow > 0 ? `<div style="color:#f59e0b">　籌碼 <strong>-${chipsPenNow}%</strong>（Taker/巨鯨 逆向）</div>` : ''}
           ${dirPenNow > 0 ? `<div style="color:#f59e0b">　方向 <strong>-${dirPenNow}%</strong>（大方向逆向）</div>` : ''}
+          ${bbPenNow > 0 ? `<div style="color:#f59e0b">　BB型態 <strong>-${bbPenNow}%</strong>（布林通道逆風）</div>` : ''}
           <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px">
             <span style="color:var(--text3)">最終信心</span> <strong style="color:${_cc(freshConf)};font-size:1rem">${freshConf}%</strong>
             ${totalPenNow === 0 && _baseDeductNow === 0 ? `<span style="font-size:0.7rem;color:#22c55e;margin-left:6px">（滿分無扣分）</span>` : ''}
@@ -6123,6 +6132,7 @@ function recordSignalsFromScan(data) {
       techPenalty: setup.techPenalty || 0,
       chipsPenalty: setup.chipsPenalty || 0,
       dirPenalty: setup.dirPenalty || 0,
+      bbPenalty: setup.bbPenalty || 0,
       entryWhaleBias:     coin.whaleData?.bias || null,
       entryMTFAlign:      (() => {
         let _mAlign = 0;
