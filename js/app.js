@@ -6198,6 +6198,7 @@ function recordSignalsFromScan(data) {
 
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
+    if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
     // 最終信心度門檻：≥65%；若僅3/4因子確認則要求≥70%（4/4才可降至65%）
     const _confMin = _factors >= 4 ? 65 : 70;
     if (setup.conf < _confMin) continue;
@@ -9972,6 +9973,22 @@ function computeSimpleSetup(coin, isLong) {
   // ── SMC 型態 ──
   const _pat = coin.patterns || null;
 
+  // ── MTF 大小週期雙確認 ──
+  const _dayAligned   = isLong ? (coin.dailySignal  || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
+  const _wkAligned    = isLong ? (coin.weeklySignal || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
+  const _mtfBothAlign = _dayAligned && _wkAligned;    // 日線 + 週線雙確認
+  const _mtfContraWk  = isLong ? (coin.weeklySignal || '').includes('bear') : (coin.weeklySignal || '').includes('bull');
+  const _mtfContraDay = isLong ? (coin.dailySignal  || '').includes('bear') : (coin.dailySignal  || '').includes('bull');
+  // MTF 止損 buffer 係數：雙確認時可收緊；週線逆向時放寬保護
+  const _mtfSlFactor  = _mtfBothAlign ? 0.8 : _mtfContraWk ? 1.25 : 1.0;
+
+  // ── 前高/前低估算（TP 結構目標）──
+  // OB 邊界優先（ICT 結構水平），其次 BB 帶（統計極值代理）
+  const _prevHigh = (_ob && _ob.high > 0 && _ob.high > price * 1.002) ? _ob.high
+                  : (_bbUp > price * 1.002 ? _bbUp : 0);
+  const _prevLow  = (_ob && _ob.low  > 0 && _ob.low  < price * 0.998) ? _ob.low
+                  : (_bbLo > 0 && _bbLo < price * 0.998 ? _bbLo : 0);
+
   // ═══════════════════════════════════════════════
   // 1. 進場點：多層優先級（ICT OB → 型態 → EMA50 → BB中軌 → EMA20）
   // ═══════════════════════════════════════════════
@@ -10009,51 +10026,44 @@ function computeSimpleSetup(coin, isLong) {
   //    優先級：OB 邊界 → EMA 結構 → BB 帶 → ATR（縮小至 1.5×）
   // ═══════════════════════════════════════════════
   let sl, _slTag = '', _slStructure = '';
-  const _atrBuf = _kzHigh ? 0.3 : 0.5;   // Kill Zone 內止損更緊
+  // Kill Zone 高品質時段本就可收緊，MTF 雙確認時再乘以 _mtfSlFactor
+  const _atrBuf = (_kzHigh ? 0.3 : 0.5) * _mtfSlFactor;
   if (_ob && _ob.priceInOB && _ob.high > 0 && _ob.low > 0) {
-    // OB 止損：OB 邊界外一個 buffer
     const _buf = atr * _atrBuf;
     sl      = isLong ? _ob.low - _buf : _ob.high + _buf;
     _slTag  = 'ob';
     _slStructure = `OB ${isLong ? '低點' : '高點'} $${_ob[isLong ? 'low' : 'high'].toPrecision(5).replace(/\.?0+$/, '')}`;
   } else if (_pat && (isLong ? _pat.bull2B : _pat.bear2B)) {
-    // 2B 型態止損：假突破點外
     const _buf = atr * (_atrBuf + 0.2);
     sl = isLong ? entry - atr * 1.3 - _buf : entry + atr * 1.3 + _buf;
     _slTag  = '2b';
     _slStructure = `2B 型態假突破點`;
   } else if (_pat && (isLong ? _pat.bull123 : _pat.bear123)) {
-    // 123 型態止損：P2 低點/高點（回調點）外
-    sl = isLong ? entry - atr * 1.4 : entry + atr * 1.4;
+    sl = isLong ? entry - atr * 1.4 * _mtfSlFactor : entry + atr * 1.4 * _mtfSlFactor;
     _slTag  = '123';
     _slStructure = `123 型態 P2 結構點`;
   } else if (ema50 > 0 && _entryTag === 'ema50') {
-    // EMA50 結構止損：EMA50 下方 ATR×0.8
-    const _buf = atr * 0.8;
+    const _buf = atr * 0.8 * _mtfSlFactor;
     sl = isLong ? ema50 - _buf : ema50 + _buf;
     _slTag  = 'ema50';
     _slStructure = `EMA50 $${ema50.toPrecision(5).replace(/\.?0+$/, '')} 下方`;
   } else if (_bbLo > 0 && isLong && price > _bbLo && entry - _bbLo < atr * 2) {
-    // 做多：BB 下軌作止損基準（收盤破下軌視為失效）
-    sl = _bbLo - atr * 0.3;
+    sl = _bbLo - atr * 0.3 * _mtfSlFactor;
     _slTag  = 'bblo';
     _slStructure = `BB 下軌 $${_bbLo.toPrecision(5).replace(/\.?0+$/, '')}`;
   } else if (_bbUp > 0 && !isLong && price < _bbUp && _bbUp - entry < atr * 2) {
-    // 做空：BB 上軌作止損基準
-    sl = _bbUp + atr * 0.3;
+    sl = _bbUp + atr * 0.3 * _mtfSlFactor;
     _slTag  = 'bbup';
     _slStructure = `BB 上軌 $${_bbUp.toPrecision(5).replace(/\.?0+$/, '')}`;
   } else if (ema20 > 0 && (isLong ? entry > ema20 : entry < ema20)) {
-    // EMA20 結構止損：EMA20 作失效基準
-    const _buf = atr * 0.6;
+    const _buf = atr * 0.6 * _mtfSlFactor;
     sl = isLong ? ema20 - _buf : ema20 + _buf;
     _slTag  = 'ema20';
     _slStructure = `EMA20 $${ema20.toPrecision(5).replace(/\.?0+$/, '')} 外`;
   } else {
-    // 最後兜底：ATR × 1.5（比舊版 2.5 更緊）
-    sl = isLong ? entry - atr * 1.5 : entry + atr * 1.5;
+    sl = isLong ? entry - atr * 1.5 * _mtfSlFactor : entry + atr * 1.5 * _mtfSlFactor;
     _slTag  = 'atr';
-    _slStructure = `ATR × 1.5`;
+    _slStructure = `ATR × ${(1.5 * _mtfSlFactor).toFixed(1)}`;
   }
 
   // ── 止損最小安全距離：至少 0.5% 且不超過 3%（防止止損過緊/過寬）──
@@ -10065,41 +10075,56 @@ function computeSimpleSetup(coin, isLong) {
   const risk = _slDist;
 
   // ═══════════════════════════════════════════════
-  // 3. 止盈：結構目標（FVG 回補 → EMA層 → BB帶 → 固定 R:R）
+  // 3. 止盈：結構目標（前高/前低 → FVG → EMA層 → BB帶 → 固定 R:R）
+  //    大小週期雙確認時允許更遠的波段目標
   // ═══════════════════════════════════════════════
   let tp1, tp2, _tp1Tag = '', _tp2Tag = '';
-  // TP1：短線目標（FVG mid → EMA50 → BB對向軌 → R:R 1.5）
-  if (_fvg && !_fvg.filled && _fvg.mid > 0 &&
+
+  // 前高/前低 TP 輔助：略低於阻力（做多）或略高於支撐（做空），留 0.2% buffer
+  const _swHigh = _prevHigh > 0 ? _prevHigh * 0.998 : 0;
+  const _swLow  = _prevLow  > 0 ? _prevLow  * 1.002 : 0;
+
+  // TP1：前高/低 → FVG 回補 → EMA50 → BB 對向軌 → R:R 1.5
+  if (isLong && _swHigh > entry + risk * 0.9) {
+    tp1 = _swHigh; _tp1Tag = 'prevhigh';
+  } else if (!isLong && _swLow > 0 && _swLow < entry - risk * 0.9) {
+    tp1 = _swLow;  _tp1Tag = 'prevlow';
+  } else if (_fvg && !_fvg.filled && _fvg.mid > 0 &&
       (isLong ? _fvg.mid > entry + risk * 0.8 : _fvg.mid < entry - risk * 0.8)) {
-    tp1   = parseFloat(_fvg.mid);
-    _tp1Tag = 'fvg';
+    tp1 = parseFloat(_fvg.mid); _tp1Tag = 'fvg';
   } else if (ema50 > 0 && (isLong ? ema50 > entry + risk * 0.8 : ema50 < entry - risk * 0.8)) {
-    tp1   = ema50;
-    _tp1Tag = 'ema50';
+    tp1 = ema50; _tp1Tag = 'ema50';
   } else if (isLong && _bbUp > 0 && _bbUp > entry + risk * 0.8) {
-    tp1   = _bbUp;
-    _tp1Tag = 'bbup';
+    tp1 = _bbUp;  _tp1Tag = 'bbup';
   } else if (!isLong && _bbLo > 0 && _bbLo < entry - risk * 0.8) {
-    tp1   = _bbLo;
-    _tp1Tag = 'bblo';
+    tp1 = _bbLo;  _tp1Tag = 'bblo';
   } else {
-    tp1   = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
-    _tp1Tag = 'rr';
+    tp1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5; _tp1Tag = 'rr';
   }
-  // TP2：波段目標（EMA200 → 遠 BB → R:R 2.5）
-  if (ema200 > 0 && (isLong ? ema200 > entry + risk * 1.5 : ema200 < entry - risk * 1.5)) {
-    tp2   = ema200;
-    _tp2Tag = 'ema200';
-  } else if (isLong && _bbUp > 0 && _bbUp > tp1 * 1.005) {
-    tp2   = isLong ? entry + Math.abs(tp1 - entry) * 1.6 : entry - Math.abs(entry - tp1) * 1.6;
-    _tp2Tag = 'ext';
+
+  // TP2：MTF 雙確認時可追更遠目標；EMA200 → 延伸目標 → R:R 2.5
+  const _tp2MinRisk = _mtfBothAlign ? 2.0 : 1.5;   // 雙確認時 TP2 要求更遠
+  if (ema200 > 0 && (isLong ? ema200 > entry + risk * _tp2MinRisk : ema200 < entry - risk * _tp2MinRisk)) {
+    tp2 = ema200; _tp2Tag = 'ema200';
+  } else if (_mtfBothAlign && _prevHigh > 0 && isLong && _prevHigh > tp1 * 1.01) {
+    // 雙確認長線：前高延伸波段
+    tp2 = entry + Math.abs(_prevHigh - entry) * 1.3; _tp2Tag = 'ext';
+  } else if (_mtfBothAlign && _prevLow > 0 && !isLong && _prevLow < tp1 * 0.99) {
+    tp2 = entry - Math.abs(entry - _prevLow) * 1.3; _tp2Tag = 'ext';
   } else {
-    tp2   = isLong ? entry + risk * 2.5 : entry - risk * 2.5;
-    _tp2Tag = 'rr';
+    const _tp2Mult = _mtfBothAlign ? 3.0 : 2.5;
+    tp2 = isLong ? entry + risk * _tp2Mult : entry - risk * _tp2Mult; _tp2Tag = 'rr';
   }
   // TP2 至少比 TP1 再遠 30%
   if (isLong  && tp2 < tp1 * 1.003) tp2 = tp1 + Math.abs(tp1 - entry) * 0.5;
   if (!isLong && tp2 > tp1 * 0.997) tp2 = tp1 - Math.abs(entry - tp1) * 0.5;
+
+  // ═══════════════════════════════════════════════
+  // 4. 盈虧比檢查：R:R < 1.3 → 觀望，不開倉
+  // ═══════════════════════════════════════════════
+  const _rrCheck  = risk > 0 ? Math.abs(tp1 - entry) / risk : 0;
+  const rrBlocked = _rrCheck < 1.3;
+  const rrReason  = rrBlocked ? `R/R ${_rrCheck.toFixed(2)}:1 低於 1.3，盈虧比不足，建議觀望` : '';
 
   // ── AI 學習引擎調整（同 buildTradeSetup 相同邏輯）──
   const hardAdxPenalty = adx < 18 ? 18 : adx < 22 ? 10 : 0;
@@ -10357,12 +10382,17 @@ function computeSimpleSetup(coin, isLong) {
     reasons.push(`⚠️ ADX ${adx} 過低（${adx < 18 ? '< 18' : '< 22'}），震盪行情信心下調 ${hardAdxPenalty}%`);
   }
 
-  // ── 長線單週線同向確認（掃描版）──
-  const _ssLtDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
-  const _ssLtWkOk  = isLong ? !!coin.weeklySignal?.includes('bull') : !!coin.weeklySignal?.includes('bear');
-  if (_ssLtDayOk && _ssLtWkOk) {
-    reasons.unshift(isLong ? `日線 + 週線同向確認 長線多頭趨勢成立` : `日線 + 週線同向確認 長線空頭趨勢成立`);
+  // ── MTF 多週期確認 / 警告 ──
+  if (_mtfBothAlign) {
+    reasons.unshift(isLong ? `✅ 日線 + 週線雙確認，大小週期同向，多頭趨勢成立` : `✅ 日線 + 週線雙確認，大小週期同向，空頭趨勢成立`);
+  } else {
+    if (_dayAligned) reasons.unshift(isLong ? `日線偏多確認` : `日線偏空確認`);
+    if (_wkAligned)  reasons.unshift(isLong ? `週線偏多確認` : `週線偏空確認`);
+    if (_mtfContraWk)  reasons.push(`⚠️ 週線逆向（大週期偏${isLong ? '空' : '多'}），止損已放寬，謹慎持倉`);
+    if (_mtfContraDay && !_mtfContraWk) reasons.push(`⚠️ 日線逆向，短線進場需嚴格止損`);
   }
+  // R:R 不足警告（僅記錄，實際 blocked 在掃描層已過濾）
+  if (rrBlocked) reasons.push(`⚠️ ${rrReason}`);
 
   // ── 止損說明 ──
   const slPct = ((Math.abs(entry - sl) / price) * 100).toFixed(2);
@@ -10386,9 +10416,15 @@ function computeSimpleSetup(coin, isLong) {
   // ── TP 說明 ──
   const _rr1 = risk > 0 ? (Math.abs(tp1 - entry) / risk).toFixed(1) : '–';
   const _rr2 = risk > 0 ? (Math.abs(tp2 - entry) / risk).toFixed(1) : '–';
-  const _tp1DescMap = { fvg: 'FVG 缺口回補目標', ema50: 'EMA50 動態壓力/支撐', bbup: 'BB 上軌結構目標', bblo: 'BB 下軌結構目標', rr: `固定 R/R ${_rr1}:1` };
-  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: '延伸波段目標', rr: `波段 R/R ${_rr2}:1` };
-  const tp1Reason = `${_tp1DescMap[_tp1Tag] || `短線目標 R/R ${_rr1}:1`}，到達後減倉 60%`;
+  const _tp1DescMap = {
+    prevhigh: `前高結構目標（${_prevHigh > 0 ? '$' + _prevHigh.toPrecision(5).replace(/\.?0+$/, '') : '–'}）`,
+    prevlow:  `前低結構目標（${_prevLow  > 0 ? '$' + _prevLow.toPrecision(5).replace(/\.?0+$/, '')  : '–'}）`,
+    fvg: 'FVG 缺口回補目標', ema50: 'EMA50 動態壓力/支撐',
+    bbup: 'BB 上軌結構目標', bblo: 'BB 下軌結構目標', rr: `固定 R/R ${_rr1}:1`,
+  };
+  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: `MTF 雙確認延伸目標`, rr: `波段 R/R ${_rr2}:1` };
+  const _mtfLabel = _mtfBothAlign ? '（日線+週線雙確認）' : _mtfContraWk ? '（週線逆向，注意風險）' : _mtfContraDay ? '（日線逆向）' : '';
+  const tp1Reason = `${_tp1DescMap[_tp1Tag] || `短線目標 R/R ${_rr1}:1`}${_mtfLabel}，到達後減倉 60%`;
   const tp2Reason = `${_tp2DescMap[_tp2Tag] || `波段目標 R/R ${_rr2}:1`}，剩餘倉位移至成本`;
 
   return {
@@ -10406,9 +10442,11 @@ function computeSimpleSetup(coin, isLong) {
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
     learnFiltered: (conf < 70 || hardBlocked) && rawConf >= 70,
     hardBlocked,
-    isRangeMode: false,   // computeSimpleSetup 無宏觀週期判斷，預設非震盪模式
-    flipRisks:   [],      // computeSimpleSetup 不計算即時事件風險
+    isRangeMode: false,
+    flipRisks:   [],
     bigTrendBlocked: (_sWkSig.includes(isLong ? 'bear' : 'bull') && _sDySig.includes(isLong ? 'bear' : 'bull') && !_sDySig.includes('neutral')),
+    rrBlocked, rrReason,
+    mtfBothAlign: _mtfBothAlign, mtfContraWk: _mtfContraWk, mtfContraDay: _mtfContraDay,
   };
 }
 
