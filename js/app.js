@@ -6277,9 +6277,10 @@ function recordSignalsFromScan(data) {
 
         // ── 信心度扣分明細 ──
         const _macroPen = setup.macroPenalty || 0;
-        const _wAIPen   = (isLong ? wBias.includes('bear') : wBias.includes('bull'))
-                          ? (wBias.includes('strong') ? 8 : 4) : 0;
-        const _tAIPen   = (isLong ? tBias.includes('bear') : tBias.includes('bull')) ? 5 : 0;
+        const _wContra2 = isLong ? wBias.includes('bear') : wBias.includes('bull');
+        const _tContra2 = isLong ? tBias.includes('bear') : tBias.includes('bull');
+        const _wAIPen   = _wContra2 ? (wBias.includes('strong') ? 8 : 4) : 0;
+        const _tAIPen   = _tContra2 ? 5 : 0;
         const _penLines = [];
         if (_macroPen > 0 && _macroCache) {
           const _dom = _macroCache.btcDominance || 0;
@@ -6298,13 +6299,14 @@ function recordSignalsFromScan(data) {
           const _whyStr = _why.length ? `（${_why.join('；')}）` : '';
           _penLines.push(`   ↳ 宏觀逆風 -${_macroPen}%${_whyStr}`);
         }
-        if (_wAIPen > 0) {
-          const _wDir = isLong ? '與做多逆向' : '與做空逆向';
-          _penLines.push(`   ↳ 本週AI預測 ${_esc(wBiasLabel)}，${_wDir}，扣 ${_wAIPen}%`);
+        // 週/日 AI 走勢：逆向顯示扣分，順向顯示確認，中性跳過
+        if (wBiasLabel) {
+          if (_wContra2) _penLines.push(`   ↳ 本週AI預測 ${_esc(wBiasLabel)}，與${isLong ? '做多' : '做空'}逆向，扣 ${_wAIPen}%`);
+          else if (wBias !== 'neutral') _penLines.push(`   ↳ 本週AI預測 ${_esc(wBiasLabel)}，與${isLong ? '做多' : '做空'}方向一致`);
         }
-        if (_tAIPen > 0) {
-          const _tDir = isLong ? '多頭今日逆風' : '空頭今日逆風';
-          _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，${_tDir}，扣 ${_tAIPen}%`);
+        if (tBiasLabel) {
+          if (_tContra2) _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 ${_tAIPen}%`);
+          else if (tBias !== 'neutral') _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，今日方向一致`);
         }
         const _dirPen = setup.dirPenalty || 0;
         if (_dirPen > 0) {
@@ -6314,6 +6316,37 @@ function recordSignalsFromScan(data) {
           if (_dWkOp) _dParts.push('週線逆向');
           if (_dDyOp) _dParts.push('日線逆向');
           _penLines.push(`   ↳ 大方向${_dParts.join('+')} -${_dirPen}%`);
+        }
+        // 技術面扣分明細
+        const _techPen = setup.techPenalty || 0;
+        if (_techPen > 0) {
+          const _macdH = parseFloat(coin.macdHist) || 0;
+          const _rsiV  = parseFloat(coin.rsi) || 50;
+          const _volSt = coin.volumeStrength || '';
+          if (isLong  && _macdH < 0) _penLines.push(`   ↳ 技術面：MACD柱狀負值，多頭動能待確認，扣 4%`);
+          if (!isLong && _macdH > 0) _penLines.push(`   ↳ 技術面：MACD柱狀正值，空頭動能待確認，扣 4%`);
+          if (isLong  && _rsiV > 78) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 嚴重超買，回調風險高，扣 8%`);
+          else if (isLong && _rsiV > 70) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 超買，上行動能減弱，扣 5%`);
+          if (!isLong && _rsiV < 22) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 嚴重超賣，反彈風險高，扣 8%`);
+          else if (!isLong && _rsiV < 30) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 超賣，下行動能減弱，扣 5%`);
+          if (_volSt === '低' || _volSt.includes('弱')) _penLines.push(`   ↳ 技術面：成交量弱勢（${_volSt}），突破動能不足，扣 4%`);
+        }
+        // 籌碼面扣分明細
+        const _chipsPen = setup.chipsPenalty || 0;
+        if (_chipsPen > 0) {
+          const _deriv = coin.derivData;
+          const _whale = coin.whaleData;
+          if (_deriv) {
+            const _tkr = _deriv.takerBuySell ?? 1;
+            if (isLong  && _tkr < 0.80) _penLines.push(`   ↳ 籌碼面：主動賣盤強勢（Taker ${_tkr.toFixed(2)}），扣 6%`);
+            else if (isLong  && _tkr < 0.88) _penLines.push(`   ↳ 籌碼面：主動賣盤偏多（Taker ${_tkr.toFixed(2)}），扣 4%`);
+            else if (!isLong && _tkr > 1.20) _penLines.push(`   ↳ 籌碼面：主動買盤強勢（Taker ${_tkr.toFixed(2)}），扣 6%`);
+            else if (!isLong && _tkr > 1.12) _penLines.push(`   ↳ 籌碼面：主動買盤偏多（Taker ${_tkr.toFixed(2)}），扣 4%`);
+          }
+          if (_whale) {
+            if (isLong  && _whale.bias === 'bear' && (_whale.bigSellCount||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續出貨（${_whale.bigSellCount}筆大賣），多頭逆風，扣 5%`);
+            if (!isLong && _whale.bias === 'bull' && (_whale.bigBuyCount ||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續買入（${_whale.bigBuyCount}筆大買），空頭逆風，扣 5%`);
+          }
         }
         const _confBlock = `📶 信心度：<b>${setup.conf}%</b>` +
           (_penLines.length ? '\n' + _penLines.join('\n') : '');
@@ -6399,7 +6432,7 @@ function recordSignalsFromScan(data) {
             `🏁 <b>最終止盈：$${_ltTPFmt}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n`;
         }
 
-        // ── 新格式 Telegram 訊息（進場位 → 止損位 → 止盈 → 進場理由 → 止損理由）──
+        // ── Telegram 訊息（進場位 → 止損位 → 止盈 → 進場理由 → 止損理由 → 信心扣分）──
         const _msg = canScaleIn
           ? (
             `💎 <b>加密掃描 Pro — 長線單信號</b>\n` +
@@ -6409,12 +6442,14 @@ function recordSignalsFromScan(data) {
             `${_kzLine}${_ictBlock}\n` +
             `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
-            `${_confBlock}\n\n` +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
             `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
+            `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
+            (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n` : '') +
             _scaleBlock +
             `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
             `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n\n` +
+            `${_confBlock}\n\n` +
             `${_tags}\n` +
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           )
@@ -6425,13 +6460,13 @@ function recordSignalsFromScan(data) {
             `⏰ ${_ts}\n` +
             `${_kzLine}${_ictBlock}\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
-            `${_confBlock}\n\n` +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
             `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
             `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
             (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n` : '') +
             `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
             `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n\n` +
+            `${_confBlock}\n\n` +
             `${_tags}\n` +
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           );
@@ -7725,8 +7760,9 @@ function checkPostDataReversal(data) {
 
     if (!suggestNewSl) continue;
 
-    // 每 4 小時最多提醒一次同類型
-    const alertId = `${trade.id}_${alertType}_${Math.floor(now / (4 * 60 * 60 * 1000))}`;
+    // 同一止損位不重複通報（以四捨五入到 0.01 的止損價為 key）
+    const _slKey = Math.round(suggestNewSl * 100);
+    const alertId = `${trade.id}_${alertType}_${_slKey}`;
     if (sentAlerts[alertId]) continue;
     sentAlerts[alertId] = true;
     localStorage.setItem(alertKey, JSON.stringify(sentAlerts));
