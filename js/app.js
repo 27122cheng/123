@@ -1088,12 +1088,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         cfPenNow = Math.min(16, cfPenNow);
       } catch(_e) {}
 
-      const rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      let freshConf    = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow);
-      // 統一使用 computeSimpleSetup 計算最終信心度，與 Telegram 通知公式一致（包含 bbPenalty/宏觀淨方向等）
+      let rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
+      let freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow);
+      // 統一使用 computeSimpleSetup 計算最終信心度，同步 rawConf 避免顯示扣分與最終值不一致
       try {
         const _ssNow = computeSimpleSetup(coin, isLongNow);
-        if (_ssNow?.conf != null) freshConf = _ssNow.conf;
+        if (_ssNow?.conf != null) {
+          freshConf  = _ssNow.conf;
+          if (_ssNow.rawConf != null) rawConfNow = _ssNow.rawConf;
+        }
       } catch(_sse) {}
       if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
@@ -2650,7 +2653,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
+    // 最低信心門檻：與 recordSignalsFromScan 一致（避免極低信心交易混入持倉）
+    const _btConfMin = 55;
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -10231,8 +10236,9 @@ function computeSimpleSetup(coin, isLong) {
     macdHist:  parseFloat(coin.macdHist) || 0,
     volWeak:   _ssVolWeak,
   });
-  // rawConf：以 coin.score 為基礎，加入 RSI/ADX/趨勢強度加成（嚴格篩選：基底降低，移除中性RSI加成）
-  let rawConf = Math.min(88, coin.score || 55);
+  // rawConf：做多用 score，做空用 100-score（score=30 → 空頭強度70%）
+  const _dirBase = isLong ? (coin.score || 55) : Math.max(10, 100 - (coin.score || 50));
+  let rawConf = Math.min(88, _dirBase);
   // RSI 確認加成（順向 RSI：做多 RSI < 50，做空 RSI > 50 各 +5；極端加 +8；移除近中性加成）
   if (isLong) {
     if (rsi < 35)       rawConf += 8;
