@@ -2905,8 +2905,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ${(_ictFVG || _ictFVG4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
       <span style="color:var(--text3);min-width:70px">📊 FVG 缺口</span>
       <div>
-        ${_ictFVG ? `<div style="color:${_ictFVG.filled ? 'var(--text3)' : '#a78bfa'}">1H　$${fmtPrice(_ictFVG.low)} – $${fmtPrice(_ictFVG.high)}（${(_ictFVG.size*100).toFixed(2)}%）${_ictFVG.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
-        ${_ictFVG4h ? `<div style="color:${_ictFVG4h.filled ? 'var(--text3)' : '#a78bfa'}">4H　$${fmtPrice(_ictFVG4h.low)} – $${fmtPrice(_ictFVG4h.high)}（${(_ictFVG4h.size*100).toFixed(2)}%）${_ictFVG4h.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
+        ${_ictFVG ? `<div style="color:${_ictFVG.filled ? 'var(--text3)' : '#a78bfa'}">1H　$${fmtPrice(_ictFVG.low)} – $${fmtPrice(_ictFVG.high)}（${(_ictFVG.size).toFixed(2)}%）${_ictFVG.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
+        ${_ictFVG4h ? `<div style="color:${_ictFVG4h.filled ? 'var(--text3)' : '#a78bfa'}">4H　$${fmtPrice(_ictFVG4h.low)} – $${fmtPrice(_ictFVG4h.high)}（${(_ictFVG4h.size).toFixed(2)}%）${_ictFVG4h.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
       </div>
     </div>` : `<div style="color:var(--text3);margin-bottom:6px">📊 FVG 缺口　<span style="opacity:.6">近期無明顯缺口</span></div>`}
     <!-- Premium / Discount -->
