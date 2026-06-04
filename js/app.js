@@ -6061,30 +6061,33 @@ function recordSignalsFromScan(data) {
     // ── 4 大方向條件計分 ──
     // F1 宏觀（slight_bull/bull/strong_bull 均算同向；neutral/無快取 → false）
     const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
-    // F2 大方向：週線 K 線同向，或幣種評分達強烈信號門檻（多頭 ≥65 / 空頭 ≤35）
+    // F2 大方向：週線 K 線同向，或幣種評分達極強信號門檻（多頭 ≥70 / 空頭 ≤30，純評分替代要求更高）
     const _f2 = isLong
-      ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 65)
-      : (!!coin.weeklySignal?.includes('bear') || coin.score <= 35);
+      ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 70)
+      : (!!coin.weeklySignal?.includes('bear') || coin.score <= 30);
     // F3 周/日AI預測：周AI 或 日AI 任一明確同向即計分
     const _f3 = _macroCache
       ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
          (isLong ? tBias.includes('bull') : tBias.includes('bear')))
       : false;
-    // F4 日線/4H盤面：日線信號同向，或 coin.trend（4H代理）確認趨勢方向
+    // F4 日線確認：必須有明確日線信號；4H trend 替代只接受「強勢」趨勢
     const _dtBull    = coin.dailySignal?.includes('bull');
     const _dtBear    = coin.dailySignal?.includes('bear');
     const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
     const _f4 = isLong
-      ? (_dtBull || (_dtNeutral && (coin.trend === '強勢看漲' || coin.trend === '看漲')))
-      : (_dtBear || (_dtNeutral && (coin.trend === '強勢看跌' || coin.trend === '看跌')));
+      ? (_dtBull || (_dtNeutral && coin.trend === '強勢看漲'))
+      : (_dtBear || (_dtNeutral && coin.trend === '強勢看跌'));
 
     // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
-    // 短線門檻：有宏觀快取時一律 ≥3/4（含中性市場），無快取才降為 2/4
-    // 宏觀中性 + 只靠幣種自身分數的 2-factor 信號勝率極低，已改為統一要求 3 個確認
-    const _minFactors = !_macroCache ? 2 : 3;
-    if ([_f1, _f2, _f3, _f4].filter(Boolean).length < _minFactors) continue;
+    // 嚴格入場門檻：無宏觀資料時不進場；有宏觀時強制 ≥3/4，僅3個時信心須≥70%
+    if (!_macroCache) continue;
+    const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
+    if (_factors < 3) continue;
+
+    // ADX 過低（< 18）：震盪無趨勢，直接跳過（不只扣分）
+    if ((parseFloat(coin.adx) || 20) < 18) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
@@ -6092,8 +6095,9 @@ function recordSignalsFromScan(data) {
 
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
-    // 最終信心度門檻（含所有技術/籌碼/AI/ADX/止損規則扣分）≥ 60%
-    if (setup.conf < 60) continue;
+    // 最終信心度門檻：≥65%；若僅3/4因子確認則要求≥70%（4/4才可降至65%）
+    const _confMin = _factors >= 4 ? 65 : 70;
+    if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -6105,8 +6109,8 @@ function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 高風險及以上（≥60）→ 觀望，不產生進場訊號
-    if (_scanRisk.score >= 60) continue;
+    // 中高風險及以上（≥55）→ 觀望（原60，降至55更保守）
+    if (_scanRisk.score >= 55) continue;
 
     // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
     const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
