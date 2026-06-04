@@ -954,6 +954,17 @@ function buildPendingPositionSetup(t, currentPrice) {
   <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　有效期至：${fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2)}</div>`;
 }
 
+/* ── ICT Kill Zone 獵殺時段偵測 ────────────────────────────── */
+function computeKillZone() {
+  const now = new Date();
+  const t = now.getUTCHours() + now.getUTCMinutes() / 60;
+  if (t >= 1  && t < 4)  return { name: '亞洲獵殺時段',     code: 'asian',  emoji: '🌏', quality: 'medium', desc: '亞洲主力活躍，波動適中' };
+  if (t >= 7  && t < 10) return { name: '倫敦開盤獵殺時段', code: 'london', emoji: '🇬🇧', quality: 'high',   desc: '流動性掃蕩高發，方向確認後追進' };
+  if (t >= 12 && t < 15) return { name: '紐約開盤獵殺時段', code: 'ny',     emoji: '🗽', quality: 'high',   desc: '最大波動時段，ICT 黃金進場窗口' };
+  if (t >= 16 && t < 17) return { name: '倫敦收盤時段',     code: 'lclose', emoji: '🔔', quality: 'low',    desc: '歐洲倉位平倉，注意假突破' };
+  return { name: '盤整時段', code: 'off', emoji: '😴', quality: 'low', desc: '非主力時段，等待機會' };
+}
+
 /* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
 function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const price = parseFloat(coin.price) || 0;
@@ -1819,6 +1830,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
   else if (!isRangeMode) dirLabel = isLong ? '做多' : '做空';
 
+  // ── ICT / SMC / SNR 分析（Kill Zone + Order Block + FVG + Premium/Discount）──
+  const _kz    = computeKillZone();
+  const _raw1h = mtfData['1h']?.raw;
+  const _raw4h = mtfData['4h']?.raw;
+  let _ictOB = null, _ictFVG = null, _ictPD = null, _ictOB4h = null, _ictFVG4h = null;
+  try {
+    if (_raw1h?.length >= 5 && typeof detectOrderBlocks   === 'function') _ictOB   = detectOrderBlocks(_raw1h, isLong);
+    if (_raw1h?.length >= 5 && typeof detectFairValueGaps === 'function') _ictFVG  = detectFairValueGaps(_raw1h, isLong);
+    if (_raw1h?.length >= 5 && typeof computePremiumDiscount === 'function') _ictPD = computePremiumDiscount(_raw1h);
+    if (_raw4h?.length >= 5 && typeof detectOrderBlocks   === 'function') _ictOB4h  = detectOrderBlocks(_raw4h, isLong);
+    if (_raw4h?.length >= 5 && typeof detectFairValueGaps === 'function') _ictFVG4h = detectFairValueGaps(_raw4h, isLong);
+  } catch(_icte) { console.warn('[ICT analysis]', _icte); }
+
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
@@ -1981,6 +2005,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       else if (scoreS <= 35) entryReasons.push(`綜合評分 ${scoreS} 空頭信號確認`);
     }
     if (!entryReasons.length) entryReasons.push('15m/1h 空頭信號共振');
+  }
+
+  // ── ICT/SMC 進場理由補充（共同適用多空）──
+  if (_kz.quality === 'high') entryReasons.push(`${_kz.emoji} ${_kz.name}（${_kz.desc}）`);
+  if (_ictOB?.priceInOB) entryReasons.push(`⚡ ${_ictOB.label} 訂單塊確認（ICT Order Block）`);
+  if (_ictOB4h?.priceInOB) entryReasons.push(`⚡ 4H ${_ictOB4h.label} 訂單塊確認`);
+  if (_ictFVG && !_ictFVG.filled) {
+    const _fvgDir = isLong ? '多頭' : '空頭';
+    entryReasons.push(`📊 ${_fvgDir} FVG 公平價值缺口 $${fmtPrice(_ictFVG.mid)} 尚未回補`);
+  }
+  if (_ictPD) {
+    if (isLong && _ictPD.idealForLong)   entryReasons.push(`📉 折扣區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質多頭進場位`);
+    if (!isLong && _ictPD.idealForShort) entryReasons.push(`📈 溢價區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質空頭進場位`);
   }
 
   // ── 止損：HTF 結構位 + 緩衝（4H/日線優先，1H fallback）──
@@ -2179,7 +2216,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const bbWalkBonus = (isLong ? (bb1h_?.walkingBull ? 1 : 0) : (bb1h_?.walkingBear ? 1 : 0));
   const patBonus    = (isLong ? ((coin.patterns?.bull123 || coin.patterns?.bull2B) ? 1 : 0)
                                : ((coin.patterns?.bear123 || coin.patterns?.bear2B) ? 1 : 0));
-  const rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus + bbWalkBonus + patBonus) * 6));
+  let rawConf  = Math.min(92, Math.max(40, 40 + (activeFactors + h4Conf + rrBonus + levelQualityBonus + bbWalkBonus + patBonus) * 6));
+
+  // ICT/SMC 信心加成
+  let _ictBonus = 0;
+  if (_kz?.quality === 'high')                        _ictBonus += 2;
+  if (_ictOB?.priceInOB)                              _ictBonus += 3;
+  if (_ictOB4h?.priceInOB)                            _ictBonus += 2;
+  if (isLong  && _ictPD?.idealForLong)                _ictBonus += 2;
+  if (!isLong && _ictPD?.idealForShort)               _ictBonus += 2;
+  if (_ictFVG && !_ictFVG.filled)                     _ictBonus += 1;
+  if (_ictFVG4h && !_ictFVG4h.filled)                 _ictBonus += 1;
+  if (_ictBonus > 0) rawConf = Math.min(92, rawConf + _ictBonus);
 
   // 宏觀環境同步確認：六大因子各自獨立扣分（反向扣較多，中性扣少一點）
   let macroOpposePenalty = 0, macroReasons = [];
@@ -2516,6 +2564,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     defenseChecks: learnResult?.defenseChecks || [],
     // AI 風險評估（供 generateAIAnalysis 整合進操作建議）
     riskScore: _risk.score, riskLevel: _risk.level, riskFactors: _risk.factors, riskRecs: _risk.recs,
+    // ICT/SMC/SNR 分析資料
+    killZone: _kz, orderBlock: _ictOB, fvg: _ictFVG, premiumDiscount: _ictPD,
+    orderBlock4h: _ictOB4h, fvg4h: _ictFVG4h, ictBonus: _ictBonus,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -2821,6 +2872,49 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             <div style="color:var(--bear);margin-top:2px">⚠️ ${f.riskDesc}</div>
           </div>`).join('')}
       </div>` : ''}
+  </div>
+
+  <!-- ═══ ICT / SMC / SNR 分析面板 ═══ -->
+  <div style="background:rgba(16,24,39,.7);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
+    <div style="font-weight:700;color:#a78bfa;margin-bottom:7px;font-size:0.8rem">🧠 ICT / SMC / SNR 智能分析</div>
+    <!-- Kill Zone -->
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">⏰ 獵殺時段</span>
+      <span style="color:${_kz.quality === 'high' ? '#22c55e' : _kz.quality === 'medium' ? '#f59e0b' : 'var(--text3)'};font-weight:600">${_kz.emoji} ${_kz.name}</span>
+      <span style="color:var(--text3);font-size:0.72rem">${_kz.desc}</span>
+      ${_kz.quality === 'high' ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">黃金窗口</span>` : ''}
+    </div>
+    <!-- Order Block -->
+    ${(_ictOB || _ictOB4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">📦 訂單塊</span>
+      <div>
+        ${_ictOB ? `<div style="color:${_ictOB.priceInOB ? '#22c55e' : '#f59e0b'}">1H ${_ictOB.label}　$${fmtPrice(_ictOB.low)} – $${fmtPrice(_ictOB.high)}${_ictOB.priceInOB ? ' ✅ 價格在 OB 內' : ''}</div>` : ''}
+        ${_ictOB4h ? `<div style="color:${_ictOB4h.priceInOB ? '#22c55e' : '#f59e0b'}">4H ${_ictOB4h.label}　$${fmtPrice(_ictOB4h.low)} – $${fmtPrice(_ictOB4h.high)}${_ictOB4h.priceInOB ? ' ✅ 價格在 OB 內' : ''}</div>` : ''}
+      </div>
+    </div>` : `<div style="color:var(--text3);margin-bottom:6px">📦 訂單塊　<span style="opacity:.6">當前範圍無明顯 OB</span></div>`}
+    <!-- FVG -->
+    ${(_ictFVG || _ictFVG4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">📊 FVG 缺口</span>
+      <div>
+        ${_ictFVG ? `<div style="color:${_ictFVG.filled ? 'var(--text3)' : '#a78bfa'}">1H　$${fmtPrice(_ictFVG.low)} – $${fmtPrice(_ictFVG.high)}（${(_ictFVG.size*100).toFixed(2)}%）${_ictFVG.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
+        ${_ictFVG4h ? `<div style="color:${_ictFVG4h.filled ? 'var(--text3)' : '#a78bfa'}">4H　$${fmtPrice(_ictFVG4h.low)} – $${fmtPrice(_ictFVG4h.high)}（${(_ictFVG4h.size*100).toFixed(2)}%）${_ictFVG4h.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
+      </div>
+    </div>` : `<div style="color:var(--text3);margin-bottom:6px">📊 FVG 缺口　<span style="opacity:.6">近期無明顯缺口</span></div>`}
+    <!-- Premium / Discount -->
+    ${_ictPD ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">⚖️ 價格位置</span>
+      <span style="color:${_ictPD.idealForLong ? '#22c55e' : _ictPD.idealForShort ? '#ef4444' : '#f59e0b'};font-weight:600">${_ictPD.icon} ${_ictPD.zoneLabel}（${_ictPD.pctInRange.toFixed(0)}% 位置）</span>
+      <span style="color:var(--text3);font-size:0.72rem">均衡點 $${fmtPrice(_ictPD.equilibrium)}</span>
+      ${(isLong && _ictPD.idealForLong) || (!isLong && _ictPD.idealForShort) ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">SMC 最佳進場</span>` : ''}
+    </div>` : ''}
+    <!-- SNR Key Levels -->
+    <div style="display:flex;align-items:flex-start;gap:8px">
+      <span style="color:var(--text3);min-width:70px">🎯 關鍵 S/R</span>
+      <div style="color:var(--text2);font-size:0.72rem;line-height:1.8">
+        ${parseFloat(coin.ema200) > 0 ? `EMA200 $${fmtPrice(parseFloat(coin.ema200))}　` : ''}${parseFloat(coin.ema50) > 0 ? `EMA50 $${fmtPrice(parseFloat(coin.ema50))}　` : ''}${vp1h?.poc ? `POC $${fmtPrice(vp1h.poc)}　` : ''}${bb1h_?.upper ? `BB上 $${fmtPrice(bb1h_.upper)}　BB下 $${fmtPrice(bb1h_.lower)}` : ''}
+      </div>
+    </div>
+    ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
   </div>
 
   ${macroBlockedForRecord ? `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⚠️ 宏觀大方向${isLong ? '極端偏空' : '極端偏多'}，信心度已扣分反映，訊號已記入持倉供參考</div>` : ''}
@@ -6245,6 +6339,21 @@ function recordSignalsFromScan(data) {
                      ' ' + _now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
         const _tags = `#${_sym.toLowerCase()} #crypto #${isLong ? 'long' : 'short'}`;
 
+        // ── ICT Kill Zone ──
+        const _kzTg   = computeKillZone();
+        const _kzLine = `🕐 Kill Zone：${_kzTg.emoji} ${_kzTg.name}${_kzTg.quality === 'high' ? ' ✅ 黃金進場窗口' : ''}`;
+        // ICT OB/FVG/PD from cache (populated by buildTradeSetup if user viewed detail)
+        const _ictCache = _tradeSetupCache[coin.symbol] || {};
+        const _ictLines = [];
+        if (_ictCache.orderBlock?.priceInOB)  _ictLines.push(`   ⚡ ${_ictCache.orderBlock.label} 訂單塊確認`);
+        if (_ictCache.fvg && !_ictCache.fvg.filled) _ictLines.push(`   📊 FVG 缺口 $${parseFloat(_ictCache.fvg.mid).toPrecision(5).replace(/\.?0+$/,'')} 未回補`);
+        if (_ictCache.premiumDiscount) {
+          const _pd = _ictCache.premiumDiscount;
+          if ((isLong && _pd.idealForLong) || (!isLong && _pd.idealForShort))
+            _ictLines.push(`   ⚖️ ${_pd.icon} ${_pd.zoneLabel}（${_pd.pctInRange.toFixed(0)}%）SMC 最佳位`);
+        }
+        const _ictBlock = _ictLines.length ? '\n' + _ictLines.join('\n') : '';
+
         // ── 風險警示橫幅（完整 10 因子評估，與幣種詳情頁相同）──
         const _riskScore = _scanRisk.score;
         const _riskLevel = _scanRisk.level;
@@ -6288,6 +6397,7 @@ function recordSignalsFromScan(data) {
             (_riskBanner ? `${_riskBanner}` : '\n') +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
             `⏰ ${_ts}\n` +
+            `${_kzLine}${_ictBlock}\n` +
             `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
             `${_confBlock}\n\n` +
@@ -6303,7 +6413,8 @@ function recordSignalsFromScan(data) {
             `🚨 <b>加密掃描 Pro — 短線單信號</b>\n` +
             (_riskBanner ? `${_riskBanner}` : '\n') +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
-            `⏰ ${_ts}\n\n` +
+            `⏰ ${_ts}\n` +
+            `${_kzLine}${_ictBlock}\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
             `${_confBlock}\n\n` +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +

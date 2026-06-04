@@ -792,3 +792,109 @@ function detectTrapPatterns(klines) {
   const hasAny = Object.values(results).some(v => v !== null);
   return hasAny ? results : null;
 }
+
+/* ── ICT Order Block Detection ──────────────────────────────────────────── */
+function detectOrderBlocks(klines, isLong) {
+  if (!klines || klines.length < 20) return null;
+  const n      = klines.length;
+  const opens  = klines.map(k => parseFloat(k[1]));
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const cur    = closes[n - 1];
+  const start  = Math.max(1, n - 35);
+  const end    = n - 3;
+
+  if (isLong) {
+    for (let i = end; i >= start; i--) {
+      if (closes[i] >= opens[i]) continue; // need bearish candle
+      const body = Math.abs(closes[i] - opens[i]);
+      if (body / closes[i] < 0.001) continue;
+      const postHigh = Math.max(...highs.slice(i + 1, Math.min(i + 10, n)));
+      if ((postHigh - highs[i]) / highs[i] < 0.004) continue;
+      const obHigh = Math.max(opens[i], closes[i]);
+      const obLow  = Math.min(opens[i], closes[i]);
+      if (cur >= obLow * 0.994 && cur <= obHigh * 1.025) {
+        return { type: 'bullish', high: obHigh, low: obLow,
+                 priceInOB: cur >= obLow && cur <= obHigh, label: '看多訂單塊 OB' };
+      }
+    }
+  } else {
+    for (let i = end; i >= start; i--) {
+      if (closes[i] <= opens[i]) continue; // need bullish candle
+      const body = Math.abs(closes[i] - opens[i]);
+      if (body / closes[i] < 0.001) continue;
+      const postLow = Math.min(...lows.slice(i + 1, Math.min(i + 10, n)));
+      if ((lows[i] - postLow) / lows[i] < 0.004) continue;
+      const obHigh = Math.max(opens[i], closes[i]);
+      const obLow  = Math.min(opens[i], closes[i]);
+      if (cur >= obLow * 0.975 && cur <= obHigh * 1.006) {
+        return { type: 'bearish', high: obHigh, low: obLow,
+                 priceInOB: cur >= obLow && cur <= obHigh, label: '看空訂單塊 OB' };
+      }
+    }
+  }
+  return null;
+}
+
+/* ── ICT Fair Value Gap (FVG/Imbalance) ────────────────────────────────── */
+function detectFairValueGaps(klines, isLong) {
+  if (!klines || klines.length < 5) return null;
+  const n     = klines.length;
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const cur    = closes[n - 1];
+  const gaps   = [];
+  const scan   = Math.max(2, n - 40);
+
+  for (let i = scan; i < n - 1; i++) {
+    if (isLong) {
+      // Bullish FVG: candle i-2 high < candle i low → gap up
+      const gL = highs[i - 2], gH = lows[i];
+      if (gH > gL && cur > gL) {
+        const size = (gH - gL) / gL * 100;
+        if (size >= 0.15) gaps.push({ high: gH, low: gL, mid: (gH + gL) / 2, size, filled: cur < gH });
+      }
+    } else {
+      // Bearish FVG: candle i-2 low > candle i high → gap down
+      const gH = lows[i - 2], gL = highs[i];
+      if (gH > gL && cur < gH) {
+        const size = (gH - gL) / gL * 100;
+        if (size >= 0.15) gaps.push({ high: gH, low: gL, mid: (gH + gL) / 2, size, filled: cur > gL });
+      }
+    }
+  }
+  if (!gaps.length) return null;
+  const sorted = gaps.sort((a, b) => Math.abs(cur - a.mid) - Math.abs(cur - b.mid));
+  return sorted.find(g => !g.filled) || sorted[0];
+}
+
+/* ── ICT Premium / Discount Zone ────────────────────────────────────────── */
+function computePremiumDiscount(klines) {
+  if (!klines || klines.length < 20) return null;
+  const n      = klines.length;
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const cur    = closes[n - 1];
+  const lb     = Math.min(60, n);
+  const rH     = Math.max(...highs.slice(-lb));
+  const rL     = Math.min(...lows.slice(-lb));
+  if (rH <= rL) return null;
+  const pct = (cur - rL) / (rH - rL) * 100;
+  let zone, zoneLabel, icon;
+  if      (pct >= 75) { zone = 'premium';         zoneLabel = '溢價區 Premium';        icon = '🔴'; }
+  else if (pct >= 55) { zone = 'slight_premium';   zoneLabel = '偏高（輕度溢價）';      icon = '🟡'; }
+  else if (pct <= 25) { zone = 'discount';         zoneLabel = '折價區 Discount';       icon = '🟢'; }
+  else if (pct <= 45) { zone = 'slight_discount';  zoneLabel = '偏低（輕度折價）';      icon = '🟡'; }
+  else                { zone = 'equilibrium';       zoneLabel = '均衡區 Equilibrium';   icon = '⚪'; }
+  return {
+    zone, zoneLabel, icon,
+    rangeHigh: rH, rangeLow: rL,
+    equilibrium: (rH + rL) / 2,
+    pctInRange: parseFloat(pct.toFixed(1)),
+    idealForLong:  zone === 'discount' || zone === 'slight_discount',
+    idealForShort: zone === 'premium'  || zone === 'slight_premium',
+  };
+}
