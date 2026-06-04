@@ -6216,10 +6216,8 @@ function recordSignalsFromScan(data) {
     // 中高風險及以上（≥55）→ 觀望（原60，降至55更保守）
     if (_scanRisk.score >= 55) continue;
 
-    // ── 長線升級判斷：短線條件通過後，日線 + 週線均同向 → 升級為長線單 ──
-    const _ltDayOk = isLong ? !!coin.dailySignal?.includes('bull')  : !!coin.dailySignal?.includes('bear');
-    const _ltWkOk  = isLong ? !!coin.weeklySignal?.includes('bull') : !!coin.weeklySignal?.includes('bear');
-    const canScaleIn = _ltDayOk && _ltWkOk;
+    // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
+    const canScaleIn = setup.isLongTerm === true;
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
@@ -6244,10 +6242,11 @@ function recordSignalsFromScan(data) {
       entryWhaleBias:     coin.whaleData?.bias || null,
       entryMTFAlign:      (() => {
         let _mAlign = 0;
-        if (isLong ? (coin.dailySignal || '').includes('bull') : (coin.dailySignal || '').includes('bear')) _mAlign++;
         if (isLong ? (coin.weeklySignal || '').includes('bull') : (coin.weeklySignal || '').includes('bear')) _mAlign++;
-        if (isLong ? wBias.includes('bull') : wBias.includes('bear')) _mAlign++;
-        if (isLong ? tBias.includes('bull') : tBias.includes('bear')) _mAlign++;
+        if (isLong ? (coin.dailySignal  || '').includes('bull') : (coin.dailySignal  || '').includes('bear')) _mAlign++;
+        if (isLong ? (coin.h4Signal     || '').includes('bull') : (coin.h4Signal     || '').includes('bear')) _mAlign++;
+        if (isLong ? (coin.h1Signal     || '').includes('bull') : (coin.h1Signal     || '').includes('bear')) _mAlign++;
+        if (setup.isLongTerm || setup.isShortTerm) _mAlign++;
         return _mAlign;
       })(),
       entryAbovePOC:      null,
@@ -9973,20 +9972,35 @@ function computeSimpleSetup(coin, isLong) {
   // ── SMC 型態 ──
   const _pat = coin.patterns || null;
 
-  // ── MTF 大小週期雙確認 ──
-  const _dayAligned   = isLong ? (coin.dailySignal  || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
+  // ── MTF 多週期確認（5 個時間軸）──
+  // 長線單條件：週線 + 日線 + 4H + 15m 均同向
+  // 短線單條件：日線 + 4H + 1H + 15m 均同向
   const _wkAligned    = isLong ? (coin.weeklySignal || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
-  const _mtfBothAlign = _dayAligned && _wkAligned;    // 日線 + 週線雙確認
+  const _dayAligned   = isLong ? (coin.dailySignal  || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
+  const _h4Aligned    = isLong ? (coin.h4Signal     || '').includes('bull') : (coin.h4Signal     || '').includes('bear');
+  const _h1Aligned    = isLong ? (coin.h1Signal     || '').includes('bull') : (coin.h1Signal     || '').includes('bear');
+  // 15m：來自 coin.signal15m（掃描版），或以 score/trend 估算
+  const _15mAligned   = coin.signal15m
+    ? (isLong ? coin.signal15m.includes('bull') : coin.signal15m.includes('bear'))
+    : (isLong ? (coin.score || 50) >= 55 : (coin.score || 50) <= 45);
+  // 組合判斷
+  const _isLongTerm  = _wkAligned && _dayAligned && _h4Aligned && _15mAligned;
+  const _isShortTerm = !_isLongTerm && _dayAligned && _h4Aligned && _h1Aligned && _15mAligned;
+  const _mtfBothAlign = _isLongTerm || _isShortTerm;
   const _mtfContraWk  = isLong ? (coin.weeklySignal || '').includes('bear') : (coin.weeklySignal || '').includes('bull');
   const _mtfContraDay = isLong ? (coin.dailySignal  || '').includes('bear') : (coin.dailySignal  || '').includes('bull');
-  // MTF 止損 buffer 係數：雙確認時可收緊；週線逆向時放寬保護
-  const _mtfSlFactor  = _mtfBothAlign ? 0.8 : _mtfContraWk ? 1.25 : 1.0;
+  const _mtfContraH4  = isLong ? (coin.h4Signal     || '').includes('bear') : (coin.h4Signal     || '').includes('bull');
+  // MTF 止損 buffer：長線雙確認收緊；4H 逆向放寬；週線逆向最寬
+  const _mtfSlFactor  = _isLongTerm ? 0.75 : _isShortTerm ? 0.85 : _mtfContraWk ? 1.3 : _mtfContraH4 ? 1.15 : 1.0;
 
-  // ── 前高/前低估算（TP 結構目標）──
-  // OB 邊界優先（ICT 結構水平），其次 BB 帶（統計極值代理）
-  const _prevHigh = (_ob && _ob.high > 0 && _ob.high > price * 1.002) ? _ob.high
+  // ── 前高/前低（4H pivot 優先，其次 OB 邊界，最後 BB 帶）──
+  const _h4Hi = parseFloat(coin.h4SwingHigh) || 0;
+  const _h4Lo = parseFloat(coin.h4SwingLow)  || 0;
+  const _prevHigh = (_h4Hi > price * 1.002) ? _h4Hi
+                  : (_ob && _ob.high > 0 && _ob.high > price * 1.002) ? _ob.high
                   : (_bbUp > price * 1.002 ? _bbUp : 0);
-  const _prevLow  = (_ob && _ob.low  > 0 && _ob.low  < price * 0.998) ? _ob.low
+  const _prevLow  = (_h4Lo > 0 && _h4Lo < price * 0.998) ? _h4Lo
+                  : (_ob && _ob.low  > 0 && _ob.low  < price * 0.998) ? _ob.low
                   : (_bbLo > 0 && _bbLo < price * 0.998 ? _bbLo : 0);
 
   // ═══════════════════════════════════════════════
@@ -10147,11 +10161,15 @@ function computeSimpleSetup(coin, isLong) {
   else if (adx >= 25) rawConf += 3;
   // 趨勢強度加成（強勢看漲/看跌）
   if (coin.trend === '強勢看漲' || coin.trend === '強勢看跌') rawConf += 4;
-  // 日線 + 週線方向確認加成（對應 buildTradeSetup 的 h4Conf + ltBias 加成）
+  // 多週期方向確認加成
   const _sDayAlignTmp = isLong ? (coin.dailySignal  || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
   const _sWkAlignTmp  = isLong ? (coin.weeklySignal || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
-  if (_sDayAlignTmp) rawConf += 5;  // 日線同向：補充 buildTradeSetup 的 h4Conf/d1Conf
-  if (_sWkAlignTmp)  rawConf += 4;  // 週線同向：補充 ltBias 加成（長線候選）
+  const _sH4AlignTmp  = isLong ? (coin.h4Signal     || '').includes('bull') : (coin.h4Signal     || '').includes('bear');
+  const _sH1AlignTmp  = isLong ? (coin.h1Signal     || '').includes('bull') : (coin.h1Signal     || '').includes('bear');
+  if (_sDayAlignTmp) rawConf += 5;  // 日線同向
+  if (_sWkAlignTmp)  rawConf += 4;  // 週線同向
+  if (_sH4AlignTmp)  rawConf += 3;  // 4H 同向加成
+  if (_sH1AlignTmp)  rawConf += 2;  // 1H 同向加成
   rawConf = Math.min(90, rawConf);
   // 宏觀逆風懲罰：六大因子各自獨立扣分（與 buildTradeSetup 一致）
   let _sMacroPen = 0, _sAIPen = 0;
@@ -10383,13 +10401,21 @@ function computeSimpleSetup(coin, isLong) {
   }
 
   // ── MTF 多週期確認 / 警告 ──
-  if (_mtfBothAlign) {
-    reasons.unshift(isLong ? `✅ 日線 + 週線雙確認，大小週期同向，多頭趨勢成立` : `✅ 日線 + 週線雙確認，大小週期同向，空頭趨勢成立`);
+  if (_isLongTerm) {
+    reasons.unshift(isLong
+      ? `✅ 週線+日線+4H+15m 四週期同向確認，長線多頭趨勢成立`
+      : `✅ 週線+日線+4H+15m 四週期同向確認，長線空頭趨勢成立`);
+  } else if (_isShortTerm) {
+    reasons.unshift(isLong
+      ? `✅ 日線+4H+1H+15m 四週期同向確認，短線多頭趨勢成立`
+      : `✅ 日線+4H+1H+15m 四週期同向確認，短線空頭趨勢成立`);
   } else {
-    if (_dayAligned) reasons.unshift(isLong ? `日線偏多確認` : `日線偏空確認`);
     if (_wkAligned)  reasons.unshift(isLong ? `週線偏多確認` : `週線偏空確認`);
-    if (_mtfContraWk)  reasons.push(`⚠️ 週線逆向（大週期偏${isLong ? '空' : '多'}），止損已放寬，謹慎持倉`);
-    if (_mtfContraDay && !_mtfContraWk) reasons.push(`⚠️ 日線逆向，短線進場需嚴格止損`);
+    if (_dayAligned) reasons.unshift(isLong ? `日線偏多確認` : `日線偏空確認`);
+    if (_h4Aligned)  reasons.unshift(isLong ? `4H 偏多確認` : `4H 偏空確認`);
+    if (_mtfContraH4)  reasons.push(`⚠️ 4H 逆向（${isLong ? '偏空' : '偏多'}），不符合短線進場條件`);
+    if (_mtfContraWk)  reasons.push(`⚠️ 週線逆向，止損已放寬，謹慎持倉`);
+    if (_mtfContraDay && !_mtfContraWk) reasons.push(`⚠️ 日線逆向，需嚴格止損`);
   }
   // R:R 不足警告（僅記錄，實際 blocked 在掃描層已過濾）
   if (rrBlocked) reasons.push(`⚠️ ${rrReason}`);
@@ -10416,14 +10442,20 @@ function computeSimpleSetup(coin, isLong) {
   // ── TP 說明 ──
   const _rr1 = risk > 0 ? (Math.abs(tp1 - entry) / risk).toFixed(1) : '–';
   const _rr2 = risk > 0 ? (Math.abs(tp2 - entry) / risk).toFixed(1) : '–';
+  const _phSrc = _h4Hi > price * 1.002 ? '4H前高' : (_ob && _ob.high > price * 1.002) ? 'OB上沿' : 'BB上軌';
+  const _plSrc = (_h4Lo > 0 && _h4Lo < price * 0.998) ? '4H前低' : (_ob && _ob.low < price * 0.998) ? 'OB下沿' : 'BB下軌';
   const _tp1DescMap = {
-    prevhigh: `前高結構目標（${_prevHigh > 0 ? '$' + _prevHigh.toPrecision(5).replace(/\.?0+$/, '') : '–'}）`,
-    prevlow:  `前低結構目標（${_prevLow  > 0 ? '$' + _prevLow.toPrecision(5).replace(/\.?0+$/, '')  : '–'}）`,
+    prevhigh: `${_phSrc}結構目標（${_prevHigh > 0 ? '$' + _prevHigh.toPrecision(5).replace(/\.?0+$/, '') : '–'}）`,
+    prevlow:  `${_plSrc}結構目標（${_prevLow  > 0 ? '$' + _prevLow.toPrecision(5).replace(/\.?0+$/, '')  : '–'}）`,
     fvg: 'FVG 缺口回補目標', ema50: 'EMA50 動態壓力/支撐',
     bbup: 'BB 上軌結構目標', bblo: 'BB 下軌結構目標', rr: `固定 R/R ${_rr1}:1`,
   };
-  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: `MTF 雙確認延伸目標`, rr: `波段 R/R ${_rr2}:1` };
-  const _mtfLabel = _mtfBothAlign ? '（日線+週線雙確認）' : _mtfContraWk ? '（週線逆向，注意風險）' : _mtfContraDay ? '（日線逆向）' : '';
+  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1` };
+  const _mtfLabel = _isLongTerm ? '（週/日/4H/15m 四週期確認）'
+                  : _isShortTerm ? '（日/4H/1H/15m 四週期確認）'
+                  : _mtfContraWk ? '（週線逆向，注意風險）'
+                  : _mtfContraH4 ? '（4H逆向）'
+                  : _mtfContraDay ? '（日線逆向）' : '';
   const tp1Reason = `${_tp1DescMap[_tp1Tag] || `短線目標 R/R ${_rr1}:1`}${_mtfLabel}，到達後減倉 60%`;
   const tp2Reason = `${_tp2DescMap[_tp2Tag] || `波段目標 R/R ${_rr2}:1`}，剩餘倉位移至成本`;
 
@@ -10446,7 +10478,8 @@ function computeSimpleSetup(coin, isLong) {
     flipRisks:   [],
     bigTrendBlocked: (_sWkSig.includes(isLong ? 'bear' : 'bull') && _sDySig.includes(isLong ? 'bear' : 'bull') && !_sDySig.includes('neutral')),
     rrBlocked, rrReason,
-    mtfBothAlign: _mtfBothAlign, mtfContraWk: _mtfContraWk, mtfContraDay: _mtfContraDay,
+    isLongTerm: _isLongTerm, isShortTerm: _isShortTerm,
+    mtfBothAlign: _mtfBothAlign, mtfContraWk: _mtfContraWk, mtfContraDay: _mtfContraDay, mtfContraH4: _mtfContraH4,
   };
 }
 

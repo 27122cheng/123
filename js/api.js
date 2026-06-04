@@ -188,11 +188,13 @@ async function fetchAllFromBinance(timeframe) {
     const batchResults = await Promise.allSettled(
       batch.map(pair => {
         const sym = pair.s.replace('/', '');
-        // 用 Promise.allSettled 讓三份資料各自獨立，週線失敗不影響日線
+        // 5 timeframes in parallel: 15m(primary), 1D, 1W, 4H, 1H
         return Promise.allSettled([
           fetchKlines(sym, interval, 220),
           fetchKlines(sym, '1d', 100),
           fetchKlines(sym, '1w', 52),
+          fetchKlines(sym, '4h', 100),
+          fetchKlines(sym, '1h', 100),
         ]);
       })
     );
@@ -206,20 +208,31 @@ async function fetchAllFromBinance(timeframe) {
       const mainRaw  = settled[0]?.status === 'fulfilled' ? settled[0].value : null;
       const dayRaw   = settled[1]?.status === 'fulfilled' ? settled[1].value : null;
       const wkRaw    = settled[2]?.status === 'fulfilled' ? settled[2].value : null;
+      const h4Raw    = settled[3]?.status === 'fulfilled' ? settled[3].value : null;
+      const h1Raw    = settled[4]?.status === 'fulfilled' ? settled[4].value : null;
       const analysed = mainRaw ? analyzeKlines(pair.s, mainRaw) : null;
+      const sig15m   = mainRaw && mainRaw.length >= 30 ? analyzeTimeframeSignal(mainRaw) : null;
       const daySig   = dayRaw  && dayRaw.length  >= 30 ? analyzeTimeframeSignal(dayRaw)  : null;
       const wkSig    = wkRaw   && wkRaw.length   >= 30 ? analyzeTimeframeSignal(wkRaw)   : null;
+      const h4Sig    = h4Raw   && h4Raw.length   >= 30 ? analyzeTimeframeSignal(h4Raw)   : null;
+      const h1Sig    = h1Raw   && h1Raw.length   >= 30 ? analyzeTimeframeSignal(h1Raw)   : null;
 
       if (analysed) {
         results[idx] = {
           ...analysed,
           trend:          scoreToTrend(analysed.score),
           volumeStrength: getVolStr(analysed.volume),
-          dailySignal:    daySig?.signal  || null,
-          weeklySignal:   wkSig?.signal   || null,
+          signal15m:      sig15m?.signal    || null,
+          dailySignal:    daySig?.signal    || null,
+          weeklySignal:   wkSig?.signal     || null,
+          h4Signal:       h4Sig?.signal     || null,
+          h1Signal:       h1Sig?.signal     || null,
+          h4SwingHigh:    h4Sig?.swingHigh  || null,
+          h4SwingLow:     h4Sig?.swingLow   || null,
+          h4Rsi:          h4Sig?.rsi        || null,
+          h1Rsi:          h1Sig?.rsi        || null,
         };
       } else {
-        /* 優先使用幣安即時現貨價格，無法獲取才退回靜態基準 */
         const fallbackPrice = spotPrices[sym] || pair.p;
         results[idx] = {
           symbol: pair.s, trend: '中性', score: 50,
@@ -230,7 +243,9 @@ async function fetchAllFromBinance(timeframe) {
           ema200: fmtPrice(fallbackPrice * 0.90),
           volume: 0, volumeStrength: '中',
           momentum: 0, strength: 20, macdHist: 0, change24h: 0,
-          dailySignal: null, weeklySignal: null,
+          signal15m: null, dailySignal: null, weeklySignal: null,
+          h4Signal: null, h1Signal: null,
+          h4SwingHigh: null, h4SwingLow: null, h4Rsi: null, h1Rsi: null,
         };
       }
     });
@@ -268,10 +283,17 @@ function enrichData(raw) {
       atr:             item.atr             ?? null,
       wickSupports:    item.wickSupports     ?? [],
       wickResistances: item.wickResistances  ?? [],
-      dailySignal:     item.dailySignal      ?? null,
-      weeklySignal:    item.weeklySignal     ?? null,
-      bb:              item.bb               ?? null,
-      patterns:        item.patterns         ?? null,
+      signal15m:       item.signal15m         ?? null,
+      dailySignal:     item.dailySignal       ?? null,
+      weeklySignal:    item.weeklySignal      ?? null,
+      h4Signal:        item.h4Signal          ?? null,
+      h1Signal:        item.h1Signal          ?? null,
+      h4SwingHigh:     item.h4SwingHigh       ?? null,
+      h4SwingLow:      item.h4SwingLow        ?? null,
+      h4Rsi:           item.h4Rsi             ?? null,
+      h1Rsi:           item.h1Rsi             ?? null,
+      bb:              item.bb                ?? null,
+      patterns:        item.patterns          ?? null,
     };
   });
 }
