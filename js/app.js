@@ -6199,8 +6199,13 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-    // 最終信心度門檻：≥65%；若僅3/4因子確認則要求≥70%（4/4才可降至65%）
-    const _confMin = _factors >= 4 ? 65 : 70;
+    // MACD 方向確認：與方向一致+2加成，逆向+3門檻
+    const _scanMacd = parseFloat(coin.macdHist) || 0;
+    const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
+    // 最終信心度門檻：MACD順向降低門檻，逆向提高（軟過濾）
+    const _confMin = _factors >= 4
+      ? (_macdAligned ? 65 : 68)   // 4/4因子：MACD順向65%，逆向68%
+      : (_macdAligned ? 70 : 73);  // 3/4因子：MACD順向70%，逆向73%
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
@@ -6252,6 +6257,8 @@ function recordSignalsFromScan(data) {
       entryAbovePOC:      null,
       entryVolDivergence: null,
       entryVolBreakout:   false,
+      entryMacdHist:      parseFloat(coin.macdHist) || 0,
+      entryVolStrength:   coin.volumeStrength || '',
       status: 'pending', outcome: null, tp1Hit: false,
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -6893,6 +6900,12 @@ function updateOpenTrades(data) {
         sendMissedEntryNotification(trade, hitLevel, hitTP2 ? tp2 : tp1);
         continue;
       }
+
+      // 進場確認：訊號後等 1 分鐘，再等價格回踩進場位才確認入場
+      // 設計：T=0 訊號出現 → T<60s 觀察期（不入場）→ T≥60s 等回踩
+      const _entryDelayMs = 60 * 1000;
+      const _canEnterNow  = Date.now() - (trade.timestamp || 0) >= _entryDelayMs;
+      if (!_canEnterNow) continue; // 還在 1 分鐘觀察期，不觸發入場
 
       // 多頭：現價降至進場價附近（0.5% 容差）
       // 空頭：現價升至進場價附近（0.5% 容差）
@@ -8031,6 +8044,24 @@ function computeLearnProfile() {
       losses.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
       closed.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
       12, r => `信心 60-68% 勉強進場止損率 ${r}%，建議等信心 ≥ 68% 再進`),
+    // MACD 方向規則（基於實際交易記錄學習）
+    check('macd_against_long',
+      longLosses.filter(t => (t.entryMacdHist || 0) < 0),
+      longClosed.filter(t => t.entryMacdHist != null && t.entryMacdHist < 0),
+      12, r => `MACD 負值做多止損率 ${r}%，建議等 MACD 柱狀轉正再進場`),
+    check('macd_against_short',
+      shortLosses.filter(t => (t.entryMacdHist || 0) > 0),
+      shortClosed.filter(t => t.entryMacdHist != null && t.entryMacdHist > 0),
+      12, r => `MACD 正值做空止損率 ${r}%，建議等 MACD 柱狀轉負再進場`),
+    // 成交量弱進場規則
+    check('low_vol_long',
+      longLosses.filter(t => t.entryVolStrength === '低' || String(t.entryVolStrength||'').includes('弱')),
+      longClosed.filter(t => t.entryVolStrength === '低' || String(t.entryVolStrength||'').includes('弱')),
+      10, r => `低量做多止損率 ${r}%，建議等放量確認再進場`),
+    check('low_vol_short',
+      shortLosses.filter(t => t.entryVolStrength === '低' || String(t.entryVolStrength||'').includes('弱')),
+      shortClosed.filter(t => t.entryVolStrength === '低' || String(t.entryVolStrength||'').includes('弱')),
+      10, r => `低量做空止損率 ${r}%，建議等放量確認再進場`),
   ].filter(Boolean);
 
   // ── 最佳進場條件（從盈利交易學習）──
@@ -8167,7 +8198,11 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
         (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
         (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
-        (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 68);
+        (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 68) ||
+        (rule.condition === 'macd_against_long'  && direction === 'long'  && (parseFloat(ctx.macdHist) || 0) < 0) ||
+        (rule.condition === 'macd_against_short' && direction === 'short' && (parseFloat(ctx.macdHist) || 0) > 0) ||
+        (rule.condition === 'low_vol_long'  && direction === 'long'  && (ctx.volWeak === true)) ||
+        (rule.condition === 'low_vol_short' && direction === 'short' && (ctx.volWeak === true));
       // 結構化規則：觸發時扣信心分（上限 8%），止損原因建議納入交易分析
       if ((rule.total || 0) >= 3) {
         const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
@@ -10120,37 +10155,58 @@ function computeSimpleSetup(coin, isLong) {
   // ═══════════════════════════════════════════════
   let tp1, tp2, _tp1Tag = '', _tp2Tag = '';
 
-  // 前高/前低 TP 輔助：略低於阻力（做多）或略高於支撐（做空），留 0.2% buffer
+  // 前高/前低：0.2% buffer 留在結構邊界稍內側
   const _swHigh = _prevHigh > 0 ? _prevHigh * 0.998 : 0;
   const _swLow  = _prevLow  > 0 ? _prevLow  * 1.002 : 0;
 
-  // TP1：前高/低 → FVG 回補 → EMA50 → BB 對向軌 → R:R 1.5
-  if (isLong && _swHigh > entry + risk * 0.9) {
-    tp1 = _swHigh; _tp1Tag = 'prevhigh';
-  } else if (!isLong && _swLow > 0 && _swLow < entry - risk * 0.9) {
-    tp1 = _swLow;  _tp1Tag = 'prevlow';
-  } else if (_fvg && !_fvg.filled && _fvg.mid > 0 &&
-      (isLong ? _fvg.mid > entry + risk * 0.8 : _fvg.mid < entry - risk * 0.8)) {
+  // ══ TP1：最近可達結構（進場價 2.5% 內），優先最快觸及目標 ══
+  // 設計原則：TP1 要容易達到（高出場率），不追求最大獲利
+  const _tp1Cap = entry * 0.025; // 2.5% 範圍內才算 TP1 近期目標
+
+  // 各候選結構是否在 2.5% 範圍內且優於進場 0.8R
+  const _fvgTP1 = _fvg && !_fvg.filled && _fvg.mid > 0 &&
+    (isLong ? _fvg.mid > entry + risk * 0.8 && _fvg.mid <= entry + _tp1Cap
+            : _fvg.mid < entry - risk * 0.8 && _fvg.mid >= entry - _tp1Cap);
+  const _ema50TP1 = ema50 > 0 &&
+    (isLong ? ema50 > entry + risk * 0.8 && ema50 <= entry + _tp1Cap
+            : ema50 < entry - risk * 0.8 && ema50 >= entry - _tp1Cap);
+  const _bbTP1 = isLong
+    ? (_bbUp > 0 && _bbUp > entry + risk * 0.8 && _bbUp <= entry + _tp1Cap)
+    : (_bbLo > 0 && _bbLo < entry - risk * 0.8 && _bbLo >= entry - _tp1Cap);
+  const _prevHTP1 = _swHigh > entry + risk * 0.8 && _swHigh <= entry + _tp1Cap;
+  const _prevLTP1 = _swLow > 0 && _swLow < entry - risk * 0.8 && _swLow >= entry - _tp1Cap;
+
+  // 優先順序：FVG缺口（最精確）→ EMA50 → BB對向軌 → 近期前高/低（≤2.5%）→ R:R 1.5 保底
+  if (_fvgTP1) {
     tp1 = parseFloat(_fvg.mid); _tp1Tag = 'fvg';
-  } else if (ema50 > 0 && (isLong ? ema50 > entry + risk * 0.8 : ema50 < entry - risk * 0.8)) {
+  } else if (isLong && _ema50TP1) {
     tp1 = ema50; _tp1Tag = 'ema50';
-  } else if (isLong && _bbUp > 0 && _bbUp > entry + risk * 0.8) {
-    tp1 = _bbUp;  _tp1Tag = 'bbup';
-  } else if (!isLong && _bbLo > 0 && _bbLo < entry - risk * 0.8) {
-    tp1 = _bbLo;  _tp1Tag = 'bblo';
+  } else if (!isLong && _ema50TP1) {
+    tp1 = ema50; _tp1Tag = 'ema50';
+  } else if (isLong && _bbTP1) {
+    tp1 = _bbUp; _tp1Tag = 'bbup';
+  } else if (!isLong && _bbTP1) {
+    tp1 = _bbLo; _tp1Tag = 'bblo';
+  } else if (isLong && _prevHTP1) {
+    tp1 = _swHigh; _tp1Tag = 'prevhigh';
+  } else if (!isLong && _prevLTP1) {
+    tp1 = _swLow; _tp1Tag = 'prevlow';
   } else {
     tp1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5; _tp1Tag = 'rr';
   }
 
-  // TP2：MTF 雙確認時可追更遠目標；EMA200 → 延伸目標 → R:R 2.5
-  const _tp2MinRisk = _mtfBothAlign ? 2.0 : 1.5;   // 雙確認時 TP2 要求更遠
-  if (ema200 > 0 && (isLong ? ema200 > entry + risk * _tp2MinRisk : ema200 < entry - risk * _tp2MinRisk)) {
+  // ══ TP2：中期波段目標（前高/低 6% 內優先，再 EMA200，再 R:R 2.5）══
+  const _tp2Cap = entry * 0.06; // 最多 6%，避免不切實際的遠期目標
+  const _prevHTP2 = _swHigh > tp1 * 1.003 && _swHigh <= entry + _tp2Cap;
+  const _prevLTP2 = _swLow > 0 && _swLow < tp1 * 0.997 && _swLow >= entry - _tp2Cap;
+  const _tp2MinRisk = _mtfBothAlign ? 2.0 : 1.5;
+
+  if (isLong && _prevHTP2) {
+    tp2 = _swHigh; _tp2Tag = 'prevhigh';
+  } else if (!isLong && _prevLTP2) {
+    tp2 = _swLow; _tp2Tag = 'prevlow';
+  } else if (ema200 > 0 && (isLong ? ema200 > entry + risk * _tp2MinRisk : ema200 < entry - risk * _tp2MinRisk)) {
     tp2 = ema200; _tp2Tag = 'ema200';
-  } else if (_mtfBothAlign && _prevHigh > 0 && isLong && _prevHigh > tp1 * 1.01) {
-    // 雙確認長線：前高延伸波段
-    tp2 = entry + Math.abs(_prevHigh - entry) * 1.3; _tp2Tag = 'ext';
-  } else if (_mtfBothAlign && _prevLow > 0 && !isLong && _prevLow < tp1 * 0.99) {
-    tp2 = entry - Math.abs(entry - _prevLow) * 1.3; _tp2Tag = 'ext';
   } else {
     const _tp2Mult = _mtfBothAlign ? 3.0 : 2.5;
     tp2 = isLong ? entry + risk * _tp2Mult : entry - risk * _tp2Mult; _tp2Tag = 'rr';
@@ -10168,9 +10224,12 @@ function computeSimpleSetup(coin, isLong) {
 
   // ── AI 學習引擎調整（同 buildTradeSetup 相同邏輯）──
   const hardAdxPenalty = adx < 18 ? 18 : adx < 22 ? 10 : 0;
+  const _ssVolWeak = (coin.volumeStrength || '') === '低' || String(coin.volumeStrength||'').includes('弱');
   const { penalty: learnPenalty, warnings: learnWarn, hardBlocked, blockReasons } = applyLearnAdjustment(direction, rsi, adx, {
-    slType: 'atr', // simple setup 預設使用 ATR 止損
-    skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
+    slType: 'atr',
+    skipAdxRule: true,
+    macdHist:  parseFloat(coin.macdHist) || 0,
+    volWeak:   _ssVolWeak,
   });
   // rawConf：以 coin.score 為基礎，加入 RSI/ADX/趨勢強度加成（嚴格篩選：基底降低，移除中性RSI加成）
   let rawConf = Math.min(88, coin.score || 55);
@@ -10196,6 +10255,12 @@ function computeSimpleSetup(coin, isLong) {
   if (_sWkAlignTmp)  rawConf += 4;  // 週線同向
   if (_sH4AlignTmp)  rawConf += 3;  // 4H 同向加成
   if (_sH1AlignTmp)  rawConf += 2;  // 1H 同向加成
+  // MACD 動量方向加成（順向 +3，不額外扣分，_sTechPen 已處理逆向）
+  const _ssMacdBonus = parseFloat(coin.macdHist) || 0;
+  if (isLong && _ssMacdBonus > 0) rawConf += 3;
+  if (!isLong && _ssMacdBonus < 0) rawConf += 3;
+  // 成交量充裕加成（高量確認 +2）
+  if ((coin.volumeStrength || '') === '高') rawConf += 2;
   rawConf = Math.min(90, rawConf);
   // 宏觀逆風懲罰：六大因子各自獨立扣分（與 buildTradeSetup 一致）
   let _sMacroPen = 0, _sAIPen = 0;
@@ -10476,7 +10541,7 @@ function computeSimpleSetup(coin, isLong) {
     fvg: 'FVG 缺口回補目標', ema50: 'EMA50 動態壓力/支撐',
     bbup: 'BB 上軌結構目標', bblo: 'BB 下軌結構目標', rr: `固定 R/R ${_rr1}:1`,
   };
-  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1` };
+  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1`, prevhigh: `${_phSrc}波段目標`, prevlow: `${_plSrc}波段目標` };
   const _mtfLabel = _isLongTerm ? '（週/日/4H/15m 四週期確認）'
                   : _isShortTerm ? '（日/4H/1H/15m 四週期確認）'
                   : _mtfContraWk ? '（週線逆向，注意風險）'
