@@ -5621,7 +5621,7 @@ async function renderCoinDetail(symbol) {
       const errMsg = err instanceof TypeError ? `TypeError: ${String(err.message).slice(0,80)}`
                    : err instanceof ReferenceError ? `ReferenceError: ${String(err.message).slice(0,80)}`
                    : `Error: ${String(err.message || err).slice(0, 80)}`;
-      e.innerHTML = `<div class="adv-loading" style="color:var(--bear)">⚠️ 載入失敗，請重新整理<br><span style="font-size:0.72rem;color:var(--text3);word-break:break-all">${errMsg}</span></div>`;
+      e.innerHTML = `<div class="adv-loading" style="color:var(--bear)">⚠️ 載入失敗，請重新整理<br><span style="font-size:0.78rem;color:#f87171;font-weight:600;word-break:break-all">${errMsg}</span></div>`;
     }
   };
 
