@@ -1823,7 +1823,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 長線單條件：日線 + 週線同方向即認定（純 MTF 時間框架確認，不依 ltBias/ltConf 門檻）
   const _dayWkAligned = isLong ? (dayBullSig && wkBullSig) : (dayBearSig && wkBearSig);
-  const canScaleIn = _dayWkAligned;
+  let canScaleIn = _dayWkAligned;
   const ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
   // 根據類型更新 dirLabel，避免出現「短線做多 〔長線單〕」矛盾文字
   if (canScaleIn) dirLabel = isLong ? '長線做多' : '長線做空';
