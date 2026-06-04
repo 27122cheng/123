@@ -8862,6 +8862,11 @@ function renderPositionsPage() {
     : '—';
   const totalClr = totalUnrealR > 0 ? 'var(--bull)' : totalUnrealR < 0 ? 'var(--bear)' : 'var(--text2)';
 
+  // 保存搜尋狀態，避免定時重繪時打斷使用者輸入
+  const _prevSearchEl    = document.getElementById('pos-search-input');
+  const _prevSearchVal   = _prevSearchEl?.value || '';
+  const _prevSearchFocus = document.activeElement === _prevSearchEl;
+
   container.innerHTML = `
     <div class="page-header"><div>
       <h1 class="page-title">持倉中</h1>
@@ -8986,6 +8991,18 @@ function renderPositionsPage() {
   if (pendingHdr)       pendingHdr.style.display       = showPendingInAll ? '' : 'none';
   if (mainList)  mainList.style.display  = showPendingTab ? 'none' : '';
   if (posSearch) posSearch.style.display = showPendingTab ? 'none' : '';
+
+  // 還原搜尋狀態（防止定時重繪清空使用者正在輸入的搜尋字）
+  if (_prevSearchVal && posSearch) {
+    posSearch.value = _prevSearchVal;
+    filterPositionCards(_prevSearchVal);
+  }
+  if (_prevSearchFocus && posSearch) {
+    posSearch.focus();
+    // 將游標移到末尾
+    const len = posSearch.value.length;
+    posSearch.setSelectionRange(len, len);
+  }
 }
 
 function filterPositionCards(query) {
