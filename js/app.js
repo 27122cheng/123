@@ -951,7 +951,7 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-price-val">${fmtPrice(sl)}</div>
     </div>
   </div>
-  <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　有效期至：${fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2)}</div>`;
+  <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　⏱ 1分鐘確認窗口 — 觸及進場價即入場</div>`;
 }
 
 /* ── ICT Kill Zone 獵殺時段偵測 ────────────────────────────── */
@@ -6189,8 +6189,21 @@ function recordSignalsFromScan(data) {
     const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
     if (_factors < 3) continue;
 
-    // ADX 過低（< 18）：震盪無趨勢，直接跳過（不只扣分）
-    if ((parseFloat(coin.adx) || 20) < 18) continue;
+    // ADX < 20：震盪行情無趨勢，直接跳過
+    if ((parseFloat(coin.adx) || 20) < 20) continue;
+
+    // RSI 極端過濾：多頭超買（>80）/ 空頭超賣（<20）直接跳過，追高殺低勝率極低
+    const _entRsi = parseFloat(coin.rsi) || 50;
+    if (isLong  && _entRsi > 80) continue;
+    if (!isLong && _entRsi < 20) continue;
+
+    // MACD 動量方向確認（柱狀線方向需與交易方向一致）
+    const _entMacd = parseFloat(coin.macdHist) || 0;
+    const _macdOk  = isLong ? _entMacd > 0 : _entMacd < 0;
+
+    // 成交量強度：弱量訊號勝率低
+    const _entVol  = coin.volumeStrength || '';
+    const _volWeak = _entVol === '低' || _entVol.includes('弱');
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
@@ -6199,8 +6212,13 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-    // 最終信心度門檻：≥65%；若僅3/4因子確認則要求≥70%（4/4才可降至65%）
-    const _confMin = _factors >= 4 ? 65 : 70;
+
+    // MACD逆向 + 量弱 雙重逆風 → 必須4/4因子才允許入場
+    if (!_macdOk && _volWeak && _factors < 4) continue;
+    // 動態信心門檻：4/4 因子基礎 65%；MACD 或量弱單項逆風提高至 68/75%；3/4 因子基礎 70%，逆風提高至 73/78%
+    const _confMin = _factors >= 4
+      ? (!_macdOk || _volWeak ? 68 : 65)
+      : (!_macdOk || _volWeak ? 75 : 70);
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
@@ -6820,7 +6838,7 @@ function updateOpenTrades(data) {
       const coin = data.find(d => d.symbol === trade.symbol);
       // 震盪單：影線區域失效快（2小時）；定向短線單：4小時等待回踩；長線單（canScaleIn=true）：24小時有效
       const isLongTermTrade = trade.canScaleIn === true;
-      const expiryMs = isLongTermTrade ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2;
+      const expiryMs = 2 * 60 * 1000; // 1分鐘確認窗口：觸及進場價才入場，否則作廢
       if (!coin || Date.now() - (trade.timestamp || 0) > expiryMs) {
         trade.status = 'expired'; changed = true; continue;
       }
@@ -8857,7 +8875,7 @@ function renderPositionsPage() {
             const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
             const fmt     = v => v ? fmtPrice(v) : '—';
             const isLongTermCard = t.canScaleIn === true;
-            const expiry  = t.timestamp ? fmtDateTime(t.timestamp + (isLongTermCard ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2)) : '—';
+            const expiry  = t.timestamp ? fmtDateTime(t.timestamp + 2 * 60 * 1000) : '—';
             const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
             const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
@@ -10120,42 +10138,68 @@ function computeSimpleSetup(coin, isLong) {
   // ═══════════════════════════════════════════════
   let tp1, tp2, _tp1Tag = '', _tp2Tag = '';
 
-  // 前高/前低 TP 輔助：略低於阻力（做多）或略高於支撐（做空），留 0.2% buffer
+  // 前高/前低：0.2% buffer（留在結構邊界稍內側）
   const _swHigh = _prevHigh > 0 ? _prevHigh * 0.998 : 0;
   const _swLow  = _prevLow  > 0 ? _prevLow  * 1.002 : 0;
 
-  // TP1：前高/低 → FVG 回補 → EMA50 → BB 對向軌 → R:R 1.5
-  if (isLong && _swHigh > entry + risk * 0.9) {
-    tp1 = _swHigh; _tp1Tag = 'prevhigh';
-  } else if (!isLong && _swLow > 0 && _swLow < entry - risk * 0.9) {
-    tp1 = _swLow;  _tp1Tag = 'prevlow';
-  } else if (_fvg && !_fvg.filled && _fvg.mid > 0 &&
-      (isLong ? _fvg.mid > entry + risk * 0.8 : _fvg.mid < entry - risk * 0.8)) {
+  // ═══ TP1：最近可達結構（2.5% 內），優先選擇最快可達到的目標 ═══
+  // 設計原則：TP1 要容易達到（高勝率），不追求最大利潤
+  const _tp1Cap = entry * 0.025; // 最多 2.5% 外視為中期目標，不作 TP1
+
+  const _fvgTP1 = _fvg && !_fvg.filled && _fvg.mid > 0 &&
+    (isLong
+      ? _fvg.mid > entry + risk * 0.8 && _fvg.mid <= entry + _tp1Cap
+      : _fvg.mid < entry - risk * 0.8 && _fvg.mid >= entry - _tp1Cap);
+
+  const _ema50TP1 = ema50 > 0 &&
+    (isLong
+      ? ema50 > entry + risk * 0.8 && ema50 <= entry + _tp1Cap
+      : ema50 < entry - risk * 0.8 && ema50 >= entry - _tp1Cap);
+
+  const _bbOppTP1 = isLong
+    ? (_bbUp > 0 && _bbUp > entry + risk * 0.8 && _bbUp <= entry + _tp1Cap)
+    : (_bbLo > 0 && _bbLo < entry - risk * 0.8 && _bbLo >= entry - _tp1Cap);
+
+  const _prevHP1 = _swHigh > entry + risk * 0.8 && _swHigh <= entry + _tp1Cap;
+  const _prevLP1 = _swLow > 0 && _swLow < entry - risk * 0.8 && _swLow >= entry - _tp1Cap;
+
+  // 優先順序：FVG缺口（最精確）→ EMA50（趨勢均線）→ BB對向軌 → 近期前高/低 → R:R 1.5
+  if (_fvgTP1) {
     tp1 = parseFloat(_fvg.mid); _tp1Tag = 'fvg';
-  } else if (ema50 > 0 && (isLong ? ema50 > entry + risk * 0.8 : ema50 < entry - risk * 0.8)) {
+  } else if (isLong && _ema50TP1) {
     tp1 = ema50; _tp1Tag = 'ema50';
-  } else if (isLong && _bbUp > 0 && _bbUp > entry + risk * 0.8) {
-    tp1 = _bbUp;  _tp1Tag = 'bbup';
-  } else if (!isLong && _bbLo > 0 && _bbLo < entry - risk * 0.8) {
-    tp1 = _bbLo;  _tp1Tag = 'bblo';
+  } else if (!isLong && _ema50TP1) {
+    tp1 = ema50; _tp1Tag = 'ema50';
+  } else if (isLong && _bbOppTP1) {
+    tp1 = _bbUp; _tp1Tag = 'bbup';
+  } else if (!isLong && _bbOppTP1) {
+    tp1 = _bbLo; _tp1Tag = 'bblo';
+  } else if (isLong && _prevHP1) {
+    tp1 = _swHigh; _tp1Tag = 'prevhigh';
+  } else if (!isLong && _prevLP1) {
+    tp1 = _swLow; _tp1Tag = 'prevlow';
   } else {
+    // 固定 R:R 1.5 保底目標（確保 TP1 一定可計算）
     tp1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5; _tp1Tag = 'rr';
   }
 
-  // TP2：MTF 雙確認時可追更遠目標；EMA200 → 延伸目標 → R:R 2.5
-  const _tp2MinRisk = _mtfBothAlign ? 2.0 : 1.5;   // 雙確認時 TP2 要求更遠
-  if (ema200 > 0 && (isLong ? ema200 > entry + risk * _tp2MinRisk : ema200 < entry - risk * _tp2MinRisk)) {
+  // ═══ TP2：中期波段目標（前高/低 6% 內 → EMA200 → R:R 2.5）═══
+  const _tp2Cap = entry * 0.06; // 最多 6% 外，避免不切實際的遠期目標
+  const _prevHP2 = _swHigh > tp1 * 1.003 && _swHigh <= entry + _tp2Cap;
+  const _prevLP2 = _swLow > 0 && _swLow < tp1 * 0.997 && _swLow >= entry - _tp2Cap;
+  const _tp2MinRisk = _mtfBothAlign ? 2.0 : 1.5;
+
+  if (isLong && _prevHP2) {
+    tp2 = _swHigh; _tp2Tag = 'prevhigh';
+  } else if (!isLong && _prevLP2) {
+    tp2 = _swLow; _tp2Tag = 'prevlow';
+  } else if (ema200 > 0 && (isLong ? ema200 > entry + risk * _tp2MinRisk : ema200 < entry - risk * _tp2MinRisk)) {
     tp2 = ema200; _tp2Tag = 'ema200';
-  } else if (_mtfBothAlign && _prevHigh > 0 && isLong && _prevHigh > tp1 * 1.01) {
-    // 雙確認長線：前高延伸波段
-    tp2 = entry + Math.abs(_prevHigh - entry) * 1.3; _tp2Tag = 'ext';
-  } else if (_mtfBothAlign && _prevLow > 0 && !isLong && _prevLow < tp1 * 0.99) {
-    tp2 = entry - Math.abs(entry - _prevLow) * 1.3; _tp2Tag = 'ext';
   } else {
     const _tp2Mult = _mtfBothAlign ? 3.0 : 2.5;
     tp2 = isLong ? entry + risk * _tp2Mult : entry - risk * _tp2Mult; _tp2Tag = 'rr';
   }
-  // TP2 至少比 TP1 再遠 30%
+  // TP2 至少比 TP1 再遠 20%
   if (isLong  && tp2 < tp1 * 1.003) tp2 = tp1 + Math.abs(tp1 - entry) * 0.5;
   if (!isLong && tp2 > tp1 * 0.997) tp2 = tp1 - Math.abs(entry - tp1) * 0.5;
 
@@ -10476,7 +10520,7 @@ function computeSimpleSetup(coin, isLong) {
     fvg: 'FVG 缺口回補目標', ema50: 'EMA50 動態壓力/支撐',
     bbup: 'BB 上軌結構目標', bblo: 'BB 下軌結構目標', rr: `固定 R/R ${_rr1}:1`,
   };
-  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1` };
+  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1`, prevhigh: `${_phSrc}波段目標`, prevlow: `${_plSrc}波段目標` };
   const _mtfLabel = _isLongTerm ? '（週/日/4H/15m 四週期確認）'
                   : _isShortTerm ? '（日/4H/1H/15m 四週期確認）'
                   : _mtfContraWk ? '（週線逆向，注意風險）'
