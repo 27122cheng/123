@@ -2653,8 +2653,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 最低信心門檻：與 recordSignalsFromScan 一致（避免極低信心交易混入持倉）
-    const _btConfMin = 55;
+    // 最低信心門檻：70%
+    const _btConfMin = 70;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
@@ -6207,10 +6207,8 @@ function recordSignalsFromScan(data) {
     // MACD 方向確認：與方向一致+2加成，逆向+3門檻
     const _scanMacd = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    // 最終信心度門檻：MACD順向降低門檻，逆向提高（軟過濾）
-    const _confMin = _factors >= 4
-      ? (_macdAligned ? 65 : 68)   // 4/4因子：MACD順向65%，逆向68%
-      : (_macdAligned ? 70 : 73);  // 3/4因子：MACD順向70%，逆向73%
+    // 最終信心度門檻：最低70%，MACD逆向或3因子提高門檻
+    const _confMin = _macdAligned ? 70 : 73;  // MACD順向70%，逆向73%
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
