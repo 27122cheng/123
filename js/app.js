@@ -6444,8 +6444,6 @@ function recordSignalsFromScan(data) {
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
             `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
-            `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
-            (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n` : '') +
             _scaleBlock +
             `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
             `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n\n` +
