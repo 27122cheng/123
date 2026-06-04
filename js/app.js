@@ -6428,8 +6428,8 @@ function recordSignalsFromScan(data) {
             return `   ${_scaleEmojis[i]} 加倉${n}：$${_fmt(lvl)}`;
           }).join('\n');
           _scaleBlock =
-            `\n💰 <b>加倉計劃</b>（${_scaleN} 次）\n${_scaleLines}\n` +
-            `🏁 <b>最終止盈：$${_ltTPFmt}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n`;
+            `🏁 <b>最終止盈：$${_ltTPFmt}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n` +
+            `\n💰 <b>加倉計劃</b>（${_scaleN} 次）\n${_scaleLines}\n`;
         }
 
         // ── Telegram 訊息（進場位 → 止損位 → 止盈 → 進場理由 → 止損理由 → 信心扣分）──
