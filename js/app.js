@@ -951,7 +951,7 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-price-val">${fmtPrice(sl)}</div>
     </div>
   </div>
-  <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　⏱ 1分鐘確認窗口 — 觸及進場價即入場</div>`;
+  <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　⏱ 掛單後1分鐘開始進場確認（有效期至 ${fmtDateTime(t.timestamp + 5 * 60 * 1000)}）</div>`;
 }
 
 /* ── ICT Kill Zone 獵殺時段偵測 ────────────────────────────── */
@@ -6838,8 +6838,9 @@ function updateOpenTrades(data) {
       const coin = data.find(d => d.symbol === trade.symbol);
       // 震盪單：影線區域失效快（2小時）；定向短線單：4小時等待回踩；長線單（canScaleIn=true）：24小時有效
       const isLongTermTrade = trade.canScaleIn === true;
-      const expiryMs = 2 * 60 * 1000; // 1分鐘確認窗口：觸及進場價才入場，否則作廢
-      if (!coin || Date.now() - (trade.timestamp || 0) > expiryMs) {
+      const ENTRY_DELAY_MS  = 60 * 1000;  // 掛單後 1 分鐘才允許進場（確認信號穩定）
+      const ENTRY_EXPIRY_MS = 5 * 60 * 1000; // 掛單有效期 5 分鐘（1分鐘等待 + 4分鐘進場窗口）
+      if (!coin || Date.now() - (trade.timestamp || 0) > ENTRY_EXPIRY_MS) {
         trade.status = 'expired'; changed = true; continue;
       }
       const cur    = parseFloat(coin.price) || 0;
@@ -6911,6 +6912,10 @@ function updateOpenTrades(data) {
         sendMissedEntryNotification(trade, hitLevel, hitTP2 ? tp2 : tp1);
         continue;
       }
+
+      // 1分鐘確認延遲：掛單建立後必須等滿 1 分鐘才允許進場
+      const _elapsed = Date.now() - (trade.timestamp || 0);
+      if (_elapsed < ENTRY_DELAY_MS) continue; // 還在等待期，不觸發入場
 
       // 多頭：現價降至進場價附近（0.5% 容差）
       // 空頭：現價升至進場價附近（0.5% 容差）
@@ -8875,7 +8880,9 @@ function renderPositionsPage() {
             const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
             const fmt     = v => v ? fmtPrice(v) : '—';
             const isLongTermCard = t.canScaleIn === true;
-            const expiry  = t.timestamp ? fmtDateTime(t.timestamp + 2 * 60 * 1000) : '—';
+            const expiry  = t.timestamp ? fmtDateTime(t.timestamp + 5 * 60 * 1000) : '—';
+            const _waitMs = t.timestamp ? Math.max(0, 60 * 1000 - (Date.now() - t.timestamp)) : 0;
+            const _waitSec = Math.ceil(_waitMs / 1000);
             const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
             const distClr = distPct === null ? 'var(--text3)' : Math.abs(parseFloat(distPct)) <= 0.5 ? 'var(--bull)' : 'var(--text2)';
@@ -8898,7 +8905,9 @@ function renderPositionsPage() {
                   <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
                   <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}${ltBadgePend}${shortTermBadgePend}</span>
                 </div>
-                <div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>
+                ${_waitSec > 0
+                  ? `<div style="font-size:0.8rem;color:#f59e0b;padding:4px 8px;background:rgba(245,158,11,0.1);border-radius:6px">⏱ 確認延遲 ${_waitSec}s</div>`
+                  : `<div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>`}
               </div>
               <div class="pos-grid">
                 <div class="pos-cell"><div class="pos-cell-lbl">進場位</div><div class="pos-cell-val">${fmt(t.entry)}</div></div>
