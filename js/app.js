@@ -2008,17 +2008,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── ICT/SMC 進場理由補充（共同適用多空）──
-  if (_kz.quality === 'high') entryReasons.push(`${_kz.emoji} ${_kz.name}（${_kz.desc}）`);
-  if (_ictOB?.priceInOB) entryReasons.push(`⚡ ${_ictOB.label} 訂單塊確認（ICT Order Block）`);
-  if (_ictOB4h?.priceInOB) entryReasons.push(`⚡ 4H ${_ictOB4h.label} 訂單塊確認`);
-  if (_ictFVG && !_ictFVG.filled) {
-    const _fvgDir = isLong ? '多頭' : '空頭';
-    entryReasons.push(`📊 ${_fvgDir} FVG 公平價值缺口 $${fmtPrice(_ictFVG.mid)} 尚未回補`);
-  }
-  if (_ictPD) {
-    if (isLong && _ictPD.idealForLong)   entryReasons.push(`📉 折扣區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質多頭進場位`);
-    if (!isLong && _ictPD.idealForShort) entryReasons.push(`📈 溢價區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質空頭進場位`);
-  }
+  try {
+    if (_kz.quality === 'high') entryReasons.push(`${_kz.emoji} ${_kz.name}（${_kz.desc}）`);
+    if (_ictOB?.priceInOB) entryReasons.push(`⚡ ${_ictOB.label} 訂單塊確認（ICT Order Block）`);
+    if (_ictOB4h?.priceInOB) entryReasons.push(`⚡ 4H ${_ictOB4h.label} 訂單塊確認`);
+    if (_ictFVG && !_ictFVG.filled) {
+      const _fvgDir = isLong ? '多頭' : '空頭';
+      entryReasons.push(`📊 ${_fvgDir} FVG 公平價值缺口 $${fmtPrice(_ictFVG.mid)} 尚未回補`);
+    }
+    if (_ictPD) {
+      if (isLong && _ictPD.idealForLong)   entryReasons.push(`📉 折扣區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質多頭進場位`);
+      if (!isLong && _ictPD.idealForShort) entryReasons.push(`📈 溢價區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質空頭進場位`);
+    }
+  } catch(_ictre) { console.warn('[ICT entry reasons]', _ictre); }
 
   // ── 止損：HTF 結構位 + 緩衝（4H/日線優先，1H fallback）──
   let sl, slReason;
@@ -2874,7 +2876,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       </div>` : ''}
   </div>
 
-  <!-- ═══ ICT / SMC / SNR 分析面板 ═══ -->
+  ${(() => { try { return `<!-- ═══ ICT / SMC / SNR 分析面板 ═══ -->
   <div style="background:rgba(16,24,39,.7);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
     <div style="font-weight:700;color:#a78bfa;margin-bottom:7px;font-size:0.8rem">🧠 ICT / SMC / SNR 智能分析</div>
     <!-- Kill Zone -->
@@ -2915,7 +2917,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       </div>
     </div>
     ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
-  </div>
+  </div>`; } catch(_icpe) { console.warn('[ICT panel]', _icpe); return ''; } })()}
 
   ${macroBlockedForRecord ? `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⚠️ 宏觀大方向${isLong ? '極端偏空' : '極端偏多'}，信心度已扣分反映，訊號已記入持倉供參考</div>` : ''}
   ${_recordBlockedByCooldown ? (() => { const cancelledT = loadCancelCooldowns().find(c => c.symbol === coin.symbol && c.direction === direction && (Date.now() - (c.cancelTime||0)) < SIGNAL_COOLDOWN); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
