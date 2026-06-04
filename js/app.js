@@ -6123,6 +6123,18 @@ function recordSignalsFromScan(data) {
       techPenalty: setup.techPenalty || 0,
       chipsPenalty: setup.chipsPenalty || 0,
       dirPenalty: setup.dirPenalty || 0,
+      entryWhaleBias:     coin.whaleData?.bias || null,
+      entryMTFAlign:      (() => {
+        let _mAlign = 0;
+        if (isLong ? (coin.dailySignal || '').includes('bull') : (coin.dailySignal || '').includes('bear')) _mAlign++;
+        if (isLong ? (coin.weeklySignal || '').includes('bull') : (coin.weeklySignal || '').includes('bear')) _mAlign++;
+        if (isLong ? wBias.includes('bull') : wBias.includes('bear')) _mAlign++;
+        if (isLong ? tBias.includes('bull') : tBias.includes('bear')) _mAlign++;
+        return _mAlign;
+      })(),
+      entryAbovePOC:      null,
+      entryVolDivergence: null,
+      entryVolBreakout:   false,
       status: 'pending', outcome: null, tp1Hit: false,
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -7631,7 +7643,9 @@ function mergeRulesIntoMemory(freshRules, freshIssues, freshBest, freshStats) {
   const now = Date.now();
 
   // ── 標記所有舊規則為未激活，然後重新激活有數據的規則 ──
-  for (const k of Object.keys(mem.rules)) { mem.rules[k].active = false; }
+  for (const k of Object.keys(mem.rules)) {
+    if (!mem.rules[k].imported) mem.rules[k].active = false;
+  }
 
   for (const rule of freshRules) {
     const existing = mem.rules[rule.condition];
@@ -7739,7 +7753,7 @@ function monthlyTradePrune() {
 
 function computeLearnProfile() {
   const closed = loadTradeLog().filter(t => t.status === 'closed');
-  if (closed.length < 3) return { ready: false, closed: closed.length };
+  if (closed.length < 2) return { ready: false, closed: closed.length };
 
   const losses = closed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
   const wins   = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
@@ -7786,7 +7800,7 @@ function computeLearnProfile() {
   const shortLosses = shortClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
 
   const check = (cond, subLoss, subAll, penaltyConf, warnTpl) => {
-    if (subAll.length < 3) return null;
+    if (subAll.length < 2) return null;
     const rate = subLoss.length / subAll.length;
     if (rate < 0.05) return null; // AI 目標勝率 95%+，止損率 > 5% 即觸發規則
     const scaledPenalty = rate >= 0.6 ? penaltyConf + 15 : rate >= 0.4 ? penaltyConf + 5 : penaltyConf;
@@ -7843,6 +7857,10 @@ function computeLearnProfile() {
       losses.filter(t => (t.entryMTFAlign || 0) <= 1),
       closed.filter(t => t.entryMTFAlign != null && t.entryMTFAlign <= 1),
       10, r => `僅1個週期對齊入場止損率 ${r}%，建議等多週期共振`),
+    check('low_conf_entry',
+      losses.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
+      closed.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
+      12, r => `信心 60-68% 勉強進場止損率 ${r}%，建議等信心 ≥ 68% 再進`),
   ].filter(Boolean);
 
   // ── 最佳進場條件（從盈利交易學習）──
@@ -7916,7 +7934,7 @@ function getLearnProfile() {
     if (_learnCache && !_learnCache.ready) {
       try {
         const mem = loadAIMemory();
-        const memRules = Object.values(mem.rules || {}).filter(r => (r.active || r.occurrences >= 2) && (r.total || 0) >= 3 && r.warning != null);
+        const memRules = Object.values(mem.rules || {}).filter(r => (r.active || r.imported || r.occurrences >= 2) && (r.total || 0) >= 3 && r.warning != null);
         if (memRules.length > 0) {
           _learnCache = { ..._learnCache, ready: true, fromMemory: true, rules: memRules, mem, bestConditions: mem.bestConditions || [] };
         }
@@ -7964,12 +7982,13 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'whale_against_long'   && direction === 'long'  && ctx.whaleBias === 'bear') ||
         (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
         (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
-        (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1);
-      // 結構化規則：觸發時扣信心分（上限 6%），止損原因建議納入交易分析
+        (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
+        (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 68);
+      // 結構化規則：觸發時扣信心分（上限 8%），止損原因建議納入交易分析
       if ((rule.total || 0) >= 3) {
         const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
         if (match) {
-          const _rPen = Math.max(1, Math.min(6, Math.round((rule.rate || 0) * 8)));
+          const _rPen = Math.max(1, Math.min(8, Math.round((rule.rate || 0) * 10)));
           penalty += _rPen;
           defenseChecks.push({ type: 'rule', label: _rLabel, count: rule.total || 0, pass: false, penalty: _rPen, rate: rule.rate });
         } else {
@@ -8976,7 +8995,8 @@ function importAIMemory() {
         }
         // 合併 rules
         for (const [k, v] of Object.entries(imported.rules || {})) {
-          if (!current.rules[k]) current.rules[k] = v;
+          if (!current.rules[k]) current.rules[k] = { ...v, imported: true };
+          else { current.rules[k] = { ...current.rules[k], imported: true }; }
         }
         // 取兩者中較大的累積統計
         const ic = imported.cumStats || {};
@@ -9905,6 +9925,11 @@ function computeSimpleSetup(coin, isLong) {
   _sBBBonus   = Math.min(6, _sBBBonus);
   _sBBPenalty = Math.min(14, _sBBPenalty);
   rawConf = Math.min(90, rawConf + _sBBBonus);
+  // 巨鯨順向加成（方向一致 +4，歷史上順巨鯨勝率顯著更高）
+  if (coin.whaleData) {
+    const _sWhaleAligned = (isLong && coin.whaleData.bias === 'bull') || (!isLong && coin.whaleData.bias === 'bear');
+    if (_sWhaleAligned) rawConf = Math.min(90, rawConf + 4);
+  }
 
   // F2 大方向逆向扣分（週線信號反向）+ F4 日線逆向扣分
   let _sDirPen = 0;
