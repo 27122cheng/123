@@ -6348,8 +6348,8 @@ function recordSignalsFromScan(data) {
             if (!isLong && _whale.bias === 'bull' && (_whale.bigBuyCount ||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續買入（${_whale.bigBuyCount}筆大買），空頭逆風，扣 5%`);
           }
         }
-        const _confBlock = `📶 信心度：<b>${setup.conf}%</b>` +
-          (_penLines.length ? '\n' + _penLines.join('\n') : '');
+        const _confScore      = `📶 信心度：<b>${setup.conf}%</b>`;
+        const _confDeductions = _penLines.length ? _penLines.join('\n') : '';
 
         // ── 週/日AI走勢 ──
         const _wLine = wBiasLabel ? `📈 本週走勢：${_esc(wBiasLabel)}（信心 ${wBiasConf}%）` : '';
@@ -6432,7 +6432,7 @@ function recordSignalsFromScan(data) {
             `\n💰 <b>加倉計劃</b>（${_scaleN} 次）\n${_scaleLines}\n`;
         }
 
-        // ── Telegram 訊息（進場位 → 止損位 → 止盈 → 進場理由 → 止損理由 → 信心扣分）──
+        // ── Telegram 訊息（信心度 → 進場 → 止損 → 止盈 → 進場理由 → 止損理由 → 扣分明細）──
         const _msg = canScaleIn
           ? (
             `💎 <b>加密掃描 Pro — 長線單信號</b>\n` +
@@ -6442,13 +6442,14 @@ function recordSignalsFromScan(data) {
             `${_kzLine}${_ictBlock}\n` +
             `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
+            `${_confScore}\n\n` +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
             `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
             _scaleBlock +
             `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
-            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n\n` +
-            `${_confBlock}\n\n` +
-            `${_tags}\n` +
+            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n` +
+            (_confDeductions ? `${_confDeductions}\n` : '') +
+            `\n${_tags}\n` +
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           )
           : (
@@ -6458,14 +6459,15 @@ function recordSignalsFromScan(data) {
             `⏰ ${_ts}\n` +
             `${_kzLine}${_ictBlock}\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
+            `${_confScore}\n\n` +
             `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
             `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
             `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
             (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n` : '') +
             `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
-            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n\n` +
-            `${_confBlock}\n\n` +
-            `${_tags}\n` +
+            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n` +
+            (_confDeductions ? `${_confDeductions}\n` : '') +
+            `\n${_tags}\n` +
             `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
           );
 
