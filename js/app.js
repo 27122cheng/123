@@ -2721,6 +2721,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
+  // ── 信心度 < 70% → 顯示觀望，不顯示交易建議 ──
+  if (conf < 70) {
+    const cColor = conf >= 60 ? '#f59e0b' : '#ef4444';
+    const confPenLines = [];
+    if (hardAdxPenalty > 0)     confPenLines.push(`ADX ${adxVal} 趨勢強度不足，扣 -${hardAdxPenalty}%`);
+    if (macroOpposePenalty > 0) confPenLines.push(`宏觀環境逆風，扣 -${macroOpposePenalty}%`);
+    if (aiTrendPenalty > 0)     confPenLines.push(`AI 趨勢預測逆向，扣 -${aiTrendPenalty}%`);
+    if (learnPenalty > 0)       confPenLines.push(`AI 風控歷史止損規則，扣 -${learnPenalty}%`);
+    if (techPenalty > 0)        confPenLines.push(`技術面逆風（RSI/MACD/成交量），扣 -${techPenalty}%`);
+    return `<div class="setup-wait">
+      <div class="setup-wait-icon">⚠️</div>
+      <div class="setup-wait-title">信心度不足（<strong style="color:${cColor}">${conf}%</strong>），建議觀望</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 70%，目前扣分後 ${conf}%，暫不開倉</div>
+      ${confPenLines.length ? `<ul class="setup-wait-reasons">${confPenLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
+    </div>`;
+  }
+
   // ── 宏觀經濟摘要 ──
   const fgVal  = fearGreed ? parseInt(fearGreed.value) : null;
   const fgZh   = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fearGreed?.value_classification] || '';
