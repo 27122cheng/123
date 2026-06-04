@@ -8100,13 +8100,27 @@ function getLearnProfile() {
       console.warn('[getLearnProfile] computeLearnProfile 失敗，使用空白 profile:', e);
       _learnCache = { ready: false, closed: 0, rules: [], winRate: 50, wins: 0, losses: 0, bestConditions: [] };
     }
-    // 若現有交易不足，仍嘗試載入記憶中的規則
+    // 若現有交易不足，嘗試從記憶中載入規則作為後備
     if (_learnCache && !_learnCache.ready) {
       try {
         const mem = loadAIMemory();
         const memRules = Object.values(mem.rules || {}).filter(r => (r.active || r.imported || r.occurrences >= 2) && (r.total || 0) >= 3 && r.warning != null);
         if (memRules.length > 0) {
           _learnCache = { ..._learnCache, ready: true, fromMemory: true, rules: memRules, mem, bestConditions: mem.bestConditions || [] };
+        }
+      } catch(e) {}
+    }
+    // 無論有無即時交易，已匯入的記憶規則都要顯示（合併而非替代）
+    if (_learnCache) {
+      try {
+        const mem = loadAIMemory();
+        const importedRules = Object.values(mem.rules || {}).filter(r => r.imported && (r.total || 0) >= 3 && r.warning != null);
+        if (importedRules.length > 0) {
+          const existingConds = new Set((_learnCache.rules || []).map(r => r.condition));
+          const newRules = importedRules.filter(r => !existingConds.has(r.condition));
+          if (newRules.length > 0) {
+            _learnCache = { ..._learnCache, rules: [...(_learnCache.rules || []), ...newRules] };
+          }
         }
       } catch(e) {}
     }
@@ -9027,9 +9041,13 @@ function renderTradeLogPage() {
     tableHtml = `<div class="tl-empty">暫無已結束的交易記錄。系統正在追蹤中，待交易觸及止盈或止損後會自動顯示在此。</div>`;
   } else {
     const rows = display.map(t => {
+      const isLongTrade = t.canScaleIn === true || t.isLongTerm === true;
       const dirHtml = t.direction === 'long'
         ? `<span class="tl-dir-long">▲ 多</span>`
         : `<span class="tl-dir-short">▼ 空</span>`;
+      const typeTag = isLongTrade
+        ? `<span style="display:inline-block;margin-left:4px;font-size:0.65rem;padding:1px 5px;border-radius:10px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);color:#4ade80;font-weight:600">長線</span>`
+        : `<span style="display:inline-block;margin-left:4px;font-size:0.65rem;padding:1px 5px;border-radius:10px;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);color:#fbbf24;font-weight:600">短線</span>`;
 
       let statusHtml;
       if (t.status === 'open') {
@@ -9037,7 +9055,9 @@ function renderTradeLogPage() {
       } else if (t.outcome === 'tp2') {
         statusHtml = `<span class="tl-badge tl-badge-tp2">止盈二 ✅</span>`;
       } else if (t.outcome === 'tp1') {
-        statusHtml = `<span class="tl-badge tl-badge-tp1">止盈一 ✅</span>`;
+        statusHtml = isLongTrade
+          ? `<span class="tl-badge tl-badge-tp2">最終止盈 ✅</span>`
+          : `<span class="tl-badge tl-badge-tp1">止盈一 ✅</span>`;
       } else if (t.outcome === 'sl') {
         statusHtml = `<span class="tl-badge tl-badge-sl">止損 ❌</span>`;
       } else {
@@ -9054,6 +9074,12 @@ function renderTradeLogPage() {
       const exitTimeHtml = t.exitTime
         ? `<div style="font-size:0.7rem;color:var(--text3);margin-top:2px">結束 ${fmtDateTime(t.exitTime)}</div>` : '';
 
+      // 長線單：最終止盈（ltTP 或 tp1），不顯示 tp2
+      const tp1Display = isLongTrade
+        ? `<span style="color:#22c55e">${fmtPrice(t.ltTP || t.tp1)}</span>`
+        : `<span style="color:var(--bull)">${fmtPrice(t.tp1)}</span>`;
+      const tp2Display = isLongTrade ? `<span style="color:var(--text3)">—</span>` : fmtPrice(t.tp2);
+
       return `<tr class="tl-row-click" onclick="showTradeDetail('${t.id}')">
         <td style="font-size:0.78rem;min-width:130px">
           <div style="color:var(--text2)">信號 ${fmtDateTime(t.timestamp)}</div>
@@ -9061,11 +9087,11 @@ function renderTradeLogPage() {
           ${exitTimeHtml}
         </td>
         <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
-        <td>${dirHtml}</td>
+        <td>${dirHtml}${typeTag}</td>
         <td>${fmtPrice(t.entry)}</td>
         <td style="color:var(--bear)">${fmtPrice(t.sl)}</td>
-        <td style="color:var(--bull)">${fmtPrice(t.tp1)}</td>
-        <td style="color:#22c55e">${fmtPrice(t.tp2)}</td>
+        <td>${tp1Display}</td>
+        <td style="color:#22c55e">${tp2Display}</td>
         <td>${statusHtml}</td>
         <td>${pnlHtml}</td>
       </tr>`;
