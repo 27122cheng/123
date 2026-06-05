@@ -1533,6 +1533,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ${bigTrendBlocked ? `<span style="font-size:0.73rem;color:var(--bear);font-weight:600">❌ 大小方向衝突</span>` : `<span style="font-size:0.73rem;color:#f59e0b">⚠️ 等待大趨勢確認</span>`}
       </div>
     </div>`;
+    const _wWait = weeklyBiasData?.biasLabel || '—';
+    const _tWait = todayBiasData?.biasLabel  || '—';
+    const _wBiasWait = weeklyBiasData?.bias || 'neutral';
+    const _tBiasWait = todayBiasData?.bias  || 'neutral';
+    const _wClr1 = _wBiasWait.includes('bull') ? 'var(--bull)' : _wBiasWait.includes('bear') ? 'var(--bear)' : '#f59e0b';
+    const _tClr1 = _tBiasWait.includes('bull') ? 'var(--bull)' : _tBiasWait.includes('bear') ? 'var(--bear)' : '#f59e0b';
     return `<div class="setup-wait">
       <div class="setup-wait-icon">${bigTrendBlocked ? '🚫' : '⏳'}</div>
       <div class="setup-wait-title">${bigTrendBlocked ? '大小趨勢方向衝突，暫不進場' : '建議觀望，短線方向未明'}</div>
@@ -1540,6 +1546,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ${reasons.length ? reasons.map(r => `<li>${r}</li>`).join('') : '<li>短線訊號不足，耐心等待 15m/1h 有效突破</li>'}
       </ul>
       ${bigTrendPanel}
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
+        <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_wClr1}40;color:${_wClr1}">📈 本週 ${_wWait}（${weeklyBiasData?.conf || 50}%）</span>
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_tClr1}40;color:${_tClr1}">📅 今日 ${_tWait}（${todayBiasData?.conf || 50}%）</span>
+        </div>
+      </div>
       ${!bigTrendBlocked ? `<div class="setup-wait-cond">
         <strong>等待條件：</strong>15m/1h 帶量實體K棒收破
         <span style="color:var(--bull)">${fmtPrice(entryHigh)}</span>（做多）
@@ -2524,6 +2537,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     };
     const _rIconMap = { '極高風險': '🚨', '高風險': '⛔' };
     const _rIcon = _rIconMap[_risk.level] || '⛔';
+    const _wClrR = weeklyOpposed ? 'var(--bear)' : weeklyNeutral ? '#f59e0b' : 'var(--bull)';
+    const _tClrR = todayOpposed  ? 'var(--bear)' : todayNeutral  ? '#f59e0b' : 'var(--bull)';
     return `<div class="setup-wait">
       <div class="setup-wait-icon">${_rIcon}</div>
       <div class="setup-wait-title" style="color:${_risk.levelColor}">${_risk.level}（${_risk.score}/100）— AI 評估建議觀望</div>
@@ -2533,6 +2548,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div style="margin-top:12px;padding:10px 12px;background:${_risk.levelColor}11;border:1px solid ${_risk.levelColor}44;border-radius:9px">
         <div style="font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px">💡 AI 建議（僅供參考）</div>
         ${_risk.recs.map(r => `<div style="font-size:0.73rem;color:#a5f3fc;padding:2px 0">→ ${r}</div>`).join('')}
+      </div>
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
+        <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_wClrR}40;color:${_wClrR}">📈 本週 ${weeklyBiasData?.biasLabel || '—'}（${weeklyBiasData?.conf || 50}%）</span>
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_tClrR}40;color:${_tClrR}">📅 今日 ${todayBiasData?.biasLabel || '—'}（${todayBiasData?.conf || 50}%）</span>
+        </div>
       </div>
     </div>`;
   }
@@ -2713,11 +2735,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       learnPenalty > 0       ? `<span style="color:#f59e0b;font-size:0.73rem">→ 風控 -${learnPenalty}</span>` : '',
       `<span style="color:var(--text3);font-size:0.73rem">= 最終</span> <span style="font-weight:700;color:${cColor(conf)}">${conf}%</span>`,
     ].filter(Boolean).join(' ');
+    const _wClrW = weeklyOpposed ? 'var(--bear)' : weeklyNeutral ? '#f59e0b' : 'var(--bull)';
+    const _tClrW = todayOpposed  ? 'var(--bear)' : todayNeutral  ? '#f59e0b' : 'var(--bull)';
     return `<div class="setup-wait">
       <div class="setup-wait-icon">${hardBlocked ? '🚫' : '⚠️'}</div>
       <div class="setup-wait-title">${hardBlocked ? '本次不進場（AI 風控封鎖）' : '本次不推薦交易'}</div>
       ${!hardBlocked ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin:4px 0 6px;font-size:0.73rem">${confFlow}</div>` : ''}
       ${deductLines.length ? `<ul class="setup-wait-reasons">${deductLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
+        <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_wClrW}40;color:${_wClrW}">📈 本週 ${weeklyBiasData?.biasLabel || '—'}（${weeklyBiasData?.conf || 50}%）</span>
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_tClrW}40;color:${_tClrW}">📅 今日 ${todayBiasData?.biasLabel || '—'}（${todayBiasData?.conf || 50}%）</span>
+        </div>
+      </div>
     </div>`;
   }
 
@@ -2730,11 +2761,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (aiTrendPenalty > 0)     confPenLines.push(`AI 趨勢預測逆向，扣 -${aiTrendPenalty}%`);
     if (learnPenalty > 0)       confPenLines.push(`AI 風控歷史止損規則，扣 -${learnPenalty}%`);
     if (techPenalty > 0)        confPenLines.push(`技術面逆風（RSI/MACD/成交量），扣 -${techPenalty}%`);
+    const _wClrL = weeklyOpposed ? 'var(--bear)' : weeklyNeutral ? '#f59e0b' : 'var(--bull)';
+    const _tClrL = todayOpposed  ? 'var(--bear)' : todayNeutral  ? '#f59e0b' : 'var(--bull)';
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⚠️</div>
       <div class="setup-wait-title">信心度不足（<strong style="color:${cColor}">${conf}%</strong>），建議觀望</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 70%，目前扣分後 ${conf}%，暫不開倉</div>
       ${confPenLines.length ? `<ul class="setup-wait-reasons">${confPenLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
+        <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_wClrL}40;color:${_wClrL}">📈 本週 ${weeklyBiasData?.biasLabel || '—'}（${weeklyBiasData?.conf || 50}%）</span>
+          <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_tClrL}40;color:${_tClrL}">📅 今日 ${todayBiasData?.biasLabel || '—'}（${todayBiasData?.conf || 50}%）</span>
+        </div>
+        ${(weeklyOpposed || todayOpposed) ? `<div style="font-size:0.71rem;color:var(--bear);margin-top:6px">⚠️ AI 預測${weeklyOpposed && todayOpposed ? '本週與今日均' : weeklyOpposed ? '本週' : '今日'}與${isLong ? '做多' : '做空'}方向相反，是信心扣分主因之一</div>` : ''}
+      </div>
     </div>`;
   }
 
