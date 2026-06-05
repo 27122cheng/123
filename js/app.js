@@ -6211,8 +6211,21 @@ function recordSignalsFromScan(data) {
     const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
     if (_factors < 3) continue;
 
-    // ADX 過低（< 18）：震盪無趨勢，直接跳過（不只扣分）
-    if ((parseFloat(coin.adx) || 20) < 18) continue;
+    // ADX 過低（< 20）：震盪無趨勢，直接跳過
+    if ((parseFloat(coin.adx) || 20) < 20) continue;
+
+    // 成交量不得為低（低量趨勢不可靠）
+    if ((coin.volumeStrength || '') === '低') continue;
+
+    // 4H 方向必須與進場方向一致（多時間框架硬性要求）
+    const _h4Sig      = coin.h4Signal || '';
+    const _h4Aligned  = isLong ? _h4Sig.includes('bull') : _h4Sig.includes('bear');
+    if (!_h4Aligned) continue;
+
+    // RSI 極端值過濾：超買不做多，超賣不做空
+    const _rsiVal = parseFloat(coin.rsi) || 50;
+    if (isLong  && _rsiVal > 72) continue;
+    if (!isLong && _rsiVal < 28) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
@@ -6221,11 +6234,10 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-    // MACD 方向確認：與方向一致+2加成，逆向+3門檻
-    const _scanMacd = parseFloat(coin.macdHist) || 0;
+    // MACD 方向確認：順向70%，逆向73%
+    const _scanMacd   = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    // 最終信心度門檻：最低70%，MACD逆向或3因子提高門檻
-    const _confMin = _macdAligned ? 70 : 73;  // MACD順向70%，逆向73%
+    const _confMin    = _macdAligned ? 70 : 73;
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
@@ -6279,6 +6291,9 @@ function recordSignalsFromScan(data) {
       entryVolBreakout:   false,
       entryMacdHist:      parseFloat(coin.macdHist) || 0,
       entryVolStrength:   coin.volumeStrength || '',
+      entryH4Aligned:     _h4Aligned,
+      entryScoreStrength: (() => { const s = isLong ? coin.score : 100 - coin.score; return s >= 75 ? 'strong' : s >= 65 ? 'medium' : 'weak'; })(),
+      entryKillZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
       status: 'pending', outcome: null, tp1Hit: false,
       entryTime: null,
       exitPrice: null, exitTime: null, pnlR: null, analysis: null,
@@ -8082,6 +8097,29 @@ function computeLearnProfile() {
       shortLosses.filter(t => t.entryVolStrength === '低' || String(t.entryVolStrength||'').includes('弱')),
       shortClosed.filter(t => t.entryVolStrength === '低' || String(t.entryVolStrength||'').includes('弱')),
       10, r => `低量做空止損率 ${r}%，建議等放量確認再進場`),
+    // 4H 方向規則
+    check('h4_against_long',
+      longLosses.filter(t => t.entryH4Aligned === false),
+      longClosed.filter(t => t.entryH4Aligned != null && t.entryH4Aligned === false),
+      15, r => `4H逆向做多止損率 ${r}%，建議等4H方向確認`),
+    check('h4_against_short',
+      shortLosses.filter(t => t.entryH4Aligned === false),
+      shortClosed.filter(t => t.entryH4Aligned != null && t.entryH4Aligned === false),
+      15, r => `4H逆向做空止損率 ${r}%，建議等4H方向確認`),
+    // 訊號強度規則
+    check('weak_score_long',
+      longLosses.filter(t => (t.entryScoreStrength || '') === 'weak'),
+      longClosed.filter(t => t.entryScoreStrength === 'weak'),
+      12, r => `弱評分（51-64分）做多止損率 ${r}%，建議等評分更強再進場`),
+    check('weak_score_short',
+      shortLosses.filter(t => (t.entryScoreStrength || '') === 'weak'),
+      shortClosed.filter(t => t.entryScoreStrength === 'weak'),
+      12, r => `弱評分做空止損率 ${r}%，建議等評分更強再進場`),
+    // 時段分析
+    check('asia_session_loss',
+      losses.filter(t => t.entryKillZone === 'asia'),
+      closed.filter(t => t.entryKillZone === 'asia'),
+      8, r => `亞洲時段進場止損率 ${r}%，流動性低需謹慎`),
   ].filter(Boolean);
 
   // ── 最佳進場條件（從盈利交易學習）──
@@ -8221,8 +8259,13 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 68) ||
         (rule.condition === 'macd_against_long'  && direction === 'long'  && (parseFloat(ctx.macdHist) || 0) < 0) ||
         (rule.condition === 'macd_against_short' && direction === 'short' && (parseFloat(ctx.macdHist) || 0) > 0) ||
-        (rule.condition === 'low_vol_long'  && direction === 'long'  && (ctx.volWeak === true)) ||
-        (rule.condition === 'low_vol_short' && direction === 'short' && (ctx.volWeak === true));
+        (rule.condition === 'low_vol_long'    && direction === 'long'  && (ctx.volWeak === true)) ||
+        (rule.condition === 'low_vol_short'   && direction === 'short' && (ctx.volWeak === true)) ||
+        (rule.condition === 'h4_against_long'  && direction === 'long'  && ctx.h4Aligned === false) ||
+        (rule.condition === 'h4_against_short' && direction === 'short' && ctx.h4Aligned === false) ||
+        (rule.condition === 'weak_score_long'  && direction === 'long'  && ctx.scoreStrength === 'weak') ||
+        (rule.condition === 'weak_score_short' && direction === 'short' && ctx.scoreStrength === 'weak') ||
+        (rule.condition === 'asia_session_loss' && ctx.killZone === 'asia');
       // 結構化規則：觸發時扣信心分（上限 8%），止損原因建議納入交易分析
       if ((rule.total || 0) >= 3) {
         const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
@@ -10261,16 +10304,22 @@ function computeSimpleSetup(coin, isLong) {
 
   // ── AI 學習引擎調整（同 buildTradeSetup 相同邏輯）──
   const hardAdxPenalty = adx < 18 ? 18 : adx < 22 ? 10 : 0;
-  const _ssVolWeak = (coin.volumeStrength || '') === '低' || String(coin.volumeStrength||'').includes('弱');
+  const _ssVolWeak      = (coin.volumeStrength || '') === '低' || String(coin.volumeStrength||'').includes('弱');
+  const _ssH4Aligned    = isLong ? (coin.h4Signal || '').includes('bull') : (coin.h4Signal || '').includes('bear');
+  const _ssDirBase      = isLong ? (coin.score || 55) : Math.max(10, 100 - (coin.score || 50));
+  const _ssScoreStr     = _ssDirBase >= 75 ? 'strong' : _ssDirBase >= 65 ? 'medium' : 'weak';
+  const _ssKillZone     = (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })();
   const { penalty: learnPenalty, warnings: learnWarn, hardBlocked, blockReasons } = applyLearnAdjustment(direction, rsi, adx, {
     slType: 'atr',
-    skipAdxRule: true,
-    macdHist:  parseFloat(coin.macdHist) || 0,
-    volWeak:   _ssVolWeak,
+    skipAdxRule:   true,
+    macdHist:      parseFloat(coin.macdHist) || 0,
+    volWeak:       _ssVolWeak,
+    h4Aligned:     _ssH4Aligned,
+    scoreStrength: _ssScoreStr,
+    killZone:      _ssKillZone,
   });
   // rawConf：做多用 score，做空用 100-score（score=30 → 空頭強度70%）
-  const _dirBase = isLong ? (coin.score || 55) : Math.max(10, 100 - (coin.score || 50));
-  let rawConf = Math.min(88, _dirBase);
+  let rawConf = Math.min(88, _ssDirBase);
   // RSI 確認加成（順向 RSI：做多 RSI < 50，做空 RSI > 50 各 +5；極端加 +8；移除近中性加成）
   if (isLong) {
     if (rsi < 35)       rawConf += 8;
