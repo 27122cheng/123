@@ -4445,15 +4445,24 @@ function buildTodayEconWidget() {
       ? `<span class="econ-status econ-status-later">${Math.round(minsUntil/60)}h後</span>`
       : `<span class="econ-status econ-status-later">${dateLabel}</span>`;
     const confColor  = (ev.aiConf||0) >= 70 ? 'var(--bull)' : (ev.aiConf||0) >= 55 ? '#f0a500' : 'var(--text3)';
-    const aiSection  = ev.aiMarketImpact ? `
+    const _aDir      = ev.aiDir || 'neutral';
+    const _aDirLabel = _aDir === 'bull' ? '▲ 偏多' : _aDir === 'bear' ? '▼ 偏空' : '◆ 中性';
+    const _aDirColor = _aDir === 'bull' ? 'var(--bull)' : _aDir === 'bear' ? 'var(--bear)' : '#f59e0b';
+    const aiSection  = ev.aiPred ? `
       <div class="econ-ai-block">
-        ${!published && ev.aiPred ? `<div class="econ-ai-row">
-          <span class="econ-ai-label">🤖 AI 預測</span>
+        <div class="econ-ai-row">
+          <span class="econ-ai-label">🤖 AI 預測值</span>
           <span class="econ-ai-val">${ev.aiPred}</span>
           <span class="econ-ai-conf" style="color:${confColor}">信心 ${ev.aiConf}%</span>
-        </div>` : ''}
-        <div class="econ-ai-impact">${ev.aiMarketImpact}</div>
-      </div>` : '';
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin:4px 0 3px">
+          <span style="font-size:0.68rem;color:var(--text3)">預測方向</span>
+          <span style="font-size:0.75rem;font-weight:700;color:${_aDirColor}">${_aDirLabel}</span>
+          ${published ? '<span style="font-size:0.65rem;color:var(--text3);padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.06)">公布前預測</span>' : ''}
+        </div>
+        ${ev.aiDirReason ? `<div style="font-size:0.71rem;color:var(--text2);line-height:1.5;margin-bottom:4px">📌 ${ev.aiDirReason}</div>` : ''}
+        ${ev.aiMarketImpact ? `<div class="econ-ai-impact">💡 ${ev.aiMarketImpact}</div>` : ''}
+      </div>` : (ev.aiMarketImpact ? `<div class="econ-ai-block"><div class="econ-ai-impact">💡 ${ev.aiMarketImpact}</div></div>` : '');
     const dateKey = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
     const actualVal = published ? getEconActualValue(ev.name, dateKey) : '';
     const hasBLS = !!BLS_SERIES_MAP[ev.name] || ev.name === 'FOMC 紀要' || !!KNOWN_ACTUALS[`${ev.name}_${dateKey}`];
@@ -7541,19 +7550,22 @@ const WEEKLY_DATA_SCHEDULE = [
     description: '衡量每週新增失業人數，數字越低代表勞動市場越強勁', impact: 'medium',
     bullIf: '< 預期（就業強勁 → 聯準會鷹派 → 美元走強，加密短線承壓）',
     bearIf: '> 預期（就業疲軟 → 降息預期升溫 → 加密可能反應偏多）',
-    aiPred: '218K～228K', aiConf: 72,
+    aiPred: '218K～228K', aiConf: 72, aiDir: 'neutral',
+    aiDirReason: '預測落在 210K～240K 中性區間，對加密影響有限，偏中性震盪',
     aiMarketImpact: '低於 210K 美元走強加密承壓；高於 240K 降息預期升加密偏多' },
   { name: 'EIA 原油庫存', dayOfWeek: 3, twHour: 22, twMin: 30, prevKey: 'eiaOil',
     description: '美國原油庫存週報，影響通膨預期與風險情緒', impact: 'low',
     bullIf: '庫存大幅下降（通膨預期升溫，加密有時跟漲）',
     bearIf: '庫存大幅增加（通縮壓力，風險情緒轉差）',
-    aiPred: '-0.5M ～ -2.0M 桶（小幅去庫存）', aiConf: 57,
+    aiPred: '-0.5M ～ -2.0M 桶（小幅去庫存）', aiConf: 57, aiDir: 'neutral',
+    aiDirReason: '小幅去庫存，影響加密有限，對方向性判斷影響不大',
     aiMarketImpact: '對加密影響有限，若大幅去庫存 >3M 可能帶動通膨預期升溫' },
   { name: 'FOMC 紀要', dayOfWeek: 3, twHour: 2, twMin: 0, prevKey: 'fomc',
     description: '聯準會政策會議紀要，揭示利率決策討論細節', impact: 'high',
     bullIf: '鴿派傾向（降息預期升溫）→ 加密強烈看多',
     bearIf: '鷹派傾向（維持高利率）→ 加密短線承壓',
-    aiPred: '維持謹慎，無明確降息時程信號', aiConf: 78,
+    aiPred: '維持謹慎，無明確降息時程信號', aiConf: 78, aiDir: 'bear',
+    aiDirReason: '鷹派基調維持，無降息時程信號 → 美元偏強，加密短線偏空壓力',
     aiMarketImpact: '若出現年底降息暗示可強勁反彈；維持鷹派則短線震盪偏空' },
 ];
 
@@ -7564,35 +7576,40 @@ const MONTHLY_DATA_SCHEDULE = [
     description: '最重要的就業數據，直接影響聯準會利率決策',
     bullIf: '< 預期（降息預期升） → 加密大幅上漲機率高',
     bearIf: '> 預期（鷹派預期） → 美元走強，加密承壓',
-    aiPred: '170K～200K（前值 175K，維持緩降趨勢）', aiConf: 63,
+    aiPred: '170K～200K（前值 175K，維持緩降趨勢）', aiConf: 63, aiDir: 'neutral',
+    aiDirReason: '勞市溫和放緩，落在 150K～220K 中性區，降息時程不受明顯影響，加密偏中性',
     aiMarketImpact: '低於 150K 加密強勁反彈；高於 220K 美元走強短線承壓' },
   { name: '美國消費者物價指數（CPI）', weekOfMonth: 2, dayOfWeek: 2, twHour: 20, twMin: 30,
     prevKey: 'usCPI', impact: 'high',
     description: '通膨指標，聯準會最重視的數據之一',
     bullIf: '< 預期（通膨降溫）→ 降息預期升溫，加密偏多',
     bearIf: '> 預期（通膨持續）→ 高利率預期延續，加密偏空',
-    aiPred: '2.3%～2.5% YoY（前值 2.4%，通膨緩慢降溫）', aiConf: 71,
+    aiPred: '2.3%～2.5% YoY（前值 2.4%，通膨緩慢降溫）', aiConf: 71, aiDir: 'bull',
+    aiDirReason: '通膨持續降溫（低於前值 2.4%），降息預期溫和升溫，加密偏多',
     aiMarketImpact: '低於 2.2% 加密大漲機率高；高於 2.7% 市場恐慌拋售' },
   { name: '美國生產者物價指數（PPI）', weekOfMonth: 2, dayOfWeek: 3, twHour: 20, twMin: 30,
     prevKey: 'usPPI', impact: 'medium',
     description: '生產端通膨先行指標',
     bullIf: '< 預期（生產端通縮）→ CPI 後續下行空間大，偏多',
     bearIf: '> 預期（成本壓力增）→ 通膨預期升，偏空',
-    aiPred: '2.0%～2.3% YoY（持續回落趨勢）', aiConf: 64,
+    aiPred: '2.0%～2.3% YoY（持續回落趨勢）', aiConf: 64, aiDir: 'bull',
+    aiDirReason: '生產成本持續回落，CPI 後續下行空間加大，對加密中性偏多',
     aiMarketImpact: '下行趨勢持續對加密中性偏多；若回升超 2.5% 則承壓' },
   { name: '美國零售銷售', weekOfMonth: 3, dayOfWeek: 2, twHour: 20, twMin: 30,
     prevKey: 'usRetail', impact: 'medium',
     description: '消費支出指標，反映經濟成長動能',
     bullIf: '< 預期（消費疲軟）→ 降息預期升，加密偏多',
     bearIf: '> 預期（消費強勁）→ 高利率預期持續，加密承壓',
-    aiPred: '+0.2%～+0.4% MoM（消費趨緩但未惡化）', aiConf: 60,
+    aiPred: '+0.2%～+0.4% MoM（消費趨緩但未惡化）', aiConf: 60, aiDir: 'bull',
+    aiDirReason: '消費溫和趨緩，低於強勁門檻，符合降息預期維持，加密輕微偏多',
     aiMarketImpact: '消費趨緩符合降息預期，短線加密輕微偏多' },
   { name: 'ADP 就業人數', weekOfMonth: 1, dayOfWeek: 3, twHour: 20, twMin: 15,
     prevKey: 'usADP', impact: 'medium',
     description: 'NFP 前瞻指標，為非農數據的早期信號',
     bullIf: '< 預期 → 降息預期升，加密偏多',
     bearIf: '> 預期 → 就業強勁，鷹派預期延續',
-    aiPred: '165K～185K（接近NFP預測，勞市溫和放緩）', aiConf: 63,
+    aiPred: '165K～185K（接近NFP預測，勞市溫和放緩）', aiConf: 63, aiDir: 'neutral',
+    aiDirReason: '就業溫和放緩，未達強烈降息觸發門檻，可作為 NFP 方向性參考',
     aiMarketImpact: '低於 150K 加密情緒明顯升溫；可作為 NFP 方向性參考' },
 ];
 
