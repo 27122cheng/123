@@ -7491,13 +7491,27 @@ function buildDailyBriefingMsg(fg, mkt) {
     ? todayEconEvents.map(ev => {
         const timeStr = `${ev.twHour}:${String(ev.twMin).padStart(2,'0')}`;
         const impactTag = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
-        const aiLine = ev.aiPred
-          ? `   🤖 AI 預測：${esc(ev.aiPred)}（信心 ${ev.aiConf}%）`
+        const isPublished = ev.eventTime && ev.eventTime.getTime() < Date.now();
+        if (isPublished) {
+          const dkY = ev.eventTime.getFullYear(), dkM = ev.eventTime.getMonth(), dkD = ev.eventTime.getDate();
+          const actualVal = getEconActualValue(ev.name, `${dkY}-${dkM}-${dkD}`);
+          const { dirLabel: aDir, dirReason: aReason } = actualVal ? _econDirText(ev, actualVal) : {};
+          const actualLine  = actualVal ? `   📌 <b>公布值：${esc(actualVal)}</b>` : '   📌 公布值：尚未取得';
+          const dirLine2    = aDir ? `   ${aDir}` : '';
+          const reasonLine2 = aReason ? `   💬 ${esc(aReason)}` : '';
+          return `${impactTag} <b>${esc(ev.name)}</b>（${timeStr} 已公布）\n${actualLine}${dirLine2 ? '\n'+dirLine2 : ''}${reasonLine2 ? '\n'+reasonLine2 : ''}`;
+        }
+        const aDirLabel = (ev.aiDir === 'bull') ? '▲ 偏多' : (ev.aiDir === 'bear') ? '▼ 偏空' : '◆ 中性';
+        const aiLine    = ev.aiPred
+          ? `   🤖 AI 預測值：${esc(ev.aiPred)}（信心 ${ev.aiConf}%）`
           : '';
-        const dirLine = ev.bullIf
-          ? `   📈 偏多條件：${esc(ev.bullIf.slice(0,60))}`
+        const aiDirLine = ev.aiDir
+          ? `   📊 預測方向：${aDirLabel}`
           : '';
-        return `${impactTag} <b>${esc(ev.name)}</b>（台灣時間 ${timeStr}）${aiLine ? '\n'+aiLine : ''}${dirLine ? '\n'+dirLine : ''}`;
+        const aiReason  = ev.aiDirReason
+          ? `   📌 ${esc(ev.aiDirReason)}`
+          : '';
+        return `${impactTag} <b>${esc(ev.name)}</b>（台灣時間 ${timeStr}）${aiLine ? '\n'+aiLine : ''}${aiDirLine ? '\n'+aiDirLine : ''}${aiReason ? '\n'+aiReason : ''}`;
       }).join('\n\n')
     : '⏰ 今日無重大預定數據';
 
@@ -7713,14 +7727,23 @@ function sendEconEventAlert(ev, s) {
     ? `\n⚠️ 目前持有 ${openTrades.length} 筆倉位，數據公布前建議確認止損位置`
     : '';
 
+  const aDirLabel = (ev.aiDir === 'bull') ? '▲ 偏多' : (ev.aiDir === 'bear') ? '▼ 偏空' : '◆ 中性';
+  const aiSection = ev.aiPred
+    ? `\n🤖 <b>AI 預測</b>\n` +
+      `• 預測值：${ev.aiPred}（信心 ${ev.aiConf || '--'}%）\n` +
+      `• 預測方向：${aDirLabel}\n` +
+      (ev.aiDirReason ? `• 原因：${ev.aiDirReason}\n` : '')
+    : '';
+
   const msg =
     `${impactEmoji} <b>重要數據即將公布（約1小時後）</b>\n\n` +
     `📊 <b>${ev.name}</b>\n` +
     `⏰ 台灣時間：<b>${twTime}</b>\n` +
     `📝 說明：${ev.description}\n\n` +
     `📈 若數據優於預期：${ev.bullIf}\n` +
-    `📉 若數據差於預期：${ev.bearIf}\n\n` +
-    `🎯 <b>盤面影響分析</b>\n` +
+    `📉 若數據差於預期：${ev.bearIf}` +
+    aiSection +
+    `\n🎯 <b>盤面影響分析</b>\n` +
     `• 數據公布前 30 分鐘通常出現方向性試探\n` +
     `• 公布後 5~15 分鐘為高波動期，避免追入\n` +
     `• 公布後 1 小時若延續方向可考慮跟進${tradeNote}`;
@@ -7757,6 +7780,48 @@ async function checkPostEventAnalysis() {
 
     sendPostEventAnalysis(ev, s, snap, fgNow, mktNow);
   }
+}
+
+function _econDirText(ev, actualVal) {
+  const avL = (actualVal || '').toLowerCase();
+  let isBear = false, isBull = false, bearReason = '', bullReason = '';
+  if (ev.name.includes('失業金') || ev.name.includes('初請')) {
+    isBear = avL.includes('低於') || avL.includes('強勁') || avL.includes('承壓') || avL.includes('鷹派');
+    isBull = avL.includes('高於') || avL.includes('轉弱') || avL.includes('疲軟') || avL.includes('降息預期升');
+    bearReason = '就業強勁 → 聯準會維持鷹派 → 加密短線承壓';
+    bullReason = '就業轉弱 → 降息預期升溫 → 加密偏多';
+  } else if (ev.name.includes('NFP') || ev.name.includes('非農') || ev.name.includes('ADP')) {
+    isBear = avL.includes('勝出') || avL.includes('高於') || avL.includes('遠超') || avL.includes('強勁');
+    isBull = avL.includes('低於') || avL.includes('疲軟') || avL.includes('未達');
+    bearReason = '就業超預期 → 聯準會降息延後 → 加密短線承壓';
+    bullReason = '就業低於預期 → 降息預期升溫 → 加密偏多';
+  } else if (ev.name.includes('CPI') || ev.name.includes('PPI') || ev.name.includes('物價')) {
+    isBear = avL.includes('高於') || avL.includes('超預期') || avL.includes('升溫') || avL.includes('升幅');
+    isBull = avL.includes('低於') || avL.includes('降溫') || avL.includes('回落') || avL.includes('符合');
+    bearReason = '通膨高於預期 → 高利率延長 → 加密承壓';
+    bullReason = '通膨降溫 → 降息預期升 → 加密偏多';
+  } else if (ev.name.includes('零售')) {
+    isBull = avL.includes('低於') || avL.includes('疲軟') || avL.includes('疲弱');
+    isBear = avL.includes('高於') || avL.includes('強勁') || avL.includes('超預期');
+    bearReason = '消費強勁 → 聯準會維持緊縮 → 加密中性偏空';
+    bullReason = '消費疲軟 → 降息預期升 → 加密偏多';
+  } else if (ev.name.includes('EIA') || ev.name.includes('原油')) {
+    const nm = actualVal.match(/([+-]?\d+\.?\d*)\s*M?\s*桶/);
+    if (nm) { const n = parseFloat(nm[1]); isBull = n < 0; isBear = n > 0; }
+    bearReason = '原油庫存增加 → 供過於求 → 通縮壓力 → 風險情緒下行';
+    bullReason = '原油去庫存 → 能源需求增 → 通膨預期升溫 → 中性偏多';
+  } else if (ev.name.includes('FOMC')) {
+    isBear = avL.includes('鷹派') || avL.includes('維持高利率') || avL.includes('通膨') || avL.includes('異議');
+    isBull = avL.includes('鴿派') || avL.includes('降息') || (avL.includes('寬鬆') && !avL.includes('反對寬鬆'));
+    bearReason = 'FOMC鷹派 → 高利率維持 → 流動性緊縮 → 加密承壓';
+    bullReason = 'FOMC鴿派 → 降息預期升 → 流動性增加 → 加密偏多';
+  } else {
+    isBear = avL.includes('高於') || avL.includes('超預期');
+    isBull = avL.includes('低於') || avL.includes('降溫');
+  }
+  const dirLabel  = isBear ? '🔴 偏空（Bearish）' : isBull ? '🟢 偏多（Bullish）' : '⚪ 中性（Neutral）';
+  const dirReason = isBear ? bearReason : isBull ? bullReason : '影響有限，等待更多數據確認方向';
+  return { dirLabel, dirReason, isBull, isBear };
 }
 
 function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
@@ -7796,16 +7861,33 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
     ? `\n💡 恐貪指數：${fgValNow}${biasLabel.includes('多') && fgValNow > 55 ? '，情緒同步偏多，多頭信號強化' : biasLabel.includes('空') && fgValNow < 45 ? '，情緒同步偏空，空頭信號強化' : '，情緒中性，方向信號待確認'}`
     : '';
 
-  // 公布數值顯示（AI 預測值作為參考基準）
+  // 實際公布值（從本地快取讀取）
+  const _dkY = ev.eventTime.getFullYear(), _dkM = ev.eventTime.getMonth(), _dkD = ev.eventTime.getDate();
+  const actualPublished = getEconActualValue(ev.name, `${_dkY}-${_dkM}-${_dkD}`);
+  const isPlaceholderVal = actualPublished && (
+    actualPublished.includes('待確認') || actualPublished.includes('無FOMC') ||
+    actualPublished.includes('稍晚公布') || actualPublished.includes('未查得') ||
+    actualPublished.includes('定於') || actualPublished.includes('假期延'));
+  const { dirLabel: _actualDirLabel, dirReason: _actualDirReason } =
+    (actualPublished && !isPlaceholderVal) ? _econDirText(ev, actualPublished) : {};
+
+  const actualSection = actualPublished
+    ? `📌 <b>實際公布值：${actualPublished}</b>\n` +
+      (_actualDirLabel ? `${_actualDirLabel}\n` : '') +
+      (_actualDirReason ? `💬 ${_actualDirReason}\n` : '')
+    : '';
+
+  // AI 預測值（事前預測，供對比）
   const valueRef = ev.aiPred
-    ? `📌 AI 預測數值（事前）：${ev.aiPred}（信心 ${ev.aiConf || '--'}%）`
+    ? `🤖 AI 預測值（事前）：${ev.aiPred}（信心 ${ev.aiConf || '--'}%）\n`
     : '';
 
   const msg =
     `${impactEmoji} <b>數據公布後 AI 盤面影響分析</b>\n\n` +
     `📊 <b>${ev.name}</b>\n` +
-    (valueRef ? valueRef + '\n' : '') +
-    `\n${biasIcon} <b>AI 判斷：${biasLabel}</b>\n` +
+    (valueRef ? valueRef : '') +
+    (actualSection ? '\n' + actualSection : '') +
+    `\n${biasIcon} <b>市場反應：${biasLabel}</b>\n` +
     `${biasDetail}${fgSupport}\n\n` +
     `🤖 <b>AI 分析</b>\n${ev.aiMarketImpact || '請依市場實際反應方向操作，等首根確認K棒收線後再決策。'}\n\n` +
     (ev.bullIf ? `📈 偏多情境：${ev.bullIf}\n` : '') +
