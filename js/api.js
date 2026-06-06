@@ -136,7 +136,7 @@ async function fetchKlines(symbol, interval, limit = 220) {
     const url = `${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
+      const timer = setTimeout(() => controller.abort(), 10000);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
       if (res.status === 400) return null; // 交易對不存在，不再重試
@@ -916,24 +916,19 @@ async function fetchMarketData(timeframe = '15m') {
   const url      = (settings.apiUrl || 'http://127.0.0.1:8000') + '/scan';
   const apiKey   = settings.apiKey  || '';
 
-  /* 1. 本地 API（只在 localhost 嘗試，避免 Vercel 等環境白等 6 秒）*/
-  const _isLocal = window.location.hostname === 'localhost' ||
-                   window.location.hostname === '127.0.0.1' ||
-                   window.location.hostname === '';
-  if (_isLocal) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(url, { signal: controller.signal, headers: buildHeaders(apiKey) });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      if (!Array.isArray(json) || json.length === 0) throw new Error('空響應');
-      console.info('[掃描專家] 使用本地 API 數據');
-      return { data: enrichData(json), source: 'api' };
-    } catch (err) {
-      console.warn('[掃描專家] 本地 API 不可用，切換至幣安 K 線實時分析：', err.message);
-    }
+  /* 1. 優先嘗試本地 API */
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(url, { signal: controller.signal, headers: buildHeaders(apiKey) });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    if (!Array.isArray(json) || json.length === 0) throw new Error('空響應');
+    console.info('[掃描專家] 使用本地 API 數據');
+    return { data: enrichData(json), source: 'api' };
+  } catch (err) {
+    console.warn('[掃描專家] 本地 API 不可用，切換至幣安 K 線實時分析：', err.message);
   }
 
   /* 2. 幣安 K 線 + 即時技術指標計算 */
