@@ -6789,6 +6789,18 @@ function updateOpenTrades(data) {
     }
   }
 
+  // ── 修復舊版 bug 留下的 tp1=null 掛單（確保止盈一永遠有有效值）──
+  for (const trade of tlog) {
+    if (trade.status !== 'pending' || trade.tp1) continue;
+    if (!trade.entry || !trade.sl) continue;
+    const _r = Math.abs(trade.entry - trade.sl);
+    if (_r <= 0) continue;
+    const _isL = trade.direction === 'long';
+    trade.tp1 = _isL ? trade.entry + _r * 1.5 : trade.entry - _r * 1.5;
+    if (!trade.tp2) trade.tp2 = _isL ? trade.entry + _r * 2.5 : trade.entry - _r * 2.5;
+    changed = true;
+  }
+
   // ── 宏觀方向反轉：取消方向衝突的未入場掛單 ──
   // 條件 A：本週 + 今日 AI 均明確反向（嚴格雙確認）
   // 條件 B：綜合宏觀方向極端反向（strong_bear/strong_bull）才取消，mild bear 由信心扣分處理
@@ -9176,6 +9188,8 @@ function renderPositionsPage() {
             const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
             const fmt     = v => v ? fmtPrice(v) : '—';
             const isLongTermCard = t.canScaleIn === true;
+            const _fbR    = Math.abs((t.entry || 0) - (t.sl || 0));
+            const _fbTp1  = t.tp1 || (_fbR > 0 ? (t.direction === 'long' ? (t.entry||0) + _fbR * 1.5 : (t.entry||0) - _fbR * 1.5) : 0);
             const expiry  = t.timestamp ? fmtDateTime(t.timestamp + (isLongTermCard ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2)) : '—';
             const cur     = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
             const distPct = (cur && t.entry) ? (((cur - t.entry) / t.entry) * 100 * (isLong ? 1 : -1)).toFixed(2) : null;
@@ -9208,8 +9222,8 @@ function renderPositionsPage() {
                 ${isLongTermCard ? `
                 <div class="pos-cell"><div class="pos-cell-lbl">最終止盈位</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.ltTP || t.tp2 || t.tp1)}</div></div>
                 ` : `
-                <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(t.tp1)}</div></div>
-                ${t.tp2 ? `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.tp2)}</div></div>` : ''}
+                <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(_fbTp1)}</div></div>
+                ${(t.tp2 || _fbR > 0) ? `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.tp2 || (t.direction === 'long' ? (t.entry||0) + _fbR * 2.5 : (t.entry||0) - _fbR * 2.5))}</div></div>` : ''}
                 `}
                 <div class="pos-cell" style="grid-column:span ${isLongTermCard ? 1 : 1}">
                   <div class="pos-cell-lbl">最終信心度</div>
