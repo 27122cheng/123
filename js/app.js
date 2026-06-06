@@ -2210,8 +2210,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       return { level, snapped: !!nearby, newSL };
     });
     // 覆蓋 tp1/tp2 → updateOpenTrades TP1 觸發 & 持倉記錄均使用長線最終止盈
-    tp1 = ltTP; tp1Reason = ltTPReason;
-    tp2 = ltTP; tp2Reason = ltTPReason;
+    // 只有在 canScaleIn 仍為 true（ltTP 有效）時才覆蓋，否則保留短線 tp1/tp2
+    if (canScaleIn && ltTP) {
+      tp1 = ltTP; tp1Reason = ltTPReason;
+      tp2 = ltTP; tp2Reason = ltTPReason;
+    }
   }
 
   // Re-sync label: canScaleIn may have been set false if no valid ltTP was found
@@ -2623,8 +2626,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   if (existIdx >= 0) {
     const ex = tlog[existIdx];
-    // 若 entry 缺失（舊版資料）或尚未精煉，強制更新完整欄位
-    if (!ex.refined || !ex.entry) {
+    // 若 entry 缺失（舊版資料）或尚未精煉，或 tp1 為空（舊版 bug），強制更新完整欄位
+    if (!ex.refined || !ex.entry || !ex.tp1) {
       ex.entry = entry; ex.sl = sl; ex.tp1 = tp1; ex.tp2 = tp2;
       ex.entryReason = entryReasons.join('，'); ex.entryReasons = [...entryReasons];
       ex.slReason = slReason; ex.tp1Reason = tp1Reason; ex.tp2Reason = tp2Reason;
