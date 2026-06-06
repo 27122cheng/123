@@ -9466,133 +9466,277 @@ function importAIMemory() {
 }
 
 /* ── 策略報表頁面 ─────────────────────────────────────────────── */
-function renderReportPage(year) {
+function renderReportPage(year, view, month) {
   const container = document.getElementById('report-content');
   if (!container) return;
 
-  const currentYear = new Date().getFullYear();
-  if (year == null) year = state.reportYear || currentYear;
-  state.reportYear = year;
+  const currentYear  = new Date().getFullYear();
+  const currentMonth = new Date().getMonth();
+  if (year  == null) year  = state.reportYear  || currentYear;
+  if (view  == null) view  = state.reportView  || 'year';
+  if (month == null) month = state.reportMonth != null ? state.reportMonth : currentMonth;
+  state.reportYear  = year;
+  state.reportView  = view;
+  state.reportMonth = month;
 
   const trades   = loadTradeLog();
   const yearStart = new Date(year, 0, 1).getTime();
   const yearEnd   = new Date(year, 11, 31, 23, 59, 59, 999).getTime();
-
-  // Closed trades in selected year (by entryTime or signal timestamp)
   const yearTrades = trades.filter(t => {
     if (t.status !== 'closed') return false;
     const ts = t.entryTime || t.timestamp || 0;
     return ts >= yearStart && ts <= yearEnd;
   }).sort((a, b) => (a.exitTime || a.entryTime || a.timestamp || 0) - (b.exitTime || b.entryTime || b.timestamp || 0));
 
-  // tp2 = win; tp1+be = break-even (保本); sl = loss
-  const wins     = yearTrades.filter(t => t.outcome === 'tp2');
-  const losses   = yearTrades.filter(t => t.outcome === 'sl');
-  const beCount  = yearTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length;
-  const winRate  = yearTrades.length > 0 ? (wins.length / yearTrades.length * 100).toFixed(1) : '--';
-  const totalR   = yearTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
-  const avgR     = yearTrades.length > 0 ? (totalR / yearTrades.length) : null;
-
-  // Average daily entries: count by entryTime date (pending→open transitions)
-  const entryDays = {};
-  for (const t of yearTrades) {
-    if (!t.entryTime) continue;  // only count confirmed entries
-    const d = new Date(t.entryTime);
-    const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    entryDays[k] = (entryDays[k] || 0) + 1;
-  }
-  const activeDays = Object.keys(entryDays).length;
-  const enteredCount = yearTrades.filter(t => t.entryTime).length;
-  const avgDaily = activeDays > 0 ? (enteredCount / activeDays).toFixed(2) : '--';
-
-  // Year selector
+  // Year selector options
   const yearsSet = new Set([currentYear]);
   trades.forEach(t => { const ts = t.entryTime || t.timestamp || 0; if (ts) yearsSet.add(new Date(ts).getFullYear()); });
   const yearOpts = [...yearsSet].sort((a, b) => b - a)
     .map(y => `<option value="${y}"${y === year ? ' selected' : ''}>${y} 年</option>`).join('');
 
-  const chartData   = _rptBuildCumData(yearTrades, year);
-  const chartSvg    = _rptBuildChartSVG(chartData, year, currentYear);
-  const barSvg      = _rptBuildBarSVG(yearTrades, year);
-  const monthlyRows = _rptBuildMonthly(yearTrades, year);
+  // Tabs HTML
+  const tabBar = `
+    <div style="display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid rgba(255,255,255,.08);padding-bottom:0">
+      <button onclick="renderReportPage(${year},'year',${month})"
+        style="padding:8px 18px;font-size:0.85rem;font-weight:600;border:none;border-radius:8px 8px 0 0;cursor:pointer;
+               background:${view==='year'?'rgba(0,212,255,.15)':'transparent'};
+               color:${view==='year'?'var(--accent)':'var(--text3)'};
+               border-bottom:2px solid ${view==='year'?'var(--accent)':'transparent'}">
+        📅 年度報告
+      </button>
+      <button onclick="renderReportPage(${year},'month',${month})"
+        style="padding:8px 18px;font-size:0.85rem;font-weight:600;border:none;border-radius:8px 8px 0 0;cursor:pointer;
+               background:${view==='month'?'rgba(0,212,255,.15)':'transparent'};
+               color:${view==='month'?'var(--accent)':'var(--text3)'};
+               border-bottom:2px solid ${view==='month'?'var(--accent)':'transparent'}">
+        📆 月度報告
+      </button>
+    </div>`;
+
+  container.innerHTML = `
+    <div class="page-header" style="margin-bottom:16px">
+      <div>
+        <h1 class="page-title">📊 策略報表</h1>
+        <p class="page-subtitle">${view === 'year' ? '全年交易績效統計分析' : '單月交易明細與統計'}</p>
+      </div>
+      <select class="setting-select" onchange="renderReportPage(parseInt(this.value),'${view}',${month})" style="padding:6px 14px;font-size:0.85rem;min-width:100px">
+        ${yearOpts}
+      </select>
+    </div>
+    ${tabBar}
+    <div id="rpt-view-content"></div>
+  `;
+
+  const viewEl = document.getElementById('rpt-view-content');
+  if (view === 'year') {
+    viewEl.innerHTML = _rptBuildYearView(yearTrades, year);
+  } else {
+    viewEl.innerHTML = _rptBuildMonthView(yearTrades, year, month);
+  }
+}
+
+function _rptBuildYearView(yearTrades, year) {
+  const wins    = yearTrades.filter(t => t.outcome === 'tp2');
+  const losses  = yearTrades.filter(t => t.outcome === 'sl');
+  const beCount = yearTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length;
+  const winRate = yearTrades.length > 0 ? (wins.length / yearTrades.length * 100).toFixed(1) : '--';
+  const totalR  = yearTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
+  const avgR    = yearTrades.length > 0 ? (totalR / yearTrades.length) : null;
+
+  const entryDays = {};
+  for (const t of yearTrades) {
+    if (!t.entryTime) continue;
+    const d = new Date(t.entryTime);
+    const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    entryDays[k] = (entryDays[k] || 0) + 1;
+  }
+  const activeDays   = Object.keys(entryDays).length;
+  const enteredCount = yearTrades.filter(t => t.entryTime).length;
+  const avgDaily     = activeDays > 0 ? (enteredCount / activeDays).toFixed(2) : '--';
+
+  const currentYear  = new Date().getFullYear();
+  const chartData    = _rptBuildCumData(yearTrades, year);
+  const chartSvg     = _rptBuildChartSVG(chartData, year, currentYear);
+  const barSvg       = _rptBuildBarSVG(yearTrades, year);
+  const monthlyRows  = _rptBuildMonthly(yearTrades, year);
 
   const wrColor    = winRate === '--' ? 'var(--text)' : parseFloat(winRate) >= 60 ? 'var(--bull)' : parseFloat(winRate) >= 40 ? 'var(--text)' : 'var(--bear)';
   const totalRColor = totalR > 0 ? 'var(--bull)' : totalR < 0 ? 'var(--bear)' : 'var(--text)';
   const avgRColor   = avgR != null ? (avgR >= 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text)';
 
-  container.innerHTML = `
-    <div class="page-header" style="margin-bottom:20px">
-      <div>
-        <h1 class="page-title">📊 策略報表</h1>
-        <p class="page-subtitle">全年交易績效統計分析</p>
+  if (yearTrades.length === 0)
+    return `<div style="text-align:center;padding:80px 20px;color:var(--text3);font-size:0.95rem">${year} 年尚無已結算的交易記錄</div>`;
+
+  return `
+    <div class="rpt-stats">
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:${wrColor}">${winRate}${winRate !== '--' ? '%' : ''}</div>
+        <div class="rpt-stat-lbl">勝率（止盈二）</div>
       </div>
-      <select class="setting-select" onchange="renderReportPage(parseInt(this.value))" style="padding:6px 14px;font-size:0.85rem;min-width:100px">
-        ${yearOpts}
-      </select>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val">${yearTrades.length}</div>
+        <div class="rpt-stat-lbl">總交易筆數</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val">
+          <span style="color:var(--bull)">${wins.length}</span><span style="color:var(--text3);font-weight:400;margin:0 3px">/</span><span style="color:var(--bear)">${losses.length}</span>
+        </div>
+        <div class="rpt-stat-lbl">獲利 / 止損</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val">${avgDaily}</div>
+        <div class="rpt-stat-lbl">平均每日入場</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:${avgRColor}">${avgR != null ? (avgR >= 0 ? '+' : '') + avgR.toFixed(2) + ' R' : '--'}</div>
+        <div class="rpt-stat-lbl">平均每筆獲利</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:${totalRColor}">${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R</div>
+        <div class="rpt-stat-lbl">全年總獲利</div>
+      </div>
     </div>
-    ${yearTrades.length === 0
-      ? `<div style="text-align:center;padding:80px 20px;color:var(--text3);font-size:0.95rem">${year} 年尚無已結算的交易記錄</div>`
-      : `
-      <div class="rpt-stats">
+
+    <div class="rpt-chart-card">
+      <div class="rpt-chart-title">帳戶成長曲線（累計 R，從零起算）</div>
+      <div class="rpt-chart-wrap">${chartSvg}</div>
+    </div>
+
+    <div class="rpt-chart-card">
+      <div class="rpt-chart-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>月度獲利 / 止損分佈</span>
+        <span style="font-size:0.75rem;font-weight:400;color:var(--text3)">
+          <span style="display:inline-block;width:8px;height:8px;background:var(--bull);border-radius:2px;margin-right:3px"></span>獲利(tp2)
+          <span style="display:inline-block;width:8px;height:8px;background:rgba(148,163,184,0.4);border-radius:2px;margin:0 3px 0 8px"></span>保本
+          <span style="display:inline-block;width:8px;height:8px;background:var(--bear);border-radius:2px;margin:0 3px 0 8px"></span>止損
+        </span>
+      </div>
+      <div class="rpt-chart-wrap">${barSvg}</div>
+    </div>
+
+    <div class="rpt-monthly-card">
+      <div class="rpt-chart-title">月度明細</div>
+      <div style="overflow-x:auto">
+      <table class="rpt-month-tbl">
+        <thead><tr>
+          <th style="text-align:left">月份</th>
+          <th>筆數</th><th>勝率</th><th>獲利/保本/止損</th><th>月盈虧</th><th>累計 R</th>
+        </tr></thead>
+        <tbody>${monthlyRows}</tbody>
+      </table>
+      </div>
+    </div>`;
+}
+
+function _rptBuildMonthView(yearTrades, year, month) {
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const today = new Date();
+
+  // Month selector tabs
+  const monthTabs = monthNames.map((mn, m) => {
+    const mTrades = yearTrades.filter(t => {
+      const ts = t.exitTime || t.entryTime || t.timestamp || 0;
+      return ts >= new Date(year, m, 1).getTime() && ts <= new Date(year, m + 1, 0, 23, 59, 59, 999).getTime();
+    });
+    const hasTrades = mTrades.length > 0;
+    const isCur = today.getFullYear() === year && today.getMonth() === m;
+    const isActive = m === month;
+    return `<button onclick="renderReportPage(${year},'month',${m})"
+      style="padding:5px 10px;font-size:0.78rem;font-weight:${isActive?'700':'500'};border:1px solid ${isActive?'var(--accent)':'rgba(255,255,255,.1)'};
+             border-radius:6px;cursor:pointer;background:${isActive?'rgba(0,212,255,.12)':'transparent'};
+             color:${isActive?'var(--accent)':hasTrades?'var(--text)':'var(--text3)'};white-space:nowrap">
+      ${mn}${isCur ? ' ●' : ''}
+    </button>`;
+  }).join('');
+
+  const mStart  = new Date(year, month, 1).getTime();
+  const mEnd    = new Date(year, month + 1, 0, 23, 59, 59, 999).getTime();
+  const mTrades = yearTrades.filter(t => {
+    const ts = t.exitTime || t.entryTime || t.timestamp || 0;
+    return ts >= mStart && ts <= mEnd;
+  }).sort((a, b) => (a.exitTime || a.entryTime || a.timestamp || 0) - (b.exitTime || b.entryTime || b.timestamp || 0));
+
+  const mWins   = mTrades.filter(t => t.outcome === 'tp2');
+  const mLosses = mTrades.filter(t => t.outcome === 'sl');
+  const mBE     = mTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'be');
+  const mR      = mTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
+  const mWR     = mTrades.length ? (mWins.length / mTrades.length * 100).toFixed(1) : '--';
+  const mAvgR   = mTrades.length ? mR / mTrades.length : null;
+
+  const wrColor  = mWR === '--' ? 'var(--text)' : parseFloat(mWR) >= 60 ? 'var(--bull)' : parseFloat(mWR) >= 40 ? 'var(--text)' : 'var(--bear)';
+  const mRColor  = mR > 0 ? 'var(--bull)' : mR < 0 ? 'var(--bear)' : 'var(--text)';
+
+  const statsHtml = mTrades.length === 0
+    ? `<div style="text-align:center;padding:40px;color:var(--text3);font-size:0.9rem">${year} 年 ${monthNames[month]} 無已結算的交易記錄</div>`
+    : `<div class="rpt-stats" style="margin-bottom:16px">
         <div class="rpt-stat-card">
-          <div class="rpt-stat-val" style="color:${wrColor}">${winRate}${winRate !== '--' ? '%' : ''}</div>
+          <div class="rpt-stat-val" style="color:${wrColor}">${mWR}${mWR !== '--' ? '%' : ''}</div>
           <div class="rpt-stat-lbl">勝率（止盈二）</div>
         </div>
         <div class="rpt-stat-card">
-          <div class="rpt-stat-val">${yearTrades.length}</div>
+          <div class="rpt-stat-val">${mTrades.length}</div>
           <div class="rpt-stat-lbl">總交易筆數</div>
         </div>
         <div class="rpt-stat-card">
           <div class="rpt-stat-val">
-            <span style="color:var(--bull)">${wins.length}</span><span style="color:var(--text3);font-weight:400;margin:0 3px">/</span><span style="color:var(--bear)">${losses.length}</span>
+            <span style="color:var(--bull)">${mWins.length}</span>
+            <span style="color:var(--text3);font-weight:400;margin:0 3px">/</span>
+            <span style="color:rgba(148,163,184,0.7)">${mBE.length}</span>
+            <span style="color:var(--text3);font-weight:400;margin:0 3px">/</span>
+            <span style="color:var(--bear)">${mLosses.length}</span>
           </div>
-          <div class="rpt-stat-lbl">獲利 / 止損</div>
+          <div class="rpt-stat-lbl">獲利 / 保本 / 止損</div>
         </div>
         <div class="rpt-stat-card">
-          <div class="rpt-stat-val">${avgDaily}</div>
-          <div class="rpt-stat-lbl">平均每日入場</div>
+          <div class="rpt-stat-val" style="color:${mRColor}">${mR >= 0 ? '+' : ''}${mR.toFixed(2)} R</div>
+          <div class="rpt-stat-lbl">月度總獲利</div>
         </div>
         <div class="rpt-stat-card">
-          <div class="rpt-stat-val" style="color:${avgRColor}">${avgR != null ? (avgR >= 0 ? '+' : '') + avgR.toFixed(2) + ' R' : '--'}</div>
-          <div class="rpt-stat-lbl">平均每筆獲利</div>
+          <div class="rpt-stat-val" style="color:${mAvgR != null ? (mAvgR >= 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text)'}">
+            ${mAvgR != null ? (mAvgR >= 0 ? '+' : '') + mAvgR.toFixed(2) + ' R' : '--'}
+          </div>
+          <div class="rpt-stat-lbl">平均每筆</div>
         </div>
-        <div class="rpt-stat-card">
-          <div class="rpt-stat-val" style="color:${totalRColor}">${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R</div>
-          <div class="rpt-stat-lbl">全年總獲利</div>
-        </div>
-      </div>
+      </div>`;
 
-      <div class="rpt-chart-card">
-        <div class="rpt-chart-title">帳戶成長曲線（累計 R，從零起算）</div>
-        <div class="rpt-chart-wrap">${chartSvg}</div>
-      </div>
+  const tradeRows = mTrades.length === 0 ? '' : mTrades.map(t => {
+    const isLong  = t.direction === 'long';
+    const dirClr  = isLong ? 'var(--bull)' : 'var(--bear)';
+    const dirTxt  = isLong ? '▲ 多' : '▼ 空';
+    const outMap  = { tp2:'止盈二 ✅', tp1:'止盈一 ✅', sl:'止損 ❌', be:'保本 ➡️' };
+    const outTxt  = outMap[t.outcome] || '—';
+    const pnl     = parseFloat(t.pnlR || 0);
+    const pnlClr  = pnl > 0 ? 'var(--bull)' : pnl < 0 ? 'var(--bear)' : 'var(--text3)';
+    const entryDt = t.entryTime ? new Date(t.entryTime) : null;
+    const exitDt  = t.exitTime  ? new Date(t.exitTime)  : null;
+    const fmtDt   = d => d ? `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}` : '—';
+    return `<tr style="cursor:pointer" onclick="showTradeDetail('${t.id}')">
+      <td style="color:${dirClr};font-weight:600">${dirTxt}</td>
+      <td style="font-weight:600">${t.symbol || '—'}</td>
+      <td style="font-size:0.78rem;color:var(--text2)">${fmtDt(entryDt)}</td>
+      <td style="font-size:0.78rem;color:var(--text2)">${fmtDt(exitDt)}</td>
+      <td>${outTxt}</td>
+      <td style="font-weight:700;color:${pnlClr}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} R</td>
+    </tr>`;
+  }).join('');
 
-      <div class="rpt-chart-card">
-        <div class="rpt-chart-title" style="display:flex;align-items:center;justify-content:space-between">
-          <span>月度獲利 / 止損分佈</span>
-          <span style="font-size:0.75rem;font-weight:400;color:var(--text3)">
-            <span style="display:inline-block;width:8px;height:8px;background:var(--bull);border-radius:2px;margin-right:3px"></span>獲利(tp2)
-            <span style="display:inline-block;width:8px;height:8px;background:rgba(148,163,184,0.4);border-radius:2px;margin:0 3px 0 8px"></span>保本
-            <span style="display:inline-block;width:8px;height:8px;background:var(--bear);border-radius:2px;margin:0 3px 0 8px"></span>止損
-          </span>
-        </div>
-        <div class="rpt-chart-wrap">${barSvg}</div>
-      </div>
-
-      <div class="rpt-monthly-card">
-        <div class="rpt-chart-title">月度明細</div>
-        <div style="overflow-x:auto">
+  const tradeTable = mTrades.length > 0 ? `
+    <div class="rpt-monthly-card" style="margin-top:16px">
+      <div class="rpt-chart-title">${year} 年 ${monthNames[month]} 交易明細（${mTrades.length} 筆，點擊查看詳情）</div>
+      <div style="overflow-x:auto">
         <table class="rpt-month-tbl">
           <thead><tr>
-            <th style="text-align:left">月份</th>
-            <th>筆數</th><th>勝率</th><th>獲利/保本/止損</th><th>月盈虧</th><th>累計 R</th>
+            <th>方向</th><th style="text-align:left">幣種</th><th>進場時間</th><th>出場時間</th><th>結果</th><th>盈虧</th>
           </tr></thead>
-          <tbody>${monthlyRows}</tbody>
+          <tbody>${tradeRows}</tbody>
         </table>
-        </div>
       </div>
-    `}
-  `;
+    </div>` : '';
+
+  return `
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">${monthTabs}</div>
+    ${statsHtml}
+    ${tradeTable}`;
 }
 
 function _rptBuildCumData(trades, year) {
