@@ -515,9 +515,12 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   const rr = v => (v != null && v !== undefined && String(v) !== 'undefined') ? v : '--';
 
   const isRange = setup?.tradeType === 'range';
+  const isLongTermSignal = setup?.isLongTerm === true || setup?.canScaleIn === true;
   let msg = isRange
     ? `🔄 <b>加密掃描 Pro — 震盪交易信號</b>\n\n`
-    : `🚨 <b>加密掃描 Pro — 交易信號</b>\n\n`;
+    : isLongTermSignal
+      ? `💎 <b>加密掃描 Pro — 長線單信號</b>\n\n`
+      : `🚨 <b>加密掃描 Pro — 短線單信號</b>\n\n`;
   msg += `${icon} <b>${dirTx}：${coin.symbol}</b>`;
   if (isRange) msg += `  <b>#震盪交易</b>`;
   msg += `\n`;

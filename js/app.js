@@ -10281,6 +10281,41 @@ async function checkAndSendAlerts(data) {
         buildTelegramText(coin, dir, notifSetup, _macroCache, window.location.origin + window.location.pathname));
     }
 
+    // 自動加入持倉：與 Telegram 同步建立掛單
+    try {
+      const _tlog2 = loadTradeLog();
+      const _alreadyIn = _tlog2.some(t => t.symbol === coin.symbol && t.direction === dir
+        && (t.status === 'open' || t.status === 'pending'));
+      if (!_alreadyIn) {
+        const _isLongTermEntry = notifSetup.isLongTerm === true;
+        const _newTrade = {
+          id: `${coin.symbol}-${Date.now()}`,
+          symbol: coin.symbol, direction: dir,
+          timestamp: Date.now(),
+          entryPrice: parseFloat(coin.price) || 0,
+          entry: notifSetup.entry, sl: notifSetup.sl,
+          tp1: notifSetup.tp1, tp2: notifSetup.tp2,
+          entryReason: notifSetup.entryReason, slReason: notifSetup.slReason,
+          tp1Reason: notifSetup.tp1Reason, tp2Reason: notifSetup.tp2Reason,
+          rsi: parseFloat(coin.rsi) || 50,
+          adx: parseFloat(coin.adx) || 20,
+          score: coin.score, trend: coin.trend,
+          conf: notifSetup.conf, rawConf: notifSetup.rawConf,
+          status: 'pending', outcome: null, tp1Hit: false,
+          entryTime: null, exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+          refined: false,
+          tradeType: notifSetup.tradeType || 'directional',
+          longTermBias: null, canScaleIn: _isLongTermEntry,
+          scaleIns: [], peakPrice: null,
+        };
+        _tlog2.unshift(_newTrade);
+        saveTradeLog(_tlog2);
+        const _tlabel = _isLongTermEntry ? '長線單' : '短線單';
+        const _ticon  = _isLongTermEntry ? '💎' : '📡';
+        try { if (typeof showToast === 'function') showToast(`${_ticon} ${_tlabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${notifSetup.conf}%，已加入持倉`, 'success'); } catch(_te) {}
+      }
+    } catch(_te) { console.warn('[checkAndSendAlerts] trade create failed', _te); }
+
     next[coin.symbol] = { dir, sentAt: now };
   }
 
