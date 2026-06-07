@@ -7923,6 +7923,115 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 
+function analyzeTrailingStopAI(coin, isLong, cur, atr, currentPnlR, entry, risk) {
+  const rsi    = parseFloat(coin.rsi)      || 50;
+  const macd   = parseFloat(coin.macdHist) || 0;
+  const adx    = parseFloat(coin.adx)      || 20;
+  const volStr = coin.volumeStrength || '';
+  const whale  = coin.whaleData || {};
+  const deriv  = coin.derivData  || {};
+  const tkr    = typeof deriv.takerBuySell === 'number' ? deriv.takerBuySell : 1.0;
+
+  let adj = 0;
+  const sigs = []; // { icon, text, delta }
+
+  // ── 技術面 ──
+  if (isLong) {
+    if      (rsi > 78) { adj -= 0.5; sigs.push({ icon:'⚠️', text:`RSI ${rsi} 嚴重超買，上行動能衰竭`, delta:-0.5 }); }
+    else if (rsi > 72) { adj -= 0.3; sigs.push({ icon:'⚠️', text:`RSI ${rsi} 超買，動能趨緩`, delta:-0.3 }); }
+    else if (rsi < 55) { adj += 0.3; sigs.push({ icon:'✅', text:`RSI ${rsi} 多頭健康區，趨勢延續`, delta:+0.3 }); }
+    if      (macd < 0) { adj -= 0.4; sigs.push({ icon:'⚠️', text:`MACD 柱狀轉負，多頭動能減弱`, delta:-0.4 }); }
+    else if (macd > 0) { adj += 0.2; sigs.push({ icon:'✅', text:`MACD 柱狀正值，多頭延續`, delta:+0.2 }); }
+  } else {
+    if      (rsi < 22) { adj -= 0.5; sigs.push({ icon:'⚠️', text:`RSI ${rsi} 嚴重超賣，下行動能衰竭`, delta:-0.5 }); }
+    else if (rsi < 28) { adj -= 0.3; sigs.push({ icon:'⚠️', text:`RSI ${rsi} 超賣，空頭動能趨緩`, delta:-0.3 }); }
+    else if (rsi > 45) { adj += 0.3; sigs.push({ icon:'✅', text:`RSI ${rsi} 空頭健康區，趨勢延續`, delta:+0.3 }); }
+    if      (macd > 0) { adj -= 0.4; sigs.push({ icon:'⚠️', text:`MACD 柱狀轉正，空頭動能減弱`, delta:-0.4 }); }
+    else if (macd < 0) { adj += 0.2; sigs.push({ icon:'✅', text:`MACD 柱狀負值，空頭延續`, delta:+0.2 }); }
+  }
+  if      (adx > 40) { adj += 0.4; sigs.push({ icon:'✅', text:`ADX ${adx} 強勢趨勢確認`, delta:+0.4 }); }
+  else if (adx > 28) { adj += 0.2; sigs.push({ icon:'✅', text:`ADX ${adx} 趨勢有效`, delta:+0.2 }); }
+  else if (adx < 20) { adj -= 0.4; sigs.push({ icon:'⚠️', text:`ADX ${adx} 趨勢弱化，震盪風險高`, delta:-0.4 }); }
+  if      (volStr === '高' || volStr.includes('強')) { adj += 0.2; sigs.push({ icon:'✅', text:`成交量${volStr}，趨勢確認`, delta:+0.2 }); }
+  else if (volStr === '低' || volStr.includes('弱')) { adj -= 0.3; sigs.push({ icon:'⚠️', text:`成交量${volStr}，動能不足`, delta:-0.3 }); }
+
+  // ── 籌碼面 ──
+  if (isLong) {
+    if (whale.bias === 'bear' && (whale.bigSellCount || 0) >= 2) {
+      adj -= 0.5; sigs.push({ icon:'🐳', text:`巨鯨持續出貨（${whale.bigSellCount}筆大賣），多頭逆風`, delta:-0.5 });
+    } else if (whale.bias === 'bull' && (whale.bigBuyCount || 0) >= 2) {
+      adj += 0.3; sigs.push({ icon:'🐳', text:`巨鯨持續吸籌（${whale.bigBuyCount}筆大買），多頭支撐`, delta:+0.3 });
+    }
+    if      (tkr < 0.80) { adj -= 0.4; sigs.push({ icon:'📊', text:`主動賣盤主導（Taker ${tkr.toFixed(2)}），空方施壓`, delta:-0.4 }); }
+    else if (tkr > 1.20) { adj += 0.3; sigs.push({ icon:'📊', text:`主動買盤主導（Taker ${tkr.toFixed(2)}），多方強勢`, delta:+0.3 }); }
+  } else {
+    if (whale.bias === 'bull' && (whale.bigBuyCount || 0) >= 2) {
+      adj -= 0.5; sigs.push({ icon:'🐳', text:`巨鯨持續吸籌（${whale.bigBuyCount}筆大買），空頭逆風`, delta:-0.5 });
+    } else if (whale.bias === 'bear' && (whale.bigSellCount || 0) >= 2) {
+      adj += 0.3; sigs.push({ icon:'🐳', text:`巨鯨持續出貨（${whale.bigSellCount}筆大賣），空頭支撐`, delta:+0.3 });
+    }
+    if      (tkr > 1.20) { adj -= 0.4; sigs.push({ icon:'📊', text:`主動買盤主導（Taker ${tkr.toFixed(2)}），多方反壓空頭`, delta:-0.4 }); }
+    else if (tkr < 0.80) { adj += 0.3; sigs.push({ icon:'📊', text:`主動賣盤主導（Taker ${tkr.toFixed(2)}），空方強勢`, delta:+0.3 }); }
+  }
+
+  // ── 多時間框架 ──
+  const h4ok = isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear');
+  const d1ok = isLong ? (coin.dailySignal||'').includes('bull') : (coin.dailySignal||'').includes('bear');
+  const wkOk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
+  const tfN  = (h4ok?1:0) + (d1ok?1:0) + (wkOk?1:0);
+  if      (tfN >= 3) { adj += 0.4; sigs.push({ icon:'✅', text:`4H+日線+週線三框同向，趨勢強勁`, delta:+0.4 }); }
+  else if (tfN === 2) { adj += 0.2; sigs.push({ icon:'✅', text:`雙時框同向，趨勢有效`, delta:+0.2 }); }
+  else if (tfN === 0) { adj -= 0.4; sigs.push({ icon:'⚠️', text:`多時框均已轉向，趨勢衰竭警示`, delta:-0.4 }); }
+
+  // ── 宏觀基本面 ──
+  if (_macroCache) {
+    try {
+      const fgV  = _macroCache.fg ? parseInt(_macroCache.fg.value || '50') : 50;
+      const chgV = _macroCache.marketCapChange || 0;
+      const domV = _macroCache.btcDominance   || 50;
+      if (isLong) {
+        if (fgV > 65 && chgV > 1) {
+          adj += 0.3; sigs.push({ icon:'🌐', text:`宏觀偏多（F&G ${fgV}，市值 +${chgV.toFixed(1)}%）`, delta:+0.3 });
+        } else if (fgV < 35 || chgV < -2) {
+          adj -= 0.3; sigs.push({ icon:'🌐', text:`宏觀偏空（F&G ${fgV}，市值 ${chgV.toFixed(1)}%），多頭逆風`, delta:-0.3 });
+        }
+        if      (domV < 44) { adj += 0.2; sigs.push({ icon:'🌐', text:`BTC主導率 ${domV.toFixed(1)}%，山寨幣資金活躍`, delta:+0.2 }); }
+        else if (domV > 57) { adj -= 0.2; sigs.push({ icon:'🌐', text:`BTC主導率 ${domV.toFixed(1)}%，資金集中BTC`, delta:-0.2 }); }
+      } else {
+        if (fgV < 35 && chgV < -1) {
+          adj += 0.3; sigs.push({ icon:'🌐', text:`宏觀偏空（F&G ${fgV}，市值 ${chgV.toFixed(1)}%）`, delta:+0.3 });
+        } else if (fgV > 65 || chgV > 2) {
+          adj -= 0.3; sigs.push({ icon:'🌐', text:`宏觀偏多（F&G ${fgV}），空頭逆風`, delta:-0.3 });
+        }
+      }
+    } catch(_e) {}
+  }
+
+  // ── ICT 關鍵結構（OB / FVG）──
+  let keyLevel = null, keyLevelText = '';
+  try {
+    const ict = _tradeSetupCache[coin.symbol] || {};
+    if (ict.orderBlock?.priceInOB) {
+      const obLvl = isLong ? ict.orderBlock.low : ict.orderBlock.high;
+      if (obLvl != null) {
+        const dist = Math.abs(cur - obLvl) / atr;
+        if (dist < 5) { keyLevel = obLvl; keyLevelText = `訂單塊（OB）$${parseFloat(obLvl).toPrecision(5).replace(/\.?0+$/,'')}，距現價 ${dist.toFixed(1)} ATR`; }
+      }
+    }
+    if (!keyLevel && ict.fvg && !ict.fvg.filled && ict.fvg.mid) {
+      const dist = Math.abs(cur - ict.fvg.mid) / atr;
+      if (dist < 6) { keyLevel = ict.fvg.mid; keyLevelText = `FVG 缺口 $${parseFloat(ict.fvg.mid).toPrecision(5).replace(/\.?0+$/,'')}，距現價 ${dist.toFixed(1)} ATR`; }
+    }
+  } catch(_e) {}
+
+  const baseMult  = currentPnlR >= 5.0 ? 2.0 : currentPnlR >= 3.5 ? 2.5 : 3.0;
+  const finalMult = parseFloat(Math.max(1.5, Math.min(4.5, baseMult + adj)).toFixed(1));
+
+  // 只保留影響最大的前 6 條信號（避免訊息過長）
+  const topSigs = [...sigs].sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 6);
+  return { baseMult, finalMult, adj: adj.toFixed(1), signals: topSigs, keyLevel, keyLevelText };
+}
+
 function checkPostDataReversal(data) {
   const tlog = loadTradeLog();
   const openTrades = tlog.filter(t => t.status === 'open');
@@ -7963,23 +8072,19 @@ function checkPostDataReversal(data) {
       alertTitle = '🎯 AI 偵測：TP1已觸及，建議移止損至成本價';
       alertDetail = `TP1 已觸及，浮盈 ${currentPnlR.toFixed(2)} R。移動止損至進場成本可確保此筆交易不虧損。`;
     }
-    // Case 2: 盈利超過 2R → 建議追蹤止損保護利潤
-    // ATR 緩衝距離依盈利層級遞減：越賺越能收緊，但早期給足夠空間避免正常回調觸發
+    // Case 2: 盈利超過 2R → AI 全面分析後建議追蹤止損
     else if (currentPnlR >= 2.0) {
-      const trailMult = currentPnlR >= 5.0 ? 2.0
-                      : currentPnlR >= 3.5 ? 2.5
-                      : 3.0;  // 2R~3.5R 給 3 倍 ATR 空間，防止正常震盪掃損
+      const _ai    = analyzeTrailingStopAI(coin, isLong, cur, atr, currentPnlR, entry, risk);
       const minFloor = isLong ? entry + risk * 0.5 : entry - risk * 0.5;
       suggestNewSl = isLong
-        ? Math.max(minFloor, cur - atr * trailMult)
-        : Math.min(minFloor, cur + atr * trailMult);
-      // 若建議止損與現有止損差距不足 1 ATR → 意義不大，跳過
+        ? Math.max(minFloor, cur - atr * _ai.finalMult)
+        : Math.min(minFloor, cur + atr * _ai.finalMult);
       const slImprovement = isLong ? suggestNewSl - sl : sl - suggestNewSl;
       if (slImprovement < atr) { suggestNewSl = null; }
       else {
         alertType  = 'trail';
         alertTitle = `🚀 AI 偵測：盈利 ${currentPnlR.toFixed(1)}R，建議追蹤止損`;
-        alertDetail = `價格已從進場點移動 ${currentPnlR.toFixed(2)} R（${trailMult} ATR 緩衝區）。AI 建議上移止損鎖定利潤，同時保留足夠空間讓行情繼續發展。`;
+        alertDetail = _ai;  // 傳遞分析物件，供後面組訊息用
       }
     }
 
@@ -8000,6 +8105,24 @@ function checkPostDataReversal(data) {
       : (suggestNewSl < sl ? `⬇ 下移 ${fmt(sl)} → ${fmt(suggestNewSl)}` : `${fmt(sl)} → ${fmt(suggestNewSl)}`);
 
     const _atrFmt = (atr * 100 / cur).toFixed(2);
+
+    // ── 組合 Telegram 訊息 ──
+    let analysisBlock = '';
+    if (alertType === 'trail' && alertDetail && typeof alertDetail === 'object') {
+      const _ai = alertDetail;
+      const sigLines = _ai.signals.map(s =>
+        `   ${s.icon} ${s.text}  ${s.delta > 0 ? '+' : ''}${s.delta.toFixed(1)}`
+      ).join('\n');
+      const adjSign = parseFloat(_ai.adj) >= 0 ? '+' : '';
+      analysisBlock =
+        `🔍 <b>AI 止損位分析</b>（技術 ＋ 籌碼 ＋ 基本面）\n` +
+        `${sigLines || '   • 無顯著信號'}\n` +
+        `   🧮 基礎 ${_ai.baseMult} ATR ${adjSign}${_ai.adj} → <b>${_ai.finalMult} ATR 緩衝</b>\n` +
+        (_ai.keyLevelText ? `   📌 關鍵結構：${_ai.keyLevelText}\n` : '') +
+        `\n`;
+      alertDetail = `盈利 ${currentPnlR.toFixed(2)} R｜${_ai.finalMult} ATR 緩衝區，保留空間讓行情發展`;
+    }
+
     const msg =
       `${alertTitle}\n\n` +
       `💎 <b>${trade.symbol}</b> ${dir}\n\n` +
@@ -8007,7 +8130,7 @@ function checkPostDataReversal(data) {
       `💰 現價：$${fmt(cur)}\n` +
       `📊 浮動盈虧：<b>${pnlSign}${currentPnlR.toFixed(2)} R</b>\n` +
       `📉 ATR 波動率：${_atrFmt}%\n\n` +
-      `📝 ${alertDetail}\n\n` +
+      `${analysisBlock}` +
       `🛑 <b>建議止損調整</b>\n` +
       `   ${slMove}\n` +
       `   新止損：<b>$${fmt(suggestNewSl)}</b>\n\n` +
