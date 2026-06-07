@@ -913,6 +913,103 @@ async function fetchWhaleTrades(symbol) {
   return { ...base, futuresWhale };
 }
 
+/* ═══════════════════ 市場足跡圖數據 ══════════════════════ */
+async function fetchFootprintData(symbol) {
+  const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(`${host}/api/v3/aggTrades?symbol=${sym}&limit=1000`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const trades = await res.json();
+      if (!Array.isArray(trades) || trades.length < 20) return null;
+
+      const BUCKET = 5 * 60 * 1000; // 5-minute candles
+      const candleMap = new Map();
+      const priceVolMap = new Map();
+
+      for (const tr of trades) {
+        const ts    = tr.T;
+        const p     = parseFloat(tr.p);
+        const q     = parseFloat(tr.q);
+        const isBuy = !tr.m; // m=true → buyer is maker (passive) = aggressor sold
+
+        // Candle bucket
+        const bucket = Math.floor(ts / BUCKET) * BUCKET;
+        if (!candleMap.has(bucket)) {
+          candleMap.set(bucket, { ts: bucket, buyVol: 0, sellVol: 0, open: p, close: p, high: p, low: p });
+        }
+        const c = candleMap.get(bucket);
+        if (isBuy) c.buyVol += q; else c.sellVol += q;
+        c.close = p;
+        if (p > c.high) c.high = p;
+        if (p < c.low)  c.low  = p;
+
+        // Price level (4 significant digits)
+        const pLvl = parseFloat(p.toPrecision(4));
+        if (!priceVolMap.has(pLvl)) priceVolMap.set(pLvl, { price: pLvl, buyVol: 0, sellVol: 0 });
+        const lv = priceVolMap.get(pLvl);
+        if (isBuy) lv.buyVol += q; else lv.sellVol += q;
+      }
+
+      const candles = [...candleMap.values()]
+        .sort((a, b) => a.ts - b.ts)
+        .map(c => ({ ...c, delta: c.buyVol - c.sellVol, total: c.buyVol + c.sellVol,
+                     priceChange: c.close - c.open }));
+
+      // Cumulative delta
+      let cum = 0;
+      const cumDeltas = candles.map(c => { cum += c.delta; return cum; });
+      const n = cumDeltas.length;
+      const deltaDir = n < 3 ? 'neutral'
+        : cumDeltas[n - 1] > cumDeltas[Math.floor(n / 3)] * 1.02 ? 'bull'
+        : cumDeltas[n - 1] < cumDeltas[Math.floor(n / 3)] * 0.98 ? 'bear' : 'neutral';
+
+      const recentDelta = candles.slice(-5).reduce((s, c) => s + c.delta, 0);
+      const firstClose  = candles[0]?.close || 0;
+      const lastClose   = candles[candles.length - 1]?.close || firstClose;
+      const priceDir    = lastClose > firstClose * 1.002 ? 'bull'
+                        : lastClose < firstClose * 0.998 ? 'bear' : 'neutral';
+      const deltaDiv    = priceDir !== 'neutral' && deltaDir !== 'neutral' && priceDir !== deltaDir;
+
+      // Volume profile
+      const priceVols = [...priceVolMap.values()]
+        .map(lv => ({ ...lv, total: lv.buyVol + lv.sellVol, delta: lv.buyVol - lv.sellVol }))
+        .sort((a, b) => b.total - a.total);
+      const poc = priceVols[0]?.price || lastClose;
+
+      // Absorption: price fell but delta was net positive (buyers absorbed selling)
+      const lastFew = candles.slice(-4);
+      const absorption = lastFew.length >= 3
+        && lastFew.filter(c => c.priceChange < 0).length >= 2
+        && lastFew.reduce((s, c) => s + c.delta, 0) > 0;
+
+      // Imbalance levels: top 5 buy-dominant and sell-dominant price levels
+      const sorted = [...priceVols].filter(l => l.total > 0);
+      const highBuyLevels  = [...sorted].sort((a, b) => b.delta - a.delta).slice(0, 5);
+      const highSellLevels = [...sorted].sort((a, b) => a.delta - b.delta).slice(0, 5);
+
+      return {
+        candles:       candles.slice(-20),
+        cumulativeDelta: cum,
+        deltaDir,
+        recentDelta,
+        priceDir,
+        deltaDiv,
+        poc,
+        priceVols:     priceVols.slice(0, 20),
+        highBuyLevels,
+        highSellLevels,
+        absorption,
+        lastClose,
+      };
+    } catch { continue; }
+  }
+  return null;
+}
+
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */
 async function fetchMarketData(timeframe = '15m') {
   const settings = loadSettings();

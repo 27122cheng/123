@@ -3,8 +3,9 @@
    ============================================================ */
 
 /* ── 交易設置緩存（供 Telegram 通知使用）────────────────────── */
-const _tradeSetupCache = {};
-let   _macroCache      = null;
+const _tradeSetupCache  = {};
+const _footprintCache   = {};  // 足跡圖數據緩存（幣種詳情頁抓取後寫入）
+let   _macroCache       = null;
 let   _positionsScanTimer = null;
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
 
@@ -2195,20 +2196,37 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     _aiScaleReason = _aiScaleCount === 3 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 3 次加倉`
                    : _aiScaleCount === 2 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 2 次加倉`
                    : `長線信心 ${ltConf}%，建議 1 次加倉（保守佈局）`;
-    // 加倉位：均勻分佈在路程中，並嘗試吸附至附近 ±1.5% S/R
+    // 加倉位：均勻分佈在路程中，並嘗試吸附至附近 ±1.5% S/R 或足跡高量區
     const totalMove = Math.abs(ltTP - entry);
+    // 足跡圖高量區（加倉優先吸附 POC + 強買/賣壓區）
+    const _fpSI = _footprintCache[coin.symbol];
+    const _fpSnaps = [];
+    if (_fpSI) {
+      try {
+        if (_fpSI.poc) _fpSnaps.push(_fpSI.poc);
+        const _fpBest = isLong ? _fpSI.highBuyLevels : _fpSI.highSellLevels;
+        if (_fpBest) _fpBest.slice(0, 3).forEach(lv => _fpSnaps.push(lv.price));
+      } catch(_e) {}
+    }
+    // 足跡 Delta 背離 → 謹慎，加倉次數上限縮減為 1
+    if (_fpSI?.deltaDiv) {
+      _aiScaleCount = 1;
+      _aiScaleReason += '　⚠️ 足跡 Delta 背離，保守降至 1 次加倉';
+    }
     scaleInLevels = Array.from({ length: _aiScaleCount }, (_, i) => i + 1).map(n => {
       const raw = isLong ? entry + totalMove * (n / (_aiScaleCount + 1))
                          : entry - totalMove * (n / (_aiScaleCount + 1));
-      const nearby = isLong
+      // 優先吸附足跡高量區，其次 S/R
+      const fpNear = _fpSnaps.find(lv => Math.abs(lv - raw) / raw < 0.015);
+      const nearby = fpNear || (isLong
         ? resists.find(r => r >= raw * 0.985 && r <= raw * 1.015)
-        : supps.find(s  => s <= raw * 1.015  && s >= raw * 0.985);
+        : supps.find(s  => s <= raw * 1.015  && s >= raw * 0.985));
       const level = nearby || raw;
       const prevLevel = n === 1 ? entry : (isLong ? entry + totalMove * ((n - 1) / (_aiScaleCount + 1)) : entry - totalMove * ((n - 1) / (_aiScaleCount + 1)));
       // 止損往前調：鎖住加倉位到前一進場位增量的 30%，避免大幅回吐利潤
       const incGain = Math.abs(level - prevLevel);
       const newSL   = isLong ? prevLevel + incGain * 0.30 : prevLevel - incGain * 0.30;
-      return { level, snapped: !!nearby, newSL };
+      return { level, snapped: !!nearby, fpSnapped: !!fpNear, newSL };
     });
     // 覆蓋 tp1/tp2 → updateOpenTrades TP1 觸發 & 持倉記錄均使用長線最終止盈
     // 只有在 canScaleIn 仍為 true（ltTP 有效）時才覆蓋，否則保留短線 tp1/tp2
@@ -2984,12 +3002,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ${(isLong && _ictPD.idealForLong) || (!isLong && _ictPD.idealForShort) ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">SMC 最佳進場</span>` : ''}
     </div>` : ''}
     <!-- SNR Key Levels -->
-    <div style="display:flex;align-items:flex-start;gap:8px">
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
       <span style="color:var(--text3);min-width:70px">🎯 關鍵 S/R</span>
       <div style="color:var(--text2);font-size:0.72rem;line-height:1.8">
         ${parseFloat(coin.ema200) > 0 ? `EMA200 $${fmtPrice(parseFloat(coin.ema200))}　` : ''}${parseFloat(coin.ema50) > 0 ? `EMA50 $${fmtPrice(parseFloat(coin.ema50))}　` : ''}${vp1h?.poc ? `POC $${fmtPrice(vp1h.poc)}　` : ''}${bb1h_?.upper ? `BB上 $${fmtPrice(bb1h_.upper)}　BB下 $${fmtPrice(bb1h_.lower)}` : ''}
       </div>
     </div>
+    <!-- Footprint -->
+    ${(() => { try {
+      const _fp = _footprintCache[coin.symbol];
+      if (!_fp) return '';
+      const _fmtFP = v => parseFloat(v).toPrecision(4).replace(/\.?0+$/, '');
+      const _dirClr  = _fp.deltaDir === 'bull' ? '#22c55e' : _fp.deltaDir === 'bear' ? '#ef4444' : 'var(--text3)';
+      const _dirTx   = _fp.deltaDir === 'bull' ? '▲ 買盤主導' : _fp.deltaDir === 'bear' ? '▼ 賣盤主導' : '◆ 均衡';
+      const _divWarn = _fp.deltaDiv ? ` <span style="background:rgba(239,68,68,.15);color:#ef4444;padding:1px 5px;border-radius:3px;font-size:0.68rem">⚡ Delta 背離</span>` : '';
+      return `<div style="display:flex;align-items:flex-start;gap:8px">
+        <span style="color:var(--text3);min-width:70px">📈 足跡圖</span>
+        <div style="font-size:0.72rem;line-height:1.8">
+          <span style="color:${_dirClr}">${_dirTx}</span>${_divWarn}
+          &nbsp;&nbsp;POC $${_fmtFP(_fp.poc)}
+          ${_fp.absorption ? '　<span style="color:#22c55e;font-size:0.68rem">🔵 吸籌</span>' : ''}
+        </div>
+      </div>`;
+    } catch(_fpe) { return ''; } })()}
     ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
   </div>`; } catch(_icpe) { console.warn('[ICT panel]', _icpe); return ''; } })()}
 
@@ -3745,6 +3780,37 @@ function computeWeeklyAIBias(fg, globalMkt) {
     else                      { factorVotes.whaleW =  0; }
   }
 
+  // ⑨ 足跡圖 Delta 聚合（已緩存幣種的主動買賣流向）
+  const _wFpEntries = Object.values(_footprintCache).filter(fp => fp && fp.deltaDir !== 'neutral');
+  if (_wFpEntries.length >= 1) {
+    const wFpW = _getBiasWeight(weights, 'weekly_fpDelta');
+    const fpBN = _wFpEntries.filter(fp => fp.deltaDir === 'bull').length;
+    const fpSN = _wFpEntries.filter(fp => fp.deltaDir === 'bear').length;
+    const fpT  = _wFpEntries.length;
+    const fpBPct = Math.round(fpBN / fpT * 100);
+    const fpSPct = Math.round(fpSN / fpT * 100);
+    const fpDivN = _wFpEntries.filter(fp => fp.deltaDiv).length;
+    if (fpBPct >= 70) {
+      factorVotes.fpW =  2; macroBull += 2 * wFpW;
+      factors.push(`足跡圖 ${fpBPct}% 幣種主動買盤主導，本週資金積極流入（${fpBN}/${fpT}）`);
+    } else if (fpBPct >= 55) {
+      factorVotes.fpW =  1; macroBull += 1 * wFpW;
+      factors.push(`足跡圖多數 Delta 偏多（${fpBPct}%），買方小幅佔優`);
+    } else if (fpSPct >= 70) {
+      factorVotes.fpW = -2; macroBear += 2 * wFpW;
+      factors.push(`足跡圖 ${fpSPct}% 幣種主動賣盤主導，本週資金撤離（${fpSN}/${fpT}）`);
+    } else if (fpSPct >= 55) {
+      factorVotes.fpW = -1; macroBear += 1 * wFpW;
+      factors.push(`足跡圖多數 Delta 偏空（${fpSPct}%），賣方小幅佔優`);
+    } else {
+      factorVotes.fpW = 0;
+    }
+    if (fpDivN >= Math.ceil(fpT * 0.5)) {
+      macroBear += 0.5;
+      factors.push(`足跡圖 ${fpDivN} 幣種出現 Delta 背離，本週趨勢動能可疑`);
+    }
+  }
+
   // ⑤ 本週重大事件風險
   const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
   const highRisk   = weekEvents.length >= 2;
@@ -3979,6 +4045,37 @@ function computeTodayAIBias(fg, globalMkt) {
     if      (momBullPct > 60) { factorVotes.momentum =  1; bull += 1 * wMomD; reasons.push(`${momBullPct}% 幣種動能向上，上行力道確認`); }
     else if (momBullPct < 40) { factorVotes.momentum = -1; bear += 1 * wMomD; reasons.push(`${100-momBullPct}% 幣種動能向下，下行壓力增加`); }
     else                      { factorVotes.momentum =  0; }
+  }
+
+  // ⑨ 足跡圖累積 Delta 聚合（以已緩存的幣種足跡圖推算今日流向）
+  const _fpEntries = Object.values(_footprintCache).filter(fp => fp && fp.deltaDir !== 'neutral');
+  if (_fpEntries.length >= 1) {
+    const wFpD = _getBiasWeight(weights, 'daily_fpDelta');
+    const fpBullN = _fpEntries.filter(fp => fp.deltaDir === 'bull').length;
+    const fpBearN = _fpEntries.filter(fp => fp.deltaDir === 'bear').length;
+    const fpTotal = _fpEntries.length;
+    const fpBullPct = Math.round(fpBullN / fpTotal * 100);
+    const fpBearPct = Math.round(fpBearN / fpTotal * 100);
+    const fpDivN = _fpEntries.filter(fp => fp.deltaDiv).length;
+    if (fpBullPct >= 70) {
+      factorVotes.fpDelta = 2; bull += 2 * wFpD;
+      reasons.push(`足跡圖 ${fpBullPct}% 幣種 Delta 偏多，今日主動買盤主導（${fpBullN}/${fpTotal}幣種）`);
+    } else if (fpBullPct >= 55) {
+      factorVotes.fpDelta = 1; bull += 1 * wFpD;
+      reasons.push(`足跡圖多數幣種 Delta 偏多（${fpBullPct}%），買盤小幅佔優`);
+    } else if (fpBearPct >= 70) {
+      factorVotes.fpDelta = -2; bear += 2 * wFpD;
+      reasons.push(`足跡圖 ${fpBearPct}% 幣種 Delta 偏空，今日賣盤主導（${fpBearN}/${fpTotal}幣種）`);
+    } else if (fpBearPct >= 55) {
+      factorVotes.fpDelta = -1; bear += 1 * wFpD;
+      reasons.push(`足跡圖多數幣種 Delta 偏空（${fpBearPct}%），賣盤小幅佔優`);
+    } else {
+      factorVotes.fpDelta = 0;
+    }
+    if (fpDivN >= Math.ceil(fpTotal * 0.5)) {
+      bear += 0.5;
+      reasons.push(`足跡圖偵測 ${fpDivN} 幣種 Delta 背離，趨勢動能可疑`);
+    }
   }
 
   // ⑤ 今日高影響數據事件（最關鍵因素）
@@ -5402,6 +5499,88 @@ function buildMTFTable(mtfData) {
 }
 
 /* ── 訂單流面板 ───────────────────────────────────────────── */
+/* ── 市場足跡圖面板 ──────────────────────────────────────── */
+function buildFootprintPanel(fp, coin) {
+  if (!fp) return '<div class="adv-loading">足跡圖資料不可用</div>';
+
+  const cur = parseFloat(coin?.price) || fp.lastClose;
+  const fmtP = v => parseFloat(v).toPrecision(5).replace(/\.?0+$/, '');
+  const fmtQ = v => v >= 1e6 ? (v/1e6).toFixed(2)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : v.toFixed(0);
+
+  // ── 摘要指標 ──
+  const dirClr  = fp.deltaDir === 'bull' ? 'var(--bull)' : fp.deltaDir === 'bear' ? 'var(--bear)' : 'var(--neutral)';
+  const dirTx   = fp.deltaDir === 'bull' ? '▲ 買盤主導' : fp.deltaDir === 'bear' ? '▼ 賣盤主導' : '◆ 買賣均衡';
+  const divClr  = fp.deltaDiv ? 'var(--bear)' : 'var(--bull)';
+  const divTx   = fp.deltaDiv ? '⚡ 背離（趨勢警示）' : '✅ 同向（趨勢健康）';
+  const absText = fp.absorption ? '✅ 偵測到吸籌（賣壓被買盤吸收）' : '—';
+  const pocDist = cur ? Math.abs(cur - fp.poc) / cur * 100 : 0;
+  const pocClr  = pocDist < 0.5 ? 'var(--bull)' : 'var(--text2)';
+
+  // ── Delta 柱狀圖（最多顯示 12 根 K 棒）──
+  const dispCandles = fp.candles.slice(-12);
+  const maxAbs = Math.max(...dispCandles.map(c => Math.abs(c.delta)), 1);
+  const bars = dispCandles.map(c => {
+    const pct  = Math.max(4, Math.abs(c.delta) / maxAbs * 100);
+    const clr  = c.delta >= 0 ? 'var(--bull)' : 'var(--bear)';
+    const time = new Date(c.ts).toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit', hour12:false });
+    return `<div class="fp-bar-wrap" title="${time}｜Δ ${c.delta >= 0 ? '+' : ''}${fmtQ(c.delta)}">
+      <div class="fp-bar" style="height:${pct}%;background:${clr};opacity:${0.55 + 0.45*(Math.abs(c.delta)/maxAbs)}"></div>
+      <div class="fp-bar-lbl" style="color:${clr}">${c.delta >= 0 ? '+' : ''}${fmtQ(c.delta)}</div>
+    </div>`;
+  }).join('');
+
+  // ── 累積 Delta 趨勢線（文字版）──
+  let cumArr = [], s = 0;
+  dispCandles.forEach(c => { s += c.delta; cumArr.push(s); });
+  const cumFirst = cumArr[0] || 0, cumLast = cumArr[cumArr.length - 1] || 0;
+  const cumTrend = cumLast > cumFirst * 1.02 ? '↗ 持續上升' : cumLast < cumFirst * 0.98 ? '↘ 持續下滑' : '→ 橫盤震盪';
+  const cumTrClr = cumLast > cumFirst ? 'var(--bull)' : cumLast < cumFirst ? 'var(--bear)' : 'var(--neutral)';
+
+  // ── 高量成交區（Top 5 買/賣優勢價位）──
+  const buyRows  = fp.highBuyLevels.slice(0, 5).map(lv =>
+    `<div class="fp-lvl-row"><span style="color:var(--bull)">▲ $${fmtP(lv.price)}</span><span class="fp-lvl-delta">+${fmtQ(lv.delta)}</span></div>`).join('');
+  const sellRows = fp.highSellLevels.slice(0, 5).map(lv =>
+    `<div class="fp-lvl-row"><span style="color:var(--bear)">▼ $${fmtP(lv.price)}</span><span class="fp-lvl-delta">${fmtQ(lv.delta)}</span></div>`).join('');
+
+  return `
+  <div class="fp-summary">
+    <div class="fp-sum-item">
+      <div class="fp-sum-label">Delta 方向</div>
+      <div class="fp-sum-val" style="color:${dirClr}">${dirTx}</div>
+    </div>
+    <div class="fp-sum-item">
+      <div class="fp-sum-label">價格 vs Delta</div>
+      <div class="fp-sum-val" style="color:${divClr}">${divTx}</div>
+    </div>
+    <div class="fp-sum-item">
+      <div class="fp-sum-label">成交量控制點（POC）</div>
+      <div class="fp-sum-val" style="color:${pocClr}">$${fmtP(fp.poc)} <span style="font-size:0.7rem;color:var(--text3)">距現價 ${pocDist.toFixed(2)}%</span></div>
+    </div>
+    <div class="fp-sum-item">
+      <div class="fp-sum-label">吸籌偵測</div>
+      <div class="fp-sum-val">${absText}</div>
+    </div>
+  </div>
+
+  <div class="fp-section-title">5分鐘 Delta 足跡（近 12 根）</div>
+  <div class="fp-bars-area">${bars}</div>
+  <div class="fp-cum-row">
+    累積 Delta：<span style="color:${cumTrClr}">${cumTrend}</span>
+    <span style="color:var(--text3);font-size:0.72rem;margin-left:8px">近5根：${fp.recentDelta >= 0 ? '+' : ''}${fmtQ(fp.recentDelta)}</span>
+  </div>
+
+  <div class="fp-levels-grid">
+    <div class="fp-lvl-col">
+      <div class="fp-lvl-hdr" style="color:var(--bull)">強買壓區（主動買入集中）</div>
+      ${buyRows || '<div style="color:var(--text3);font-size:0.76rem">無顯著買壓集中</div>'}
+    </div>
+    <div class="fp-lvl-col">
+      <div class="fp-lvl-hdr" style="color:var(--bear)">強賣壓區（主動賣出集中）</div>
+      ${sellRows || '<div style="color:var(--text3);font-size:0.76rem">無顯著賣壓集中</div>'}
+    </div>
+  </div>`;
+}
+
 function buildOrderFlowPanel(coin, of15m) {
   if (!of15m) return '<div class="adv-loading">訂單流數據不可用</div>';
 
@@ -5673,19 +5852,23 @@ async function renderCoinDetail(symbol) {
 
   // 重置所有異步區塊
   const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
-  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('ai-body'); setL('vp-body'); setL('situation-body');
+  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('fp-body'); setL('ai-body'); setL('vp-body'); setL('situation-body');
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
-  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊 + 巨鯨偵測
-  const [mtfData, fearGreed, deriv, globalMkt, halving, whale] = await Promise.all([
+  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊 + 巨鯨偵測 + 足跡圖
+  const [mtfData, fearGreed, deriv, globalMkt, halving, whale, fpData] = await Promise.all([
     fetchMTFKlines(symbol),
     fetchFearGreed(),
     fetchDerivativesData(symbol),
     fetchGlobalMarket(),
     fetchHalvingInfo(),
     fetchWhaleTrades(symbol),
+    fetchFootprintData(symbol),
   ]);
+
+  // 足跡圖緩存（供 AI 分析函數讀取）
+  if (fpData) _footprintCache[symbol] = fpData;
 
   // 緩存宏觀數據供後台使用（宏觀詳情僅在9AM簡報和幣種分析頁顯示）
   if (globalMkt || fearGreed) _macroCache = { ...(globalMkt || {}), fg: fearGreed };
@@ -5713,6 +5896,7 @@ async function renderCoinDetail(symbol) {
   setSafe('setup-body',     () => buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed));
   setSafe('mtf-body',       () => buildMTFTable(mtfData));
   setSafe('of-body',        () => buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
+  setSafe('fp-body',        () => buildFootprintPanel(_footprintCache[symbol], coin));
   setSafe('ai-body',        () => generateAIAnalysis(coin, mtfData, fearGreed));
   setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
   setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
@@ -8007,6 +8191,40 @@ function analyzeTrailingStopAI(coin, isLong, cur, atr, currentPnlR, entry, risk)
     } catch(_e) {}
   }
 
+  // ── 足跡圖訊號 ──
+  const fp = _footprintCache[coin.symbol] || null;
+  if (fp) {
+    try {
+      // Delta 背離：趨勢方向與 Delta 方向相反 → 動能可疑，縮短緩衝
+      if (fp.deltaDiv) {
+        adj -= 0.5;
+        sigs.push({ icon:'📊', text:`足跡 Delta 背離（價格${fp.priceDir === 'bull' ? '上漲' : '下跌'}但Delta ${fp.deltaDir === 'bull' ? '偏多' : '偏空'}），趨勢動能存疑`, delta:-0.5 });
+      }
+      // Delta 同向：趨勢與 Delta 一致 → 趨勢可信
+      else if (fp.deltaDir !== 'neutral' && fp.priceDir !== 'neutral') {
+        const ok = (isLong && fp.deltaDir === 'bull') || (!isLong && fp.deltaDir === 'bear');
+        if (ok) { adj += 0.3; sigs.push({ icon:'📊', text:`足跡 Delta 同向（${fp.deltaDir === 'bull' ? '買盤' : '賣盤'}主導），趨勢動能充足`, delta:+0.3 }); }
+        else    { adj -= 0.3; sigs.push({ icon:'📊', text:`足跡 Delta 反向（${fp.deltaDir === 'bull' ? '買盤' : '賣盤'}主導），逆勢操作需謹慎`, delta:-0.3 }); }
+      }
+      // POC 距現價過近 → 強力支撐/阻力，不需要大緩衝
+      const pocDist = Math.abs(cur - fp.poc) / atr;
+      if (pocDist < 1.5) {
+        adj -= 0.3;
+        sigs.push({ icon:'📌', text:`POC $${parseFloat(fp.poc).toPrecision(4)} 緊貼現價（${pocDist.toFixed(1)} ATR），成交密集阻力`, delta:-0.3 });
+      } else if (pocDist < 3.5) {
+        const pocBelowLong  = isLong  && fp.poc < cur;
+        const pocAboveShort = !isLong && fp.poc > cur;
+        if (pocBelowLong || pocAboveShort) {
+          adj += 0.2; sigs.push({ icon:'📌', text:`POC $${parseFloat(fp.poc).toPrecision(4)} 在有利方向（${pocDist.toFixed(1)} ATR），支撐穩固`, delta:+0.2 });
+        }
+      }
+      // 近期吸籌：賣壓被承接，多頭強支撐 → 可寬放止損
+      if (fp.absorption && isLong) {
+        adj += 0.3; sigs.push({ icon:'🔵', text:`足跡偵測到吸籌訊號（賣盤被買盤吸收），多頭支撐強`, delta:+0.3 });
+      }
+    } catch(_e) {}
+  }
+
   // ── ICT 關鍵結構（OB / FVG）──
   let keyLevel = null, keyLevelText = '';
   try {
@@ -8127,13 +8345,13 @@ function checkPostDataReversal(data) {
       `${alertTitle}\n\n` +
       `💎 <b>${trade.symbol}</b> ${dir}\n\n` +
       `📍 進場：$${fmt(entry)}\n` +
+      `🛑 <b>建議止損調整</b>\n` +
+      `   ${slMove}\n` +
+      `   新止損：<b>$${fmt(suggestNewSl)}</b>\n\n` +
       `💰 現價：$${fmt(cur)}\n` +
       `📊 浮動盈虧：<b>${pnlSign}${currentPnlR.toFixed(2)} R</b>\n` +
       `📉 ATR 波動率：${_atrFmt}%\n\n` +
       `${analysisBlock}` +
-      `🛑 <b>建議止損調整</b>\n` +
-      `   ${slMove}\n` +
-      `   新止損：<b>$${fmt(suggestNewSl)}</b>\n\n` +
       `🔗 <a href="${window.location.origin + window.location.pathname}">查看 ${trade.symbol.replace('/USDT','')} 詳細分析 →</a>`;
     sendTelegramMessage(s.tgToken, s.tgChatId, msg);
   }
