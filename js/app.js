@@ -7108,18 +7108,19 @@ function updateOpenTrades(data) {
           pendingSI.entryPrice = cur;
           changed = true;
 
-          // ── 止損往前調（每次加倉均執行）：鎖住增量利潤的 30%，不讓利潤大幅回吐 ──
-          // 加倉 1 → SL 移至原始進場 + 30% 距離；加倉 2 → SL 移至加倉1進場 + 30% 距離；以此類推
+          // ── 止損往前調（ATR 導向）：移至前一進場位附近，以波動率給緩衝區間 ──
+          // 邏輯：前一進場位是新的「成本底線」，ATR 緩衝讓正常回調不觸發止損
           const confirmedBefore = trade.scaleIns.filter(s => s.status === 'open' && s !== pendingSI);
           const prevEntry = confirmedBefore.length > 0
             ? (confirmedBefore.at(-1).entryPrice || confirmedBefore.at(-1).entryLevel)
             : trade.entry;
-          const currentSIEntry = pendingSI.entryPrice || pendingSI.entryLevel;
-          const incGain     = Math.abs(currentSIEntry - prevEntry);
-          // 止損移至前一進場位 + 30% 增量（鎖住 30% 的移動利潤，不讓回吐超過 70%）
+          // ATR 估算（用進場時保存的 ADX 推算現在波動率）
+          const _siAdx = trade.adx || 20;
+          const _siAtr = cur * (_siAdx > 35 ? 0.018 : _siAdx > 25 ? 0.013 : 0.009);
+          // SL 錨定在前一進場位，再往有利方向加 0.8 ATR 緩衝（避免正常回調觸發）
           const candidateSL = isLong
-            ? prevEntry + incGain * 0.30
-            : prevEntry - incGain * 0.30;
+            ? prevEntry + _siAtr * 0.8
+            : prevEntry - _siAtr * 0.8;
           const slMoved = isLong ? candidateSL > trade.sl : candidateSL < trade.sl;
           const oldSL   = trade.sl;
           if (slMoved) { trade.sl = candidateSL; changed = true; }
@@ -7359,7 +7360,7 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
   const dir = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
   const siteUrl = window.location.origin + window.location.pathname;
   const slLine = (oldSL != null && newSL != null)
-    ? `🔒 止損已上移：$${fmt(oldSL)} → <b>$${fmt(newSL)}</b>（移至上一進場位）\n`
+    ? `🔒 止損已上移：$${fmt(oldSL)} → <b>$${fmt(newSL)}</b>（上一進場位 + 波動緩衝）\n`
     : `🛑 現行止損：<b>$${fmt(trade.sl)}</b>\n`;
   const ltTarget = trade.ltTP || scaleIn.tp2 || scaleIn.tp1;
   const msg =
@@ -7963,13 +7964,23 @@ function checkPostDataReversal(data) {
       alertDetail = `TP1 已觸及，浮盈 ${currentPnlR.toFixed(2)} R。移動止損至進場成本可確保此筆交易不虧損。`;
     }
     // Case 2: 盈利超過 2R → 建議追蹤止損保護利潤
+    // ATR 緩衝距離依盈利層級遞減：越賺越能收緊，但早期給足夠空間避免正常回調觸發
     else if (currentPnlR >= 2.0) {
+      const trailMult = currentPnlR >= 5.0 ? 2.0
+                      : currentPnlR >= 3.5 ? 2.5
+                      : 3.0;  // 2R~3.5R 給 3 倍 ATR 空間，防止正常震盪掃損
+      const minFloor = isLong ? entry + risk * 0.5 : entry - risk * 0.5;
       suggestNewSl = isLong
-        ? Math.max(entry + atr * 0.5, cur - atr * 1.8)
-        : Math.min(entry - atr * 0.5, cur + atr * 1.8);
-      alertType  = 'trail';
-      alertTitle = `🚀 AI 偵測：盈利 ${currentPnlR.toFixed(1)}R，建議追蹤止損`;
-      alertDetail = `價格已從進場點移動 ${currentPnlR.toFixed(2)} R，AI 建議上移止損鎖定部分利潤，避免回吐。`;
+        ? Math.max(minFloor, cur - atr * trailMult)
+        : Math.min(minFloor, cur + atr * trailMult);
+      // 若建議止損與現有止損差距不足 1 ATR → 意義不大，跳過
+      const slImprovement = isLong ? suggestNewSl - sl : sl - suggestNewSl;
+      if (slImprovement < atr) { suggestNewSl = null; }
+      else {
+        alertType  = 'trail';
+        alertTitle = `🚀 AI 偵測：盈利 ${currentPnlR.toFixed(1)}R，建議追蹤止損`;
+        alertDetail = `價格已從進場點移動 ${currentPnlR.toFixed(2)} R（${trailMult} ATR 緩衝區）。AI 建議上移止損鎖定利潤，同時保留足夠空間讓行情繼續發展。`;
+      }
     }
 
     if (!suggestNewSl) continue;
@@ -7988,12 +7999,14 @@ function checkPostDataReversal(data) {
       ? (suggestNewSl > sl ? `⬆ 上移 ${fmt(sl)} → ${fmt(suggestNewSl)}` : `${fmt(sl)} → ${fmt(suggestNewSl)}`)
       : (suggestNewSl < sl ? `⬇ 下移 ${fmt(sl)} → ${fmt(suggestNewSl)}` : `${fmt(sl)} → ${fmt(suggestNewSl)}`);
 
+    const _atrFmt = (atr * 100 / cur).toFixed(2);
     const msg =
       `${alertTitle}\n\n` +
       `💎 <b>${trade.symbol}</b> ${dir}\n\n` +
       `📍 進場：$${fmt(entry)}\n` +
       `💰 現價：$${fmt(cur)}\n` +
-      `📊 浮動盈虧：<b>${pnlSign}${currentPnlR.toFixed(2)} R</b>\n\n` +
+      `📊 浮動盈虧：<b>${pnlSign}${currentPnlR.toFixed(2)} R</b>\n` +
+      `📉 ATR 波動率：${_atrFmt}%\n\n` +
       `📝 ${alertDetail}\n\n` +
       `🛑 <b>建議止損調整</b>\n` +
       `   ${slMove}\n` +
