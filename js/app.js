@@ -61,6 +61,7 @@ async function init() {
   loadDashboardMacro();
   startRefreshCycle();
   startDailyBriefingCheck();
+  startDailyForecastCheck();
   startEconCalendarCheck();
   bindEvents();
   checkApiStatus();
@@ -6108,9 +6109,9 @@ function triggerRescan() {
     state.data = data; state.dataSource = source;
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
-    checkAndSendAlerts(data);
-    updateOpenTrades(data);
     recordSignalsFromScan(data);
+    updateOpenTrades(data);
+    checkAndSendAlerts(data);
   });
 }
 
@@ -7372,6 +7373,16 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
     `🔔 已加倉 ${scaleIn.seqNum}/${trade.maxScaleIns || 3} 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+  // 加倉後止損已調整 → 寫入 AI 追蹤止損快取，避免同一位置重複通知
+  if (newSL != null) {
+    try {
+      const _slCache = JSON.parse(localStorage.getItem('csp_sl_adjust_alert') || '{}');
+      const _slKey = Math.round(newSL * 100);
+      _slCache[`${trade.id}_trail_${_slKey}`] = true;
+      _slCache[`${trade.id}_be_${_slKey}`] = true;
+      localStorage.setItem('csp_sl_adjust_alert', JSON.stringify(_slCache));
+    } catch(_e) {}
+  }
 }
 
 /* ── 每日早晨市場簡報 ─────────────────────────────────────────── */
@@ -7570,6 +7581,131 @@ function buildDailyBriefingMsg(fg, mkt) {
     `📆 <b>今日重要數據</b>\n${eventSection}\n\n` +
     (() => { try { const cf = buildCapitalFlowTelegramSection(fg, mkt); return `💹 <b>資金流動事件提醒</b>\n${cf || '• 本月無近期資金流動事件'}\n\n`; } catch { return ''; } })() +
     `<i>🤖 由 AI 自動分析生成 · 僅供參考，不構成投資建議</i>`;
+}
+
+/* ── 每日下午三點盤面預測 ─────────────────────────────────────── */
+const DAILY_FORECAST_KEY = 'csp_daily_forecast_slot';
+
+function startDailyForecastCheck() {
+  (async () => {
+    const now = new Date();
+    const h = now.getHours();
+    const slot = now.toDateString() + '_15';
+    if (h >= 15) {
+      if (localStorage.getItem(DAILY_FORECAST_KEY) !== slot) {
+        localStorage.setItem(DAILY_FORECAST_KEY, slot);
+        await sendDailyForecast();
+      }
+    }
+  })();
+  setInterval(async () => {
+    const now  = new Date();
+    const h    = now.getHours();
+    const slot = now.toDateString() + '_15';
+    if (h !== 15) return;
+    if (localStorage.getItem(DAILY_FORECAST_KEY) === slot) return;
+    localStorage.setItem(DAILY_FORECAST_KEY, slot);
+    await sendDailyForecast();
+  }, 60 * 1000);
+}
+
+async function sendDailyForecast() {
+  const s = loadSettings();
+  if (!s.tgToken || !s.tgChatId) return false;
+  try {
+    const [fg, globalMkt] = await Promise.allSettled([fetchFearGreed(), fetchGlobalMarket()]);
+    const fgData  = fg.status  === 'fulfilled' ? fg.value  : null;
+    const mktData = globalMkt.status === 'fulfilled' ? globalMkt.value : null;
+    let msg = buildDailyForecastMsg(fgData, mktData);
+    if (msg.length > 4000) msg = msg.slice(0, 3980) + '\n…（訊息過長已截斷）';
+    return await sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+  } catch { return false; }
+}
+
+function buildDailyForecastMsg(fg, mkt) {
+  const now     = new Date();
+  const dateStr = now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit', weekday: 'short' });
+  const esc = v => String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  const fgVal = fg ? parseInt(fg.value) : null;
+  const fgZh  = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg?.value_classification] || '';
+  const mktChg = mkt?.marketCapChange != null ? mkt.marketCapChange.toFixed(2) : null;
+  const btcDom = mkt?.btcDominance   != null ? mkt.btcDominance.toFixed(1)   : null;
+
+  // 多空判斷（15:00 → 次日 15:00）
+  let bullPts = 0, bearPts = 0;
+  const args = [];
+  if (fgVal != null) {
+    if (fgVal >= 60)      { bullPts++;    args.push(`• 恐貪 ${fgVal}（${fgZh}），情緒偏多`); }
+    else if (fgVal <= 40) { bearPts++;    args.push(`• 恐貪 ${fgVal}（${fgZh}），情緒偏空`); }
+    else                  {               args.push(`• 恐貪 ${fgVal}（中性），多空均衡`); }
+  }
+  if (mktChg != null) {
+    const chg = parseFloat(mktChg);
+    if (chg > 2)       { bullPts += 2; args.push(`• 市值 +${mktChg}%，資金積極流入`); }
+    else if (chg > 0)  { bullPts++;    args.push(`• 市值 +${mktChg}%，小幅成長`); }
+    else if (chg < -2) { bearPts += 2; args.push(`• 市值 ${mktChg}%，資金明顯流出`); }
+    else if (chg < 0)  { bearPts++;    args.push(`• 市值 ${mktChg}%，輕微回調`); }
+  }
+  if (btcDom != null) {
+    const dom = parseFloat(btcDom);
+    if (dom > 56)      { bearPts++; args.push(`• BTC主導 ${btcDom}%，山寨資金分散難`); }
+    else if (dom < 44) { bullPts++; args.push(`• BTC主導 ${btcDom}%，山寨季活躍`); }
+    else               {            args.push(`• BTC主導 ${btcDom}%，均衡格局`); }
+  }
+
+  // AI 今日偏向
+  let todaySection = '';
+  try {
+    const tb = computeTodayAIBias(fg, mkt);
+    const reasons = (tb.reasons || []).slice(0, 3).map(r => `   • ${esc(r)}`).join('\n');
+    todaySection = `${tb.biasLabel}（信心 ${tb.conf}%）${reasons ? '\n' + reasons : ''}`;
+    // 未來 24 小時翻轉風險
+    const nowMs = Date.now();
+    const next24h = Date.now() + 24 * 60 * 60 * 1000;
+    const flips = (tb.highEvs || []).filter(ev => {
+      const t = ev.eventTime?.getTime?.() || 0;
+      return t > nowMs && t < next24h;
+    });
+    if (flips.length) {
+      todaySection += '\n\n   ⚡ <b>24小時翻轉風險</b>\n' + flips.map(ev => {
+        const m = (ev.eventTime.getTime() - nowMs) / 60000;
+        const tl = m < 60 ? `${Math.round(m)}分鐘後` : `${(m / 60).toFixed(1)}小時後`;
+        return `   🕐 ${tl} ${esc(ev.name)}${ev.aiPred ? `：AI預測 ${esc(ev.aiPred)}（信心 ${ev.aiConf}%）` : ''}`;
+      }).join('\n');
+    }
+  } catch(e) { todaySection = '（計算失敗）'; }
+
+  // 未來 24h 重要數據
+  const nowMs2 = Date.now();
+  const next24 = nowMs2 + 24 * 60 * 60 * 1000;
+  let upcomingEvents = '';
+  try {
+    const evs = getTodayEconEvents().filter(ev => {
+      const t = ev.eventTime?.getTime?.() || 0;
+      return t > nowMs2 && t < next24;
+    });
+    if (evs.length) {
+      upcomingEvents = evs.map(ev => {
+        const m  = (ev.eventTime.getTime() - nowMs2) / 60000;
+        const tl = m < 60 ? `${Math.round(m)}分鐘後` : `${(m / 60).toFixed(1)}小時後`;
+        const imp = ev.impact === 'high' ? '🔴' : ev.impact === 'medium' ? '🟡' : '🟢';
+        return `${imp} <b>${esc(ev.name)}</b>（${tl}）${ev.aiDir ? `  ▸ AI 預測：${ev.aiDir === 'bull' ? '▲偏多' : ev.aiDir === 'bear' ? '▼偏空' : '◆中性'}` : ''}`;
+      }).join('\n');
+    }
+  } catch(e) {}
+
+  const overallBias = bullPts > bearPts + 1
+    ? '▲ <b>偏多</b>，建議以做多為主'
+    : bearPts > bullPts + 1
+      ? '▼ <b>偏空</b>，建議以做空為主'
+      : '◆ <b>中性</b>，多空均衡，謹慎操作';
+
+  return `🔭 <b>盤面預測</b> ${dateStr} 15:00 → 次日 15:00\n\n` +
+    `${overallBias}\n${args.join('\n') || '• 數據更新中'}\n\n` +
+    `🤖 <b>AI 今日走勢</b>\n${todaySection}\n\n` +
+    (upcomingEvents ? `⏰ <b>未來 24h 重要數據</b>\n${upcomingEvents}\n\n` : '') +
+    `<i>🤖 僅供參考，不構成投資建議</i>`;
 }
 
 /* ── 台灣時間重要數據預警系統 ─────────────────────────────────── */
