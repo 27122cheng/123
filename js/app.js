@@ -10254,8 +10254,8 @@ async function checkAndSendAlerts(data) {
       }
     }
 
-    // AI 風控攔截 或 方向=觀望 → 完全不通知
-    if (notifSetup.hardBlocked || notifSetup.direction === 'wait') continue;
+    // AI 風控攔截 或 方向=觀望 或 R/R 不足 → 完全不通知
+    if (notifSetup.hardBlocked || notifSetup.direction === 'wait' || notifSetup.rrBlocked) continue;
 
     // 最終信心度（扣完所有項目後）
     const notifConf = notifSetup.conf
