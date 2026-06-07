@@ -7108,16 +7108,19 @@ function updateOpenTrades(data) {
           pendingSI.entryPrice = cur;
           changed = true;
 
-          // ── 止損往前調（ATR 導向）：移至加倉位附近，以 0.5 ATR 緩衝保護加倉保本 ──
-          // 錨定加倉進場位（currentSIEntry），止損放在進場位的對面方向，確保加倉部位近保本
-          const currentSIEntry = pendingSI.entryPrice || pendingSI.entryLevel || cur;
+          // ── 止損往前調（ATR 導向）：移至前一進場位附近，以波動率給緩衝區間 ──
+          // 邏輯：前一進場位是新的「成本底線」，ATR 緩衝讓正常回調不觸發止損
+          const confirmedBefore = trade.scaleIns.filter(s => s.status === 'open' && s !== pendingSI);
+          const prevEntry = confirmedBefore.length > 0
+            ? (confirmedBefore.at(-1).entryPrice || confirmedBefore.at(-1).entryLevel)
+            : trade.entry;
           // ATR 估算（用進場時保存的 ADX 推算現在波動率）
           const _siAdx = trade.adx || 20;
           const _siAtr = cur * (_siAdx > 35 ? 0.018 : _siAdx > 25 ? 0.013 : 0.009);
-          // 做多：止損在加倉位下方 0.5 ATR；做空：止損在加倉位上方 0.5 ATR
+          // SL 錨定在前一進場位，再往有利方向加 0.8 ATR 緩衝（避免正常回調觸發）
           const candidateSL = isLong
-            ? currentSIEntry - _siAtr * 0.5
-            : currentSIEntry + _siAtr * 0.5;
+            ? prevEntry + _siAtr * 0.8
+            : prevEntry - _siAtr * 0.8;
           const slMoved = isLong ? candidateSL > trade.sl : candidateSL < trade.sl;
           const oldSL   = trade.sl;
           if (slMoved) { trade.sl = candidateSL; changed = true; }
@@ -7357,7 +7360,7 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
   const dir = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
   const siteUrl = window.location.origin + window.location.pathname;
   const slLine = (oldSL != null && newSL != null)
-    ? `🔒 止損已調整：$${fmt(oldSL)} → <b>$${fmt(newSL)}</b>（加倉位附近，保護加倉保本）\n`
+    ? `🔒 止損已上移：$${fmt(oldSL)} → <b>$${fmt(newSL)}</b>（上一進場位 + 波動緩衝）\n`
     : `🛑 現行止損：<b>$${fmt(trade.sl)}</b>\n`;
   const ltTarget = trade.ltTP || scaleIn.tp2 || scaleIn.tp1;
   const msg =
