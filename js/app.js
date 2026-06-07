@@ -613,9 +613,6 @@ function buildDashRow(row) {
     <td><span class="trend-badge ${trendClass(row.trend)}">${trendArrow(row.trend)} ${row.trend}</span></td>
     <td><span class="vol-chip vol-${volClass(row.volumeStrength)}">${fmtVol(row.volume)}</span></td>
     <td style="color:${chgColor};font-weight:600;white-space:nowrap">${chgSign}${chg.toFixed(2)}%</td>
-    <td onclick="event.stopPropagation()">
-      <button onclick="quickAddToPending('${row.symbol}',event)" style="padding:3px 9px;border:1px solid rgba(99,102,241,.4);border-radius:5px;background:rgba(99,102,241,.1);color:#818cf8;font-size:0.72rem;font-weight:600;cursor:pointer;white-space:nowrap">➕ 加入</button>
-    </td>
   </tr>`;
 }
 
@@ -692,9 +689,6 @@ function renderRankingTable() {
       </td>
       <td style="color:${rsiColor(row.rsi)}">${row.rsi}</td>
       <td style="color:var(--text2);font-size:0.82rem">${fmtVolume(row.volume)}</td>
-      <td onclick="event.stopPropagation()">
-        <button onclick="quickAddToPending('${row.symbol}',event)" style="padding:3px 9px;border:1px solid rgba(99,102,241,.4);border-radius:5px;background:rgba(99,102,241,.1);color:#818cf8;font-size:0.72rem;font-weight:600;cursor:pointer;white-space:nowrap">➕ 加入</button>
-      </td>
     </tr>`;
   }).join('');
 }
@@ -728,8 +722,6 @@ function renderReversalCards() {
   grid.innerHTML = reversals.map(d => {
     const fromTrend = d.trend;
     const toTrend   = d.trend.includes('看漲') ? '看跌' : '看漲';
-    const isLong    = d.score > 50;
-    const addClr    = isLong ? '#22c55e' : '#ef4444';
     return `
       <div class="rev-card" onclick="navigateTo('coin','${d.symbol}')">
         <div class="rev-sym">${d.symbol.replace('/USDT','')} <span style="color:var(--text3);font-weight:400;font-size:0.8em">/USDT</span></div>
@@ -742,75 +734,11 @@ function renderReversalCards() {
           <span>RSI: <span style="color:${rsiColor(d.rsi)};font-family:'JetBrains Mono',monospace">${d.rsi}</span></span>
           <span>评分: <span class="rev-score-val">${d.score}</span></span>
         </div>
-        <button onclick="quickAddToPending('${d.symbol}',event)" style="margin-top:6px;width:100%;padding:4px 0;border:1px solid ${addClr}40;border-radius:6px;background:${addClr}14;color:${addClr};font-size:0.72rem;font-weight:600;cursor:pointer">➕ 加入持倉</button>
       </div>
     `;
   }).join('');
 }
 
-/* ── 快速加入持倉（從掃描頁直接加入，不需進入幣種詳情）──────── */
-function quickAddToPending(symbol, event) {
-  if (event) event.stopPropagation();
-  const coin = state.data.find(d => d.symbol === symbol);
-  if (!coin) { showToast('找不到幣種資料', 'error'); return; }
-
-  const isLong    = coin.score > 50;
-  const direction = isLong ? 'long' : 'short';
-  const tlog      = loadTradeLog();
-
-  const hasExisting = tlog.some(t => t.symbol === symbol && (t.status === 'open' || t.status === 'pending'));
-  if (hasExisting) { showToast(`${symbol.replace('/USDT','')} 已有進行中的掛單`, 'warning'); return; }
-
-  if (inCooldown(tlog, symbol, direction)) {
-    showToast(`${symbol.replace('/USDT','')} 冷卻期中，稍後再試`, 'warning'); return;
-  }
-
-  const setup = computeSimpleSetup(coin, isLong);
-  if (!setup || setup.hardBlocked) { showToast('此幣種已被風控封鎖，無法加入', 'warning'); return; }
-  if (!setup.tp1) { showToast('無法計算止盈位', 'error'); return; }
-  if (setup.conf < 65) {
-    showToast(`${symbol.replace('/USDT','')} 信心度 ${setup.conf}% 不足（需 ≥ 65%）`, 'warning'); return;
-  }
-
-  const canScaleIn = setup.isLongTerm === true;
-  const newTrade = {
-    id: `${symbol}-${Date.now()}`,
-    symbol, direction,
-    timestamp: Date.now(),
-    entryPrice: parseFloat(coin.price) || 0,
-    entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
-    entryReason: setup.entryReason, entryReasons: setup.entryReasons || [],
-    slReason: setup.slReason, tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
-    rsi: parseFloat(coin.rsi) || 50,
-    adx: parseFloat(coin.adx) || 20,
-    score: coin.score, trend: coin.trend,
-    conf: setup.conf, rawConf: setup.rawConf,
-    hardAdxPenalty: setup.hardAdxPenalty || 0,
-    learnPenalty: setup.learnPenalty || 0,
-    macroPenalty: setup.macroPenalty || 0,
-    aiTrendPenalty: setup.aiTrendPenalty || 0,
-    techPenalty: setup.techPenalty || 0,
-    chipsPenalty: setup.chipsPenalty || 0,
-    dirPenalty: setup.dirPenalty || 0,
-    bbPenalty: setup.bbPenalty || 0,
-    status: 'pending', outcome: null, tp1Hit: false,
-    entryTime: null, exitPrice: null, exitTime: null, pnlR: null, analysis: null,
-    refined: true,
-    canScaleIn,
-    scaleInTargets: [],
-    scaleInNewSLs: [],
-    scaleIns: [],
-    peakPrice: null,
-  };
-
-  tlog.unshift(newTrade);
-  if (tlog.length > 500) tlog.splice(500);
-  saveTradeLog(tlog);
-
-  const dirLabel = isLong ? '📈 做多' : '📉 做空';
-  showToast(`已加入持倉：${symbol.replace('/USDT','')} ${dirLabel}（信心 ${setup.conf}%）`, 'success');
-  if (state.currentPage === 'positions') try { renderPositionsPage(); } catch(e) {}
-}
 
 /* ── 幣種詳情輔助函數 ────────────────────────────────────────── */
 
