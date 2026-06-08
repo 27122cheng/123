@@ -17,9 +17,16 @@ module.exports = async function handler(req, res) {
   const afterPrefix = req.url.replace(/^\/api\/pionex/, '') || '/';
   const targetUrl = 'https://api.pionex.com' + afterPrefix;
 
+  // Node.js lowercases all headers; restore original casing for Pionex
+  const HEADER_MAP = {
+    'content-type':        'Content-Type',
+    'x-pionex-key':        'X-PIONEX-KEY',
+    'x-pionex-signature':  'X-PIONEX-SIGNATURE',
+    'x-pionex-timestamp':  'X-PIONEX-TIMESTAMP',
+  };
   const fwdHeaders = {};
-  for (const h of ['content-type', 'x-pionex-key', 'x-pionex-signature', 'x-pionex-timestamp']) {
-    if (req.headers[h]) fwdHeaders[h] = req.headers[h];
+  for (const [lower, canonical] of Object.entries(HEADER_MAP)) {
+    if (req.headers[lower]) fwdHeaders[canonical] = req.headers[lower];
   }
 
   // Collect request body
