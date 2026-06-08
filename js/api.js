@@ -914,7 +914,19 @@ async function fetchWhaleTrades(symbol) {
 }
 
 /* ═══════════════════ Pionex 自動交易 API ══════════════════ */
-const PIONEX_BASE = 'https://api.pionex.com';
+const PIONEX_BASE  = 'https://api.pionex.com';
+const PIONEX_PROXY = 'http://127.0.0.1:8001'; // 本地代理（解決 CORS）
+
+// 快取代理可用狀態，避免每次請求都重新探測
+let _pionexProxyAvailable = null;
+async function _checkPionexProxy() {
+  if (_pionexProxyAvailable !== null) return _pionexProxyAvailable;
+  try {
+    const r = await fetch(PIONEX_PROXY + '/pionex/api/v1/common/symbols?limit=1', { method: 'GET', signal: AbortSignal.timeout(2000) });
+    _pionexProxyAvailable = r.status < 500;
+  } catch { _pionexProxyAvailable = false; }
+  return _pionexProxyAvailable;
+}
 
 async function _pionexHmac(secret, message) {
   const enc = new TextEncoder();
@@ -946,7 +958,12 @@ async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
     'X-PIONEX-SIGNATURE': sig,
     'X-PIONEX-TIMESTAMP': ts,
   };
-  const url = PIONEX_BASE + path + queryStr;
+
+  // 優先嘗試本地代理（繞過 CORS）；代理不可用時直連（可能被 CORS 阻擋）
+  const useProxy = await _checkPionexProxy();
+  const base = useProxy ? (PIONEX_PROXY + '/pionex') : PIONEX_BASE;
+  const url = base + path + queryStr;
+
   const opts = { method, headers };
   if (bodyStr) opts.body = bodyStr;
   const ctrl = new AbortController();
@@ -962,6 +979,7 @@ async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
   } catch (e) {
     clearTimeout(timer);
     if (e.name === 'TypeError' && e.message.includes('fetch')) {
+      _pionexProxyAvailable = false; // 重置快取，下次重試
       throw new Error('CORS_BLOCKED');
     }
     throw e;

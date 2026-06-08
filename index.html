@@ -820,8 +820,15 @@
             <li>複製 API Key 和 Secret 填入上方欄位，設定本金與槓桿後儲存</li>
           </ol>
           <div style="font-size:0.75rem;color:#f59e0b;margin-top:6px;background:rgba(245,158,11,.07);padding:6px 10px;border-radius:6px">
-            ⚠️ API Key 儲存於本裝置 localStorage，請勿在公用電腦使用。<br>
-            若測試連線出現 CORS 錯誤，代表瀏覽器直連受限，需在本地後端（127.0.0.1:8000）加入代理端點。
+            ⚠️ API Key 儲存於本裝置 localStorage，請勿在公用電腦使用。
+          </div>
+          <div style="font-size:0.75rem;color:var(--text2);margin-top:8px;background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);padding:8px 12px;border-radius:8px;line-height:1.8">
+            <strong style="color:#a78bfa">🔌 CORS 錯誤解決方案（本地代理）</strong><br>
+            瀏覽器無法直連 Pionex API，需執行本地代理伺服器：<br>
+            <span style="color:#22c55e">① 下載專案中的 <code>start-proxy.bat</code>（Windows）</span><br>
+            <span style="color:#22c55e">② 雙擊執行，保持視窗開啟</span><br>
+            <span style="color:#22c55e">③ 代理在 <code>127.0.0.1:8001</code> 啟動後，API 請求自動透過代理</span><br>
+            <span style="color:var(--text3)">（需安裝 Python 3，Windows 通常已內建）</span>
           </div>
         </div>
       </div>
@@ -866,7 +873,7 @@
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script src="js/indicators.js?v=20260605b"></script>
-  <script src="js/api.js?v=20260608d"></script>
+  <script src="js/api.js?v=20260608f"></script>
   <script src="js/app.js?v=20260608e"></script>
 </body>
 </html>
