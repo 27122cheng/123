@@ -136,11 +136,10 @@ async function fetchKlines(symbol, interval, limit = 220) {
     const url = `${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
+      const timer = setTimeout(() => controller.abort(), 10000);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
       if (res.status === 400) return null; // 交易對不存在，不再重試
-      if (res.status === 429 || res.status === 418) return null; // 速率限制，直接放棄不重試其他 host
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (e) {
@@ -175,7 +174,7 @@ async function fetchAllSpotPrices() {
 /* 並行批次獲取所有交易對 K 線，並即時計算技術指標 */
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
-  const batchSize = 10;
+  const batchSize = 20;
   const pairs     = loadPairs();
   const results   = new Array(pairs.length).fill(null);
 
@@ -255,8 +254,8 @@ async function fetchAllFromBinance(timeframe) {
     const pct = Math.min(Math.round(((i + batchSize) / pairs.length) * 100), 100);
     if (typeof updateScanProgress === 'function') updateScanProgress(pct);
 
-    /* 批次間停頓，避免觸發幣安限速 */
-    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 300));
+    /* 批次間短暫停頓，避免觸發幣安限速 */
+    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
   }
 
   return results;
@@ -912,6 +911,85 @@ async function fetchWhaleTrades(symbol) {
   };
 
   return { ...base, futuresWhale };
+}
+
+/* ═══════════════════ Pionex 自動交易 API ══════════════════ */
+const PIONEX_BASE = 'https://api.pionex.com';
+// Vercel serverless proxy — 同域請求，無 CORS 問題
+const PIONEX_VERCEL_PROXY = window.location.origin + '/api/pionex';
+
+
+async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
+  let queryStr = '', bodyStr = '';
+  // GET and DELETE use query-string params; POST/PUT use request body
+  if (method === 'GET' || method === 'DELETE') {
+    if (params && typeof params === 'string') {
+      queryStr = '?' + params; // pre-built query string (e.g. cancelPionexOrder)
+    } else if (params && typeof params === 'object' && Object.keys(params).length) {
+      queryStr = '?' + new URLSearchParams(params).toString();
+    }
+  } else if (params) {
+    bodyStr = typeof params === 'string' ? params : JSON.stringify(params);
+  }
+
+  // POST credentials + request details to proxy — proxy signs and forwards.
+  // Avoids CORS custom-header issues; proxy uses Node crypto for HMAC.
+  const payload = JSON.stringify({ key: apiKey, secret: apiSecret, method, path, queryStr, bodyStr });
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const resp = await fetch(PIONEX_VERCEL_PROXY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    let json;
+    try {
+      json = await resp.json();
+    } catch (_) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`代理回應非 JSON (HTTP ${resp.status}): ${text.slice(0, 120)}`);
+    }
+    if (!resp.ok || json.result === false) {
+      throw new Error(json.message || json.msg || `HTTP ${resp.status}`);
+    }
+    return json;
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'TypeError' && e.message.includes('fetch')) {
+      throw new Error('CORS_BLOCKED');
+    }
+    throw e;
+  }
+}
+
+async function getPionexBalance(apiKey, apiSecret) {
+  return pionexRequest(apiKey, apiSecret, 'GET', '/api/v1/account/balances', {});
+}
+
+async function placePionexOrder(apiKey, apiSecret, params) {
+  const body = { ...params, symbol: params.symbol.replace('/', '_').replace('-', '_') };
+  return pionexRequest(apiKey, apiSecret, 'POST', '/api/v1/trade/order', body);
+}
+
+async function cancelPionexOrder(apiKey, apiSecret, symbol, orderId) {
+  const sym = symbol.replace('/', '_').replace('-', '_');
+  return pionexRequest(apiKey, apiSecret, 'DELETE', '/api/v1/trade/order',
+    `symbol=${sym}&orderId=${orderId}`);
+}
+
+async function setPionexLeverage(apiKey, apiSecret, symbol, leverage) {
+  const sym = symbol.replace('/', '_').replace('-', '_');
+  return pionexRequest(apiKey, apiSecret, 'POST', '/api/v1/account/setLeverage',
+    { symbol: sym, leverage: String(Math.round(leverage)) });
+}
+
+async function getPionexOpenOrders(apiKey, apiSecret, symbol) {
+  const sym = symbol.replace('/', '_').replace('-', '_');
+  return pionexRequest(apiKey, apiSecret, 'GET', '/api/v1/trade/openOrders', { symbol: sym });
 }
 
 /* ═══════════════════ 市場足跡圖數據 ══════════════════════ */
