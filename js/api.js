@@ -950,7 +950,8 @@ async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
   };
 
   // 透過 Vercel serverless proxy 轉發（同域，無 CORS）
-  const url = PIONEX_VERCEL_PROXY + path + queryStr;
+  // Use ?path= param so Vercel rewrite doesn't strip the path from req.url
+  const url = PIONEX_VERCEL_PROXY + '?path=' + encodeURIComponent(path + queryStr);
 
   const opts = { method, headers };
   if (bodyStr) opts.body = bodyStr;

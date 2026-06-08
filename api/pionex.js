@@ -13,8 +13,9 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  // req.url is the full original path e.g. /api/pionex/api/v1/account/balances?...
-  const afterPrefix = req.url.replace(/^\/api\/pionex/, '') || '/';
+  // Extract target path from ?path= query param (avoids Vercel rewrite stripping the path)
+  const reqParsed = new URL(req.url, 'http://dummy');
+  const afterPrefix = reqParsed.searchParams.get('path') || '/';
   const targetUrl = 'https://api.pionex.com' + afterPrefix;
 
   // Node.js lowercases all headers; restore original casing for Pionex
