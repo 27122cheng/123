@@ -918,17 +918,8 @@ const PIONEX_BASE = 'https://api.pionex.com';
 // Vercel serverless proxy — 同域請求，無 CORS 問題
 const PIONEX_VERCEL_PROXY = window.location.origin + '/api/pionex';
 
-async function _pionexHmac(secret, message) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
-  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
-  const ts = Date.now().toString();
   let queryStr = '', bodyStr = '';
   // GET and DELETE use query-string params; POST/PUT use request body
   if (method === 'GET' || method === 'DELETE') {
@@ -940,25 +931,20 @@ async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
   } else if (params) {
     bodyStr = typeof params === 'string' ? params : JSON.stringify(params);
   }
-  const msg = ts + method + path + (queryStr || bodyStr);
-  const sig = await _pionexHmac(apiSecret, msg);
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-PIONEX-KEY':       apiKey,
-    'X-PIONEX-SIGNATURE': sig,
-    'X-PIONEX-TIMESTAMP': ts,
-  };
 
-  // 透過 Vercel serverless proxy 轉發（同域，無 CORS）
-  // Use ?path= param so Vercel rewrite doesn't strip the path from req.url
-  const url = PIONEX_VERCEL_PROXY + '?path=' + encodeURIComponent(path + queryStr);
+  // POST credentials + request details to proxy — proxy signs and forwards.
+  // Avoids CORS custom-header issues; proxy uses Node crypto for HMAC.
+  const payload = JSON.stringify({ key: apiKey, secret: apiSecret, method, path, queryStr, bodyStr });
 
-  const opts = { method, headers };
-  if (bodyStr) opts.body = bodyStr;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10000);
   try {
-    const resp = await fetch(url, { ...opts, signal: ctrl.signal });
+    const resp = await fetch(PIONEX_VERCEL_PROXY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      signal: ctrl.signal,
+    });
     clearTimeout(timer);
     const json = await resp.json();
     if (!resp.ok || json.result === false) {

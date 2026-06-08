@@ -1,50 +1,63 @@
-// Vercel Serverless Function — Pionex CORS Proxy (CommonJS)
+// Vercel Serverless Function — Pionex Signing Proxy (CommonJS)
+// Browser POSTs {key, secret, method, path, queryStr, bodyStr} as JSON.
+// Proxy computes HMAC-SHA256, forwards the real request to Pionex.
+// This avoids CORS custom-header forwarding issues entirely.
 const https = require('https');
+const crypto = require('crypto');
 const { URL } = require('url');
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers',
-    'Content-Type, X-PIONEX-KEY, X-PIONEX-SIGNATURE, X-PIONEX-TIMESTAMP');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     res.status(204).end();
     return;
   }
 
-  // Extract target path from ?path= query param (avoids Vercel rewrite stripping the path)
-  const reqParsed = new URL(req.url, 'http://dummy');
-  const afterPrefix = reqParsed.searchParams.get('path') || '/';
-  const targetUrl = 'https://api.pionex.com' + afterPrefix;
-
-  // Node.js lowercases all headers; restore original casing for Pionex
-  const HEADER_MAP = {
-    'content-type':        'Content-Type',
-    'x-pionex-key':        'X-PIONEX-KEY',
-    'x-pionex-signature':  'X-PIONEX-SIGNATURE',
-    'x-pionex-timestamp':  'X-PIONEX-TIMESTAMP',
-  };
-  const fwdHeaders = {};
-  for (const [lower, canonical] of Object.entries(HEADER_MAP)) {
-    if (req.headers[lower]) fwdHeaders[canonical] = req.headers[lower];
-  }
-
-  // Collect request body
-  const body = await new Promise((resolve) => {
+  // Read request body
+  const raw = await new Promise((resolve) => {
     const chunks = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => resolve(Buffer.concat(chunks)));
   });
 
+  let payload;
+  try {
+    payload = JSON.parse(raw.toString());
+  } catch (_) {
+    return res.status(400).json({ result: false, message: 'Invalid JSON body' });
+  }
+
+  const { key, secret, method, path, queryStr = '', bodyStr = '' } = payload;
+  if (!key || !secret || !method || !path) {
+    return res.status(400).json({ result: false, message: 'Missing required fields' });
+  }
+
+  // Sign on the server side — no custom headers from browser needed
+  const ts = Date.now().toString();
+  const msg = ts + method + path + (queryStr || bodyStr);
+  const sig = crypto.createHmac('sha256', secret).update(msg).digest('hex');
+
+  const targetUrl = 'https://api.pionex.com' + path + queryStr;
   const parsed = new URL(targetUrl);
+
+  const fwdHeaders = {
+    'Host':               parsed.hostname,
+    'Content-Type':       'application/json',
+    'X-PIONEX-KEY':       key,
+    'X-PIONEX-SIGNATURE': sig,
+    'X-PIONEX-TIMESTAMP': ts,
+  };
+  if (bodyStr) fwdHeaders['Content-Length'] = String(Buffer.byteLength(bodyStr));
+
   const options = {
     hostname: parsed.hostname,
-    path: parsed.pathname + parsed.search,
-    method: req.method,
-    headers: { ...fwdHeaders, 'Host': parsed.hostname },
+    path:     parsed.pathname + parsed.search,
+    method,
+    headers:  fwdHeaders,
   };
-  if (body.length) options.headers['Content-Length'] = body.length;
 
   await new Promise((resolve) => {
     const proxyReq = https.request(options, (proxyRes) => {
@@ -62,7 +75,7 @@ module.exports = async function handler(req, res) {
       res.status(502).json({ result: false, message: String(err) });
       resolve();
     });
-    if (body.length) proxyReq.write(body);
+    if (bodyStr) proxyReq.write(bodyStr);
     proxyReq.end();
   });
 };
