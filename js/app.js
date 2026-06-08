@@ -153,7 +153,7 @@ function startRefreshCycle() {
   clearInterval(state.refreshTimer);
   clearInterval(state.countdownTimer);
 
-  // 持續背景掃描：每 30 秒掃描所有幣種交易建議，與頁面無關
+  // 持續背景掃描：每 60 秒掃描所有幣種交易建議，與頁面無關
   clearInterval(_bgScanTimer);
   _bgScanTimer = setInterval(() => {
     if (!state.data || !state.data.length) return;
@@ -162,7 +162,7 @@ function startRefreshCycle() {
     if (state.currentPage === 'positions') {
       try { renderPositionsPage(); } catch(e) {}
     }
-  }, 15000);
+  }, 60000);
 
   const secs = state.settings.refreshInterval || 60;
   state.countdown = secs;

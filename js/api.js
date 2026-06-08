@@ -136,10 +136,11 @@ async function fetchKlines(symbol, interval, limit = 220) {
     const url = `${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
+      const timer = setTimeout(() => controller.abort(), 8000);
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
       if (res.status === 400) return null; // 交易對不存在，不再重試
+      if (res.status === 429 || res.status === 418) return null; // 速率限制，直接放棄不重試其他 host
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (e) {
@@ -174,7 +175,7 @@ async function fetchAllSpotPrices() {
 /* 並行批次獲取所有交易對 K 線，並即時計算技術指標 */
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
-  const batchSize = 20;
+  const batchSize = 10;
   const pairs     = loadPairs();
   const results   = new Array(pairs.length).fill(null);
 
@@ -254,8 +255,8 @@ async function fetchAllFromBinance(timeframe) {
     const pct = Math.min(Math.round(((i + batchSize) / pairs.length) * 100), 100);
     if (typeof updateScanProgress === 'function') updateScanProgress(pct);
 
-    /* 批次間短暫停頓，避免觸發幣安限速 */
-    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
+    /* 批次間停頓，避免觸發幣安限速 */
+    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 300));
   }
 
   return results;
