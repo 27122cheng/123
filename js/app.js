@@ -1276,6 +1276,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (deriv.topLongRatio < 0.43)  derivBearBonus++;
   }
 
+  // 足跡圖加成（Delta 方向 + 買方吸收信號，作為方向確認因子）
+  const _fpBTS = _footprintCache[coin.symbol];
+  const fpBull    = (_fpBTS?.deltaDir === 'bull') ? 1 : 0;
+  const fpBear    = (_fpBTS?.deltaDir === 'bear') ? 1 : 0;
+  const fpAbsBull = (_fpBTS?.absorption && _fpBTS?.deltaDir !== 'bear') ? 1 : 0;
+
   let macroBullBonus = 0, macroBearBonus = 0;
   if (globalMkt) {
     const chg = globalMkt.marketCapChange || 0;
@@ -1341,8 +1347,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const bbBull = (bb1h_?.bullBonus || 0) + (bb15m_ ? Math.min(1, bb15m_.bullBonus) : 0);
   const bbBear = (bb1h_?.bearBonus || 0) + (bb15m_ ? Math.min(1, bb15m_.bearBonus) : 0);
 
-  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull + trapBull + trap4hBull + bbBull;
-  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear + trapBear + trap4hBear + bbBear;
+  const totalBull = bullScore + derivBullBonus + macroBullBonus + whaleBullBonus + orderFlowBull + volAIBull + vpBull + d1Bull + trapBull + trap4hBull + bbBull + fpBull + fpAbsBull;
+  const totalBear = bearScore + derivBearBonus + macroBearBonus + whaleBearBonus + orderFlowBear + volAIBear + vpBear + d1Bear + trapBear + trap4hBear + bbBear + fpBear;
 
   let direction = 'wait';
   const primaryBull = (m15?.signal?.includes('bull') ? 1 : 0) + (h1?.signal?.includes('bull') ? 1 : 0);
@@ -1617,8 +1623,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       // 最終信心度：ADX不適用震盪單，扣學習+宏觀+AI
       const rConf = Math.max(0, rRawConf - rLearnPen - _rMacroPen - _rAIPen);
 
-      // 門檻檢查：扣完所有分後 < 70% 或 AI 硬封鎖 → 不顯示也不記錄
-      if (rConf >= 70 && !rHardBlocked) {
+      // 門檻檢查：扣完所有分後 < 65% 或 AI 硬封鎖 → 不顯示也不記錄
+      if (rConf >= 65 && !rHardBlocked) {
       const rIsLong  = rangeDir === 'long';
       const rIcon    = rIsLong ? '▲' : '▼';
       const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
@@ -1661,7 +1667,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         : supps.find(s  => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.0));
       const rTP1 = _rTP1Target || (rIsLong ? rEntry + atr * 0.8 : rEntry - atr * 0.8);
       // TP2：BB%B 極端或信心 ≥ 70 才延伸；優先 D1/4H 引線
-      const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 70;
+      const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 65;
       const _rTP2WickTarget = _rHasTP2 ? (rIsLong
         ? _rWickResists.find(r => r > rTP1 + price * 0.003 && r <= rEntry + atr * 3.5)
         : _rWickSupps.find(s  => s < rTP1 - price * 0.003 && s >= rEntry - atr * 3.5)) : null;
@@ -1889,6 +1895,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       entryReasons.push(`POC $${fmtPrice(vp1h.poc)} 上方 籌碼結構看多`);
     if (vp1h && !vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 1.5)
       entryReasons.push(`逼近POC $${fmtPrice(vp1h.poc)} 籌碼磁吸`);
+    // 足跡圖 Delta 確認（方向 + 吸收 + POC）
+    if (_fpBTS?.deltaDir === 'bull')  entryReasons.push(`📊 足跡圖 Delta 偏多（累積買超）`);
+    if (_fpBTS?.absorption)           entryReasons.push(`🔄 足跡圖買方吸收（賣壓持續被消化）`);
+    if (_fpBTS?.poc && Math.abs(price - _fpBTS.poc) / price < 0.012)
+      entryReasons.push(`🎯 足跡 POC ${fmtPrice(_fpBTS.poc)} 支撐確認`);
+    if (_fpBTS?.deltaDiv) entryReasons.push(`⚠️ 足跡圖 Delta 背離，注意方向轉換風險`);
     // Volume AI entry confluence
     const volAI1h = mtfData['1h']?.volAI;
     if (volAI1h) {
@@ -1968,6 +1980,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       entryReasons.push(`POC $${fmtPrice(vp1h.poc)} 下方 籌碼結構看空`);
     if (vp1h && vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 1.5)
       entryReasons.push(`逼近POC $${fmtPrice(vp1h.poc)} 磁吸阻力`);
+    // 足跡圖 Delta 確認（方向 + POC + 背離）
+    if (_fpBTS?.deltaDir === 'bear') entryReasons.push(`📊 足跡圖 Delta 偏空（累積賣超）`);
+    if (_fpBTS?.poc && Math.abs(price - _fpBTS.poc) / price < 0.012)
+      entryReasons.push(`🎯 足跡 POC ${fmtPrice(_fpBTS.poc)} 壓力確認`);
+    if (_fpBTS?.deltaDiv) entryReasons.push(`⚠️ 足跡圖 Delta 背離，謹慎注意多空轉換`);
     // Volume AI entry confluence
     const volAI1hShort = mtfData['1h']?.volAI;
     if (volAI1hShort) {
@@ -2276,6 +2293,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (_ictFVG4h && !_ictFVG4h.filled)                 _ictBonus += 1;
   if (_ictBonus > 0) rawConf = Math.min(92, rawConf + _ictBonus);
 
+  // 足跡圖信心加成（Delta 同向確認 +2%，買方吸收 +1%）
+  if (_fpBTS) {
+    const _fpDirMatch = isLong ? (_fpBTS.deltaDir === 'bull') : (_fpBTS.deltaDir === 'bear');
+    if (_fpDirMatch && !_fpBTS.deltaDiv) rawConf = Math.min(92, rawConf + 2);
+    if (_fpBTS.absorption && isLong)     rawConf = Math.min(92, rawConf + 1);
+  }
+
   // 宏觀環境同步確認：六大因子各自獨立扣分（反向扣較多，中性扣少一點）
   let macroOpposePenalty = 0, macroReasons = [];
   try {
@@ -2507,6 +2531,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 逆向走軌（對手方向 BB 走軌）
   if (isLong  && bb1h_?.walkingBear) { techPenalty += 4; techPenReasons.push(`BB空頭走軌（1H）：連續貼近下軌，逆勢做多風險，扣 4%`); }
   if (!isLong && bb1h_?.walkingBull) { techPenalty += 4; techPenReasons.push(`BB多頭走軌（1H）：連續貼近上軌，逆勢做空風險，扣 4%`); }
+  // 足跡圖逆風扣分（Delta 背離 / 方向逆勢）
+  if (_fpBTS) {
+    const _fpOppose = isLong ? (_fpBTS.deltaDir === 'bear') : (_fpBTS.deltaDir === 'bull');
+    if (_fpBTS.deltaDiv) {
+      techPenalty += 4;
+      techPenReasons.push(`足跡圖 Delta 背離（${isLong ? '多' : '空'}向行進但 Delta 逆向），動能警告，扣 4%`);
+    } else if (_fpOppose) {
+      techPenalty += 3;
+      techPenReasons.push(`足跡圖 Delta 偏${isLong ? '空' : '多'}，與${isLong ? '做多' : '做空'}方向逆勢，扣 3%`);
+    }
+  }
   techPenalty = Math.min(18, techPenalty);
 
   // ── 籌碼面逆風扣分 (Taker比例、巨鯨方向) ──
@@ -2697,8 +2732,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 最低信心門檻：70%
-    const _btConfMin = 70;
+    // 最低信心門檻：65%
+    const _btConfMin = 65;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
@@ -2774,21 +2809,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
-  // ── 信心度 < 70% → 顯示觀望，不顯示交易建議 ──
-  if (conf < 70) {
-    const cColor = conf >= 60 ? '#f59e0b' : '#ef4444';
+  // ── 信心度 < 65% → 顯示觀望，不顯示交易建議 ──
+  if (conf < 65) {
+    const cColor = conf >= 55 ? '#f59e0b' : '#ef4444';
     const confPenLines = [];
     if (hardAdxPenalty > 0)     confPenLines.push(`ADX ${adxVal} 趨勢強度不足，扣 -${hardAdxPenalty}%`);
     if (macroOpposePenalty > 0) confPenLines.push(`宏觀環境逆風，扣 -${macroOpposePenalty}%`);
     if (aiTrendPenalty > 0)     confPenLines.push(`AI 趨勢預測逆向，扣 -${aiTrendPenalty}%`);
     if (learnPenalty > 0)       confPenLines.push(`AI 風控歷史止損規則，扣 -${learnPenalty}%`);
-    if (techPenalty > 0)        confPenLines.push(`技術面逆風（RSI/MACD/成交量），扣 -${techPenalty}%`);
+    if (techPenalty > 0)        confPenLines.push(`技術面逆風（RSI/MACD/足跡圖/成交量），扣 -${techPenalty}%`);
     const _wClrL = weeklyOpposed ? 'var(--bear)' : weeklyNeutral ? '#f59e0b' : 'var(--bull)';
     const _tClrL = todayOpposed  ? 'var(--bear)' : todayNeutral  ? '#f59e0b' : 'var(--bull)';
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⚠️</div>
       <div class="setup-wait-title">信心度不足（<strong style="color:${cColor}">${conf}%</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 70%，目前扣分後 ${conf}%，暫不開倉</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 65%，目前扣分後 ${conf}%，暫不開倉</div>
       ${confPenLines.length ? `<ul class="setup-wait-reasons">${confPenLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
       <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
         <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
@@ -2798,6 +2833,63 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
         ${(weeklyOpposed || todayOpposed) ? `<div style="font-size:0.71rem;color:var(--bear);margin-top:6px">⚠️ AI 預測${weeklyOpposed && todayOpposed ? '本週與今日均' : weeklyOpposed ? '本週' : '今日'}與${isLong ? '做多' : '做空'}方向相反，是信心扣分主因之一</div>` : ''}
       </div>
+    </div>`;
+  }
+
+  // ── 訊號品質 AI 評估（多因子評分 0-10，決定等級與是否過濾）──
+  const _sqFactors = [];
+  let _sqScore = 0;
+  // ① 大時框架同向（4H + 日線）
+  const _sq4hOk = h4?.signal?.includes(isLong ? 'bull' : 'bear');
+  const _sqD1Ok = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
+  if (_sq4hOk && _sqD1Ok) { _sqScore += 2; _sqFactors.push('✅ 4H+日線同向'); }
+  else if (_sq4hOk || _sqD1Ok) { _sqScore += 1; _sqFactors.push('⚠️ 單一大框架確認'); }
+  else { _sqFactors.push('❌ 大框架無確認'); }
+  // ② AI 預測對齊
+  const _sqWkOk = weeklyBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
+  const _sqTdOk = todayBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
+  if (_sqWkOk) { _sqScore += 1; _sqFactors.push('✅ 本週 AI 同向'); }
+  if (_sqTdOk) { _sqScore += 1; _sqFactors.push('✅ 今日 AI 同向'); }
+  // ③ 足跡圖 Delta 確認
+  if (_fpBTS && !_fpBTS.deltaDiv) {
+    const _fpOk = isLong ? (_fpBTS.deltaDir === 'bull') : (_fpBTS.deltaDir === 'bear');
+    if (_fpOk) { _sqScore += 1; _sqFactors.push('✅ 足跡圖 Delta 確認'); }
+    else if (_fpBTS.deltaDir === 'neutral') { /* 中性不加分也不扣 */ }
+    else { _sqFactors.push('❌ 足跡圖 Delta 逆向'); }
+  } else if (_fpBTS?.deltaDiv) { _sqFactors.push('⚡ 足跡圖 Delta 背離'); }
+  // ④ ICT 結構確認（OB / FVG / Kill Zone）
+  let _sqIctCnt = 0;
+  if (_ictOB?.priceInOB || _ictOB4h?.priceInOB) _sqIctCnt++;
+  if ((_ictFVG && !_ictFVG.filled) || (_ictFVG4h && !_ictFVG4h.filled)) _sqIctCnt++;
+  if (_kz?.quality === 'high') _sqIctCnt++;
+  _sqScore += Math.min(2, _sqIctCnt);
+  if (_sqIctCnt >= 2) _sqFactors.push('✅ ICT 多重結構確認');
+  else if (_sqIctCnt === 1) _sqFactors.push('⚠️ ICT 單一結構');
+  // ⑤ ADX 趨勢強度
+  if (adxVal >= 28) { _sqScore += 1; _sqFactors.push(`✅ ADX ${adxVal} 趨勢確立`); }
+  else if (adxVal >= 22) { /* 合格但不加分 */ }
+  else { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
+  // ⑥ 訂單流確認（CVD + Taker）
+  const _sqOFOk = isLong ? (cvdTrend === 'bull' && buyPct > 55) : (cvdTrend === 'bear' && buyPct < 45);
+  if (_sqOFOk) { _sqScore += 1; _sqFactors.push('✅ 訂單流同向確認'); }
+  // ⑦ 無技術逆風（RSI/MACD 均正常）
+  const _sqNoTechRisk = techPenalty === 0;
+  if (_sqNoTechRisk) { _sqScore += 1; _sqFactors.push('✅ 技術面無逆風'); }
+
+  const _sqGrade = _sqScore >= 8 ? 'S'
+                 : _sqScore >= 6 ? 'A'
+                 : _sqScore >= 4 ? 'B'
+                 : _sqScore >= 2 ? 'C' : 'D';
+  const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
+  const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
+
+  // Grade D：訊號品質過低 → AI 過濾，建議觀望
+  if (_sqGrade === 'D') {
+    return `<div class="setup-wait">
+      <div class="setup-wait-icon">🤖</div>
+      <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:#ef4444">D 級</strong>），建議觀望</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/10，未達 AI 訊號品質門檻（需 ≥ C 級，評分 ≥ 2）</div>
+      <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
 
@@ -2854,6 +2946,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <span class="verdict-arrow">${dirIcon}</span>
       <span class="verdict-label">${dirLabel}</span>
       ${ltTag}${rangeTagHtml}
+      <span style="font-size:0.7rem;font-weight:700;background:${_sqGradeColor}22;border:1px solid ${_sqGradeColor}55;color:${_sqGradeColor};padding:1px 7px;border-radius:20px;margin-left:6px" title="${_sqFactors.join(' | ')}">AI ${_sqGrade} ${_sqGradeLabel}</span>
       <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">${isRangeMode ? '震盪高低點快進快出' : '15m ~ 1h 時間框架'}</span>
     </div>
     ${conf >= 60 ? `<div class="verdict-conf-wrap">
@@ -8156,6 +8249,23 @@ function analyzeTrailingStopAI(coin, isLong, cur, atr, currentPnlR, entry, risk)
     }
     if      (tkr > 1.20) { adj -= 0.4; sigs.push({ icon:'📊', text:`主動買盤主導（Taker ${tkr.toFixed(2)}），多方反壓空頭`, delta:-0.4 }); }
     else if (tkr < 0.80) { adj += 0.3; sigs.push({ icon:'📊', text:`主動賣盤主導（Taker ${tkr.toFixed(2)}），空方強勢`, delta:+0.3 }); }
+  }
+
+  // ── 足跡圖 Delta（移動止損參考）──
+  const _fpTSA = _footprintCache[coin.symbol];
+  if (_fpTSA) {
+    const _fpTSMatch = isLong ? (_fpTSA.deltaDir === 'bull') : (_fpTSA.deltaDir === 'bear');
+    const _fpTSOpp   = isLong ? (_fpTSA.deltaDir === 'bear') : (_fpTSA.deltaDir === 'bull');
+    if (_fpTSA.deltaDiv) {
+      adj -= 0.4; sigs.push({ icon:'⚡', text:`足跡圖 Delta 背離，趨勢動能警告`, delta:-0.4 });
+    } else if (_fpTSMatch) {
+      adj += 0.3; sigs.push({ icon:'📊', text:`足跡圖 Delta 同向確認（${isLong ? '買盤' : '賣盤'}主導）`, delta:+0.3 });
+    } else if (_fpTSOpp) {
+      adj -= 0.3; sigs.push({ icon:'📊', text:`足跡圖 Delta 逆向（${isLong ? '賣盤' : '買盤'}主導），動能轉弱`, delta:-0.3 });
+    }
+    if (_fpTSA.absorption && isLong) {
+      adj += 0.2; sigs.push({ icon:'🔄', text:`足跡圖買方吸收信號，持倉支撐有效`, delta:+0.2 });
+    }
   }
 
   // ── 多時間框架 ──
