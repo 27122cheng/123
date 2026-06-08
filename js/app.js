@@ -11010,12 +11010,15 @@ async function executePionexAutoTrade(trade, notifSetup) {
 
 async function testPionexConnection() {
   const s = loadSettings();
-  if (!s.pionexApiKey || !s.pionexApiSecret) {
+  // 優先讀取 DOM 輸入框（用戶填入但未儲存時仍可測試）
+  const apiKey    = document.getElementById('s-pionex-key')?.value.trim()    || s.pionexApiKey    || '';
+  const apiSecret = document.getElementById('s-pionex-secret')?.value.trim() || s.pionexApiSecret || '';
+  if (!apiKey || !apiSecret) {
     showToast('請先填入 Pionex API Key 和 Secret', 'error'); return;
   }
   showToast('正在測試連線...', 'info');
   try {
-    const result = await getPionexBalance(s.pionexApiKey, s.pionexApiSecret);
+    const result = await getPionexBalance(apiKey, apiSecret);
     const usdt = result?.data?.balances?.find(b => b.coin === 'USDT');
     const avail = usdt ? parseFloat(usdt.free).toFixed(2) : '—';
     showToast(`✅ Pionex 連線成功！USDT 可用餘額：${avail}`, 'success');
