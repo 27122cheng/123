@@ -66,8 +66,24 @@ module.exports = async function handler(req, res) {
       proxyRes.on('end', () => {
         const data = Buffer.concat(chunks);
         res.status(proxyRes.statusCode);
-        res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/json');
-        res.send(data);
+        res.setHeader('Content-Type', 'application/json');
+        // On errors, augment with debug info (never exposes secret)
+        let pionexBody = {};
+        try { pionexBody = JSON.parse(data.toString()); } catch(_) {}
+        if (pionexBody.result === false) {
+          res.json({
+            ...pionexBody,
+            _debug: {
+              keyLen: key.length,
+              secretLen: secret.length,
+              targetUrl,
+              method,
+              queryStr,
+            },
+          });
+        } else {
+          res.send(data);
+        }
         resolve();
       });
     });
