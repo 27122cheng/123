@@ -7157,7 +7157,7 @@ function updateOpenTrades(data) {
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
         // 信心度跌破 60% → 自動取消掃描粗估單（!refined）
         if (freshConf < 60 && !trade.entryTime) {
-          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 60%（宏觀/AI/技術面扣分累積）`;
+          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 65%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -7170,7 +7170,7 @@ function updateOpenTrades(data) {
       const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
       if (_structConf < 60 && !trade.entryTime) {
-        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 60%（ADX/風控規則扣分）`;
+        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 65%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -9259,7 +9259,7 @@ function renderPositionsPage() {
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
       </div></div>
-      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 60% 的訊號時會自動出現</span></div>`;
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 65% 的訊號時會自動出現</span></div>`;
     return;
   }
 
