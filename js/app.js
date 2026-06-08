@@ -2632,7 +2632,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     mtfAlign: entryMTFAlign,
     slType,
     score: parseFloat(coin.score) || 50,
-    symbol: coin.symbol || null,
     skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   };
   const adxVal = parseFloat(coin.adx) || 20;
@@ -6619,8 +6618,8 @@ function recordSignalsFromScan(data) {
     const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
     if (_factors < 3) continue;
 
-    // ADX 過低（< 22）：震盪無趨勢，直接跳過
-    if ((parseFloat(coin.adx) || 20) < 22) continue;
+    // ADX 過低（< 20）：震盪無趨勢，直接跳過
+    if ((parseFloat(coin.adx) || 20) < 20) continue;
 
     // 成交量不得為低（低量趨勢不可靠）
     if ((coin.volumeStrength || '') === '低') continue;
@@ -6630,15 +6629,10 @@ function recordSignalsFromScan(data) {
     const _h4Aligned  = isLong ? _h4Sig.includes('bull') : _h4Sig.includes('bear');
     if (!_h4Aligned) continue;
 
-    // RSI 極端值過濾：超買不做多，超賣不做空（收緊 2 個百分點）
+    // RSI 極端值過濾：超買不做多，超賣不做空
     const _rsiVal = parseFloat(coin.rsi) || 50;
-    if (isLong  && _rsiVal > 70) continue;
-    if (!isLong && _rsiVal < 30) continue;
-
-    // 亞洲時段（UTC 0-4）流動性低，僅接受四大方向全對齊的高品質信號
-    const _utcH = new Date().getUTCHours();
-    const _isAsia = _utcH >= 0 && _utcH < 4;
-    if (_isAsia && _factors < 4) continue;
+    if (isLong  && _rsiVal > 72) continue;
+    if (!isLong && _rsiVal < 28) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
@@ -6647,21 +6641,11 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-    // MACD 方向確認：順向 70%，逆向 76%（逆向 MACD 勝率歷史偏低，提高門檻）
-    const _scanMacd    = parseFloat(coin.macdHist) || 0;
+    // MACD 方向確認：順向70%，逆向73%
+    const _scanMacd   = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    const _confMin     = _macdAligned ? 70 : 76;
+    const _confMin    = _macdAligned ? 70 : 73;
     if (setup.conf < _confMin) continue;
-
-    // 3/4 因子時：若評分不夠強（多頭 < 68 / 空頭 > 32），要求成交量為「高」或 ADX > 26
-    if (_factors === 3) {
-      const _scoreWeak = isLong ? coin.score < 68 : coin.score > 32;
-      if (_scoreWeak) {
-        const _volHigh = (coin.volumeStrength || '') === '高';
-        const _adxStr  = (parseFloat(coin.adx) || 20) > 26;
-        if (!_volHigh && !_adxStr) continue;
-      }
-    }
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -6673,8 +6657,8 @@ function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 中高風險及以上（≥50）→ 觀望（提高保守度，確保進的都是較低風險）
-    if (_scanRisk.score >= 50) continue;
+    // 中高風險及以上（≥55）→ 觀望（原60，降至55更保守）
+    if (_scanRisk.score >= 55) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
@@ -7044,17 +7028,6 @@ async function backgroundRefineNewTrades() {
         tlogEdit[idx].aiScaleReason  = _bgScaleReason;
         tlogEdit[idx].scaleInTargets = bgScaleInLevels.map(s => s.level);
         tlogEdit[idx].scaleInNewSLs  = bgScaleInLevels.map(s => s.newSL);
-        // ── Pionex：升級為長線單時更新止盈訂單至 ltTP ──
-        if (!_wasLongTermAlready && tlogEdit[idx].pionexOrders) {
-          const _ps2 = loadSettings();
-          if (_ps2.pionexAutoTrade && _ps2.pionexApiKey && _ps2.pionexApiSecret) {
-            // 先清除記憶體中的舊 tpId，避免 saveTradeLog 保存舊 ID 造成競態
-            const _oldTpId = tlogEdit[idx].pionexOrders.tpId;
-            tlogEdit[idx].pionexOrders.tpId = null;
-            const _tradeSnap = { ...tlogEdit[idx], pionexOrders: { ...tlogEdit[idx].pionexOrders, tpId: _oldTpId } };
-            pionexUpdateTP(_tradeSnap, ltTP, _ps2).catch(e => console.warn('[Pionex TP upgrade]', e));
-          }
-        }
         // 發送長線升級通知（僅在從短線升級為長線時才發送；已是長線單時掃描通知已覆蓋，不重複通知）
         if (!_wasLongTermAlready) {
           try {
@@ -7088,7 +7061,6 @@ function updateOpenTrades(data) {
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
   const toDeleteIds = new Set();      // 取消後立即從 tlog 刪除的 trade id
   const tp1Hits = []; // trades that just reached TP1 this cycle
-  const pionexCancelQueue = []; // 需要在 Pionex 取消訂單的交易（非正常止盈止損，而是信號失效撤單）
 
   // ── 清除殘留的 direction='wait' 無效掛單（直接刪除，不留冷卻記錄）──
   for (const trade of tlog) {
@@ -7137,7 +7109,6 @@ function updateOpenTrades(data) {
             ? `宏觀大方向${macroLabel}，取消逆勢${trade.direction === 'long' ? '多' : '空'}單掛單`
             : '本週 + 今日 AI 均明確反向，取消未入場掛單';
           addCancelCooldown(trade, reason);
-          pionexCancelQueue.push(trade);
           toDeleteIds.add(trade.id);
           changed = true;
           cancelledSymbols.add(trade.symbol);
@@ -7264,7 +7235,6 @@ function updateOpenTrades(data) {
         if (freshConf < 60 && !trade.entryTime) {
           const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 60%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
-          pionexCancelQueue.push(trade);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
           changed = true;
@@ -7278,7 +7248,6 @@ function updateOpenTrades(data) {
       if (_structConf < 60 && !trade.entryTime) {
         const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 60%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
-        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
         changed = true;
@@ -7298,7 +7267,6 @@ function updateOpenTrades(data) {
           const _rDetail = _frRisk.score >= 60 ? _frRisk.factors.slice(0, 2).join('、') : '市場高波動性，RSI 或趨勢評分處於極端區間';
           const _frReason = `AI 風險評估升至${_rLabel}：${_rDetail}`;
           addCancelCooldown(trade, _frReason);
-          pionexCancelQueue.push(trade);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
           changed = true;
@@ -7343,7 +7311,6 @@ function updateOpenTrades(data) {
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
         const cancelReason = reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`;
         addCancelCooldown(trade, cancelReason);
-        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
@@ -7356,7 +7323,6 @@ function updateOpenTrades(data) {
       if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
         const _slReason = `進場前價格已${isLong ? '跌破' : '突破'}止損位 $${sl}（現價 $${cur.toPrecision(6)}）`;
         addCancelCooldown(trade, _slReason);
-        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
@@ -7373,7 +7339,6 @@ function updateOpenTrades(data) {
         const fmt      = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
         const cancelReason = `價格未回踩進場直接飛越${hitLevel}（$${fmt(isLong ? tp1 : tp1)}），掛單失效`;
         addCancelCooldown(trade, cancelReason);
-        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
@@ -7569,17 +7534,6 @@ function updateOpenTrades(data) {
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
   if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
-
-  // ── Pionex 撤銷已取消的掛單 ──
-  if (pionexCancelQueue.length > 0) {
-    const _ps = loadSettings();
-    if (_ps.pionexAutoTrade && _ps.pionexApiKey && _ps.pionexApiSecret) {
-      for (const _ct of pionexCancelQueue) {
-        pionexCancelTradeOrders(_ct).catch(e => console.warn('[Pionex cancel]', _ct.symbol, e.message));
-      }
-    }
-  }
-
   return cancelledSymbols;
 }
 
@@ -7772,15 +7726,6 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
     `🔔 已加倉 ${scaleIn.seqNum}/${trade.maxScaleIns || 3} 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
-
-  // ── Pionex 加倉 + 更新止損 ──
-  if (s.pionexAutoTrade && s.pionexApiKey && s.pionexApiSecret) {
-    const _ptrade = loadTradeLog().find(t => t.id === trade.id);
-    if (_ptrade) {
-      pionexPlaceScaleIn(_ptrade, scaleIn, s).catch(e => console.warn('[Pionex scale-in]', e));
-    }
-  }
-
   // 加倉後止損已調整 → 寫入 AI 追蹤止損快取，避免同一位置重複通知
   if (newSL != null) {
     try {
@@ -8578,15 +8523,6 @@ function checkPostDataReversal(data) {
       `${analysisBlock}` +
       `🔗 <a href="${window.location.origin + window.location.pathname}">查看 ${trade.symbol.replace('/USDT','')} 詳細分析 →</a>`;
     sendTelegramMessage(s.tgToken, s.tgChatId, msg);
-
-    // ── 同步更新 Pionex 止損單 ──
-    if (s.pionexAutoTrade && s.pionexApiKey && s.pionexApiSecret) {
-      const _ptrade = loadTradeLog().find(t => t.id === trade.id);
-      if (_ptrade?.pionexOrders) {
-        pionexUpdateSL(_ptrade, suggestNewSl, s).catch(e => console.warn('[Pionex SL trail]', e));
-        if (typeof showToast === 'function') showToast(`🔄 Pionex 止損更新：${trade.symbol} → $${suggestNewSl.toFixed(4)}`, 'info');
-      }
-    }
   }
 }
 
@@ -8699,16 +8635,6 @@ function archiveExpiredToMemory(trades) {
   mem.cumStats.totalWins    = (mem.cumStats.totalWins    || 0) + winT.length;
   mem.cumStats.totalLosses  = (mem.cumStats.totalLosses  || 0) + lossT.length;
 
-  // ── 各幣種勝率追蹤（用於 AI 懲罰歷史低勝率幣種）──
-  if (!mem.symbolStats) mem.symbolStats = {};
-  for (const t of newTrades) {
-    const sym = t.symbol;
-    if (!sym) continue;
-    if (!mem.symbolStats[sym]) mem.symbolStats[sym] = { wins: 0, total: 0 };
-    mem.symbolStats[sym].total++;
-    if (t.outcome === 'tp1' || t.outcome === 'tp2') mem.symbolStats[sym].wins++;
-  }
-
   // ── 記錄已歸檔 ID（最多保留最新 2000 個，防止無限增長）──
   const allArchived = [...archivedSet, ...newTrades.map(t => t.id)];
   mem.archivedIds = allArchived.slice(-2000);
@@ -8734,7 +8660,7 @@ function monthlyTradePrune() {
 
 function computeLearnProfile() {
   const closed = loadTradeLog().filter(t => t.status === 'closed');
-  if (closed.length < 3) return { ready: false, closed: closed.length };
+  if (closed.length < 2) return { ready: false, closed: closed.length };
 
   const losses = closed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
   const wins   = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
@@ -8781,11 +8707,10 @@ function computeLearnProfile() {
   const shortLosses = shortClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
 
   const check = (cond, subLoss, subAll, penaltyConf, warnTpl) => {
-    if (subAll.length < 3) return null; // 至少 3 筆才建立規則（避免樣本太小誤導）
+    if (subAll.length < 2) return null;
     const rate = subLoss.length / subAll.length;
     if (rate < 0.05) return null; // AI 目標勝率 95%+，止損率 > 5% 即觸發規則
-    // 高止損率條件加重懲罰：≥60% → +20，≥40% → +8，否則基礎值
-    const scaledPenalty = rate >= 0.6 ? penaltyConf + 20 : rate >= 0.4 ? penaltyConf + 8 : penaltyConf;
+    const scaledPenalty = rate >= 0.6 ? penaltyConf + 15 : rate >= 0.4 ? penaltyConf + 5 : penaltyConf;
     return { condition: cond, lossCount: subLoss.length, total: subAll.length,
       rate, penaltyConf: scaledPenalty, warning: warnTpl(Math.round(rate * 100)) };
   };
@@ -8840,9 +8765,9 @@ function computeLearnProfile() {
       closed.filter(t => t.entryMTFAlign != null && t.entryMTFAlign <= 1),
       10, r => `僅1個週期對齊入場止損率 ${r}%，建議等多週期共振`),
     check('low_conf_entry',
-      losses.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 70),
-      closed.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 70),
-      12, r => `信心 60-70% 勉強進場止損率 ${r}%，建議等信心 ≥ 70% 再進`),
+      losses.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
+      closed.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
+      12, r => `信心 60-68% 勉強進場止損率 ${r}%，建議等信心 ≥ 68% 再進`),
     // MACD 方向規則（基於實際交易記錄學習）
     check('macd_against_long',
       longLosses.filter(t => (t.entryMacdHist || 0) < 0),
@@ -9020,7 +8945,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
         (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
         (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
-        (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 70) ||
+        (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 68) ||
         (rule.condition === 'macd_against_long'  && direction === 'long'  && (parseFloat(ctx.macdHist) || 0) < 0) ||
         (rule.condition === 'macd_against_short' && direction === 'short' && (parseFloat(ctx.macdHist) || 0) > 0) ||
         (rule.condition === 'low_vol_long'    && direction === 'long'  && (ctx.volWeak === true)) ||
@@ -9034,32 +8959,12 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       if ((rule.total || 0) >= 3) {
         const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
         if (match) {
-          // 最高懲罰上限提高至 12%（原 8%），對高止損率條件更有力地阻止進場
-          const _rPen = Math.max(1, Math.min(12, Math.round((rule.rate || 0) * 14)));
+          const _rPen = Math.max(1, Math.min(8, Math.round((rule.rate || 0) * 10)));
           penalty += _rPen;
           defenseChecks.push({ type: 'rule', label: _rLabel, count: rule.total || 0, pass: false, penalty: _rPen, rate: rule.rate });
         } else {
           defenseChecks.push({ type: 'rule', label: _rLabel, count: rule.total || 0, pass: true, penalty: 0, rate: rule.rate });
         }
-      }
-    }
-  }
-
-  // ① 各幣種勝率懲罰（歷史勝率偏低的幣種進場前額外扣分）
-  if (ctx.symbol) {
-    const _symStats = (profile.mem || loadAIMemory()).symbolStats?.[ctx.symbol];
-    if (_symStats && _symStats.total >= 5) {
-      const _symWR = _symStats.wins / _symStats.total;
-      if (_symWR < 0.35) {
-        const _symPen = 14;
-        penalty += _symPen;
-        addCheck('symbol', `${ctx.symbol} 歷史勝率僅 ${Math.round(_symWR*100)}%（${_symStats.wins}/${_symStats.total}筆），謹慎進場`, _symStats.total, true, _symPen);
-      } else if (_symWR < 0.45) {
-        const _symPen = 8;
-        penalty += _symPen;
-        addCheck('symbol', `${ctx.symbol} 歷史勝率 ${Math.round(_symWR*100)}%（${_symStats.wins}/${_symStats.total}筆），略偏低`, _symStats.total, true, _symPen);
-      } else if (_symWR >= 0.65) {
-        defenseChecks.push({ type: 'symbol', label: `${ctx.symbol} 歷史勝率 ${Math.round(_symWR*100)}%`, count: _symStats.total, pass: true, penalty: 0 });
       }
     }
   }
@@ -9095,28 +9000,6 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
           ((s.includes('週期') && s.includes('信號一致')) && (ctx.mtfAlign ?? 99) <= 1);
         // 改進建議僅作為 AI 交易建議參考，不影響信心評分
         defenseChecks.push({ type: 'sugg_ref', label: s.slice(0, 55), count: cnt, pass: !suggViolated, penalty: 0 });
-      }
-    }
-  }
-
-  // ⑤ 結構規則高止損率硬封鎖：≥75% 止損率 + ≥8 筆樣本 → 強制加罰防止進場
-  if (profile.ready && profile.rules.length) {
-    for (const rule of profile.rules) {
-      if ((rule.total || 0) >= 8 && (rule.rate || 0) >= 0.75) {
-        const match75 =
-          (rule.condition === 'long_high_rsi'      && direction === 'long'  && rsi > 65) ||
-          (rule.condition === 'short_low_rsi'       && direction === 'short' && rsi < 35) ||
-          (rule.condition === 'low_adx'             && !ctx.skipAdxRule && adx < 20) ||
-          (rule.condition === 'low_conf_entry'      && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 70) ||
-          (rule.condition === 'macd_against_long'   && direction === 'long'  && (parseFloat(ctx.macdHist) || 0) < 0) ||
-          (rule.condition === 'macd_against_short'  && direction === 'short' && (parseFloat(ctx.macdHist) || 0) > 0) ||
-          (rule.condition === 'weak_score_long'     && direction === 'long'  && ctx.scoreStrength === 'weak') ||
-          (rule.condition === 'weak_score_short'    && direction === 'short' && ctx.scoreStrength === 'weak') ||
-          (rule.condition === 'asia_session_loss'   && ctx.killZone === 'asia');
-        if (match75) {
-          penalty += 20;
-          blockReasons.push(`🚫 極高止損率條件攔截：「${(rule.warning||'').slice(0,40)}」止損率 ${Math.round(rule.rate*100)}%（${rule.total}筆），強制觀望`);
-        }
       }
     }
   }
@@ -10762,292 +10645,6 @@ function fmtDateTime(ts) {
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */
 const SIGNAL_CACHE_KEY = 'csp_signal_cache';
 
-/* ── Pionex 自動下單 ──────────────────────────────────────────── */
-
-// 儲存 Pionex 訂單 ID 到持倉記錄
-async function _pionexSaveOrderIds(tradeId, updates) {
-  try {
-    const tl = loadTradeLog();
-    const ti = tl.findIndex(t => t.id === tradeId);
-    if (ti < 0) return;
-    if (!tl[ti].pionexOrders) tl[ti].pionexOrders = { scaleInOrders: [] };
-    Object.assign(tl[ti].pionexOrders, updates);
-    saveTradeLog(tl);
-  } catch(e) { console.warn('[Pionex] save order IDs failed', e); }
-}
-
-// 設置槓桿（不支援則自動降至 20x）
-async function _pionexSetLeverage(apiKey, apiSecret, symbol, leverage) {
-  if (leverage <= 0) return;
-  try {
-    await setPionexLeverage(apiKey, apiSecret, symbol, leverage);
-  } catch(e) {
-    if (leverage !== 20) {
-      try { await setPionexLeverage(apiKey, apiSecret, symbol, 20); } catch(_) {}
-    }
-  }
-}
-
-// 下單並取得訂單 ID
-async function _pionexPlaceOrderSafe(apiKey, apiSecret, params) {
-  try {
-    const res = await placePionexOrder(apiKey, apiSecret, params);
-    return res?.data?.orderId || null;
-  } catch(e) {
-    console.warn('[Pionex] 掛單失敗:', params.type, e.message);
-    return null;
-  }
-}
-
-// 取消單一訂單（不拋出錯誤）
-async function _pionexCancelSafe(apiKey, apiSecret, symbol, orderId) {
-  if (!orderId) return;
-  await cancelPionexOrder(apiKey, apiSecret, symbol, orderId).catch(() => {});
-}
-
-// 取消某筆交易的所有 Pionex 訂單（進場 + 止損 + 止盈 + 加倉）
-async function pionexCancelTradeOrders(trade) {
-  const s = loadSettings();
-  if (!s.pionexAutoTrade || !s.pionexApiKey || !s.pionexApiSecret || !trade.pionexOrders) return;
-  const { entryId, slId, tpId, scaleInOrders = [] } = trade.pionexOrders;
-  const sym = trade.symbol;
-  await Promise.allSettled([
-    _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, entryId),
-    _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, slId),
-    _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, tpId),
-    ...scaleInOrders.flatMap(si => [
-      _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, si.entryId),
-      _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, si.slId),
-      _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, si.tpId),
-    ]),
-  ]);
-}
-
-// 更新 Pionex 止損單（取消舊的，掛新的）
-async function pionexUpdateSL(trade, newSL, s) {
-  if (!s.pionexAutoTrade || !s.pionexApiKey || !s.pionexApiSecret || !trade?.pionexOrders) return;
-  const sym     = trade.symbol;
-  const isLong  = trade.direction === 'long';
-  const oppSide = isLong ? 'SELL' : 'BUY';
-  const size    = trade.pionexOrders.size || 0;
-  if (!size || !newSL) return;
-
-  await _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, trade.pionexOrders.slId);
-
-  const slBuffer = newSL * (isLong ? 0.997 : 1.003);
-  const newSlId  = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
-    symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(size),
-    stopPrice: String(parseFloat(newSL.toFixed(8))),
-    price:     String(parseFloat(slBuffer.toFixed(8))),
-  });
-  await _pionexSaveOrderIds(trade.id, { slId: newSlId });
-  console.log('[Pionex] 止損已更新:', sym, newSL, '→ orderId:', newSlId);
-}
-
-// 更新 Pionex 止盈單（取消舊的，掛新的）
-async function pionexUpdateTP(trade, newTP, s) {
-  if (!s.pionexAutoTrade || !s.pionexApiKey || !trade?.pionexOrders) return;
-  const sym     = trade.symbol;
-  const isLong  = trade.direction === 'long';
-  const oppSide = isLong ? 'SELL' : 'BUY';
-  const size    = trade.pionexOrders.size || 0;
-  if (!size || !newTP) return;
-
-  await _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, trade.pionexOrders.tpId);
-
-  const tpBuffer = newTP * (isLong ? 0.999 : 1.001);
-  const newTpId  = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
-    symbol: sym, side: oppSide, type: 'TAKE_PROFIT_LIMIT', size: String(size),
-    stopPrice: String(parseFloat(newTP.toFixed(8))),
-    price:     String(parseFloat(tpBuffer.toFixed(8))),
-  });
-  await _pionexSaveOrderIds(trade.id, { tpId: newTpId });
-  console.log('[Pionex] 止盈已更新:', sym, newTP, '→ orderId:', newTpId);
-}
-
-// 加倉：在 Pionex 掛加倉進場單 + 更新止損，並記錄訂單 ID
-async function pionexPlaceScaleIn(trade, scaleIn, s) {
-  if (!s.pionexAutoTrade || !s.pionexApiKey || !s.pionexApiSecret || !trade?.pionexOrders) return;
-  const sym     = trade.symbol;
-  const isLong  = trade.direction === 'long';
-  const oppSide = isLong ? 'SELL' : 'BUY';
-
-  // 計算加倉倉位大小
-  const capitalUSDT = parseFloat(s.pionexCapitalUSDT) || 100;
-  const leverage    = parseInt(s.pionexLeverage)  || 0;
-  const sizeUSDT    = leverage > 0 ? capitalUSDT * leverage : capitalUSDT;
-  // 防止 entryPrice 為 0 或 undefined 導致 NaN/Infinity
-  const entryPrice  = parseFloat(scaleIn.entryPrice) || parseFloat(scaleIn.entryLevel) || 0;
-  if (!entryPrice) { console.warn('[Pionex] scale-in entryPrice 無效，跳過'); return; }
-  const sizeBase = parseFloat((sizeUSDT / entryPrice).toFixed(6));
-  if (!sizeBase || !isFinite(sizeBase)) { console.warn('[Pionex] scale-in sizeBase 無效:', sizeBase); return; }
-
-  // ── 加倉進場單（市價，已確認回踩到位才觸發）──
-  let siEntryId = null;
-  siEntryId = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
-    symbol: sym, side: isLong ? 'BUY' : 'SELL', type: 'MARKET', size: String(sizeBase),
-  });
-
-  // ── 加倉止損單（新止損位）──
-  let siSlId = null;
-  if (s.pionexEnableSL && trade.sl) {
-    const sl = trade.sl;
-    const slBuffer = sl * (isLong ? 0.997 : 1.003);
-    siSlId = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
-      symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(sizeBase),
-      stopPrice: String(parseFloat(sl.toFixed(8))),
-      price:     String(parseFloat(slBuffer.toFixed(8))),
-    });
-  }
-
-  // ── 更新主倉止損單至新止損位 ──
-  if (trade.pionexOrders?.slId && trade.sl) {
-    await pionexUpdateSL(trade, trade.sl, s);
-  }
-
-  // ── 儲存加倉訂單 ID ──
-  try {
-    const tl = loadTradeLog();
-    const ti = tl.findIndex(t => t.id === trade.id);
-    if (ti >= 0) {
-      if (!tl[ti].pionexOrders) tl[ti].pionexOrders = { scaleInOrders: [] };
-      if (!tl[ti].pionexOrders.scaleInOrders) tl[ti].pionexOrders.scaleInOrders = [];
-      tl[ti].pionexOrders.scaleInOrders.push({ seqNum: scaleIn.seqNum, entryId: siEntryId, slId: siSlId });
-      saveTradeLog(tl);
-    }
-  } catch(e) {}
-  console.log('[Pionex] 加倉完成:', sym, '#' + scaleIn.seqNum, 'entry:', siEntryId);
-}
-
-async function executePionexAutoTrade(trade, notifSetup) {
-  try {
-    const s = loadSettings();
-    if (!s.pionexAutoTrade || !s.pionexApiKey || !s.pionexApiSecret) return;
-
-    const sym    = trade.symbol;
-    const isLong = trade.direction === 'long';
-    const entry  = parseFloat(notifSetup?.entry || trade.entry) || 0;
-    const sl     = parseFloat(notifSetup?.sl    || trade.sl)    || 0;
-    const tp1    = parseFloat(notifSetup?.tp1   || trade.tp1)   || 0;
-    const ltTP   = parseFloat(notifSetup?.ltTP  || trade.ltTP)  || 0;
-    const tpTarget = ltTP || tp1;
-    if (!entry || !sl) { console.warn('[Pionex] 缺少進場/止損位，跳過下單'); return; }
-
-    // ── 計算下單量（本金 × 槓桿）──
-    const capitalUSDT = parseFloat(s.pionexCapitalUSDT) || 100;
-    const leverage    = parseInt(s.pionexLeverage)  || 0;
-    const sizeUSDT    = leverage > 0 ? capitalUSDT * leverage : capitalUSDT;
-    const sizeBase    = parseFloat((sizeUSDT / entry).toFixed(6));
-    const leverageLabel = leverage > 0 ? `${leverage}x` : '現貨';
-
-    // ── 設置槓桿 ──
-    if (leverage > 0) await _pionexSetLeverage(s.pionexApiKey, s.pionexApiSecret, sym, leverage);
-
-    const side      = isLong ? 'BUY' : 'SELL';
-    const oppSide   = isLong ? 'SELL' : 'BUY';
-    const orderType = s.pionexOrderType || 'LIMIT';
-
-    // ── 進場訂單（限價掛在進場位）──
-    const entryParams = { symbol: sym, side, type: orderType, size: String(sizeBase) };
-    if (orderType === 'LIMIT') entryParams.price = String(entry);
-
-    let entryOrderId = null;
-    try {
-      const entryResult = await placePionexOrder(s.pionexApiKey, s.pionexApiSecret, entryParams);
-      entryOrderId = entryResult?.data?.orderId || null;
-      const toastMsg = `✅ Pionex 掛單：${sym} ${isLong ? '▲ 做多' : '▼ 做空'} @$${entry}（${sizeUSDT.toFixed(0)} USDT ${leverageLabel}）`;
-      if (typeof showToast === 'function') showToast(toastMsg, 'success');
-      if (s.notifTelegram && s.tgToken && s.tgChatId) {
-        sendTelegramMessage(s.tgToken, s.tgChatId,
-          `🤖 <b>Pionex 自動掛單</b>\n\n💎 <b>${sym}</b> ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
-          `📍 進場：<b>$${entry}</b>（${orderType === 'LIMIT' ? '限價' : '市價'}）\n` +
-          `🛑 止損：$${sl}\n🎯 止盈：$${tpTarget || tp1}\n` +
-          `📦 倉位：${sizeBase}（${sizeUSDT.toFixed(0)} USDT${leverage > 0 ? '，' + leverage + 'x 槓桿' : '，現貨'}）`
-        );
-      }
-    } catch (err) {
-      const isCors = err.message === 'CORS_BLOCKED';
-      const errMsg = isCors
-        ? '⚠️ Pionex 被瀏覽器 CORS 阻擋，需本地後端代理（見設定說明）'
-        : `❌ Pionex 進場掛單失敗：${err.message}`;
-      console.error('[Pionex]', errMsg, err);
-      if (typeof showToast === 'function') showToast(errMsg, 'error');
-      if (s.notifTelegram && s.tgToken && s.tgChatId)
-        sendTelegramMessage(s.tgToken, s.tgChatId, `❌ <b>Pionex 掛單失敗</b>\n${sym}\n${err.message}`);
-      return;
-    }
-
-    // ── 止損單 ──
-    let slOrderId = null;
-    if (s.pionexEnableSL && sl) {
-      const slBuffer = sl * (isLong ? 0.997 : 1.003);
-      slOrderId = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
-        symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(sizeBase),
-        stopPrice: String(parseFloat(sl.toFixed(8))),
-        price:     String(parseFloat(slBuffer.toFixed(8))),
-      });
-    }
-
-    // ── 止盈單（優先使用長線目標 ltTP）──
-    let tpOrderId = null;
-    if (s.pionexEnableTP && tpTarget) {
-      const tpBuffer = tpTarget * (isLong ? 0.999 : 1.001);
-      tpOrderId = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
-        symbol: sym, side: oppSide, type: 'TAKE_PROFIT_LIMIT', size: String(sizeBase),
-        stopPrice: String(parseFloat(tpTarget.toFixed(8))),
-        price:     String(parseFloat(tpBuffer.toFixed(8))),
-      });
-    }
-
-    // ── 儲存訂單 ID 到持倉記錄 ──
-    await _pionexSaveOrderIds(trade.id, {
-      entryId: entryOrderId, slId: slOrderId, tpId: tpOrderId,
-      size: sizeBase, scaleInOrders: [],
-    });
-
-  } catch(e) { console.error('[executePionexAutoTrade]', e); }
-}
-
-async function testPionexPing() {
-  showToast('正在測試代理到 Pionex 的網路連線...', 'info');
-  try {
-    const resp = await fetch(window.location.origin + '/api/pionex', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ping: true }),
-    });
-    const json = await resp.json();
-    showToast(json.result ? `✅ ${json.message}` : `❌ ${json.message}`, json.result ? 'success' : 'error');
-  } catch(e) {
-    showToast(`❌ 代理連線失敗: ${e.message}`, 'error');
-  }
-}
-
-async function testPionexConnection() {
-  const s = loadSettings();
-  // 優先讀取 DOM 輸入框（用戶填入但未儲存時仍可測試）
-  const apiKey    = document.getElementById('s-pionex-key')?.value.trim()    || s.pionexApiKey    || '';
-  const apiSecret = document.getElementById('s-pionex-secret')?.value.trim() || s.pionexApiSecret || '';
-  if (!apiKey || !apiSecret) {
-    showToast('請先填入 Pionex API Key 和 Secret', 'error'); return;
-  }
-  if (apiSecret.length < 20) {
-    showToast(`⚠️ API Secret 只有 ${apiSecret.length} 個字元，太短了！Pionex Secret 應該是 60+ 字元的長字串，請重新複製貼上完整的 Secret。`, 'error'); return;
-  }
-  showToast('正在測試連線...', 'info');
-  try {
-    const result = await getPionexBalance(apiKey, apiSecret);
-    const usdt = result?.data?.balances?.find(b => b.coin === 'USDT');
-    const avail = usdt ? parseFloat(usdt.free).toFixed(2) : '—';
-    showToast(`✅ Pionex 連線成功！USDT 可用餘額：${avail}`, 'success');
-  } catch(err) {
-    const msg = err.message === 'CORS_BLOCKED'
-      ? '⚠️ 連線被 CORS 阻擋。請透過本地後端代理 API 請求，或在 Chrome 擴充功能允許跨域。'
-      : `❌ 連線失敗：${err.message}`;
-    showToast(msg, 'error');
-  }
-}
-
 async function checkAndSendAlerts(data) {
   const s = loadSettings();
   if (!s.notifBrowser && !s.notifTelegram) return;
@@ -11186,10 +10783,7 @@ async function checkAndSendAlerts(data) {
           notifSetup.capitalFlowPenalty = cfPen;
           notifSetup.capitalFlowReasons = cfReasons;
           notifSetup.conf = Math.max(0, notifSetup.conf - macroPen - aiTrendPen - cfPen);
-        } catch (e) {
-          // 宏觀資料異常 → 保守降分 5%，避免未扣分信號誤觸發
-          notifSetup.conf = Math.max(0, notifSetup.conf - 5);
-        }
+        } catch (e) { /* macro enrichment failed, keep simple conf */ }
       }
     }
 
@@ -11205,7 +10799,7 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 68) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
+    if (notifConf < 65) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
 
     // 信心度達標 → 完整交易信號通知
     if (s.notifBrowser) {
@@ -11252,8 +10846,6 @@ async function checkAndSendAlerts(data) {
         const _tlabel = _isLongTermEntry ? '長線單' : '短線單';
         const _ticon  = _isLongTermEntry ? '💎' : '📡';
         try { if (typeof showToast === 'function') showToast(`${_ticon} ${_tlabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${notifSetup.conf}%，已加入持倉`, 'success'); } catch(_te) {}
-        // Pionex 自動下單
-        executePionexAutoTrade(_newTrade, notifSetup).catch(e => console.warn('[Pionex auto]', e));
       }
     } catch(_te) { console.warn('[checkAndSendAlerts] trade create failed', _te); }
 
@@ -11574,11 +11166,11 @@ function computeSimpleSetup(coin, isLong) {
   if (!isLong && tp2 > tp1 * 0.997) tp2 = tp1 - Math.abs(entry - tp1) * 0.5;
 
   // ═══════════════════════════════════════════════
-  // 4. 盈虧比檢查：R:R < 1.5 → 觀望，不開倉（高勝率要求最低 1.5:1）
+  // 4. 盈虧比檢查：R:R < 1.3 → 觀望，不開倉
   // ═══════════════════════════════════════════════
   const _rrCheck  = risk > 0 ? Math.abs(tp1 - entry) / risk : 0;
-  const rrBlocked = _rrCheck < 1.5;
-  const rrReason  = rrBlocked ? `R/R ${_rrCheck.toFixed(2)}:1 低於 1.5，盈虧比不足，建議觀望` : '';
+  const rrBlocked = _rrCheck < 1.3;
+  const rrReason  = rrBlocked ? `R/R ${_rrCheck.toFixed(2)}:1 低於 1.3，盈虧比不足，建議觀望` : '';
 
   // ── AI 學習引擎調整（同 buildTradeSetup 相同邏輯）──
   const hardAdxPenalty = adx < 18 ? 18 : adx < 22 ? 10 : 0;
@@ -11595,7 +11187,6 @@ function computeSimpleSetup(coin, isLong) {
     h4Aligned:     _ssH4Aligned,
     scoreStrength: _ssScoreStr,
     killZone:      _ssKillZone,
-    symbol:        coin.symbol || null,
   });
   // rawConf：做多用 score，做空用 100-score（score=30 → 空頭強度70%）
   let rawConf = Math.min(88, _ssDirBase);
@@ -12044,28 +11635,9 @@ function populateSettingsPage() {
   if (tgToken)  tgToken.value  = s.tgToken  || '';
   if (tgChatId) tgChatId.value = s.tgChatId || '';
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
-  if (nBullThr) { nBullThr.value = s.notifBullScore || 68; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
-  if (nBearThr) { nBearThr.value = s.notifBearScore || 32; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
+  if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
+  if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
-
-  // Pionex 設定
-  const _pSet = (id, v) => { const el = document.getElementById(id); if (el) el.value = String(v ?? ''); };
-  const _pChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
-  _pChk('s-pionex-toggle',    s.pionexAutoTrade);
-  _pSet('s-pionex-key',       s.pionexApiKey    || '');
-  _pSet('s-pionex-secret',    s.pionexApiSecret || '');
-  // Show character counts so user can verify key/secret length
-  const _kLen = (s.pionexApiKey    || '').trim().length;
-  const _sLen = (s.pionexApiSecret || '').trim().length;
-  const _klEl = document.getElementById('s-pionex-key-len');
-  const _slEl = document.getElementById('s-pionex-secret-len');
-  if (_klEl) _klEl.textContent = _kLen ? `(${_kLen} 字元)` : '';
-  if (_slEl) _slEl.textContent = _sLen ? `(${_sLen} 字元)` : '';
-  _pSet('s-pionex-order-type',s.pionexOrderType    || 'LIMIT');
-  _pSet('s-pionex-capital',   s.pionexCapitalUSDT || '100');
-  _pSet('s-pionex-leverage',  s.pionexLeverage    ?? '20');
-  _pChk('s-pionex-sl',        s.pionexEnableSL  ?? true);
-  _pChk('s-pionex-tp',        s.pionexEnableTP  ?? true);
 
   renderPairsList();
 }
@@ -12083,17 +11655,8 @@ function saveAllSettings() {
     notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
     tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
-    notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 68,
-    notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 32,
-    // Pionex
-    pionexAutoTrade: document.getElementById('s-pionex-toggle')?.checked ?? false,
-    pionexApiKey:    document.getElementById('s-pionex-key')?.value.trim()    || '',
-    pionexApiSecret: document.getElementById('s-pionex-secret')?.value.trim() || '',
-    pionexOrderType:    document.getElementById('s-pionex-order-type')?.value         || 'LIMIT',
-    pionexCapitalUSDT:  parseFloat(document.getElementById('s-pionex-capital')?.value) || 100,
-    pionexLeverage:     parseInt(document.getElementById('s-pionex-leverage')?.value)  ?? 20,
-    pionexEnableSL:  document.getElementById('s-pionex-sl')?.checked ?? true,
-    pionexEnableTP:  document.getElementById('s-pionex-tp')?.checked ?? true,
+    notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
+    notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();
