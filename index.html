@@ -765,12 +765,12 @@
 
         <div class="tg-setup-grid" style="margin-bottom:12px">
           <div class="tg-field">
-            <label class="tg-label">API Key</label>
-            <input id="s-pionex-key" type="password" class="setting-input" placeholder="Pionex API Key" autocomplete="off" />
+            <label class="tg-label">API Key <span id="s-pionex-key-len" style="color:var(--text3);font-weight:400;font-size:0.72rem"></span></label>
+            <input id="s-pionex-key" type="text" class="setting-input" placeholder="Pionex API Key" autocomplete="off" oninput="document.getElementById('s-pionex-key-len').textContent=this.value.trim().length?'('+this.value.trim().length+' 字元)':''" />
           </div>
           <div class="tg-field">
-            <label class="tg-label">API Secret</label>
-            <input id="s-pionex-secret" type="password" class="setting-input" placeholder="Pionex API Secret" autocomplete="off" />
+            <label class="tg-label">API Secret <span id="s-pionex-secret-len" style="color:var(--text3);font-weight:400;font-size:0.72rem"></span></label>
+            <input id="s-pionex-secret" type="text" class="setting-input" placeholder="Pionex API Secret" autocomplete="off" oninput="document.getElementById('s-pionex-secret-len').textContent=this.value.trim().length?'('+this.value.trim().length+' 字元)':''" />
           </div>
         </div>
 

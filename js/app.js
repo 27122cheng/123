@@ -11016,6 +11016,9 @@ async function testPionexConnection() {
   if (!apiKey || !apiSecret) {
     showToast('請先填入 Pionex API Key 和 Secret', 'error'); return;
   }
+  if (apiSecret.length < 20) {
+    showToast(`⚠️ API Secret 只有 ${apiSecret.length} 個字元，太短了！Pionex Secret 應該是 60+ 字元的長字串，請重新複製貼上完整的 Secret。`, 'error'); return;
+  }
   showToast('正在測試連線...', 'info');
   try {
     const result = await getPionexBalance(apiKey, apiSecret);
@@ -12036,6 +12039,13 @@ function populateSettingsPage() {
   _pChk('s-pionex-toggle',    s.pionexAutoTrade);
   _pSet('s-pionex-key',       s.pionexApiKey    || '');
   _pSet('s-pionex-secret',    s.pionexApiSecret || '');
+  // Show character counts so user can verify key/secret length
+  const _kLen = (s.pionexApiKey    || '').trim().length;
+  const _sLen = (s.pionexApiSecret || '').trim().length;
+  const _klEl = document.getElementById('s-pionex-key-len');
+  const _slEl = document.getElementById('s-pionex-secret-len');
+  if (_klEl) _klEl.textContent = _kLen ? `(${_kLen} 字元)` : '';
+  if (_slEl) _slEl.textContent = _sLen ? `(${_sLen} 字元)` : '';
   _pSet('s-pionex-order-type',s.pionexOrderType    || 'LIMIT');
   _pSet('s-pionex-capital',   s.pionexCapitalUSDT || '100');
   _pSet('s-pionex-leverage',  s.pionexLeverage    ?? '20');
