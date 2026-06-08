@@ -7028,6 +7028,13 @@ async function backgroundRefineNewTrades() {
         tlogEdit[idx].aiScaleReason  = _bgScaleReason;
         tlogEdit[idx].scaleInTargets = bgScaleInLevels.map(s => s.level);
         tlogEdit[idx].scaleInNewSLs  = bgScaleInLevels.map(s => s.newSL);
+        // ── Pionex：升級為長線單時更新止盈訂單至 ltTP ──
+        if (!_wasLongTermAlready && tlogEdit[idx].pionexOrders) {
+          const _ps2 = loadSettings();
+          if (_ps2.pionexAutoTrade && _ps2.pionexApiKey) {
+            pionexUpdateTP(tlogEdit[idx], ltTP, _ps2).catch(e => console.warn('[Pionex TP upgrade]', e));
+          }
+        }
         // 發送長線升級通知（僅在從短線升級為長線時才發送；已是長線單時掃描通知已覆蓋，不重複通知）
         if (!_wasLongTermAlready) {
           try {
@@ -7061,6 +7068,7 @@ function updateOpenTrades(data) {
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
   const toDeleteIds = new Set();      // 取消後立即從 tlog 刪除的 trade id
   const tp1Hits = []; // trades that just reached TP1 this cycle
+  const pionexCancelQueue = []; // 需要在 Pionex 取消訂單的交易（非正常止盈止損，而是信號失效撤單）
 
   // ── 清除殘留的 direction='wait' 無效掛單（直接刪除，不留冷卻記錄）──
   for (const trade of tlog) {
@@ -7109,6 +7117,7 @@ function updateOpenTrades(data) {
             ? `宏觀大方向${macroLabel}，取消逆勢${trade.direction === 'long' ? '多' : '空'}單掛單`
             : '本週 + 今日 AI 均明確反向，取消未入場掛單';
           addCancelCooldown(trade, reason);
+          pionexCancelQueue.push(trade);
           toDeleteIds.add(trade.id);
           changed = true;
           cancelledSymbols.add(trade.symbol);
@@ -7235,6 +7244,7 @@ function updateOpenTrades(data) {
         if (freshConf < 60 && !trade.entryTime) {
           const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 60%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
+          pionexCancelQueue.push(trade);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
           changed = true;
@@ -7248,6 +7258,7 @@ function updateOpenTrades(data) {
       if (_structConf < 60 && !trade.entryTime) {
         const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 60%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
+        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
         changed = true;
@@ -7267,6 +7278,7 @@ function updateOpenTrades(data) {
           const _rDetail = _frRisk.score >= 60 ? _frRisk.factors.slice(0, 2).join('、') : '市場高波動性，RSI 或趨勢評分處於極端區間';
           const _frReason = `AI 風險評估升至${_rLabel}：${_rDetail}`;
           addCancelCooldown(trade, _frReason);
+          pionexCancelQueue.push(trade);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
           changed = true;
@@ -7311,6 +7323,7 @@ function updateOpenTrades(data) {
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
         const cancelReason = reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`;
         addCancelCooldown(trade, cancelReason);
+        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
@@ -7323,6 +7336,7 @@ function updateOpenTrades(data) {
       if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
         const _slReason = `進場前價格已${isLong ? '跌破' : '突破'}止損位 $${sl}（現價 $${cur.toPrecision(6)}）`;
         addCancelCooldown(trade, _slReason);
+        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
@@ -7339,6 +7353,7 @@ function updateOpenTrades(data) {
         const fmt      = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
         const cancelReason = `價格未回踩進場直接飛越${hitLevel}（$${fmt(isLong ? tp1 : tp1)}），掛單失效`;
         addCancelCooldown(trade, cancelReason);
+        pionexCancelQueue.push(trade);
         toDeleteIds.add(trade.id);
         changed = true;
         cancelledSymbols.add(trade.symbol);
@@ -7534,6 +7549,17 @@ function updateOpenTrades(data) {
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
   if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
+
+  // ── Pionex 撤銷已取消的掛單 ──
+  if (pionexCancelQueue.length > 0) {
+    const _ps = loadSettings();
+    if (_ps.pionexAutoTrade && _ps.pionexApiKey) {
+      for (const _ct of pionexCancelQueue) {
+        pionexCancelTradeOrders(_ct).catch(e => console.warn('[Pionex cancel]', _ct.symbol, e.message));
+      }
+    }
+  }
+
   return cancelledSymbols;
 }
 
@@ -7726,6 +7752,15 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
     `🔔 已加倉 ${scaleIn.seqNum}/${trade.maxScaleIns || 3} 次\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+
+  // ── Pionex 加倉 + 更新止損 ──
+  if (s.pionexAutoTrade && s.pionexApiKey && s.pionexApiSecret) {
+    const _ptrade = loadTradeLog().find(t => t.id === trade.id);
+    if (_ptrade) {
+      pionexPlaceScaleIn(_ptrade, scaleIn, s).catch(e => console.warn('[Pionex scale-in]', e));
+    }
+  }
+
   // 加倉後止損已調整 → 寫入 AI 追蹤止損快取，避免同一位置重複通知
   if (newSL != null) {
     try {
@@ -8523,6 +8558,15 @@ function checkPostDataReversal(data) {
       `${analysisBlock}` +
       `🔗 <a href="${window.location.origin + window.location.pathname}">查看 ${trade.symbol.replace('/USDT','')} 詳細分析 →</a>`;
     sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+
+    // ── 同步更新 Pionex 止損單 ──
+    if (s.pionexAutoTrade && s.pionexApiKey && s.pionexApiSecret) {
+      const _ptrade = loadTradeLog().find(t => t.id === trade.id);
+      if (_ptrade?.pionexOrders) {
+        pionexUpdateSL(_ptrade, suggestNewSl, s).catch(e => console.warn('[Pionex SL trail]', e));
+        if (typeof showToast === 'function') showToast(`🔄 Pionex 止損更新：${trade.symbol} → $${suggestNewSl.toFixed(4)}`, 'info');
+      }
+    }
   }
 }
 
@@ -10645,10 +10689,153 @@ function fmtDateTime(ts) {
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */
 const SIGNAL_CACHE_KEY = 'csp_signal_cache';
 
-/* ── 信號偵測與通知發送 ──────────────────────────────────────── */
-const SIGNAL_CACHE_KEY = 'csp_signal_cache';
-
 /* ── Pionex 自動下單 ──────────────────────────────────────────── */
+
+// 儲存 Pionex 訂單 ID 到持倉記錄
+async function _pionexSaveOrderIds(tradeId, updates) {
+  try {
+    const tl = loadTradeLog();
+    const ti = tl.findIndex(t => t.id === tradeId);
+    if (ti < 0) return;
+    if (!tl[ti].pionexOrders) tl[ti].pionexOrders = { scaleInOrders: [] };
+    Object.assign(tl[ti].pionexOrders, updates);
+    saveTradeLog(tl);
+  } catch(e) { console.warn('[Pionex] save order IDs failed', e); }
+}
+
+// 設置槓桿（不支援則自動降至 20x）
+async function _pionexSetLeverage(apiKey, apiSecret, symbol, leverage) {
+  if (leverage <= 0) return;
+  try {
+    await setPionexLeverage(apiKey, apiSecret, symbol, leverage);
+  } catch(e) {
+    if (leverage !== 20) {
+      try { await setPionexLeverage(apiKey, apiSecret, symbol, 20); } catch(_) {}
+    }
+  }
+}
+
+// 下單並取得訂單 ID
+async function _pionexPlaceOrderSafe(apiKey, apiSecret, params) {
+  try {
+    const res = await placePionexOrder(apiKey, apiSecret, params);
+    return res?.data?.orderId || null;
+  } catch(e) {
+    console.warn('[Pionex] 掛單失敗:', params.type, e.message);
+    return null;
+  }
+}
+
+// 取消單一訂單（不拋出錯誤）
+async function _pionexCancelSafe(apiKey, apiSecret, symbol, orderId) {
+  if (!orderId) return;
+  await cancelPionexOrder(apiKey, apiSecret, symbol, orderId).catch(() => {});
+}
+
+// 取消某筆交易的所有 Pionex 訂單（進場 + 止損 + 止盈 + 加倉）
+async function pionexCancelTradeOrders(trade) {
+  const s = loadSettings();
+  if (!s.pionexAutoTrade || !s.pionexApiKey || !s.pionexApiSecret || !trade.pionexOrders) return;
+  const { entryId, slId, tpId, scaleInOrders = [] } = trade.pionexOrders;
+  const sym = trade.symbol;
+  await Promise.allSettled([
+    _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, entryId),
+    _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, slId),
+    _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, tpId),
+    ...scaleInOrders.flatMap(si => [
+      _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, si.slId),
+      _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, si.tpId),
+    ]),
+  ]);
+}
+
+// 更新 Pionex 止損單（取消舊的，掛新的）
+async function pionexUpdateSL(trade, newSL, s) {
+  if (!s.pionexAutoTrade || !s.pionexApiKey || !trade?.pionexOrders) return;
+  const sym     = trade.symbol;
+  const isLong  = trade.direction === 'long';
+  const oppSide = isLong ? 'SELL' : 'BUY';
+  const size    = trade.pionexOrders.size || 0;
+  if (!size || !newSL) return;
+
+  await _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, trade.pionexOrders.slId);
+
+  const slBuffer = newSL * (isLong ? 0.997 : 1.003);
+  const newSlId  = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
+    symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(size),
+    stopPrice: String(parseFloat(newSL.toFixed(8))),
+    price:     String(parseFloat(slBuffer.toFixed(8))),
+  });
+  await _pionexSaveOrderIds(trade.id, { slId: newSlId });
+  console.log('[Pionex] 止損已更新:', sym, newSL, '→ orderId:', newSlId);
+}
+
+// 更新 Pionex 止盈單（取消舊的，掛新的）
+async function pionexUpdateTP(trade, newTP, s) {
+  if (!s.pionexAutoTrade || !s.pionexApiKey || !trade?.pionexOrders) return;
+  const sym     = trade.symbol;
+  const isLong  = trade.direction === 'long';
+  const oppSide = isLong ? 'SELL' : 'BUY';
+  const size    = trade.pionexOrders.size || 0;
+  if (!size || !newTP) return;
+
+  await _pionexCancelSafe(s.pionexApiKey, s.pionexApiSecret, sym, trade.pionexOrders.tpId);
+
+  const tpBuffer = newTP * (isLong ? 0.999 : 1.001);
+  const newTpId  = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
+    symbol: sym, side: oppSide, type: 'TAKE_PROFIT_LIMIT', size: String(size),
+    stopPrice: String(parseFloat(newTP.toFixed(8))),
+    price:     String(parseFloat(tpBuffer.toFixed(8))),
+  });
+  await _pionexSaveOrderIds(trade.id, { tpId: newTpId });
+  console.log('[Pionex] 止盈已更新:', sym, newTP, '→ orderId:', newTpId);
+}
+
+// 加倉：更新 Pionex 止損單（加倉後止損移位），並記錄加倉訂單 ID
+async function pionexPlaceScaleIn(trade, scaleIn, s) {
+  if (!s.pionexAutoTrade || !s.pionexApiKey || !trade?.pionexOrders) return;
+  const sym     = trade.symbol;
+  const isLong  = trade.direction === 'long';
+  const oppSide = isLong ? 'SELL' : 'BUY';
+
+  // 計算加倉倉位大小（與原倉位相同）
+  const capitalUSDT = parseFloat(s.pionexCapitalUSDT) || 100;
+  const leverage    = parseInt(s.pionexLeverage)  || 0;
+  const sizeUSDT    = leverage > 0 ? capitalUSDT * leverage : capitalUSDT;
+  const entryPrice  = scaleIn.entryPrice || scaleIn.entryLevel;
+  const sizeBase    = parseFloat((sizeUSDT / entryPrice).toFixed(6));
+
+  // 加倉止損單（新止損位）
+  let siSlId = null;
+  if (s.pionexEnableSL && trade.sl) {
+    const sl = trade.sl;
+    const slBuffer = sl * (isLong ? 0.997 : 1.003);
+    siSlId = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
+      symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(sizeBase),
+      stopPrice: String(parseFloat(sl.toFixed(8))),
+      price:     String(parseFloat(slBuffer.toFixed(8))),
+    });
+  }
+
+  // 同時更新主倉的止損單至新止損位
+  if (trade.pionexOrders?.slId && trade.sl) {
+    await pionexUpdateSL(trade, trade.sl, s);
+  }
+
+  // 儲存加倉訂單 ID
+  try {
+    const tl = loadTradeLog();
+    const ti = tl.findIndex(t => t.id === trade.id);
+    if (ti >= 0) {
+      if (!tl[ti].pionexOrders) tl[ti].pionexOrders = { scaleInOrders: [] };
+      if (!tl[ti].pionexOrders.scaleInOrders) tl[ti].pionexOrders.scaleInOrders = [];
+      tl[ti].pionexOrders.scaleInOrders.push({ seqNum: scaleIn.seqNum, slId: siSlId });
+      saveTradeLog(tl);
+    }
+  } catch(e) {}
+  console.log('[Pionex] 加倉訂單完成:', sym, '#' + scaleIn.seqNum);
+}
+
 async function executePionexAutoTrade(trade, notifSetup) {
   try {
     const s = loadSettings();
@@ -10656,24 +10843,28 @@ async function executePionexAutoTrade(trade, notifSetup) {
 
     const sym    = trade.symbol;
     const isLong = trade.direction === 'long';
-    const entry  = parseFloat(notifSetup?.entry  || trade.entry)  || 0;
-    const sl     = parseFloat(notifSetup?.sl     || trade.sl)     || 0;
-    const tp1    = parseFloat(notifSetup?.tp1    || trade.tp1)    || 0;
+    const entry  = parseFloat(notifSetup?.entry || trade.entry) || 0;
+    const sl     = parseFloat(notifSetup?.sl    || trade.sl)    || 0;
+    const tp1    = parseFloat(notifSetup?.tp1   || trade.tp1)   || 0;
+    const ltTP   = parseFloat(notifSetup?.ltTP  || trade.ltTP)  || 0;
+    const tpTarget = ltTP || tp1;
     if (!entry || !sl) { console.warn('[Pionex] 缺少進場/止損位，跳過下單'); return; }
 
-    // ── 計算下單量 ──
-    const riskUSDT   = parseFloat(s.pionexRiskUSDT)  || 10;
-    const maxUSDT    = parseFloat(s.pionexMaxUSDT)   || 500;
-    const slDistPct  = Math.abs(entry - sl) / entry;
-    const rawSizeUSDT= slDistPct > 0 ? riskUSDT / slDistPct : riskUSDT * 5;
-    const sizeUSDT   = Math.min(rawSizeUSDT, maxUSDT);
-    const sizeBase   = parseFloat((sizeUSDT / entry).toFixed(6));
+    // ── 計算下單量（本金 × 槓桿）──
+    const capitalUSDT = parseFloat(s.pionexCapitalUSDT) || 100;
+    const leverage    = parseInt(s.pionexLeverage)  || 0;
+    const sizeUSDT    = leverage > 0 ? capitalUSDT * leverage : capitalUSDT;
+    const sizeBase    = parseFloat((sizeUSDT / entry).toFixed(6));
+    const leverageLabel = leverage > 0 ? `${leverage}x` : '現貨';
 
-    const side       = isLong ? 'BUY' : 'SELL';
-    const oppSide    = isLong ? 'SELL' : 'BUY';
-    const orderType  = s.pionexOrderType || 'MARKET';
+    // ── 設置槓桿 ──
+    if (leverage > 0) await _pionexSetLeverage(s.pionexApiKey, s.pionexApiSecret, sym, leverage);
 
-    // ── 進場訂單 ──
+    const side      = isLong ? 'BUY' : 'SELL';
+    const oppSide   = isLong ? 'SELL' : 'BUY';
+    const orderType = s.pionexOrderType || 'LIMIT';
+
+    // ── 進場訂單（限價掛在進場位）──
     const entryParams = { symbol: sym, side, type: orderType, size: String(sizeBase) };
     if (orderType === 'LIMIT') entryParams.price = String(entry);
 
@@ -10681,49 +10872,55 @@ async function executePionexAutoTrade(trade, notifSetup) {
     try {
       const entryResult = await placePionexOrder(s.pionexApiKey, s.pionexApiSecret, entryParams);
       entryOrderId = entryResult?.data?.orderId || null;
-      const msg = `✅ Pionex 自動下單：${sym} ${isLong ? '▲ 做多' : '▼ 做空'}\n進場 $${entry}，量 ${sizeBase} (${sizeUSDT.toFixed(1)} USDT)`;
-      if (typeof showToast === 'function') showToast(msg, 'success');
+      const toastMsg = `✅ Pionex 掛單：${sym} ${isLong ? '▲ 做多' : '▼ 做空'} @$${entry}（${sizeUSDT.toFixed(0)} USDT ${leverageLabel}）`;
+      if (typeof showToast === 'function') showToast(toastMsg, 'success');
       if (s.notifTelegram && s.tgToken && s.tgChatId) {
         sendTelegramMessage(s.tgToken, s.tgChatId,
-          `🤖 <b>Pionex 自動下單</b>\n\n💎 <b>${sym}</b> ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
-          `📍 進場：$${entry}\n🛑 止損：$${sl}\n🎯 止盈1：$${tp1}\n📦 倉位：${sizeBase}（${sizeUSDT.toFixed(1)} USDT）`
+          `🤖 <b>Pionex 自動掛單</b>\n\n💎 <b>${sym}</b> ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
+          `📍 進場：<b>$${entry}</b>（${orderType === 'LIMIT' ? '限價' : '市價'}）\n` +
+          `🛑 止損：$${sl}\n🎯 止盈：$${tpTarget || tp1}\n` +
+          `📦 倉位：${sizeBase}（${sizeUSDT.toFixed(0)} USDT${leverage > 0 ? '，' + leverage + 'x 槓桿' : '，現貨'}）`
         );
       }
     } catch (err) {
       const isCors = err.message === 'CORS_BLOCKED';
       const errMsg = isCors
-        ? '⚠️ Pionex 下單被瀏覽器 CORS 政策阻擋。請在設定中改用 API 代理模式，或在本地後端加入 /trade 端點。'
-        : `❌ Pionex 進場下單失敗：${err.message}`;
+        ? '⚠️ Pionex 被瀏覽器 CORS 阻擋，需本地後端代理（見設定說明）'
+        : `❌ Pionex 進場掛單失敗：${err.message}`;
       console.error('[Pionex]', errMsg, err);
       if (typeof showToast === 'function') showToast(errMsg, 'error');
       if (s.notifTelegram && s.tgToken && s.tgChatId)
-        sendTelegramMessage(s.tgToken, s.tgChatId, `❌ <b>Pionex 下單失敗</b>\n${sym}\n${err.message}`);
+        sendTelegramMessage(s.tgToken, s.tgChatId, `❌ <b>Pionex 掛單失敗</b>\n${sym}\n${err.message}`);
       return;
     }
 
     // ── 止損單 ──
+    let slOrderId = null;
     if (s.pionexEnableSL && sl) {
-      try {
-        const slBuffer = sl * (isLong ? 0.997 : 1.003); // 稍微留緩衝避免滑點吃單失敗
-        await placePionexOrder(s.pionexApiKey, s.pionexApiSecret, {
-          symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(sizeBase),
-          stopPrice: String(parseFloat(sl.toFixed(8))),
-          price:     String(parseFloat(slBuffer.toFixed(8))),
-        });
-      } catch (err) { console.warn('[Pionex] 止損單失敗（可繼續）:', err.message); }
+      const slBuffer = sl * (isLong ? 0.997 : 1.003);
+      slOrderId = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
+        symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(sizeBase),
+        stopPrice: String(parseFloat(sl.toFixed(8))),
+        price:     String(parseFloat(slBuffer.toFixed(8))),
+      });
     }
 
-    // ── 止盈單 ──
-    if (s.pionexEnableTP && tp1) {
-      try {
-        const tpBuffer = tp1 * (isLong ? 0.999 : 1.001);
-        await placePionexOrder(s.pionexApiKey, s.pionexApiSecret, {
-          symbol: sym, side: oppSide, type: 'TAKE_PROFIT_LIMIT', size: String(sizeBase),
-          stopPrice: String(parseFloat(tp1.toFixed(8))),
-          price:     String(parseFloat(tpBuffer.toFixed(8))),
-        });
-      } catch (err) { console.warn('[Pionex] 止盈單失敗（可繼續）:', err.message); }
+    // ── 止盈單（優先使用長線目標 ltTP）──
+    let tpOrderId = null;
+    if (s.pionexEnableTP && tpTarget) {
+      const tpBuffer = tpTarget * (isLong ? 0.999 : 1.001);
+      tpOrderId = await _pionexPlaceOrderSafe(s.pionexApiKey, s.pionexApiSecret, {
+        symbol: sym, side: oppSide, type: 'TAKE_PROFIT_LIMIT', size: String(sizeBase),
+        stopPrice: String(parseFloat(tpTarget.toFixed(8))),
+        price:     String(parseFloat(tpBuffer.toFixed(8))),
+      });
     }
+
+    // ── 儲存訂單 ID 到持倉記錄 ──
+    await _pionexSaveOrderIds(trade.id, {
+      entryId: entryOrderId, slId: slOrderId, tpId: tpOrderId,
+      size: sizeBase, scaleInOrders: [],
+    });
 
   } catch(e) { console.error('[executePionexAutoTrade]', e); }
 }
@@ -11749,9 +11946,9 @@ function populateSettingsPage() {
   _pChk('s-pionex-toggle',    s.pionexAutoTrade);
   _pSet('s-pionex-key',       s.pionexApiKey    || '');
   _pSet('s-pionex-secret',    s.pionexApiSecret || '');
-  _pSet('s-pionex-order-type',s.pionexOrderType || 'MARKET');
-  _pSet('s-pionex-risk',      s.pionexRiskUSDT  || '10');
-  _pSet('s-pionex-max',       s.pionexMaxUSDT   || '500');
+  _pSet('s-pionex-order-type',s.pionexOrderType    || 'LIMIT');
+  _pSet('s-pionex-capital',   s.pionexCapitalUSDT || '100');
+  _pSet('s-pionex-leverage',  s.pionexLeverage    ?? '20');
   _pChk('s-pionex-sl',        s.pionexEnableSL  ?? true);
   _pChk('s-pionex-tp',        s.pionexEnableTP  ?? true);
 
@@ -11777,9 +11974,9 @@ function saveAllSettings() {
     pionexAutoTrade: document.getElementById('s-pionex-toggle')?.checked ?? false,
     pionexApiKey:    document.getElementById('s-pionex-key')?.value.trim()    || '',
     pionexApiSecret: document.getElementById('s-pionex-secret')?.value.trim() || '',
-    pionexOrderType: document.getElementById('s-pionex-order-type')?.value    || 'MARKET',
-    pionexRiskUSDT:  parseFloat(document.getElementById('s-pionex-risk')?.value) || 10,
-    pionexMaxUSDT:   parseFloat(document.getElementById('s-pionex-max')?.value)  || 500,
+    pionexOrderType:    document.getElementById('s-pionex-order-type')?.value         || 'LIMIT',
+    pionexCapitalUSDT:  parseFloat(document.getElementById('s-pionex-capital')?.value) || 100,
+    pionexLeverage:     parseInt(document.getElementById('s-pionex-leverage')?.value)  ?? 20,
     pionexEnableSL:  document.getElementById('s-pionex-sl')?.checked ?? true,
     pionexEnableTP:  document.getElementById('s-pionex-tp')?.checked ?? true,
   };

@@ -978,6 +978,17 @@ async function cancelPionexOrder(apiKey, apiSecret, symbol, orderId) {
     `symbol=${sym}&orderId=${orderId}`);
 }
 
+async function setPionexLeverage(apiKey, apiSecret, symbol, leverage) {
+  const sym = symbol.replace('/', '_').replace('-', '_');
+  return pionexRequest(apiKey, apiSecret, 'POST', '/api/v1/account/setLeverage',
+    { symbol: sym, leverage: String(Math.round(leverage)) });
+}
+
+async function getPionexOpenOrders(apiKey, apiSecret, symbol) {
+  const sym = symbol.replace('/', '_').replace('-', '_');
+  return pionexRequest(apiKey, apiSecret, 'GET', '/api/v1/trade/openOrders', { symbol: sym });
+}
+
 /* ═══════════════════ 市場足跡圖數據 ══════════════════════ */
 async function fetchFootprintData(symbol) {
   const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';

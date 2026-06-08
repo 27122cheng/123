@@ -776,13 +776,14 @@
 
         <div class="tg-setup-grid" style="margin-bottom:12px">
           <div class="tg-field">
-            <label class="tg-label">每筆風險 (USDT)</label>
-            <input id="s-pionex-risk" type="number" class="setting-input" placeholder="10" min="1" max="10000" step="1" />
-            <div style="font-size:0.72rem;color:var(--text3);margin-top:4px">依止損距離反推倉位：風險÷止損%＝倉位</div>
+            <label class="tg-label">每單本金 (USDT)</label>
+            <input id="s-pionex-capital" type="number" class="setting-input" placeholder="100" min="1" max="100000" step="1" />
+            <div style="font-size:0.72rem;color:var(--text3);margin-top:4px">每筆交易投入的保證金，倉位 = 本金 × 槓桿</div>
           </div>
           <div class="tg-field">
-            <label class="tg-label">單筆倉位上限 (USDT)</label>
-            <input id="s-pionex-max" type="number" class="setting-input" placeholder="500" min="10" step="10" />
+            <label class="tg-label">槓桿倍數（0 = 現貨）</label>
+            <input id="s-pionex-leverage" type="number" class="setting-input" placeholder="20" min="0" max="100" step="1" />
+            <div style="font-size:0.72rem;color:var(--text3);margin-top:4px">Pionex 不支援時自動降為 20x</div>
           </div>
         </div>
 
@@ -790,8 +791,8 @@
           <div class="tg-field">
             <label class="tg-label">進場單類型</label>
             <select id="s-pionex-order-type" class="setting-input" style="cursor:pointer">
+              <option value="LIMIT">限價單（掛在進場位，建議）</option>
               <option value="MARKET">市價單（立即成交）</option>
-              <option value="LIMIT">限價單（進場點位）</option>
             </select>
           </div>
           <div class="tg-field" style="display:flex;flex-direction:column;gap:8px;justify-content:center">
@@ -801,7 +802,7 @@
             </label>
             <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;cursor:pointer">
               <input type="checkbox" id="s-pionex-tp" checked />
-              <span>同時掛止盈單（TP1）</span>
+              <span>同時掛止盈單（長線目標優先）</span>
             </label>
           </div>
         </div>
@@ -814,9 +815,9 @@
           <div class="tg-guide-title">📖 Pionex API 設定步驟</div>
           <ol class="tg-guide-steps">
             <li>登入 <strong>Pionex</strong> → 右上角帳戶 → <strong>API 管理</strong></li>
-            <li>新增 API，勾選 <strong>現貨交易</strong> 權限（不需提款權限）</li>
+            <li>新增 API，勾選 <strong>現貨交易</strong>（現貨）或 <strong>合約交易</strong>（槓桿）權限</li>
             <li>設定 IP 白名單（可選，提升安全性）</li>
-            <li>複製 API Key 和 Secret 填入上方欄位</li>
+            <li>複製 API Key 和 Secret 填入上方欄位，設定本金與槓桿後儲存</li>
           </ol>
           <div style="font-size:0.75rem;color:#f59e0b;margin-top:6px;background:rgba(245,158,11,.07);padding:6px 10px;border-radius:6px">
             ⚠️ API Key 儲存於本裝置 localStorage，請勿在公用電腦使用。<br>
@@ -865,7 +866,7 @@
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script src="js/indicators.js?v=20260605b"></script>
-  <script src="js/api.js?v=20260608a"></script>
-  <script src="js/app.js?v=20260608a"></script>
+  <script src="js/api.js?v=20260608b"></script>
+  <script src="js/app.js?v=20260608b"></script>
 </body>
 </html>
