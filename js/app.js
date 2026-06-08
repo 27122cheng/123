@@ -2658,6 +2658,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // ICT/SMC/SNR 分析資料
     killZone: _kz, orderBlock: _ictOB, fvg: _ictFVG, premiumDiscount: _ictPD,
     orderBlock4h: _ictOB4h, fvg4h: _ictFVG4h, ictBonus: _ictBonus,
+    // AI 訊號品質等級（供 Telegram 顯示）
+    sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel, sqFactors: _sqFactors,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -6648,6 +6650,15 @@ function recordSignalsFromScan(data) {
         const _dirLabel = isLong ? '▲ 做多（Long）' : '▼ 做空（Short）';
         const _siteUrl  = window.location.origin + window.location.pathname;
 
+        // ── AI 訊號品質等級 ──
+        const _sqGradeTG    = setup.sqGrade || 'C';
+        const _sqScoreTG    = setup.sqScore ?? '—';
+        const _sqLabelTG    = setup.sqGradeLabel || '一般訊號';
+        const _sqEmoji      = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
+        const _sqFactorsTG  = (setup.sqFactors || []).filter(f => f.startsWith('✅')).join(' · ');
+        const _sqLine       = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（評分 ${_sqScoreTG}/10）` +
+                              (_sqFactorsTG ? `\n   ${_sqFactorsTG}` : '');
+
         // ── 信心度扣分明細 ──
         const _macroPen = setup.macroPenalty || 0;
         const _wContra2 = isLong ? wBias.includes('bear') : wBias.includes('bull');
@@ -6811,6 +6822,7 @@ function recordSignalsFromScan(data) {
             `💎 <b>加密掃描 Pro — 長線單信號</b>\n` +
             (_riskBanner ? `${_riskBanner}` : '\n') +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
+            `${_sqLine}\n` +
             `⏰ ${_ts}\n` +
             `${_kzLine}${_ictBlock}\n` +
             `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` +
@@ -6829,6 +6841,7 @@ function recordSignalsFromScan(data) {
             `🚨 <b>加密掃描 Pro — 短線單信號</b>\n` +
             (_riskBanner ? `${_riskBanner}` : '\n') +
             `${_dirLabel}：<b>${coin.symbol}</b>\n` +
+            `${_sqLine}\n` +
             `⏰ ${_ts}\n` +
             `${_kzLine}${_ictBlock}\n\n` +
             (_biasBlock ? `${_biasBlock}\n\n` : '') +
