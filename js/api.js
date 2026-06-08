@@ -928,9 +928,14 @@ async function _pionexHmac(secret, message) {
 async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
   const ts = Date.now().toString();
   let queryStr = '', bodyStr = '';
-  if (method === 'GET' && params && Object.keys(params).length) {
-    queryStr = '?' + new URLSearchParams(params).toString();
-  } else if (method !== 'GET' && params) {
+  // GET and DELETE use query-string params; POST/PUT use request body
+  if (method === 'GET' || method === 'DELETE') {
+    if (params && typeof params === 'string') {
+      queryStr = '?' + params; // pre-built query string (e.g. cancelPionexOrder)
+    } else if (params && typeof params === 'object' && Object.keys(params).length) {
+      queryStr = '?' + new URLSearchParams(params).toString();
+    }
+  } else if (params) {
     bodyStr = typeof params === 'string' ? params : JSON.stringify(params);
   }
   const msg = ts + method + path + (queryStr || bodyStr);
