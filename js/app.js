@@ -2632,6 +2632,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     mtfAlign: entryMTFAlign,
     slType,
     score: parseFloat(coin.score) || 50,
+    symbol: coin.symbol || null,
     skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
   };
   const adxVal = parseFloat(coin.adx) || 20;
@@ -6618,8 +6619,8 @@ function recordSignalsFromScan(data) {
     const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
     if (_factors < 3) continue;
 
-    // ADX 過低（< 20）：震盪無趨勢，直接跳過
-    if ((parseFloat(coin.adx) || 20) < 20) continue;
+    // ADX 過低（< 22）：震盪無趨勢，直接跳過
+    if ((parseFloat(coin.adx) || 20) < 22) continue;
 
     // 成交量不得為低（低量趨勢不可靠）
     if ((coin.volumeStrength || '') === '低') continue;
@@ -6629,10 +6630,15 @@ function recordSignalsFromScan(data) {
     const _h4Aligned  = isLong ? _h4Sig.includes('bull') : _h4Sig.includes('bear');
     if (!_h4Aligned) continue;
 
-    // RSI 極端值過濾：超買不做多，超賣不做空
+    // RSI 極端值過濾：超買不做多，超賣不做空（收緊 2 個百分點）
     const _rsiVal = parseFloat(coin.rsi) || 50;
-    if (isLong  && _rsiVal > 72) continue;
-    if (!isLong && _rsiVal < 28) continue;
+    if (isLong  && _rsiVal > 70) continue;
+    if (!isLong && _rsiVal < 30) continue;
+
+    // 亞洲時段（UTC 0-4）流動性低，僅接受四大方向全對齊的高品質信號
+    const _utcH = new Date().getUTCHours();
+    const _isAsia = _utcH >= 0 && _utcH < 4;
+    if (_isAsia && _factors < 4) continue;
 
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
@@ -6641,11 +6647,21 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-    // MACD 方向確認：順向70%，逆向73%
-    const _scanMacd   = parseFloat(coin.macdHist) || 0;
+    // MACD 方向確認：順向 70%，逆向 76%（逆向 MACD 勝率歷史偏低，提高門檻）
+    const _scanMacd    = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    const _confMin    = _macdAligned ? 70 : 73;
+    const _confMin     = _macdAligned ? 70 : 76;
     if (setup.conf < _confMin) continue;
+
+    // 3/4 因子時：若評分不夠強（多頭 < 68 / 空頭 > 32），要求成交量為「高」或 ADX > 26
+    if (_factors === 3) {
+      const _scoreWeak = isLong ? coin.score < 68 : coin.score > 32;
+      if (_scoreWeak) {
+        const _volHigh = (coin.volumeStrength || '') === '高';
+        const _adxStr  = (parseFloat(coin.adx) || 20) > 26;
+        if (!_volHigh && !_adxStr) continue;
+      }
+    }
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -6657,8 +6673,8 @@ function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 中高風險及以上（≥55）→ 觀望（原60，降至55更保守）
-    if (_scanRisk.score >= 55) continue;
+    // 中高風險及以上（≥50）→ 觀望（提高保守度，確保進的都是較低風險）
+    if (_scanRisk.score >= 50) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
@@ -8679,6 +8695,16 @@ function archiveExpiredToMemory(trades) {
   mem.cumStats.totalWins    = (mem.cumStats.totalWins    || 0) + winT.length;
   mem.cumStats.totalLosses  = (mem.cumStats.totalLosses  || 0) + lossT.length;
 
+  // ── 各幣種勝率追蹤（用於 AI 懲罰歷史低勝率幣種）──
+  if (!mem.symbolStats) mem.symbolStats = {};
+  for (const t of newTrades) {
+    const sym = t.symbol;
+    if (!sym) continue;
+    if (!mem.symbolStats[sym]) mem.symbolStats[sym] = { wins: 0, total: 0 };
+    mem.symbolStats[sym].total++;
+    if (t.outcome === 'tp1' || t.outcome === 'tp2') mem.symbolStats[sym].wins++;
+  }
+
   // ── 記錄已歸檔 ID（最多保留最新 2000 個，防止無限增長）──
   const allArchived = [...archivedSet, ...newTrades.map(t => t.id)];
   mem.archivedIds = allArchived.slice(-2000);
@@ -8704,7 +8730,7 @@ function monthlyTradePrune() {
 
 function computeLearnProfile() {
   const closed = loadTradeLog().filter(t => t.status === 'closed');
-  if (closed.length < 2) return { ready: false, closed: closed.length };
+  if (closed.length < 3) return { ready: false, closed: closed.length };
 
   const losses = closed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
   const wins   = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
@@ -8751,10 +8777,11 @@ function computeLearnProfile() {
   const shortLosses = shortClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
 
   const check = (cond, subLoss, subAll, penaltyConf, warnTpl) => {
-    if (subAll.length < 2) return null;
+    if (subAll.length < 3) return null; // 至少 3 筆才建立規則（避免樣本太小誤導）
     const rate = subLoss.length / subAll.length;
     if (rate < 0.05) return null; // AI 目標勝率 95%+，止損率 > 5% 即觸發規則
-    const scaledPenalty = rate >= 0.6 ? penaltyConf + 15 : rate >= 0.4 ? penaltyConf + 5 : penaltyConf;
+    // 高止損率條件加重懲罰：≥60% → +20，≥40% → +8，否則基礎值
+    const scaledPenalty = rate >= 0.6 ? penaltyConf + 20 : rate >= 0.4 ? penaltyConf + 8 : penaltyConf;
     return { condition: cond, lossCount: subLoss.length, total: subAll.length,
       rate, penaltyConf: scaledPenalty, warning: warnTpl(Math.round(rate * 100)) };
   };
@@ -8809,9 +8836,9 @@ function computeLearnProfile() {
       closed.filter(t => t.entryMTFAlign != null && t.entryMTFAlign <= 1),
       10, r => `僅1個週期對齊入場止損率 ${r}%，建議等多週期共振`),
     check('low_conf_entry',
-      losses.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
-      closed.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 68),
-      12, r => `信心 60-68% 勉強進場止損率 ${r}%，建議等信心 ≥ 68% 再進`),
+      losses.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 70),
+      closed.filter(t => (t.conf || 0) >= 60 && (t.conf || 0) < 70),
+      12, r => `信心 60-70% 勉強進場止損率 ${r}%，建議等信心 ≥ 70% 再進`),
     // MACD 方向規則（基於實際交易記錄學習）
     check('macd_against_long',
       longLosses.filter(t => (t.entryMacdHist || 0) < 0),
@@ -8989,7 +9016,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'whale_against_short'  && direction === 'short' && ctx.whaleBias === 'bull') ||
         (rule.condition === 'bearish_div_long'     && direction === 'long'  && ctx.volDivergence === 'bearish_div') ||
         (rule.condition === 'low_mtf_align'        && (ctx.mtfAlign ?? 99) <= 1) ||
-        (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 68) ||
+        (rule.condition === 'low_conf_entry' && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 70) ||
         (rule.condition === 'macd_against_long'  && direction === 'long'  && (parseFloat(ctx.macdHist) || 0) < 0) ||
         (rule.condition === 'macd_against_short' && direction === 'short' && (parseFloat(ctx.macdHist) || 0) > 0) ||
         (rule.condition === 'low_vol_long'    && direction === 'long'  && (ctx.volWeak === true)) ||
@@ -9003,12 +9030,32 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       if ((rule.total || 0) >= 3) {
         const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
         if (match) {
-          const _rPen = Math.max(1, Math.min(8, Math.round((rule.rate || 0) * 10)));
+          // 最高懲罰上限提高至 12%（原 8%），對高止損率條件更有力地阻止進場
+          const _rPen = Math.max(1, Math.min(12, Math.round((rule.rate || 0) * 14)));
           penalty += _rPen;
           defenseChecks.push({ type: 'rule', label: _rLabel, count: rule.total || 0, pass: false, penalty: _rPen, rate: rule.rate });
         } else {
           defenseChecks.push({ type: 'rule', label: _rLabel, count: rule.total || 0, pass: true, penalty: 0, rate: rule.rate });
         }
+      }
+    }
+  }
+
+  // ① 各幣種勝率懲罰（歷史勝率偏低的幣種進場前額外扣分）
+  if (ctx.symbol) {
+    const _symStats = (profile.mem || loadAIMemory()).symbolStats?.[ctx.symbol];
+    if (_symStats && _symStats.total >= 5) {
+      const _symWR = _symStats.wins / _symStats.total;
+      if (_symWR < 0.35) {
+        const _symPen = 14;
+        penalty += _symPen;
+        addCheck('symbol', `${ctx.symbol} 歷史勝率僅 ${Math.round(_symWR*100)}%（${_symStats.wins}/${_symStats.total}筆），謹慎進場`, _symStats.total, true, _symPen);
+      } else if (_symWR < 0.45) {
+        const _symPen = 8;
+        penalty += _symPen;
+        addCheck('symbol', `${ctx.symbol} 歷史勝率 ${Math.round(_symWR*100)}%（${_symStats.wins}/${_symStats.total}筆），略偏低`, _symStats.total, true, _symPen);
+      } else if (_symWR >= 0.65) {
+        defenseChecks.push({ type: 'symbol', label: `${ctx.symbol} 歷史勝率 ${Math.round(_symWR*100)}%`, count: _symStats.total, pass: true, penalty: 0 });
       }
     }
   }
@@ -9044,6 +9091,28 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
           ((s.includes('週期') && s.includes('信號一致')) && (ctx.mtfAlign ?? 99) <= 1);
         // 改進建議僅作為 AI 交易建議參考，不影響信心評分
         defenseChecks.push({ type: 'sugg_ref', label: s.slice(0, 55), count: cnt, pass: !suggViolated, penalty: 0 });
+      }
+    }
+  }
+
+  // ⑤ 結構規則高止損率硬封鎖：≥75% 止損率 + ≥8 筆樣本 → 強制加罰防止進場
+  if (profile.ready && profile.rules.length) {
+    for (const rule of profile.rules) {
+      if ((rule.total || 0) >= 8 && (rule.rate || 0) >= 0.75) {
+        const match75 =
+          (rule.condition === 'long_high_rsi'      && direction === 'long'  && rsi > 65) ||
+          (rule.condition === 'short_low_rsi'       && direction === 'short' && rsi < 35) ||
+          (rule.condition === 'low_adx'             && !ctx.skipAdxRule && adx < 20) ||
+          (rule.condition === 'low_conf_entry'      && (ctx.conf || 0) >= 60 && (ctx.conf || 0) < 70) ||
+          (rule.condition === 'macd_against_long'   && direction === 'long'  && (parseFloat(ctx.macdHist) || 0) < 0) ||
+          (rule.condition === 'macd_against_short'  && direction === 'short' && (parseFloat(ctx.macdHist) || 0) > 0) ||
+          (rule.condition === 'weak_score_long'     && direction === 'long'  && ctx.scoreStrength === 'weak') ||
+          (rule.condition === 'weak_score_short'    && direction === 'short' && ctx.scoreStrength === 'weak') ||
+          (rule.condition === 'asia_session_loss'   && ctx.killZone === 'asia');
+        if (match75) {
+          penalty += 20;
+          blockReasons.push(`🚫 極高止損率條件攔截：「${(rule.warning||'').slice(0,40)}」止損率 ${Math.round(rule.rate*100)}%（${rule.total}筆），強制觀望`);
+        }
       }
     }
   }
@@ -11098,7 +11167,7 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 65) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
+    if (notifConf < 68) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
 
     // 信心度達標 → 完整交易信號通知
     if (s.notifBrowser) {
@@ -11467,11 +11536,11 @@ function computeSimpleSetup(coin, isLong) {
   if (!isLong && tp2 > tp1 * 0.997) tp2 = tp1 - Math.abs(entry - tp1) * 0.5;
 
   // ═══════════════════════════════════════════════
-  // 4. 盈虧比檢查：R:R < 1.3 → 觀望，不開倉
+  // 4. 盈虧比檢查：R:R < 1.5 → 觀望，不開倉（高勝率要求最低 1.5:1）
   // ═══════════════════════════════════════════════
   const _rrCheck  = risk > 0 ? Math.abs(tp1 - entry) / risk : 0;
-  const rrBlocked = _rrCheck < 1.3;
-  const rrReason  = rrBlocked ? `R/R ${_rrCheck.toFixed(2)}:1 低於 1.3，盈虧比不足，建議觀望` : '';
+  const rrBlocked = _rrCheck < 1.5;
+  const rrReason  = rrBlocked ? `R/R ${_rrCheck.toFixed(2)}:1 低於 1.5，盈虧比不足，建議觀望` : '';
 
   // ── AI 學習引擎調整（同 buildTradeSetup 相同邏輯）──
   const hardAdxPenalty = adx < 18 ? 18 : adx < 22 ? 10 : 0;
@@ -11488,6 +11557,7 @@ function computeSimpleSetup(coin, isLong) {
     h4Aligned:     _ssH4Aligned,
     scoreStrength: _ssScoreStr,
     killZone:      _ssKillZone,
+    symbol:        coin.symbol || null,
   });
   // rawConf：做多用 score，做空用 100-score（score=30 → 空頭強度70%）
   let rawConf = Math.min(88, _ssDirBase);
@@ -11936,8 +12006,8 @@ function populateSettingsPage() {
   if (tgToken)  tgToken.value  = s.tgToken  || '';
   if (tgChatId) tgChatId.value = s.tgChatId || '';
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
-  if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
-  if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
+  if (nBullThr) { nBullThr.value = s.notifBullScore || 68; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
+  if (nBearThr) { nBearThr.value = s.notifBearScore || 32; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
 
   // Pionex 設定
@@ -11968,8 +12038,8 @@ function saveAllSettings() {
     notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
     tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
-    notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
-    notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
+    notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 68,
+    notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 32,
     // Pionex
     pionexAutoTrade: document.getElementById('s-pionex-toggle')?.checked ?? false,
     pionexApiKey:    document.getElementById('s-pionex-key')?.value.trim()    || '',
