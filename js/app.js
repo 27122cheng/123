@@ -1861,6 +1861,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_raw4h?.length >= 5 && typeof detectFairValueGaps === 'function') _ictFVG4h = detectFairValueGaps(_raw4h, isLong);
   } catch(_icte) { console.warn('[ICT analysis]', _icte); }
 
+  // ── 足跡圖關鍵數據（Footprint）──
+  const _fp      = _footprintCache[coin.symbol] || null;
+  const _fpPOC   = _fp?.poc   || null;
+  const _fpDir   = _fp?.deltaDir  || 'neutral';
+  const _fpDiv   = _fp?.deltaDiv  || false;
+  const _fpAbs   = _fp?.absorption || false;
+  // 依方向篩選：多頭關注賣壓區（阻力）及買壓區（支撐），空頭相反
+  const _fpResistLevels = _fp?.highSellLevels?.map(l => l.price) || [];  // 賣壓集中 → 阻力
+  const _fpSupportLevels= _fp?.highBuyLevels?.map(l => l.price)  || [];  // 買壓集中 → 支撐
+
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
@@ -1879,6 +1889,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     } else {
       entry = price;
     }
+    // ── 足跡圖進場輔助（多頭）──
+    if (_fp) {
+      // POC 在進場價附近（±1.5 ATR）→ 最優成交量磁吸點，吸附進場
+      if (_fpPOC && Math.abs(entry - _fpPOC) < atr * 1.5) {
+        const pocEntry = isLong ? Math.min(entry, _fpPOC + atr * 0.1) : entry;
+        if (pocEntry < entry) {
+          entry = pocEntry;
+          entryReasons.unshift(`足跡 POC $${parseFloat(_fpPOC).toPrecision(4).replace(/\.?0+$/,'')} 磁吸最高成交量區，優化進場`);
+        } else {
+          entryReasons.push(`足跡 POC $${parseFloat(_fpPOC).toPrecision(4).replace(/\.?0+$/,'')} 附近確認 成交量結構支撐`);
+        }
+      }
+      // 強買壓區在進場下方 → 可靠支撐
+      const _nearBuySup = _fpSupportLevels.find(lv => lv < entry && lv > entry - atr * 2);
+      if (_nearBuySup) entryReasons.push(`足跡強買壓區 $${parseFloat(_nearBuySup).toPrecision(4).replace(/\.?0+$/,'')} 支撐進場`);
+      // 吸籌偵測 → 賣壓被承接，多頭信心
+      if (_fpAbs) entryReasons.push('🔵 足跡偵測吸籌 賣壓被多方承接');
+      // Delta 同向 → 確認
+      if (_fpDir === 'bull') entryReasons.push(`足跡 Delta 偏多 主動買盤主導`);
+      // Delta 背離 → 警告（逆風）
+      if (_fpDiv) entryReasons.push(`⚠️ 足跡 Delta 背離 趨勢動能存疑`);
+    }
+
     if (rsi < 45 && rsiSlope > 1)  entryReasons.push(`RSI ${rsi} 低位回升（+${rsiSlope}）`);
     else if (rsi < 38)             entryReasons.push(`RSI ${rsi} 超賣反彈機會`);
     if (buyPct > 57)               entryReasons.push(`主動買盤佔 ${buyPct}%`);
@@ -1958,6 +1991,27 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     } else {
       entry = price;
     }
+    // ── 足跡圖進場輔助（空頭）──
+    if (_fp) {
+      // POC 在進場價附近 → 成交量磁吸阻力
+      if (_fpPOC && Math.abs(entry - _fpPOC) < atr * 1.5) {
+        const pocEntry = Math.max(entry, _fpPOC - atr * 0.1);
+        if (pocEntry > entry) {
+          entry = pocEntry;
+          entryReasons.unshift(`足跡 POC $${parseFloat(_fpPOC).toPrecision(4).replace(/\.?0+$/,'')} 磁吸阻力，優化做空進場`);
+        } else {
+          entryReasons.push(`足跡 POC $${parseFloat(_fpPOC).toPrecision(4).replace(/\.?0+$/,'')} 附近確認 成交量結構阻力`);
+        }
+      }
+      // 強賣壓區在進場上方 → 可靠阻力
+      const _nearSellRes = _fpResistLevels.find(lv => lv > entry && lv < entry + atr * 2);
+      if (_nearSellRes) entryReasons.push(`足跡強賣壓區 $${parseFloat(_nearSellRes).toPrecision(4).replace(/\.?0+$/,'')} 阻力確認做空`);
+      // Delta 同向（bear）→ 確認
+      if (_fpDir === 'bear') entryReasons.push(`足跡 Delta 偏空 主動賣盤主導`);
+      // Delta 背離 → 警告
+      if (_fpDiv) entryReasons.push(`⚠️ 足跡 Delta 背離 趨勢動能存疑`);
+    }
+
     if (rsi > 55 && rsiSlope < -1) entryReasons.push(`RSI ${rsi} 高位回落（${rsiSlope}）`);
     else if (rsi > 62)             entryReasons.push(`RSI ${rsi} 超買回調機會`);
     if (buyPct < 43)               entryReasons.push(`主動賣盤佔 ${100 - buyPct}%`);
@@ -2087,6 +2141,47 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           : `現價上方 ${slDistPct}%（ATR 止損），動能失效離場`;
     }
   }
+
+  // ── 足跡圖止損優化 ──
+  if (_fp) {
+    try {
+      if (isLong) {
+        // 在現有 SL 附近找最近的強買壓支撐區 → 錨定在該區下方（確保止損在支撐失效點）
+        const fpSup = _fpSupportLevels
+          .filter(lv => lv > sl - atr && lv < entry)
+          .sort((a, b) => b - a)[0];  // 最靠近進場的買壓區
+        if (fpSup) {
+          const fpSL = fpSup - atr * 0.25;  // 買壓區下方加 0.25 ATR 緩衝
+          if (fpSL > sl - atr * 0.5) {      // 只在不大幅收緊止損的前提下調整
+            sl = fpSL;
+            slReason += `；足跡強買壓區 $${parseFloat(fpSup).toPrecision(4).replace(/\.?0+$/,'')} 下方止損（失守視為買盤瓦解）`;
+          }
+        }
+        // POC 在 SL 和進場之間 → 使用 POC 下方作為止損（POC 失守 = 結構轉換）
+        if (_fpPOC && _fpPOC > sl && _fpPOC < entry - atr * 0.3) {
+          sl = _fpPOC - atr * 0.2;
+          slReason += `；足跡 POC $${parseFloat(_fpPOC).toPrecision(4).replace(/\.?0+$/,'')} 下方止損（最高成交量失守）`;
+        }
+      } else {
+        // 空頭：在現有 SL 附近找最近的強賣壓阻力區 → 錨定在該區上方
+        const fpRes = _fpResistLevels
+          .filter(lv => lv < sl + atr && lv > entry)
+          .sort((a, b) => a - b)[0];  // 最靠近進場的賣壓區
+        if (fpRes) {
+          const fpSL = fpRes + atr * 0.25;
+          if (fpSL < sl + atr * 0.5) {
+            sl = fpSL;
+            slReason += `；足跡強賣壓區 $${parseFloat(fpRes).toPrecision(4).replace(/\.?0+$/,'')} 上方止損（失守視為賣盤瓦解）`;
+          }
+        }
+        if (_fpPOC && _fpPOC < sl && _fpPOC > entry + atr * 0.3) {
+          sl = _fpPOC + atr * 0.2;
+          slReason += `；足跡 POC $${parseFloat(_fpPOC).toPrecision(4).replace(/\.?0+$/,'')} 上方止損（最高成交量失守）`;
+        }
+      }
+    } catch(_fpSLe) {}
+  }
+
   const risk = Math.abs(entry - sl) || atr;
 
   // ── 止盈一：優先 4H/日線 S/R，最低 2:1 R/R ──
@@ -2135,6 +2230,80 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     tp2Reason = s2
       ? `${_htfTfLabel(s2)}支撐 ${fmtPrice(s2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
       : `擺動低點 ${fmtPrice(swLow)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
+  }
+
+  // ── 足跡圖止盈優化 ──
+  if (_fp) {
+    try {
+      const _fmtFPLvl = v => parseFloat(v).toPrecision(4).replace(/\.?0+$/, '');
+      if (isLong) {
+        // TP1：在 entry → tp1 之間若有強賣壓區，提前在該區止盈（避免被阻力打回）
+        const fpTP1Wall = _fpResistLevels
+          .filter(lv => lv > entry + risk * 1.2 && lv < tp1 + atr)
+          .sort((a, b) => a - b)[0];
+        if (fpTP1Wall) {
+          const fpTP1 = fpTP1Wall - atr * 0.15;
+          const fpRR1 = ((fpTP1 - entry) / risk).toFixed(1);
+          if (parseFloat(fpRR1) >= 1.5) {
+            tp1 = fpTP1;
+            tp1Reason = `足跡強賣壓區 $${_fmtFPLvl(fpTP1Wall)} 前方止盈，R/R ${fpRR1}:1（主力出貨區，到達後減倉 60%）`;
+          }
+        }
+        // TP2：在 tp1 → tp2 之間若有更強的賣壓區，作為 TP2
+        const fpTP2Wall = _fpResistLevels
+          .filter(lv => lv > tp1 + price * 0.003 && lv <= tp2 + atr * 2)
+          .sort((a, b) => b - a)[0];  // 取最高的賣壓區
+        if (fpTP2Wall) {
+          const fpTP2 = fpTP2Wall - atr * 0.2;
+          const fpRR2 = ((fpTP2 - entry) / risk).toFixed(1);
+          if (fpTP2 > tp1 && parseFloat(fpRR2) >= 2.5) {
+            tp2 = fpTP2;
+            tp2Reason = `足跡強賣壓區 $${_fmtFPLvl(fpTP2Wall)} 前方止盈，R/R ${fpRR2}:1（成交量牆阻力，剩餘倉位移至成本）`;
+          }
+        }
+        // POC 在 TP1 前 → 若 POC 是強阻力，在 POC 前止盈 TP1
+        if (_fpPOC && _fpPOC > entry + risk * 1.2 && _fpPOC < tp1) {
+          const fpRR1c = ((_fpPOC - atr * 0.1 - entry) / risk).toFixed(1);
+          if (parseFloat(fpRR1c) >= 1.5) {
+            tp1 = _fpPOC - atr * 0.1;
+            tp1Reason = `足跡 POC $${_fmtFPLvl(_fpPOC)} 前方止盈，R/R ${fpRR1c}:1（最高成交量區阻力，減倉 60%）`;
+          }
+        }
+      } else {
+        // 空頭 TP1：在 entry → tp1（向下）之間若有強買壓區，提前止盈
+        const fpTP1Floor = _fpSupportLevels
+          .filter(lv => lv < entry - risk * 1.2 && lv > tp1 - atr)
+          .sort((a, b) => b - a)[0];  // 最靠近 entry 的買壓區
+        if (fpTP1Floor) {
+          const fpTP1 = fpTP1Floor + atr * 0.15;
+          const fpRR1 = ((entry - fpTP1) / risk).toFixed(1);
+          if (parseFloat(fpRR1) >= 1.5) {
+            tp1 = fpTP1;
+            tp1Reason = `足跡強買壓區 $${_fmtFPLvl(fpTP1Floor)} 上方止盈，R/R ${fpRR1}:1（主力吸籌區，減倉 60%）`;
+          }
+        }
+        // 空頭 TP2：更低的買壓區作為 TP2
+        const fpTP2Floor = _fpSupportLevels
+          .filter(lv => lv < tp1 - price * 0.003 && lv >= tp2 - atr * 2)
+          .sort((a, b) => a - b)[0];  // 最低的買壓區
+        if (fpTP2Floor) {
+          const fpTP2 = fpTP2Floor + atr * 0.2;
+          const fpRR2 = ((entry - fpTP2) / risk).toFixed(1);
+          if (fpTP2 < tp1 && parseFloat(fpRR2) >= 2.5) {
+            tp2 = fpTP2;
+            tp2Reason = `足跡強買壓區 $${_fmtFPLvl(fpTP2Floor)} 上方止盈，R/R ${fpRR2}:1（成交量底部支撐，移至成本）`;
+          }
+        }
+        // POC 在 TP1 前 → 空頭在 POC 上方止盈
+        if (_fpPOC && _fpPOC < entry - risk * 1.2 && _fpPOC > tp1) {
+          const fpRR1c = ((entry - (_fpPOC + atr * 0.1)) / risk).toFixed(1);
+          if (parseFloat(fpRR1c) >= 1.5) {
+            tp1 = _fpPOC + atr * 0.1;
+            tp1Reason = `足跡 POC $${_fmtFPLvl(_fpPOC)} 上方止盈，R/R ${fpRR1c}:1（最高成交量磁吸支撐，減倉 60%）`;
+          }
+        }
+      }
+    } catch(_fpTPe) {}
   }
 
   // ── 長線單：覆蓋 tp1/tp2 為長線最終止盈，並計算三個加倉位 ──────
