@@ -10645,6 +10645,108 @@ function fmtDateTime(ts) {
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */
 const SIGNAL_CACHE_KEY = 'csp_signal_cache';
 
+/* ── 信號偵測與通知發送 ──────────────────────────────────────── */
+const SIGNAL_CACHE_KEY = 'csp_signal_cache';
+
+/* ── Pionex 自動下單 ──────────────────────────────────────────── */
+async function executePionexAutoTrade(trade, notifSetup) {
+  try {
+    const s = loadSettings();
+    if (!s.pionexAutoTrade || !s.pionexApiKey || !s.pionexApiSecret) return;
+
+    const sym    = trade.symbol;
+    const isLong = trade.direction === 'long';
+    const entry  = parseFloat(notifSetup?.entry  || trade.entry)  || 0;
+    const sl     = parseFloat(notifSetup?.sl     || trade.sl)     || 0;
+    const tp1    = parseFloat(notifSetup?.tp1    || trade.tp1)    || 0;
+    if (!entry || !sl) { console.warn('[Pionex] 缺少進場/止損位，跳過下單'); return; }
+
+    // ── 計算下單量 ──
+    const riskUSDT   = parseFloat(s.pionexRiskUSDT)  || 10;
+    const maxUSDT    = parseFloat(s.pionexMaxUSDT)   || 500;
+    const slDistPct  = Math.abs(entry - sl) / entry;
+    const rawSizeUSDT= slDistPct > 0 ? riskUSDT / slDistPct : riskUSDT * 5;
+    const sizeUSDT   = Math.min(rawSizeUSDT, maxUSDT);
+    const sizeBase   = parseFloat((sizeUSDT / entry).toFixed(6));
+
+    const side       = isLong ? 'BUY' : 'SELL';
+    const oppSide    = isLong ? 'SELL' : 'BUY';
+    const orderType  = s.pionexOrderType || 'MARKET';
+
+    // ── 進場訂單 ──
+    const entryParams = { symbol: sym, side, type: orderType, size: String(sizeBase) };
+    if (orderType === 'LIMIT') entryParams.price = String(entry);
+
+    let entryOrderId = null;
+    try {
+      const entryResult = await placePionexOrder(s.pionexApiKey, s.pionexApiSecret, entryParams);
+      entryOrderId = entryResult?.data?.orderId || null;
+      const msg = `✅ Pionex 自動下單：${sym} ${isLong ? '▲ 做多' : '▼ 做空'}\n進場 $${entry}，量 ${sizeBase} (${sizeUSDT.toFixed(1)} USDT)`;
+      if (typeof showToast === 'function') showToast(msg, 'success');
+      if (s.notifTelegram && s.tgToken && s.tgChatId) {
+        sendTelegramMessage(s.tgToken, s.tgChatId,
+          `🤖 <b>Pionex 自動下單</b>\n\n💎 <b>${sym}</b> ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
+          `📍 進場：$${entry}\n🛑 止損：$${sl}\n🎯 止盈1：$${tp1}\n📦 倉位：${sizeBase}（${sizeUSDT.toFixed(1)} USDT）`
+        );
+      }
+    } catch (err) {
+      const isCors = err.message === 'CORS_BLOCKED';
+      const errMsg = isCors
+        ? '⚠️ Pionex 下單被瀏覽器 CORS 政策阻擋。請在設定中改用 API 代理模式，或在本地後端加入 /trade 端點。'
+        : `❌ Pionex 進場下單失敗：${err.message}`;
+      console.error('[Pionex]', errMsg, err);
+      if (typeof showToast === 'function') showToast(errMsg, 'error');
+      if (s.notifTelegram && s.tgToken && s.tgChatId)
+        sendTelegramMessage(s.tgToken, s.tgChatId, `❌ <b>Pionex 下單失敗</b>\n${sym}\n${err.message}`);
+      return;
+    }
+
+    // ── 止損單 ──
+    if (s.pionexEnableSL && sl) {
+      try {
+        const slBuffer = sl * (isLong ? 0.997 : 1.003); // 稍微留緩衝避免滑點吃單失敗
+        await placePionexOrder(s.pionexApiKey, s.pionexApiSecret, {
+          symbol: sym, side: oppSide, type: 'STOP_LIMIT', size: String(sizeBase),
+          stopPrice: String(parseFloat(sl.toFixed(8))),
+          price:     String(parseFloat(slBuffer.toFixed(8))),
+        });
+      } catch (err) { console.warn('[Pionex] 止損單失敗（可繼續）:', err.message); }
+    }
+
+    // ── 止盈單 ──
+    if (s.pionexEnableTP && tp1) {
+      try {
+        const tpBuffer = tp1 * (isLong ? 0.999 : 1.001);
+        await placePionexOrder(s.pionexApiKey, s.pionexApiSecret, {
+          symbol: sym, side: oppSide, type: 'TAKE_PROFIT_LIMIT', size: String(sizeBase),
+          stopPrice: String(parseFloat(tp1.toFixed(8))),
+          price:     String(parseFloat(tpBuffer.toFixed(8))),
+        });
+      } catch (err) { console.warn('[Pionex] 止盈單失敗（可繼續）:', err.message); }
+    }
+
+  } catch(e) { console.error('[executePionexAutoTrade]', e); }
+}
+
+async function testPionexConnection() {
+  const s = loadSettings();
+  if (!s.pionexApiKey || !s.pionexApiSecret) {
+    showToast('請先填入 Pionex API Key 和 Secret', 'error'); return;
+  }
+  showToast('正在測試連線...', 'info');
+  try {
+    const result = await getPionexBalance(s.pionexApiKey, s.pionexApiSecret);
+    const usdt = result?.data?.balances?.find(b => b.coin === 'USDT');
+    const avail = usdt ? parseFloat(usdt.free).toFixed(2) : '—';
+    showToast(`✅ Pionex 連線成功！USDT 可用餘額：${avail}`, 'success');
+  } catch(err) {
+    const msg = err.message === 'CORS_BLOCKED'
+      ? '⚠️ 連線被 CORS 阻擋。請透過本地後端代理 API 請求，或在 Chrome 擴充功能允許跨域。'
+      : `❌ 連線失敗：${err.message}`;
+    showToast(msg, 'error');
+  }
+}
+
 async function checkAndSendAlerts(data) {
   const s = loadSettings();
   if (!s.notifBrowser && !s.notifTelegram) return;
@@ -10846,6 +10948,8 @@ async function checkAndSendAlerts(data) {
         const _tlabel = _isLongTermEntry ? '長線單' : '短線單';
         const _ticon  = _isLongTermEntry ? '💎' : '📡';
         try { if (typeof showToast === 'function') showToast(`${_ticon} ${_tlabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${notifSetup.conf}%，已加入持倉`, 'success'); } catch(_te) {}
+        // Pionex 自動下單
+        executePionexAutoTrade(_newTrade, notifSetup).catch(e => console.warn('[Pionex auto]', e));
       }
     } catch(_te) { console.warn('[checkAndSendAlerts] trade create failed', _te); }
 
@@ -11639,6 +11743,18 @@ function populateSettingsPage() {
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
 
+  // Pionex 設定
+  const _pSet = (id, v) => { const el = document.getElementById(id); if (el) el.value = String(v ?? ''); };
+  const _pChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  _pChk('s-pionex-toggle',    s.pionexAutoTrade);
+  _pSet('s-pionex-key',       s.pionexApiKey    || '');
+  _pSet('s-pionex-secret',    s.pionexApiSecret || '');
+  _pSet('s-pionex-order-type',s.pionexOrderType || 'MARKET');
+  _pSet('s-pionex-risk',      s.pionexRiskUSDT  || '10');
+  _pSet('s-pionex-max',       s.pionexMaxUSDT   || '500');
+  _pChk('s-pionex-sl',        s.pionexEnableSL  ?? true);
+  _pChk('s-pionex-tp',        s.pionexEnableTP  ?? true);
+
   renderPairsList();
 }
 
@@ -11657,6 +11773,15 @@ function saveAllSettings() {
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
     notifBearScore:  parseInt(document.getElementById('s-notif-bear-thr')?.value) || 35,
+    // Pionex
+    pionexAutoTrade: document.getElementById('s-pionex-toggle')?.checked ?? false,
+    pionexApiKey:    document.getElementById('s-pionex-key')?.value.trim()    || '',
+    pionexApiSecret: document.getElementById('s-pionex-secret')?.value.trim() || '',
+    pionexOrderType: document.getElementById('s-pionex-order-type')?.value    || 'MARKET',
+    pionexRiskUSDT:  parseFloat(document.getElementById('s-pionex-risk')?.value) || 10,
+    pionexMaxUSDT:   parseFloat(document.getElementById('s-pionex-max')?.value)  || 500,
+    pionexEnableSL:  document.getElementById('s-pionex-sl')?.checked ?? true,
+    pionexEnableTP:  document.getElementById('s-pionex-tp')?.checked ?? true,
   };
   state.settings = saveSettings(patch);
   startRefreshCycle();

@@ -745,6 +745,86 @@
         </div>
       </div>
 
+      <!-- Pionex 自動交易 -->
+      <div class="settings-card">
+        <h3 class="settings-group-ttl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          Pionex 自動交易
+        </h3>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div>
+            <div class="setting-name">⚡ 掃描到訊號時自動下單</div>
+            <div class="setting-desc">達到交易信號條件時直接在 Pionex 下單（請先測試連線確認可用）</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-pionex-toggle" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+
+        <div class="tg-setup-grid" style="margin-bottom:12px">
+          <div class="tg-field">
+            <label class="tg-label">API Key</label>
+            <input id="s-pionex-key" type="password" class="setting-input" placeholder="Pionex API Key" autocomplete="off" />
+          </div>
+          <div class="tg-field">
+            <label class="tg-label">API Secret</label>
+            <input id="s-pionex-secret" type="password" class="setting-input" placeholder="Pionex API Secret" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="tg-setup-grid" style="margin-bottom:12px">
+          <div class="tg-field">
+            <label class="tg-label">每筆風險 (USDT)</label>
+            <input id="s-pionex-risk" type="number" class="setting-input" placeholder="10" min="1" max="10000" step="1" />
+            <div style="font-size:0.72rem;color:var(--text3);margin-top:4px">依止損距離反推倉位：風險÷止損%＝倉位</div>
+          </div>
+          <div class="tg-field">
+            <label class="tg-label">單筆倉位上限 (USDT)</label>
+            <input id="s-pionex-max" type="number" class="setting-input" placeholder="500" min="10" step="10" />
+          </div>
+        </div>
+
+        <div class="tg-setup-grid" style="margin-bottom:12px">
+          <div class="tg-field">
+            <label class="tg-label">進場單類型</label>
+            <select id="s-pionex-order-type" class="setting-input" style="cursor:pointer">
+              <option value="MARKET">市價單（立即成交）</option>
+              <option value="LIMIT">限價單（進場點位）</option>
+            </select>
+          </div>
+          <div class="tg-field" style="display:flex;flex-direction:column;gap:8px;justify-content:center">
+            <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;cursor:pointer">
+              <input type="checkbox" id="s-pionex-sl" checked />
+              <span>同時掛止損單</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:0.82rem;cursor:pointer">
+              <input type="checkbox" id="s-pionex-tp" checked />
+              <span>同時掛止盈單（TP1）</span>
+            </label>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-ghost" onclick="testPionexConnection()" style="font-size:0.82rem">🔌 測試連線 + 查看餘額</button>
+        </div>
+
+        <div class="tg-guide" style="margin-top:12px">
+          <div class="tg-guide-title">📖 Pionex API 設定步驟</div>
+          <ol class="tg-guide-steps">
+            <li>登入 <strong>Pionex</strong> → 右上角帳戶 → <strong>API 管理</strong></li>
+            <li>新增 API，勾選 <strong>現貨交易</strong> 權限（不需提款權限）</li>
+            <li>設定 IP 白名單（可選，提升安全性）</li>
+            <li>複製 API Key 和 Secret 填入上方欄位</li>
+          </ol>
+          <div style="font-size:0.75rem;color:#f59e0b;margin-top:6px;background:rgba(245,158,11,.07);padding:6px 10px;border-radius:6px">
+            ⚠️ API Key 儲存於本裝置 localStorage，請勿在公用電腦使用。<br>
+            若測試連線出現 CORS 錯誤，代表瀏覽器直連受限，需在本地後端（127.0.0.1:8000）加入代理端點。
+          </div>
+        </div>
+      </div>
+
       <!-- 自定義幣種管理 -->
       <div class="settings-card pairs-mgr-card">
         <h3 class="settings-group-ttl">
@@ -785,7 +865,7 @@
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script src="js/indicators.js?v=20260605b"></script>
-  <script src="js/api.js?v=20260607e"></script>
-  <script src="js/app.js?v=20260607k"></script>
+  <script src="js/api.js?v=20260608a"></script>
+  <script src="js/app.js?v=20260608a"></script>
 </body>
 </html>

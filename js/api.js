@@ -913,6 +913,71 @@ async function fetchWhaleTrades(symbol) {
   return { ...base, futuresWhale };
 }
 
+/* ═══════════════════ Pionex 自動交易 API ══════════════════ */
+const PIONEX_BASE = 'https://api.pionex.com';
+
+async function _pionexHmac(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+  return Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
+  const ts = Date.now().toString();
+  let queryStr = '', bodyStr = '';
+  if (method === 'GET' && params && Object.keys(params).length) {
+    queryStr = '?' + new URLSearchParams(params).toString();
+  } else if (method !== 'GET' && params) {
+    bodyStr = typeof params === 'string' ? params : JSON.stringify(params);
+  }
+  const msg = ts + method + path + (queryStr || bodyStr);
+  const sig = await _pionexHmac(apiSecret, msg);
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-PIONEX-KEY':       apiKey,
+    'X-PIONEX-SIGNATURE': sig,
+    'X-PIONEX-TIMESTAMP': ts,
+  };
+  const url = PIONEX_BASE + path + queryStr;
+  const opts = { method, headers };
+  if (bodyStr) opts.body = bodyStr;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const resp = await fetch(url, { ...opts, signal: ctrl.signal });
+    clearTimeout(timer);
+    const json = await resp.json();
+    if (!resp.ok || json.result === false) {
+      throw new Error(json.message || json.msg || `HTTP ${resp.status}`);
+    }
+    return json;
+  } catch (e) {
+    clearTimeout(timer);
+    if (e.name === 'TypeError' && e.message.includes('fetch')) {
+      throw new Error('CORS_BLOCKED');
+    }
+    throw e;
+  }
+}
+
+async function getPionexBalance(apiKey, apiSecret) {
+  return pionexRequest(apiKey, apiSecret, 'GET', '/api/v1/account/balances', {});
+}
+
+async function placePionexOrder(apiKey, apiSecret, params) {
+  const body = { ...params, symbol: params.symbol.replace('/', '_').replace('-', '_') };
+  return pionexRequest(apiKey, apiSecret, 'POST', '/api/v1/trade/order', body);
+}
+
+async function cancelPionexOrder(apiKey, apiSecret, symbol, orderId) {
+  const sym = symbol.replace('/', '_').replace('-', '_');
+  return pionexRequest(apiKey, apiSecret, 'DELETE', '/api/v1/trade/order',
+    `symbol=${sym}&orderId=${orderId}`);
+}
+
 /* ═══════════════════ 市場足跡圖數據 ══════════════════════ */
 async function fetchFootprintData(symbol) {
   const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';
