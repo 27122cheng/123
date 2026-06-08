@@ -7,6 +7,16 @@ const crypto = require('crypto');
 const { URL } = require('url');
 
 module.exports = async function handler(req, res) {
+  try {
+    await _handle(req, res);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.status(500).json({ result: false, message: `Proxy crash: ${err.message}` });
+    }
+  }
+};
+
+async function _handle(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');

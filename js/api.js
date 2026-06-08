@@ -946,7 +946,13 @@ async function pionexRequest(apiKey, apiSecret, method, path, params = null) {
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-    const json = await resp.json();
+    let json;
+    try {
+      json = await resp.json();
+    } catch (_) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`代理回應非 JSON (HTTP ${resp.status}): ${text.slice(0, 120)}`);
+    }
     if (!resp.ok || json.result === false) {
       throw new Error(json.message || json.msg || `HTTP ${resp.status}`);
     }
