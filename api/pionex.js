@@ -1,45 +1,60 @@
-// Vercel Serverless Function — Pionex CORS Proxy
-// 所有 /api/pionex/* 請求都會被轉發到 api.pionex.com
-export default async function handler(req, res) {
-  // 允許瀏覽器跨域請求
+// Vercel Serverless Function — Pionex CORS Proxy (CommonJS)
+const https = require('https');
+const { URL } = require('url');
+
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers',
     'Content-Type, X-PIONEX-KEY, X-PIONEX-SIGNATURE, X-PIONEX-TIMESTAMP');
 
   if (req.method === 'OPTIONS') {
-    return res.status(204).end();
+    res.status(204).end();
+    return;
   }
 
-  // 取出 /api/pionex 後面的路徑（e.g. /api/v1/account/balances）
-  const pionexPath = req.url.replace(/^\/api\/pionex/, '') || '/';
-  const targetUrl  = 'https://api.pionex.com' + pionexPath;
+  // req.url is the full original path e.g. /api/pionex/api/v1/account/balances?...
+  const afterPrefix = req.url.replace(/^\/api\/pionex/, '') || '/';
+  const targetUrl = 'https://api.pionex.com' + afterPrefix;
 
-  // 轉發 Pionex 認證標頭
-  const forwardHeaders = {};
+  const fwdHeaders = {};
   for (const h of ['content-type', 'x-pionex-key', 'x-pionex-signature', 'x-pionex-timestamp']) {
-    if (req.headers[h]) forwardHeaders[h] = req.headers[h];
+    if (req.headers[h]) fwdHeaders[h] = req.headers[h];
   }
 
-  let body;
-  if (req.method !== 'GET' && req.method !== 'DELETE') {
+  // Collect request body
+  const body = await new Promise((resolve) => {
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    body = Buffer.concat(chunks);
-    if (!body.length) body = undefined;
-  }
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+  });
 
-  try {
-    const upstream = await fetch(targetUrl, {
-      method:  req.method,
-      headers: forwardHeaders,
-      body,
+  const parsed = new URL(targetUrl);
+  const options = {
+    hostname: parsed.hostname,
+    path: parsed.pathname + parsed.search,
+    method: req.method,
+    headers: { ...fwdHeaders, 'Host': parsed.hostname },
+  };
+  if (body.length) options.headers['Content-Length'] = body.length;
+
+  await new Promise((resolve) => {
+    const proxyReq = https.request(options, (proxyRes) => {
+      const chunks = [];
+      proxyRes.on('data', c => chunks.push(c));
+      proxyRes.on('end', () => {
+        const data = Buffer.concat(chunks);
+        res.status(proxyRes.statusCode);
+        res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'application/json');
+        res.send(data);
+        resolve();
+      });
     });
-    const data = await upstream.arrayBuffer();
-    res.status(upstream.status)
-       .setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json')
-       .send(Buffer.from(data));
-  } catch (err) {
-    res.status(502).json({ result: false, message: String(err) });
-  }
-}
+    proxyReq.on('error', (err) => {
+      res.status(502).json({ result: false, message: String(err) });
+      resolve();
+    });
+    if (body.length) proxyReq.write(body);
+    proxyReq.end();
+  });
+};
