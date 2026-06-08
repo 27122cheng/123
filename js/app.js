@@ -10716,8 +10716,6 @@ function fmtDateTime(ts) {
 /* ── 信號偵測與通知發送 ──────────────────────────────────────── */
 const SIGNAL_CACHE_KEY = 'csp_signal_cache';
 
-
-
 async function checkAndSendAlerts(data) {
   const s = loadSettings();
   if (!s.notifBrowser && !s.notifTelegram) return;
