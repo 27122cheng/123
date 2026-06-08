@@ -30,6 +30,30 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ result: false, message: 'Invalid JSON body' });
   }
 
+  // Ping mode: test connectivity to Pionex public API without auth
+  if (payload.ping) {
+    return await new Promise((resolve) => {
+      const proxyReq = https.request({
+        hostname: 'api.pionex.com',
+        path: '/api/v1/common/symbols?limit=1',
+        method: 'GET',
+        headers: { 'Host': 'api.pionex.com' },
+      }, (proxyRes) => {
+        const chunks = [];
+        proxyRes.on('data', c => chunks.push(c));
+        proxyRes.on('end', () => {
+          res.json({ result: true, message: `Pionex 公開 API 連線正常 (HTTP ${proxyRes.statusCode})` });
+          resolve();
+        });
+      });
+      proxyReq.on('error', (err) => {
+        res.status(502).json({ result: false, message: `無法連線到 Pionex: ${err.message}` });
+        resolve();
+      });
+      proxyReq.end();
+    });
+  }
+
   const { key, secret, method, path, queryStr = '', bodyStr = '' } = payload;
   if (!key || !secret || !method || !path) {
     return res.status(400).json({ result: false, message: 'Missing required fields' });

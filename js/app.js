@@ -11008,6 +11008,21 @@ async function executePionexAutoTrade(trade, notifSetup) {
   } catch(e) { console.error('[executePionexAutoTrade]', e); }
 }
 
+async function testPionexPing() {
+  showToast('正在測試代理到 Pionex 的網路連線...', 'info');
+  try {
+    const resp = await fetch(window.location.origin + '/api/pionex', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ping: true }),
+    });
+    const json = await resp.json();
+    showToast(json.result ? `✅ ${json.message}` : `❌ ${json.message}`, json.result ? 'success' : 'error');
+  } catch(e) {
+    showToast(`❌ 代理連線失敗: ${e.message}`, 'error');
+  }
+}
+
 async function testPionexConnection() {
   const s = loadSettings();
   // 優先讀取 DOM 輸入框（用戶填入但未儲存時仍可測試）
