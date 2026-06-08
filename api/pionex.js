@@ -72,14 +72,8 @@ module.exports = async function handler(req, res) {
         try { pionexBody = JSON.parse(data.toString()); } catch(_) {}
         if (pionexBody.result === false) {
           res.json({
-            ...pionexBody,
-            _debug: {
-              keyLen: key.length,
-              secretLen: secret.length,
-              targetUrl,
-              method,
-              queryStr,
-            },
+            result: false,
+            message: `${pionexBody.message} [keyLen=${key.length} secretLen=${secret.length} url=${targetUrl}]`,
           });
         } else {
           res.send(data);
