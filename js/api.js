@@ -529,6 +529,41 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     const _sqL = setup.sqGradeLabel || '';
     msg += `${_sqE} AI 訊號品質：<b>${setup.sqGrade} 級${_sqL ? ` — ${_sqL}` : ''}</b>（評分 ${setup.sqScore ?? '—'}/10）\n`;
   }
+  // ── 勝率評估 ──
+  {
+    const _sg  = setup?.sqGrade || '';
+    const _c   = setup?.conf || 0;
+    const _lp  = setup?.learnPenalty || 0;
+    const _atp = setup?.aiTrendPenalty || 0;
+    const _mp  = setup?.macroPenalty || 0;
+    const _hp  = setup?.hardAdxPenalty || 0;
+    const _hb  = setup?.hardBlocked || false;
+    const _hasDanger = _hb || ['C','D'].includes(_sg) || _c < 65
+      || _lp >= 10 || _atp >= 12 || _mp >= 15 || _hp >= 18;
+    const _hasCaution = _sg === 'B' || _c < 74 || _lp >= 5
+      || _atp >= 6 || _mp >= 8 || _hp > 0;
+    const _isHighWR = (_sg === 'S' || _sg === 'A') && _c >= 70 && !_hasDanger && !(_hasCaution && _hasDanger);
+    if (_isHighWR && !_hasDanger) {
+      const _warnCount = (_sg === 'B' ? 1 : 0) + (_c < 74 ? 1 : 0) + (_atp >= 6 ? 1 : 0);
+      if (_warnCount <= 1) {
+        msg += `🏆 <b>高勝率訊號</b> — 符合頂級交易員進場條件\n`;
+      } else {
+        msg += `⚠️ <b>中等勝率</b> — 有條件可進場，建議保守操作\n`;
+      }
+    } else if (_hasDanger) {
+      const _reasons = [];
+      if (_hb) _reasons.push('AI 學習風控攔截');
+      else if (_lp >= 10) _reasons.push(`AI 風控扣分 -${_lp}%`);
+      if (['C','D'].includes(_sg)) _reasons.push(`訊號品質 ${_sg} 級`);
+      if (_c < 65)  _reasons.push(`信心度偏低 ${_c}%`);
+      if (_atp >= 12) _reasons.push('AI 多週期趨勢逆向');
+      if (_mp >= 15)  _reasons.push(`宏觀逆風強 -${_mp}%`);
+      if (_hp >= 18)  _reasons.push(`ADX 偏低`);
+      msg += `🔴 <b>低勝率警告</b>：${_reasons.slice(0,3).join('、')}\n`;
+    } else if (_hasCaution) {
+      msg += `⚠️ <b>中等勝率</b> — 有條件可進場，建議保守操作\n`;
+    }
+  }
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   // ── 震盪交易：宏觀有方向偏向時加入謹慎操作提示 ──────────

@@ -785,6 +785,98 @@ function buildDerivativesPanel(d) {
   </div>`;
 }
 
+/* ── 勝率評估橫幅（從 tlog 存儲欄位計算，供持倉頁卡片使用）── */
+function _buildHWRBannerFromTrade(t) {
+  try {
+    const sg   = t.sqGrade || '';
+    const sc   = t.sqScore ?? '—';
+    const conf = t.conf != null ? t.conf
+      : Math.max(0, (t.rawConf||60) - (t.hardAdxPenalty||0) - (t.learnPenalty||0)
+          - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0)
+          - (t.chipsPenalty||0) - (t.dirPenalty||0) - (t.bbPenalty||0));
+    const adx  = t.adx || 20;
+    const _W = [], _P = [];
+
+    // ① 訊號品質
+    if (sg === 'S')      _P.push('訊號品質 S 級（頂級）');
+    else if (sg === 'A') _P.push('訊號品質 A 級（優質）');
+    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（評分 ${sc}/10）`, source:'AI 訊號品質' });
+    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（評分 ${sc}/10）`, source:'AI 訊號品質' });
+
+    // ② 信心度
+    if (conf >= 74)      _P.push(`信心度 ${conf}%（高）`);
+    else if (conf >= 65) _W.push({ level:'caution', text:`信心度 ${conf}%（中等，理想需 ≥ 74%）`, source:'綜合信心分' });
+    else                 _W.push({ level:'danger',  text:`信心度 ${conf}%（偏低）`, source:'綜合信心分' });
+
+    // ③ AI 學習
+    const lp = t.learnPenalty || 0;
+    if (lp >= 10)      _W.push({ level:'danger',  text:`AI 學習風控觸發（扣分 -${lp}%）`, source:'AI 學習' });
+    else if (lp >= 5)  _W.push({ level:'caution', text:`AI 學習風控警告（扣分 -${lp}%）`, source:'AI 學習' });
+    else               _P.push('AI 學習風控通過');
+
+    // ④ AI 趨勢
+    const atp = t.aiTrendPenalty || 0;
+    if (atp >= 12)     _W.push({ level:'danger',  text:`AI 多週期趨勢均逆向（扣分 -${atp}%）`, source:'AI 趨勢判斷' });
+    else if (atp >= 6) _W.push({ level:'caution', text:`AI 趨勢部分逆向（扣分 -${atp}%）`, source:'AI 趨勢判斷' });
+    else               _P.push('AI 趨勢方向確認');
+
+    // ⑤ 宏觀
+    const mp = t.macroPenalty || 0;
+    if (mp >= 15)      _W.push({ level:'danger',  text:`宏觀逆風強（扣分 -${mp}%）`, source:'宏觀分析' });
+    else if (mp >= 8)  _W.push({ level:'caution', text:`宏觀逆風中等（扣分 -${mp}%）`, source:'宏觀分析' });
+    else               _P.push('宏觀環境無明顯逆風');
+
+    // ⑥ ADX
+    const hp = t.hardAdxPenalty || 0;
+    if (hp >= 18)      _W.push({ level:'danger',  text:`ADX ${adx} 嚴重偏低（< 18），震盪行情`, source:'技術面' });
+    else if (hp > 0 || adx < 22) _W.push({ level:'caution', text:`ADX ${adx} 偏低（< 22），趨勢強度不足`, source:'技術面' });
+    else if (adx >= 28) _P.push(`ADX ${adx}（趨勢明確）`);
+
+    const dc = _W.filter(w=>w.level==='danger').length;
+    const cc = _W.filter(w=>w.level==='caution').length;
+    const isHigh = dc === 0 && cc <= 1 && (sg === 'S' || sg === 'A') && conf >= 70;
+    const isLow  = dc >= 1 || cc >= 3;
+
+    if (isHigh) {
+      return `<div style="background:rgba(34,197,94,.08);border:1.5px solid rgba(34,197,94,.3);border-radius:10px;padding:9px 13px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
+          <span>🏆</span>
+          <span style="font-weight:700;color:#22c55e;font-size:0.84rem">高勝率訊號 — 符合頂級交易員進場條件</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${_P.map(p=>`<span style="font-size:0.7rem;color:#22c55e;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);padding:1px 7px;border-radius:20px">✅ ${p}</span>`).join('')}
+          ${cc > 0 ? _W.map(w=>`<span style="font-size:0.7rem;color:#f59e0b;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);padding:1px 7px;border-radius:20px">⚠️ ${w.text}</span>`).join('') : ''}
+        </div>
+      </div>`;
+    } else if (isLow) {
+      const src = [...new Set(_W.map(w=>w.source))].join('、');
+      return `<div style="background:rgba(239,68,68,.08);border:1.5px solid rgba(239,68,68,.35);border-radius:10px;padding:9px 13px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px">
+          <span>🔴</span>
+          <span style="font-weight:700;color:#ef4444;font-size:0.84rem">低勝率警告 — 不符合高勝率條件</span>
+          <span style="font-size:0.68rem;color:var(--text3)">（${src}）</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          ${_W.filter(w=>w.level==='danger').map(w=>`<div style="font-size:0.77rem;color:#ef4444">🚫 ${w.text}<span style="font-size:0.67rem;color:var(--text3);margin-left:4px">（${w.source}）</span></div>`).join('')}
+          ${_W.filter(w=>w.level==='caution').map(w=>`<div style="font-size:0.77rem;color:#f59e0b">⚠️ ${w.text}<span style="font-size:0.67rem;color:var(--text3);margin-left:4px">（${w.source}）</span></div>`).join('')}
+        </div>
+        ${_P.length ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">${_P.map(p=>`<span style="font-size:0.68rem;color:var(--text3);background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);padding:1px 6px;border-radius:20px">✅ ${p}</span>`).join('')}</div>` : ''}
+      </div>`;
+    } else {
+      return `<div style="background:rgba(245,158,11,.07);border:1.5px solid rgba(245,158,11,.3);border-radius:10px;padding:9px 13px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">
+          <span>⚠️</span>
+          <span style="font-weight:700;color:#f59e0b;font-size:0.84rem">中等勝率 — 有條件可進場，建議保守操作</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          ${_W.map(w=>`<div style="font-size:0.77rem;color:${w.level==='danger'?'#ef4444':'#f59e0b'}">${w.level==='danger'?'🚫':'⚠️'} ${w.text}<span style="font-size:0.67rem;color:var(--text3);margin-left:4px">（${w.source}）</span></div>`).join('')}
+        </div>
+        ${_P.length ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">${_P.map(p=>`<span style="font-size:0.7rem;color:#22c55e;background:rgba(34,197,94,.05);border:1px solid rgba(34,197,94,.15);padding:1px 6px;border-radius:20px">✅ ${p}</span>`).join('')}</div>` : ''}
+      </div>`;
+    }
+  } catch(_e) { return ''; }
+}
+
 /* ── 已開倉時顯示持倉詳情 + 即時損益 ──────────────────────────── */
 function buildOpenPositionSetup(t, currentPrice) {
   const isLong   = t.direction === 'long';
@@ -881,6 +973,7 @@ function buildOpenPositionSetup(t, currentPrice) {
       </div>
       ${isLongTermTrade ? `<div style="font-size:0.7rem;color:#4ade80;margin-top:4px">✅ 日線信號 + 週線信號均同向確認</div>` : ''}
     </div>
+    ${_buildHWRBannerFromTrade(t)}
     ${unrealHtml}
     <div class="setup-levels">
       <div class="level-row level-entry">
@@ -966,6 +1059,7 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="pending-sub">等待現價觸及進場位後自動確認開倉</div>
     </div>
   </div>
+  ${_buildHWRBannerFromTrade(t)}
   <div class="setup-levels" style="margin-top:10px">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場位</div>
