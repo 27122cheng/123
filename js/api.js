@@ -1015,6 +1015,43 @@ async function fetchFootprintData(symbol) {
   return null;
 }
 
+/* ═══════════════════ 爆倉地圖 API ══════════════════════ */
+async function fetchLiquidationMap(symbol) {
+  const base = symbol.replace('/USDT', '').replace('USDT', '');
+  // Try CoinGlass public API
+  try {
+    const url = `https://open-api.coinglass.com/public/v2/liquidation_chart?symbol=${base}&time_type=m5`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const json = await res.json();
+      if (json && json.data) {
+        const longLiqs  = [];
+        const shortLiqs = [];
+        if (Array.isArray(json.data.longLiquidationData)) {
+          json.data.longLiquidationData.forEach(d => {
+            if (d.price && d.amount) longLiqs.push({ price: parseFloat(d.price), strength: parseFloat(d.amount) });
+          });
+        }
+        if (Array.isArray(json.data.shortLiquidationData)) {
+          json.data.shortLiquidationData.forEach(d => {
+            if (d.price && d.amount) shortLiqs.push({ price: parseFloat(d.price), strength: parseFloat(d.amount) });
+          });
+        }
+        if (longLiqs.length || shortLiqs.length) {
+          return { longLiqs, shortLiqs, rawData: json.data, source: 'coinglass' };
+        }
+      }
+    }
+  } catch (_e) { /* fallback to estimated */ }
+
+  // Fallback: generate estimated liquidation levels from common leverage multiples
+  // Returns source='estimated' with leverages array; app.js will compute prices using current price
+  return { longLiqs: null, shortLiqs: null, rawData: null, source: 'estimated', leverages: [3, 5, 10, 20, 50, 100] };
+}
+
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */
 async function fetchMarketData(timeframe = '15m') {
   const settings = loadSettings();

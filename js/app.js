@@ -5,6 +5,7 @@
 /* ── 交易設置緩存（供 Telegram 通知使用）────────────────────── */
 const _tradeSetupCache  = {};
 const _footprintCache   = {};  // 足跡圖數據緩存（幣種詳情頁抓取後寫入）
+const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓取後寫入）
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
@@ -794,10 +795,10 @@ function buildOpenPositionSetup(t, currentPrice) {
   const tp1      = t.tp1  || 0;
   const tp2      = t.tp2  || 0;
   const risk     = Math.abs(entry - sl) || 1;
-  // 最終信心度：由 rawConf 扣除各懲罰計算（與持倉頁一致）
+  // 最終信心度：由 rawConf 扣除各懲罰計算（與持倉頁一致，含 bbPenalty）
   const conf     = t.conf != null ? t.conf
     : (t.rawConf != null
-      ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0) - (t.dirPenalty||0))
+      ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0) - (t.dirPenalty||0) - (t.bbPenalty||0))
       : Math.min(90, t.score || 60));
   const confClr  = conf >= 75 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
   const ltBias  = t.longTermBias;
@@ -848,7 +849,12 @@ function buildOpenPositionSetup(t, currentPrice) {
       <div class="level-tag">🏁 最終止盈</div>
       <div class="level-desc">${t.ltTPReason || t.aiScaleReason || '長線最終目標'}</div>
       <div class="level-price-val" style="color:#22c55e">${fmt(ltFinalTP)}${pctStr(entry, ltFinalTP)}</div>
-    </div>` : `
+    </div>
+    ${t.ltPartialTP ? `<div class="level-row" style="border-left:3px solid rgba(251,191,36,.6)">
+      <div class="level-tag">🎯 部分止盈（3R）</div>
+      <div class="level-desc">建議在此位置減少50%倉位</div>
+      <div class="level-price-val" style="color:#fbbf24">${fmt(t.ltPartialTP)}${pctStr(entry, t.ltPartialTP)}</div>
+    </div>` : ''}` : `
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈1</div>
       <div class="level-desc">${t.tp1Reason || '—'}</div>
@@ -931,6 +937,28 @@ function buildPendingPositionSetup(t, currentPrice) {
     return `<span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px;margin-left:7px">${ge} AI ${t.sqGrade}${gl ? ` ${gl}` : ''}</span>`;
   })() : '';
 
+  // 信心度計算（含所有扣分項，與 buildTradeSetup 一致）
+  const _pConf = t.conf != null ? t.conf
+    : (t.rawConf != null
+      ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0) - (t.dirPenalty||0) - (t.bbPenalty||0))
+      : Math.min(90, t.score || 60));
+
+  // 信心度分項明細
+  const _confBreakdown = (t.rawConf != null) ? `
+  <div class="conf-breakdown" style="margin-top:10px;padding:9px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;font-size:0.73rem;line-height:1.9">
+    <div style="font-weight:700;color:var(--text2);margin-bottom:4px">📊 信心度分項明細</div>
+    <div>原始信心度：<strong>${t.rawConf}%</strong></div>
+    ${(t.hardAdxPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ ADX 過低 <strong>-${t.hardAdxPenalty}%</strong></div>` : ''}
+    ${(t.macroPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ 宏觀逆風 <strong>-${t.macroPenalty}%</strong></div>` : ''}
+    ${(t.aiTrendPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ AI趨勢逆向 <strong>-${t.aiTrendPenalty}%</strong></div>` : ''}
+    ${(t.learnPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ AI風控記憶 <strong>-${t.learnPenalty}%</strong></div>` : ''}
+    ${(t.techPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ 技術逆風 <strong>-${t.techPenalty}%</strong></div>` : ''}
+    ${(t.chipsPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ 籌碼逆向 <strong>-${t.chipsPenalty}%</strong></div>` : ''}
+    ${(t.dirPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ 方向逆向 <strong>-${t.dirPenalty}%</strong></div>` : ''}
+    ${(t.bbPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ BB型態逆風 <strong>-${t.bbPenalty}%</strong></div>` : ''}
+    <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px;font-weight:700">最終信心度：<span style="color:${_pConf >= 75 ? '#22c55e' : _pConf >= 60 ? '#f59e0b' : '#ef4444'}">${_pConf}%</span></div>
+  </div>` : '';
+
   return `<div class="pending-banner">
     <div class="pending-icon">⏳</div>
     <div>
@@ -950,6 +978,12 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-desc">${t.ltTPReason || t.aiScaleReason || '長線最終目標'}</div>
       <div class="level-price-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp1)}</div>
     </div>
+    ${t.ltPartialTP ? `
+    <div class="level-row" style="border-left:3px solid rgba(251,191,36,.6)">
+      <div class="level-tag">🎯 部分止盈（3R）</div>
+      <div class="level-desc">建議在此位置減少50%倉位</div>
+      <div class="level-price-val" style="color:#fbbf24">${fmtPrice(t.ltPartialTP)}</div>
+    </div>` : ''}
     <div style="font-size:0.7rem;color:var(--text3);margin-top:4px;padding:5px 10px;background:rgba(99,102,241,.06);border-radius:6px">
       📈 加倉計劃：進場後偵測到回踩時自動顯示，最多 ${t.maxScaleIns || 3} 次
     </div>` : `
@@ -969,6 +1003,7 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-price-val">${fmtPrice(sl)}</div>
     </div>
   </div>
+  ${_confBreakdown}
   <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　有效期至：${fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2)}</div>`;
 }
 
@@ -2073,6 +2108,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_ictre) { console.warn('[ICT entry reasons]', _ictre); }
 
+  // ── 爆倉地圖：進場理由補充 + 信心加成 ──
+  try {
+    const _liqBTS = _liquidationCache[coin.symbol];
+    if (_liqBTS && price > 0) {
+      const _liqRange15 = price * 0.15;
+      if (isLong) {
+        // Short liq wall above entry within 15% → squeeze potential
+        const _nearSqWall = (_liqBTS.shortLiqs || []).find(
+          l => l.price > price && l.price <= price + _liqRange15
+        );
+        if (_nearSqWall) {
+          entryReasons.push(`💥 空單爆倉牆 $${fmtPrice(_nearSqWall.price)} 在進場位上方，擠壓行情有利`);
+          rawConf = Math.min(90, rawConf + 1); // +1 squeeze play bonus
+        }
+        // Long liq wall below SL → add slReason context (will be applied after sl calc)
+      } else {
+        // Long liq wall below entry within 15% → squeeze potential for shorts
+        const _nearLqWall = (_liqBTS.longLiqs || []).find(
+          l => l.price < price && l.price >= price - _liqRange15
+        );
+        if (_nearLqWall) {
+          entryReasons.push(`💥 多單爆倉牆 $${fmtPrice(_nearLqWall.price)} 在進場位下方，擠壓行情有利`);
+          rawConf = Math.min(90, rawConf + 1);
+        }
+      }
+    }
+  } catch(_liqBTSe) {}
+
   // ── 止損：HTF 結構位 + 緩衝（4H/日線優先，1H fallback）──
   let sl, slReason;
   if (isLong) {
@@ -2174,7 +2237,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // 觸發條件：ltBias === direction && ltConf >= 85（canScaleIn = true）
   let ltTP = null, ltTPReason = '', scaleInLevels = [], _aiScaleCount = 1, _aiScaleReason = '';
   if (canScaleIn) {
-    const minLtRR  = 3.0; // 最低 R/R 要求：低於此值不做長線單
+    const minLtRR  = 7.0; // 最低 R/R 要求：低於此值不做長線單（長線必須 >= 7:1）
     const minLtTP  = isLong ? entry + risk * minLtRR : entry - risk * minLtRR;
     const maxDist  = price * 0.35; // 長線上限擴展至 35%
     if (isLong) {
@@ -2268,6 +2331,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       tp2 = ltTP; tp2Reason = ltTPReason;
     }
   }
+
+  // 長線單部分止盈位（3R），用作飛越取消門檻
+  const ltPartialTP = canScaleIn ? (isLong ? entry + risk * 3 : entry - risk * 3) : null;
 
   // Re-sync label: canScaleIn may have been set false if no valid ltTP was found
   if (!canScaleIn || !ltTP) {
@@ -2735,6 +2801,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     orderBlock4h: _ictOB4h, fvg4h: _ictFVG4h, ictBonus: _ictBonus,
     // AI 訊號品質等級（供 Telegram 顯示）
     sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel, sqFactors: _sqFactors,
+    // 長線部分止盈位（3R）
+    ltPartialTP: ltPartialTP || null,
+    ltTP: (canScaleIn && ltTP) ? ltTP : null,
+    ltTPReason: (canScaleIn && ltTPReason) ? ltTPReason : null,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -2835,6 +2905,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         aiScaleReason:  canScaleIn ? _aiScaleReason : undefined,
         ltTP: (canScaleIn && ltTP) ? ltTP : null,
         ltTPReason: (canScaleIn && ltTPReason) ? ltTPReason : null,
+        ltPartialTP: ltPartialTP || null,
         scaleIns: [], peakPrice: null,
         sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel,
         ...tradeCtx,
@@ -3182,6 +3253,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="level-desc">${ltTPReason}</div>
       <div class="level-price-val" style="color:var(--bull)">${fmtPrice(ltTP)}</div>
     </div>
+    ${ltPartialTP ? `<div class="level-row" style="border-left:3px solid rgba(251,191,36,.6)">
+      <div class="level-tag">🎯 部分止盈（3R）</div>
+      <div class="level-desc">建議在此位置減少50%倉位</div>
+      <div class="level-price-val" style="color:#fbbf24">${fmtPrice(ltPartialTP)}</div>
+    </div>` : ''}
     <div class="level-row level-sl">
       <div class="level-tag">🛑 初始止損</div>
       <div class="level-desc">${slReason}</div>
@@ -3193,6 +3269,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="rule-item">✦ 初始倉位 <strong>2~3%</strong>，每次加倉追加 <strong>1~2%</strong>，${_aiScaleCount}次加倉合計上限 <strong>${_aiScaleCount <= 1 ? '4~5' : _aiScaleCount === 2 ? '6~7' : '8~9'}%</strong></div>
     <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(sl)}</strong>）；每次加倉確認後止損往前調至各加倉行顯示的位置（鎖住 30% 增量利潤，不讓大幅回吐）</div>
     <div class="rule-item">✦ 最後一次加倉後止損接近保本位，確保整體持倉不虧損</div>
+    ${ltPartialTP ? `<div class="rule-item">✦ 🎯 部分止盈（3R）：<strong style="color:#fbbf24">${fmtPrice(ltPartialTP)}</strong> — 建議在此位置減少50%倉位，其餘持倉至最終止盈</div>` : ''}
     <div class="rule-item">✦ 全倉持有至最終止盈（<strong style="color:${dirColor}">${fmtPrice(ltTP)}</strong>），中途不提前止盈</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
@@ -5706,6 +5783,89 @@ function buildFootprintPanel(fp, coin) {
   </div>`;
 }
 
+/* ── 爆倉地圖熱力圖 ─────────────────────────────────────────── */
+function buildLiquidationPanel(liqData, coin, mtfData) {
+  const price = parseFloat(coin.price) || 0;
+  if (!price) return '<div class="adv-loading">價格數據不可用</div>';
+
+  let longLiqs  = liqData?.longLiqs  || [];
+  let shortLiqs = liqData?.shortLiqs || [];
+
+  // If no real data, generate estimated levels from current price
+  if (!longLiqs.length && !shortLiqs.length) {
+    const leverages = [3, 5, 10, 20, 50, 100];
+    longLiqs  = leverages.map(lev => ({ price: price / (1 + 1 / lev), strength: 1000 / lev, leverage: lev }));
+    shortLiqs = leverages.map(lev => ({ price: price / (1 - 1 / lev), strength: 1000 / lev, leverage: lev }));
+  }
+
+  const range = price * 0.20;
+  const nearLongLiqs  = longLiqs.filter(l  => Math.abs(l.price - price) <= range).sort((a, b) => b.price - a.price);
+  const nearShortLiqs = shortLiqs.filter(s => Math.abs(s.price - price) <= range).sort((a, b) => a.price - b.price);
+
+  const allNear = [
+    ...nearLongLiqs.map(l  => ({ ...l, type: 'long'  })),
+    ...nearShortLiqs.map(s => ({ ...s, type: 'short' })),
+  ].sort((a, b) => a.price - b.price);
+
+  const maxStr = allNear.reduce((m, l) => Math.max(m, l.strength || 1), 1);
+  const fmtP = v => fmtPrice(v);
+  const pct  = v => ((v / maxStr) * 100).toFixed(0);
+
+  // Nearest key levels
+  const nearestShortLiqAbove = nearShortLiqs.filter(s => s.price > price)[0];
+  const nearestLongLiqBelow  = nearLongLiqs.filter(l  => l.price < price)[0];
+
+  const keyLevelHtml = [
+    nearestShortLiqAbove ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="color:#ef4444;font-size:0.8rem;font-weight:700">空單爆倉牆</span>
+      <span style="color:#f87171;font-weight:700">${fmtP(nearestShortLiqAbove.price)}</span>
+      <span style="font-size:0.72rem;color:var(--text3)">${nearestShortLiqAbove.leverage ? `${nearestShortLiqAbove.leverage}x` : ''}（壓力 / Short Squeeze 目標）</span>
+    </div>` : '',
+    nearestLongLiqBelow ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="color:#22c55e;font-size:0.8rem;font-weight:700">多單爆倉牆</span>
+      <span style="color:#4ade80;font-weight:700">${fmtP(nearestLongLiqBelow.price)}</span>
+      <span style="font-size:0.72rem;color:var(--text3)">${nearestLongLiqBelow.leverage ? `${nearestLongLiqBelow.leverage}x` : ''}（支撐 / Long Squeeze 目標）</span>
+    </div>` : '',
+  ].filter(Boolean).join('');
+
+  // Bar rows
+  const barRows = allNear.map(l => {
+    const isShort = l.type === 'short';
+    const color   = isShort ? 'rgba(239,68,68,.7)' : 'rgba(34,197,94,.7)';
+    const bgColor = isShort ? 'rgba(239,68,68,.1)' : 'rgba(34,197,94,.1)';
+    const label   = isShort ? '空單爆倉牆' : '多單爆倉牆';
+    const distPct = (((l.price - price) / price) * 100).toFixed(2);
+    const isCurrent = Math.abs(l.price - price) / price < 0.002;
+    return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;padding:2px 0;${isCurrent ? 'border-top:1px dashed rgba(251,191,36,.5);border-bottom:1px dashed rgba(251,191,36,.5)' : ''}">
+      <span style="font-size:0.68rem;color:var(--text3);min-width:72px;text-align:right">${fmtP(l.price)}</span>
+      <div style="flex:1;height:14px;background:rgba(255,255,255,.05);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${pct(l.strength)}%;background:${color};border-radius:3px;transition:width 0.3s"></div>
+      </div>
+      <span style="font-size:0.67rem;min-width:55px;color:${isShort ? '#f87171' : '#4ade80'}">${label}</span>
+      <span style="font-size:0.67rem;color:var(--text3);min-width:42px">${distPct > 0 ? '+' : ''}${distPct}%</span>
+    </div>`;
+  }).join('');
+
+  const source = liqData?.source || 'estimated';
+  const sourceLabel = source === 'coinglass' ? 'CoinGlass 實時' : '估算（基於常見槓桿倍數）';
+
+  return `<div style="padding:4px 0">
+    ${keyLevelHtml ? `<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px 13px;margin-bottom:10px">
+      <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:7px">🔑 關鍵爆倉位</div>
+      ${keyLevelHtml}
+    </div>` : ''}
+    <div style="font-size:0.73rem;font-weight:700;color:var(--text2);margin-bottom:6px">
+      爆倉熱力圖（±20%範圍）
+      <span style="font-weight:400;color:var(--text3);font-size:0.68rem;margin-left:6px">資料：${sourceLabel}</span>
+    </div>
+    ${allNear.length ? `<div style="max-height:280px;overflow-y:auto">${barRows}</div>` : '<div style="color:var(--text3);font-size:0.78rem">±20%範圍內無顯著爆倉位</div>'}
+    <div style="margin-top:8px;font-size:0.7rem;color:var(--text3)">
+      🟢 多單爆倉牆 = 做多者被強平的價格（下方支撐，Long Squeeze 觸發點）<br>
+      🔴 空單爆倉牆 = 做空者被強平的價格（上方壓力，Short Squeeze 觸發點）
+    </div>
+  </div>`;
+}
+
 function buildOrderFlowPanel(coin, of15m) {
   if (!of15m) return '<div class="adv-loading">訂單流數據不可用</div>';
 
@@ -5872,6 +6032,105 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     </div>`;
   }
 
+  // ── 足跡圖分析段落 ──
+  let pFP = '';
+  const _fpAI = _footprintCache[coin.symbol];
+  if (_fpAI) {
+    try {
+      const _fpDir   = _fpAI.deltaDir   || 'neutral';
+      const _fpDiv   = _fpAI.deltaDiv   === true;
+      const _fpAbs   = _fpAI.absorption === true;
+      const _fpRecDelta = _fpAI.recentDelta || 0;
+      const _fpDirLabel = _fpDir === 'bull' ? '看漲' : _fpDir === 'bear' ? '看跌' : '中性';
+      const _fpDirColor = _fpDir === 'bull' ? '#22c55e' : _fpDir === 'bear' ? '#ef4444' : 'var(--text3)';
+      let _fpText = `足跡圖顯示訂單流方向 <strong style="color:${_fpDirColor}">${_fpDirLabel}</strong>`;
+      if (_fpAbs)  _fpText += `，偵測到主力吸籌/出貨（Absorption）行為`;
+      if (_fpDiv)  _fpText += `，<strong style="color:#f59e0b">Delta 背離警告</strong>（價格與訂單流方向不一致，動能可能衰竭）`;
+      if (_fpRecDelta > 0) _fpText += `，近期 Delta 正值（${_fpRecDelta > 0 ? '+' : ''}${_fpRecDelta.toFixed ? _fpRecDelta.toFixed(0) : _fpRecDelta}），買壓確認`;
+      else if (_fpRecDelta < 0) _fpText += `，近期 Delta 負值（${_fpRecDelta.toFixed ? _fpRecDelta.toFixed(0) : _fpRecDelta}），賣壓確認`;
+      pFP = `<div style="background:rgba(99,102,241,.06);border-left:3px solid rgba(99,102,241,.4);padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
+        <strong style="color:#818cf8">📊 足跡圖分析</strong>：${_fpText}。
+      </div>`;
+    } catch(_fpe) {}
+  }
+
+  // ── 爆倉地圖分析段落 ──
+  let pLiq = '';
+  const _liqAI = _liquidationCache[coin.symbol];
+  if (_liqAI && (_liqAI.longLiqs?.length || _liqAI.shortLiqs?.length)) {
+    try {
+      const _curP = parseFloat(coin.price) || 0;
+      const _range = _curP * 0.20;
+      const _nearLong  = (_liqAI.longLiqs  || []).filter(l => Math.abs(l.price - _curP) <= _range).sort((a, b) => b.strength - a.strength)[0];
+      const _nearShort = (_liqAI.shortLiqs || []).filter(l => Math.abs(l.price - _curP) <= _range).sort((a, b) => b.strength - a.strength)[0];
+      const _liqParts = [];
+      if (_nearLong)  _liqParts.push(`多單爆倉牆 <strong style="color:#22c55e">$${fmtPrice(_nearLong.price)}</strong>（多空擠壓支撐位）`);
+      if (_nearShort) _liqParts.push(`空單爆倉牆 <strong style="color:#ef4444">$${fmtPrice(_nearShort.price)}</strong>（空頭擠壓目標位）`);
+      // Combined insight
+      const _fpForLiq = _footprintCache[coin.symbol];
+      let _sqInsight = '';
+      if (_nearShort && _nearShort.price > _curP && _fpForLiq?.deltaDir === 'bull') {
+        _sqInsight = `　⚡ <strong>Short Squeeze 潛力</strong>：空單爆倉牆在上方 + 足跡訂單流看漲，存在短期擠壓行情機會。`;
+      } else if (_nearLong && _nearLong.price < _curP && _fpForLiq?.deltaDir === 'bear') {
+        _sqInsight = `　⚡ <strong>Long Squeeze 潛力</strong>：多單爆倉牆在下方 + 足跡訂單流看跌，存在向下擠壓行情機會。`;
+      }
+      if (_liqParts.length) {
+        pLiq = `<div style="background:rgba(239,68,68,.06);border-left:3px solid rgba(239,68,68,.35);padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
+          <strong style="color:#f87171">💥 爆倉地圖</strong>：${_liqParts.join('；')}。${_sqInsight}
+        </div>`;
+      }
+    } catch(_liqe) {}
+  }
+
+  // ── 頂級交易員視角 ──
+  let pTopTrader = '';
+  try {
+    const _ttFP   = _footprintCache[coin.symbol];
+    const _ttLiq  = _liquidationCache[coin.symbol];
+    const _ttSetup = cached || {};
+    const _ttPrice = parseFloat(coin.price) || 0;
+    const _ttDir   = tradeDir || (bullTFs.length > bearTFs.length ? 'long' : bearTFs.length > bullTFs.length ? 'short' : null);
+    if (_ttDir && _ttDir !== 'wait') {
+      const _isLong = _ttDir === 'long';
+      const _ttParts = [];
+      // MTF 觀點
+      const _ttMtfAlign = _isLong ? bullTFs.length : bearTFs.length;
+      if (_ttMtfAlign >= 3) _ttParts.push(`多週期（${(_isLong ? bullTFs : bearTFs).join('、')}）同向確認，Smart Money 方向明確`);
+      else if (_ttMtfAlign >= 2) _ttParts.push(`${_ttMtfAlign}個週期確認，趨勢方向成立但需進一步確認`);
+      // 足跡訂單流
+      if (_ttFP) {
+        const _ttFPLabel = _ttFP.deltaDir === 'bull' ? '主動買盤主導' : _ttFP.deltaDir === 'bear' ? '主動賣盤主導' : '訂單流中性';
+        _ttParts.push(`足跡訂單流 ${_ttFPLabel}${_ttFP.absorption ? '，主力吸籌跡象' : ''}`);
+      }
+      // ICT 結構
+      if (_ttSetup.orderBlock) _ttParts.push(`ICT Order Block 在進場區附近（$${fmtPrice(_ttSetup.orderBlock.high || _ttSetup.orderBlock.low)}），結構支撐有效`);
+      if (_ttSetup.fvg && !_ttSetup.fvg.filled) _ttParts.push(`FVG 缺口尚未回補，趨勢延續動能強`);
+      // 爆倉牆
+      if (_ttLiq) {
+        const _ttRange = _ttPrice * 0.15;
+        const _sqWall = _isLong
+          ? (_ttLiq.shortLiqs || []).find(l => l.price > _ttPrice && l.price <= _ttPrice + _ttRange)
+          : (_ttLiq.longLiqs  || []).find(l => l.price < _ttPrice && l.price >= _ttPrice - _ttRange);
+        if (_sqWall) _ttParts.push(`${_isLong ? '空單爆倉牆' : '多單爆倉牆'}（$${fmtPrice(_sqWall.price)}）在進場方向前方，擠壓行情有利`);
+      }
+      // 巨鯨 + CVD
+      const _ttWhale = coin.whaleData;
+      if (_ttWhale) {
+        const _ttWLabel = _ttWhale.bias === 'bull' ? '巨鯨大幅淨買入' : _ttWhale.bias === 'bear' ? '巨鯨大幅淨賣出' : '巨鯨動向中性';
+        _ttParts.push(_ttWLabel);
+      }
+      if (_ttParts.length >= 2) {
+        pTopTrader = `<div style="background:rgba(251,191,36,.05);border:1px solid rgba(251,191,36,.2);border-radius:8px;padding:10px 13px;margin-top:6px">
+          <div style="font-weight:700;color:#fbbf24;margin-bottom:5px">👑 頂級交易員視角</div>
+          <div style="font-size:0.84rem;line-height:1.8;color:var(--text2)">
+            從機構視角分析 <strong>${coin.symbol}</strong>：${_ttParts.join('；')}。
+            ${_ttSetup.conf >= 75 ? `<br>綜合信心度 <strong style="color:#22c55e">${_ttSetup.conf}%</strong>，具備高確信度進場條件。` : _ttSetup.conf >= 65 ? `<br>綜合信心度 <strong style="color:#f59e0b">${_ttSetup.conf}%</strong>，條件尚可，控倉保守進場。` : ''}
+          </div>
+        </div>`;
+      }
+    }
+  } catch(_tte) {}
+
   // ── 風控扣分整合段落（ADX + 宏觀 + AI趨勢 + AI風控規則）──
   let p5 = '';
   const totalPen = adxPen + macroPen + aiPen + learnPen;
@@ -5902,6 +6161,9 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     ${p2 ? `<div class="ai-para">${p2}</div>` : ''}
     ${p3 ? `<div class="ai-para">${p3}</div>` : ''}
     <div class="ai-para">${p4}</div>
+    ${pFP  ? `<div class="ai-para">${pFP}</div>`  : ''}
+    ${pLiq ? `<div class="ai-para">${pLiq}</div>` : ''}
+    ${pTopTrader ? `<div class="ai-para">${pTopTrader}</div>` : ''}
     ${p6 ? `<div class="ai-para">${p6}</div>` : ''}
     ${p5 ? `<div class="ai-para">${p5}</div>` : ''}
   </div>`;
@@ -5977,12 +6239,12 @@ async function renderCoinDetail(symbol) {
 
   // 重置所有異步區塊
   const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
-  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('fp-body'); setL('ai-body'); setL('vp-body'); setL('situation-body');
+  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('fp-body'); setL('liq-body'); setL('ai-body'); setL('vp-body'); setL('situation-body');
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
-  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊 + 巨鯨偵測 + 足跡圖
-  const [mtfData, fearGreed, deriv, globalMkt, halving, whale, fpData] = await Promise.all([
+  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊 + 巨鯨偵測 + 足跡圖 + 爆倉地圖
+  const [mtfData, fearGreed, deriv, globalMkt, halving, whale, fpData, liqData] = await Promise.all([
     fetchMTFKlines(symbol),
     fetchFearGreed(),
     fetchDerivativesData(symbol),
@@ -5990,10 +6252,34 @@ async function renderCoinDetail(symbol) {
     fetchHalvingInfo(),
     fetchWhaleTrades(symbol),
     fetchFootprintData(symbol),
+    fetchLiquidationMap(symbol),
   ]);
 
   // 足跡圖緩存（供 AI 分析函數讀取）
   if (fpData) _footprintCache[symbol] = fpData;
+
+  // 爆倉地圖緩存（供 AI 分析函數讀取）
+  if (liqData) {
+    // 若為 estimated 來源，用當前價格生成估算數據
+    if (liqData.source === 'estimated' && liqData.leverages) {
+      const _liqPrice = parseFloat(coin.price) || 0;
+      if (_liqPrice > 0) {
+        const _longLiqs = liqData.leverages.map(lev => ({
+          price: _liqPrice / (1 + 1 / lev),
+          strength: 1 / lev * 1000, // normalized strength
+          leverage: lev,
+        }));
+        const _shortLiqs = liqData.leverages.map(lev => ({
+          price: _liqPrice / (1 - 1 / lev),
+          strength: 1 / lev * 1000,
+          leverage: lev,
+        }));
+        _liquidationCache[symbol] = { longLiqs: _longLiqs, shortLiqs: _shortLiqs, source: 'estimated' };
+      }
+    } else {
+      _liquidationCache[symbol] = liqData;
+    }
+  }
 
   // 緩存宏觀數據供後台使用（宏觀詳情僅在9AM簡報和幣種分析頁顯示）
   if (globalMkt || fearGreed) _macroCache = { ...(globalMkt || {}), fg: fearGreed };
@@ -6022,6 +6308,7 @@ async function renderCoinDetail(symbol) {
   setSafe('mtf-body',       () => buildMTFTable(mtfData));
   setSafe('of-body',        () => buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
   setSafe('fp-body',        () => buildFootprintPanel(_footprintCache[symbol], coin));
+  setSafe('liq-body',       () => buildLiquidationPanel(_liquidationCache[symbol], coin, mtfData));
   setSafe('ai-body',        () => generateAIAnalysis(coin, mtfData, fearGreed));
   setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
   setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
@@ -6686,6 +6973,14 @@ function recordSignalsFromScan(data) {
       scaleIns: [], peakPrice: null,
       sqGrade: _scanSqGrade, sqScore: _scanSqScore, sqGradeLabel: _scanSqLabel,
     };
+    // 若現價已超過進場位 0.3%，標記為等待回踩
+    const _scanCurPrice = parseFloat(coin.price) || 0;
+    if (_scanCurPrice > 0 && newTrade.entry > 0) {
+      const _pastEntry = isLong
+        ? _scanCurPrice > newTrade.entry * 1.003   // 多單：現價已漲過進場位 0.3%
+        : _scanCurPrice < newTrade.entry * 0.997;  // 空單：現價已跌過進場位 0.3%
+      if (_pastEntry) newTrade.note = '等待回踩確認進場';
+    }
     tlog.unshift(newTrade);
     changed = true;
     const _tLabel = canScaleIn ? '長線單' : '短線單';
@@ -7320,7 +7615,9 @@ function updateOpenTrades(data) {
 
       // ── 未回踩進場，價格已飛越止盈位 → 取消並通知（機會已過）──
       const { tp1, tp2 } = trade;
-      const missedTP = (isLong && cur >= tp1) || (!isLong && cur <= tp1);
+      // 長線單：使用部分止盈位（3R）作為飛越門檻，避免因最終止盈太遠而無法觸發取消
+      const flyOverTP = (trade.canScaleIn && trade.ltPartialTP) ? trade.ltPartialTP : tp1;
+      const missedTP = (isLong && cur >= flyOverTP) || (!isLong && cur <= flyOverTP);
       if (missedTP) {
         const hitTP2   = (isLong && cur >= tp2) || (!isLong && cur <= tp2);
         const hitLevel = hitTP2 ? '止盈二' : '止盈一';
@@ -7343,11 +7640,11 @@ function updateOpenTrades(data) {
         continue;
       }
 
-      // 進場確認：訊號後等 1 分鐘，再等價格回踩進場位才確認入場
-      // 設計：T=0 訊號出現 → T<60s 觀察期（不入場）→ T≥60s 等回踩
-      const _entryDelayMs = 60 * 1000;
-      const _canEnterNow  = Date.now() - (trade.timestamp || 0) >= _entryDelayMs;
-      if (!_canEnterNow) continue; // 還在 1 分鐘觀察期，不觸發入場
+      // 進場確認：訊號後等 5 分鐘，確保 Telegram 通知已送達後才確認入場
+      // 設計：T=0 訊號出現 → T<300s 觀察期（不入場）→ T≥300s 等回踩
+      const MIN_PENDING_SECS = 300; // 5 分鐘最低觀察期
+      const tradeAge = (Date.now() - (trade.timestamp || 0)) / 1000;
+      if (tradeAge < MIN_PENDING_SECS) continue; // 太新，跳過進場確認
 
       // 多頭：現價降至進場價附近（0.5% 容差）
       // 空頭：現價升至進場價附近（0.5% 容差）
@@ -11172,6 +11469,16 @@ function computeSimpleSetup(coin, isLong) {
   if (isLong  && tp2 < tp1 * 1.003) tp2 = tp1 + Math.abs(tp1 - entry) * 0.5;
   if (!isLong && tp2 > tp1 * 0.997) tp2 = tp1 - Math.abs(entry - tp1) * 0.5;
 
+  // 長線單（_isLongTerm）：估算 8:1 RR 目標並驗證 >= 7:1
+  let _isLongTermFinal = _isLongTerm;
+  if (_isLongTerm) {
+    const _ltTPEst = isLong ? entry + risk * 8 : entry - risk * 8;
+    const _ltRRest = risk > 0 ? Math.abs(_ltTPEst - entry) / risk : 0;
+    if (_ltRRest < 7) {
+      _isLongTermFinal = false; // R/R 不足 7:1，降為短線處理
+    }
+  }
+
   // ═══════════════════════════════════════════════
   // 4. 盈虧比檢查：R:R < 1.3 → 觀望，不開倉
   // ═══════════════════════════════════════════════
@@ -11533,7 +11840,7 @@ function computeSimpleSetup(coin, isLong) {
     flipRisks:   [],
     bigTrendBlocked: (_sWkSig.includes(isLong ? 'bear' : 'bull') && _sDySig.includes(isLong ? 'bear' : 'bull') && !_sDySig.includes('neutral')),
     rrBlocked, rrReason,
-    isLongTerm: _isLongTerm, isShortTerm: _isShortTerm,
+    isLongTerm: _isLongTermFinal, isShortTerm: _isShortTerm,
     mtfBothAlign: _mtfBothAlign, mtfContraWk: _mtfContraWk, mtfContraDay: _mtfContraDay, mtfContraH4: _mtfContraH4,
   };
 }
