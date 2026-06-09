@@ -3022,6 +3022,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
             buildTelegramText(coin, direction, _btsSetup, _macroCache,
               typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
+          // 標記此掛單已成功推送 Telegram，避免 checkAndSendAlerts 誤判為未通知
+          const _btsIdx = tlog.findIndex(t => t.symbol === coin.symbol && t.status === 'pending' && t.direction === direction);
+          if (_btsIdx >= 0) { tlog[_btsIdx].telegramSent = true; saveTradeLog(tlog); }
         }
       } catch(_bte) { console.warn('[buildTradeSetup tg]', _bte); }
     } else {
@@ -7420,6 +7423,7 @@ function recordSignalsFromScan(data) {
           );
 
         sendTelegramMessage(_ns.tgToken, _ns.tgChatId, _msg);
+        newTrade.telegramSent = true;
       }
     } catch(_e) { console.warn('[recordSignalsFromScan tg]', _e); }
   }
@@ -11215,12 +11219,23 @@ async function checkAndSendAlerts(data) {
     if (cached && cached.dir === dir && (now - (cached.sentAt || 0)) < SIGNAL_COOLDOWN) continue;
 
     // recordSignalsFromScan 已為此幣種/方向建立交易記錄 → 不重複通知
+    // 但若掛單存在卻未標記 telegramSent（掃描建立時推送失敗），補發一次
     try {
       const _tlog = loadTradeLog();
-      const _hasOpen = _tlog.some(t => t.symbol === coin.symbol && t.direction === dir
+      const _existTrade = _tlog.find(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
-      if (_hasOpen) {
-        next[coin.symbol] = { dir, sentAt: now }; // 記入快取，避免下次也重複
+      if (_existTrade) {
+        if (!_existTrade.telegramSent && s.notifTelegram && s.tgToken && s.tgChatId) {
+          // 補發漏掉的進場通知
+          const _rsSetup = _tradeSetupCache[coin.symbol] || {};
+          try {
+            sendTelegramMessage(s.tgToken, s.tgChatId,
+              buildTelegramText(coin, dir, _rsSetup, _macroCache, window.location.origin + window.location.pathname));
+            const _ri = _tlog.findIndex(t => t.id === _existTrade.id);
+            if (_ri >= 0) { _tlog[_ri].telegramSent = true; saveTradeLog(_tlog); }
+          } catch(_rse) { console.warn('[checkAndSendAlerts] retry send failed', _rse); }
+        }
+        next[coin.symbol] = { dir, sentAt: now };
         continue;
       }
     } catch(_e) {}
@@ -11382,6 +11397,7 @@ async function checkAndSendAlerts(data) {
           scaleIns: [], peakPrice: null,
           sqGrade: notifSetup.sqGrade || null, sqScore: notifSetup.sqScore ?? null,
           sqGradeLabel: notifSetup.sqGradeLabel || null,
+          telegramSent: !!(s.notifTelegram && s.tgToken && s.tgChatId),
         };
         _tlog2.unshift(_newTrade);
         saveTradeLog(_tlog2);
