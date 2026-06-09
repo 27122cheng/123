@@ -2850,13 +2850,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
-  // Grade D：訊號品質過低 → AI 過濾，建議觀望
-  if (_sqGrade === 'D') {
-    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: 'D', sqScore: _sqScore };
+  // Grade C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
+  if (!['S','A','B'].includes(_sqGrade)) {
+    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore };
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
-      <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:#ef4444">D 級</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/10，未達 AI 訊號品質門檻（需 ≥ C 級，評分 ≥ 2）</div>
+      <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/10，需達 B 級（評分 ≥ 4）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
@@ -2977,9 +2977,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 低勝率評估：不加入持倉，直接觀望（grade D 才硬性過濾，C 級由 conf >= 65 把關）
+    // 低勝率評估：不加入持倉，直接觀望（B 級以下含 C/D 均不建倉）
     const _isLowWinRate =
-      _sqGrade === 'D'                                                         // 訊號品質最弱（D 級）
+      !['S','A','B'].includes(_sqGrade)                                        // 訊號品質 C/D
       || hardBlocked                                                            // AI 學習硬性攔截
       || bigTrendBlocked                                                        // 大時框逆勢
       || (weeklyOpposed && todayOpposed)                                        // 本週+今日 AI 均逆向
@@ -6973,6 +6973,220 @@ function inCooldown(tlog, symbol, direction) {
   return sameDir || cancelledRecently || anyOpen;
 }
 
+/* ── Telegram 訊息建構（buildTradeSetup / checkAndSendAlerts / recordSignalsFromScan 共用）── */
+function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
+  const isLong    = direction === 'long';
+  const _fmt  = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+  const _pct  = (a, b) => b ? ((Math.abs(a - b) / Math.abs(b)) * 100).toFixed(2) : '0.00';
+  const _esc  = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const _sym  = coin.symbol.replace('/USDT', '');
+  const _dirLabel  = isLong ? '▲ 做多（Long）' : '▼ 做空（Short）';
+  const canScaleIn = !!(setup.canScaleIn || setup.isLongTerm);
+
+  // ── AI 週/日趨勢（優先從 macroCache 即時計算，fallback 用 setup 存儲值）──
+  let wBias = 'neutral', wBiasLabel = setup.weeklyBias || '', wBiasConf = setup.weeklyConf || 0;
+  let tBias = 'neutral', tBiasLabel = setup.todayBias  || '', tBiasConf = setup.todayConf  || 0;
+  if (macroCache) {
+    try {
+      const _wb = computeWeeklyAIBias(macroCache.fg, macroCache);
+      const _tb = computeTodayAIBias(macroCache.fg, macroCache);
+      wBias = _wb.bias; if (_wb.biasLabel) { wBiasLabel = _wb.biasLabel; wBiasConf = _wb.conf || 0; }
+      tBias = _tb.bias; if (_tb.biasLabel) { tBiasLabel = _tb.biasLabel; tBiasConf = _tb.conf || 0; }
+    } catch(_e) {}
+  }
+
+  // ── AI 訊號品質等級 ──
+  const _sqGradeTG   = setup.sqGrade || '?';
+  const _sqScoreTG   = setup.sqScore ?? '—';
+  const _sqLabelTG   = setup.sqGradeLabel || { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGradeTG] || '—';
+  const _sqEmoji     = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
+  const _sqFactorsTG = (setup.sqFactors || []).filter(f => f.startsWith('✅')).join(' · ');
+  const _sqLine      = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（評分 ${_sqScoreTG}/10）` +
+                       (_sqFactorsTG ? `\n   ${_sqFactorsTG}` : '');
+
+  // ── 信心度扣分明細 ──
+  const _macroPen = setup.macroOpposePenalty || setup.macroPenalty || 0;
+  const _wContra2 = isLong ? wBias.includes('bear') : wBias.includes('bull');
+  const _tContra2 = isLong ? tBias.includes('bear') : tBias.includes('bull');
+  const _penLines = [];
+  if (_macroPen > 0 && macroCache) {
+    const _dom = macroCache.btcDominance || 0;
+    const _chg = macroCache.marketCapChange || 0;
+    const _fg  = macroCache.fg ? parseInt(macroCache.fg.value) : null;
+    const _why = [];
+    if (isLong) {
+      if (_dom > 58) _why.push(`BTC主導率偏高 ${_dom.toFixed(1)}%`);
+      if (_chg < -2) _why.push(`市值下跌 ${_chg.toFixed(1)}%`);
+      if (_fg != null && _fg < 30) _why.push(`恐貪指數偏低 ${_fg}`);
+    } else {
+      if (_dom < 44) _why.push(`BTC主導率偏低 ${_dom.toFixed(1)}%`);
+      if (_chg > 2)  _why.push(`市值上漲 ${_chg.toFixed(1)}%`);
+      if (_fg != null && _fg > 70) _why.push(`恐貪指數偏高 ${_fg}`);
+    }
+    _penLines.push(`   ↳ 宏觀逆風 -${_macroPen}%${_why.length ? `（${_why.join('；')}）` : ''}`);
+  }
+  if (wBiasLabel) {
+    if (_wContra2) _penLines.push(`   ↳ 本週AI預測 ${_esc(wBiasLabel)}，與${isLong ? '做多' : '做空'}逆向，扣 ${_wContra2 ? (wBias.includes('strong') ? 8 : 4) : 0}%`);
+    else if (wBias !== 'neutral') _penLines.push(`   ↳ 本週AI預測 ${_esc(wBiasLabel)}，方向一致`);
+  }
+  if (tBiasLabel) {
+    if (_tContra2) _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 5%`);
+    else if (tBias !== 'neutral') _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，今日方向一致`);
+  }
+  const _dirPen = setup.dirPenalty || 0;
+  if (_dirPen > 0) {
+    const _dWkOp = isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull');
+    const _dDyOp = isLong ? (coin.dailySignal||'').includes('bear')  : (coin.dailySignal||'').includes('bull');
+    const _dParts = [];
+    if (_dWkOp) _dParts.push('週線逆向');
+    if (_dDyOp) _dParts.push('日線逆向');
+    _penLines.push(`   ↳ 大方向${_dParts.join('+')} -${_dirPen}%`);
+  }
+  const _techPen = setup.techPenalty || 0;
+  if (_techPen > 0) {
+    const _macdH = parseFloat(coin.macdHist) || 0;
+    const _rsiV  = parseFloat(coin.rsi) || 50;
+    const _volSt = coin.volumeStrength || '';
+    if (isLong  && _macdH < 0) _penLines.push(`   ↳ 技術面：MACD柱狀負值，多頭動能待確認，扣 4%`);
+    if (!isLong && _macdH > 0) _penLines.push(`   ↳ 技術面：MACD柱狀正值，空頭動能待確認，扣 4%`);
+    if (isLong  && _rsiV > 78) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 嚴重超買，扣 8%`);
+    else if (isLong && _rsiV > 70) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 超買，扣 5%`);
+    if (!isLong && _rsiV < 22) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 嚴重超賣，扣 8%`);
+    else if (!isLong && _rsiV < 30) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 超賣，扣 5%`);
+    if (_volSt === '低' || _volSt.includes('弱')) _penLines.push(`   ↳ 技術面：成交量弱（${_volSt}），扣 4%`);
+  }
+  const _chipsPen = setup.chipsPenalty || 0;
+  if (_chipsPen > 0) {
+    const _deriv = coin.derivData;
+    const _whale = coin.whaleData;
+    if (_deriv) {
+      const _tkr = _deriv.takerBuySell ?? 1;
+      if (isLong  && _tkr < 0.80) _penLines.push(`   ↳ 籌碼面：主動賣盤強勢（Taker ${_tkr.toFixed(2)}），扣 6%`);
+      else if (isLong  && _tkr < 0.88) _penLines.push(`   ↳ 籌碼面：主動賣盤偏多（Taker ${_tkr.toFixed(2)}），扣 4%`);
+      else if (!isLong && _tkr > 1.20) _penLines.push(`   ↳ 籌碼面：主動買盤強勢（Taker ${_tkr.toFixed(2)}），扣 6%`);
+      else if (!isLong && _tkr > 1.12) _penLines.push(`   ↳ 籌碼面：主動買盤偏多（Taker ${_tkr.toFixed(2)}），扣 4%`);
+    }
+    if (_whale) {
+      if (isLong  && _whale.bias === 'bear' && (_whale.bigSellCount||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續出貨（${_whale.bigSellCount}筆大賣），扣 5%`);
+      if (!isLong && _whale.bias === 'bull' && (_whale.bigBuyCount ||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續買入（${_whale.bigBuyCount}筆大買），扣 5%`);
+    }
+  }
+  const _confScore      = `📶 信心度：<b>${setup.conf}%</b>`;
+  const _confDeductions = _penLines.length ? _penLines.join('\n') : '';
+
+  // ── 週/日 AI 走勢 & 預警 ──
+  const _wLine = wBiasLabel ? `📈 本週走勢：${_esc(wBiasLabel)}（信心 ${wBiasConf}%）` : '';
+  const _tLine = tBiasLabel ? `📅 今日走勢：${_esc(tBiasLabel)}（信心 ${tBiasConf}%）` : '';
+  const _biasBlock = [_wLine, _tLine].filter(Boolean).join('\n');
+
+  // ── 進場理由 ──
+  const _reasons = (setup.entryReasons?.length ? setup.entryReasons : (setup.entryReason || '').split('，')).filter(Boolean);
+  const _reasonsBullets = _reasons.map(r => `   • ${_esc(r)}`).join('\n');
+
+  // ── 價格 ──
+  const _tp1Pct  = _pct(setup.tp1, setup.entry);
+  const _tp2Pct  = setup.tp2 ? _pct(setup.tp2, setup.entry) : null;
+  const _slPct   = _pct(setup.sl, setup.entry);
+  const _tp1Sign = isLong ? '+' : '-';
+  const _slSign  = isLong ? '-' : '+';
+  const _rr1 = setup.rr1 != null ? setup.rr1 : (() => {
+    const risk = Math.abs((setup.entry || 0) - (setup.sl || 0));
+    return risk > 0 ? (Math.abs((setup.tp1 || 0) - (setup.entry || 0)) / risk).toFixed(2) : '?';
+  })();
+  const _rr2 = setup.rr2 != null ? setup.rr2 : (setup.tp2 ? (() => {
+    const risk = Math.abs((setup.entry || 0) - (setup.sl || 0));
+    return risk > 0 ? (Math.abs((setup.tp2 || 0) - (setup.entry || 0)) / risk).toFixed(2) : null;
+  })() : null);
+
+  // ── 時間戳 & 標籤 ──
+  const _now  = new Date();
+  const _ts   = _now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) +
+                ' ' + _now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+  const _tags = `#${_sym.toLowerCase()} #crypto #${isLong ? 'long' : 'short'}`;
+
+  // ── Kill Zone ──
+  let _kzLine = '';
+  try {
+    const _kzTg = computeKillZone();
+    _kzLine = `🕐 Kill Zone：${_kzTg.emoji} ${_kzTg.name}${_kzTg.quality === 'high' ? ' ✅ 黃金進場窗口' : ''}`;
+  } catch(_e) {}
+
+  // ── ICT 結構（從快取讀取）──
+  const _ictCache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache[coin.symbol]) || {};
+  const _ictLines = [];
+  if (_ictCache.orderBlock?.priceInOB)  _ictLines.push(`   ⚡ ${_ictCache.orderBlock.label} 訂單塊確認`);
+  if (_ictCache.fvg && !_ictCache.fvg.filled) _ictLines.push(`   📊 FVG 缺口 $${parseFloat(_ictCache.fvg.mid).toPrecision(5).replace(/\.?0+$/,'')} 未回補`);
+  if (_ictCache.premiumDiscount) {
+    const _pd = _ictCache.premiumDiscount;
+    if ((isLong && _pd.idealForLong) || (!isLong && _pd.idealForShort))
+      _ictLines.push(`   ⚖️ ${_pd.icon} ${_pd.zoneLabel}（${_pd.pctInRange.toFixed(0)}%）SMC 最佳位`);
+  }
+  const _ictBlock = _ictLines.length ? '\n' + _ictLines.join('\n') : '';
+
+  // ── 風險警示 ──
+  const _riskScore = setup.riskScore || _ictCache.riskScore || 0;
+  const _riskLevel = setup.riskLevel || _ictCache.riskLevel || '低風險';
+  const _riskRecs  = setup.riskRecs  || _ictCache.riskRecs  || [];
+  let _riskBanner = '';
+  if (_riskScore >= 28) {
+    const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 60 ? '⛔⛔' : '⚠️';
+    const _riskHdr   = _riskScore >= 75 ? '極高風險警示' : _riskScore >= 60 ? '高風險警示' : '中風險提示';
+    const _recLine   = _riskRecs[0] ? `\n   ▸ ${_esc(_riskRecs[0])}` : '';
+    const _rec2      = _riskRecs[1] ? `\n   ▸ ${_esc(_riskRecs[1])}` : '';
+    _riskBanner = `${_riskEmoji} <b>${_riskHdr}（${_riskScore}/100）</b>：${_esc(_riskLevel)}${_recLine}${_rec2}\n\n`;
+  }
+
+  // ── 長線加倉計劃 ──
+  let _scaleBlock = '';
+  if (canScaleIn) {
+    const _ltRisk    = Math.abs((setup.entry || 0) - (setup.sl || 0)) || ((setup.entry || 1) * 0.015);
+    const _ltTPEst   = isLong ? (setup.entry || 0) + _ltRisk * 8 : (setup.entry || 0) - _ltRisk * 8;
+    const _ltTPFmt   = _fmt(Math.max(0, _ltTPEst));
+    const _ltRR      = (_ltRisk > 0 ? Math.abs(_ltTPEst - (setup.entry || 0)) / _ltRisk : 0).toFixed(1);
+    const _ltPct     = _pct(_ltTPEst, setup.entry);
+    const _scaleN    = 2;
+    const _totalMove = Math.abs(_ltTPEst - (setup.entry || 0));
+    const _scaleEmojis = ['🥇', '🥈', '🥉'];
+    const _scaleLines  = Array.from({ length: _scaleN }, (_, i) => {
+      const n   = i + 1;
+      const lvl = isLong
+        ? (setup.entry || 0) + _totalMove * (n / (_scaleN + 1))
+        : (setup.entry || 0) - _totalMove * (n / (_scaleN + 1));
+      return `   ${_scaleEmojis[i]} 加倉${n}：$${_fmt(lvl)}`;
+    }).join('\n');
+    _scaleBlock = `🏁 <b>最終止盈：$${_ltTPFmt}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n` +
+                  `\n💰 <b>加倉計劃</b>（${_scaleN} 次）\n${_scaleLines}\n`;
+  }
+
+  const _hdr = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
+  const _ltConfirm = canScaleIn ? `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` : '';
+
+  const _priceLines = canScaleIn
+    ? (`📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
+       `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
+       _scaleBlock)
+    : (`📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
+       `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
+       `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${_rr1}:1)\n` +
+       (_rr2 && setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp1Sign}${_tp2Pct}% | R:R ${_rr2}:1)\n` : ''));
+
+  return `${_hdr}\n` +
+    (_riskBanner ? `${_riskBanner}` : '\n') +
+    `${_dirLabel}：<b>${coin.symbol}</b>\n` +
+    `${_sqLine}\n` +
+    `⏰ ${_ts}\n` +
+    (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
+    (_ltConfirm ? _ltConfirm : '\n') +
+    (_biasBlock ? `${_biasBlock}\n\n` : '') +
+    `${_confScore}\n\n` +
+    _priceLines +
+    `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
+    `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n` +
+    (_confDeductions ? `${_confDeductions}\n` : '') +
+    `\n${_tags}\n` +
+    `🔗 <a href="${siteUrl}">查看 ${_sym} 詳細分析 →</a>`;
+}
+
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
 function recordSignalsFromScan(data) {
   const tlog = loadTradeLog();
@@ -7149,6 +7363,8 @@ function recordSignalsFromScan(data) {
     if (setup.techPenalty === 0) { _scanSqScore += 1; _scanSqFactors.push('✅ 技術面無逆風'); }
     const _scanSqGrade = _scanSqScore >= 8 ? 'S' : _scanSqScore >= 6 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
+    // 等級 C/D：訊號品質不足，不建立倉位，不推送 Telegram
+    if (!['S','A','B'].includes(_scanSqGrade)) continue;
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
@@ -7195,7 +7411,7 @@ function recordSignalsFromScan(data) {
       tradeType: 'directional',
       longTermBias: null, canScaleIn,
       scaleIns: [], peakPrice: null,
-      sqGrade: _scanSqGrade, sqScore: _scanSqScore, sqGradeLabel: _scanSqLabel,
+      sqGrade: _scanSqGrade, sqScore: _scanSqScore, sqGradeLabel: _scanSqLabel, sqFactors: _scanSqFactors,
     };
     // 若現價已超過進場位 0.3%，標記為等待回踩
     const _scanCurPrice = parseFloat(coin.price) || 0;
@@ -7213,221 +7429,11 @@ function recordSignalsFromScan(data) {
     try {
       const _ns = loadSettings();
       if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
-        const _fmt  = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-        const _pct  = (a, b) => ((Math.abs(a - b) / Math.abs(b)) * 100).toFixed(2);
-        const _esc  = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        const _sym  = coin.symbol.replace('/USDT', '');
-        const _dirLabel = isLong ? '▲ 做多（Long）' : '▼ 做空（Short）';
-        const _siteUrl  = window.location.origin + window.location.pathname;
-
-        // ── AI 訊號品質等級（使用掃描時計算的等級）──
-        const _sqGradeTG    = _scanSqGrade || 'C';
-        const _sqScoreTG    = _scanSqScore ?? '—';
-        const _sqLabelTG    = _scanSqLabel || '一般訊號';
-        const _sqEmoji      = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
-        const _sqFactorsTG  = _scanSqFactors.filter(f => f.startsWith('✅')).join(' · ');
-        const _sqLine       = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（評分 ${_sqScoreTG}/10）` +
-                              (_sqFactorsTG ? `\n   ${_sqFactorsTG}` : '');
-
-        // ── 信心度扣分明細 ──
-        const _macroPen = setup.macroPenalty || 0;
-        const _wContra2 = isLong ? wBias.includes('bear') : wBias.includes('bull');
-        const _tContra2 = isLong ? tBias.includes('bear') : tBias.includes('bull');
-        const _wAIPen   = _wContra2 ? (wBias.includes('strong') ? 8 : 4) : 0;
-        const _tAIPen   = _tContra2 ? 5 : 0;
-        const _penLines = [];
-        if (_macroPen > 0 && _macroCache) {
-          const _dom = _macroCache.btcDominance || 0;
-          const _chg = _macroCache.marketCapChange || 0;
-          const _fg  = _macroCache.fg ? parseInt(_macroCache.fg.value) : null;
-          const _why = [];
-          if (isLong) {
-            if (_dom > 58) _why.push(`BTC主導率偏高 ${_dom.toFixed(1)}%`);
-            if (_chg < -2) _why.push(`市值下跌 ${_chg.toFixed(1)}%`);
-            if (_fg != null && _fg < 30) _why.push(`恐貪指數偏低 ${_fg}`);
-          } else {
-            if (_dom < 44) _why.push(`BTC主導率偏低 ${_dom.toFixed(1)}%`);
-            if (_chg > 2)  _why.push(`市值上漲 ${_chg.toFixed(1)}%`);
-            if (_fg != null && _fg > 70) _why.push(`恐貪指數偏高 ${_fg}`);
-          }
-          const _whyStr = _why.length ? `（${_why.join('；')}）` : '';
-          _penLines.push(`   ↳ 宏觀逆風 -${_macroPen}%${_whyStr}`);
-        }
-        // 週/日 AI 走勢：逆向顯示扣分，順向顯示確認，中性跳過
-        if (wBiasLabel) {
-          if (_wContra2) _penLines.push(`   ↳ 本週AI預測 ${_esc(wBiasLabel)}，與${isLong ? '做多' : '做空'}逆向，扣 ${_wAIPen}%`);
-          else if (wBias !== 'neutral') _penLines.push(`   ↳ 本週AI預測 ${_esc(wBiasLabel)}，與${isLong ? '做多' : '做空'}方向一致`);
-        }
-        if (tBiasLabel) {
-          if (_tContra2) _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 ${_tAIPen}%`);
-          else if (tBias !== 'neutral') _penLines.push(`   ↳ 今日AI預測 ${_esc(tBiasLabel)}，今日方向一致`);
-        }
-        const _dirPen = setup.dirPenalty || 0;
-        if (_dirPen > 0) {
-          const _dWkOp = isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull');
-          const _dDyOp = isLong ? (coin.dailySignal||'').includes('bear')  : (coin.dailySignal||'').includes('bull');
-          const _dParts = [];
-          if (_dWkOp) _dParts.push('週線逆向');
-          if (_dDyOp) _dParts.push('日線逆向');
-          _penLines.push(`   ↳ 大方向${_dParts.join('+')} -${_dirPen}%`);
-        }
-        // 技術面扣分明細
-        const _techPen = setup.techPenalty || 0;
-        if (_techPen > 0) {
-          const _macdH = parseFloat(coin.macdHist) || 0;
-          const _rsiV  = parseFloat(coin.rsi) || 50;
-          const _volSt = coin.volumeStrength || '';
-          if (isLong  && _macdH < 0) _penLines.push(`   ↳ 技術面：MACD柱狀負值，多頭動能待確認，扣 4%`);
-          if (!isLong && _macdH > 0) _penLines.push(`   ↳ 技術面：MACD柱狀正值，空頭動能待確認，扣 4%`);
-          if (isLong  && _rsiV > 78) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 嚴重超買，回調風險高，扣 8%`);
-          else if (isLong && _rsiV > 70) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 超買，上行動能減弱，扣 5%`);
-          if (!isLong && _rsiV < 22) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 嚴重超賣，反彈風險高，扣 8%`);
-          else if (!isLong && _rsiV < 30) _penLines.push(`   ↳ 技術面：RSI ${_rsiV} 超賣，下行動能減弱，扣 5%`);
-          if (_volSt === '低' || _volSt.includes('弱')) _penLines.push(`   ↳ 技術面：成交量弱勢（${_volSt}），突破動能不足，扣 4%`);
-        }
-        // 籌碼面扣分明細
-        const _chipsPen = setup.chipsPenalty || 0;
-        if (_chipsPen > 0) {
-          const _deriv = coin.derivData;
-          const _whale = coin.whaleData;
-          if (_deriv) {
-            const _tkr = _deriv.takerBuySell ?? 1;
-            if (isLong  && _tkr < 0.80) _penLines.push(`   ↳ 籌碼面：主動賣盤強勢（Taker ${_tkr.toFixed(2)}），扣 6%`);
-            else if (isLong  && _tkr < 0.88) _penLines.push(`   ↳ 籌碼面：主動賣盤偏多（Taker ${_tkr.toFixed(2)}），扣 4%`);
-            else if (!isLong && _tkr > 1.20) _penLines.push(`   ↳ 籌碼面：主動買盤強勢（Taker ${_tkr.toFixed(2)}），扣 6%`);
-            else if (!isLong && _tkr > 1.12) _penLines.push(`   ↳ 籌碼面：主動買盤偏多（Taker ${_tkr.toFixed(2)}），扣 4%`);
-          }
-          if (_whale) {
-            if (isLong  && _whale.bias === 'bear' && (_whale.bigSellCount||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續出貨（${_whale.bigSellCount}筆大賣），多頭逆風，扣 5%`);
-            if (!isLong && _whale.bias === 'bull' && (_whale.bigBuyCount ||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續買入（${_whale.bigBuyCount}筆大買），空頭逆風，扣 5%`);
-          }
-        }
-        const _confScore      = `📶 信心度：<b>${setup.conf}%</b>`;
-        const _confDeductions = _penLines.length ? _penLines.join('\n') : '';
-
-        // ── 週/日AI走勢 ──
-        const _wLine = wBiasLabel ? `📈 本週走勢：${_esc(wBiasLabel)}（信心 ${wBiasConf}%）` : '';
-        const _tLine = tBiasLabel ? `📅 今日走勢：${_esc(tBiasLabel)}（信心 ${tBiasConf}%）` : '';
-        const _biasBlock = [_wLine, _tLine].filter(Boolean).join('\n');
-
-        // ── AI預警（逆向時顯示）──
-        const _wContra = isLong ? wBias.includes('bear') : wBias.includes('bull');
-        const _tContra = isLong ? tBias.includes('bear') : tBias.includes('bull');
-        const _aiWarn  = (_wContra || _tContra)
-          ? `\n⚠️ AI 走勢預警：${_wContra && _tContra ? '本週/今日預測' : _wContra ? '本週預測' : '今日預測'}與操作方向相反，請謹慎操作、縮小倉位`
-          : '';
-
-        // ── 進場理由（逐條列出）──
-        const _reasons = (setup.entryReasons?.length ? setup.entryReasons : (setup.entryReason || '').split('，')).filter(Boolean);
-        const _reasonsBullets = _reasons.map(r => `   • ${_esc(r)}`).join('\n');
-
-        // ── 價格計算 ──
-        const _tp1Pct = _pct(setup.tp1, setup.entry);
-        const _tp2Pct = setup.tp2 ? _pct(setup.tp2, setup.entry) : null;
-        const _slPct  = _pct(setup.sl, setup.entry);
-        const _tp1Sign = isLong ? '+' : '-';
-        const _tp2Sign = isLong ? '+' : '-';
-        const _slSign  = isLong ? '-' : '+';
-
-        // ── 時間戳 & 標籤 ──
-        const _now = new Date();
-        const _ts  = _now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) +
-                     ' ' + _now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
-        const _tags = `#${_sym.toLowerCase()} #crypto #${isLong ? 'long' : 'short'}`;
-
-        // ── ICT Kill Zone ──
-        const _kzTg   = computeKillZone();
-        const _kzLine = `🕐 Kill Zone：${_kzTg.emoji} ${_kzTg.name}${_kzTg.quality === 'high' ? ' ✅ 黃金進場窗口' : ''}`;
-        // ICT OB/FVG/PD from cache (populated by buildTradeSetup if user viewed detail)
-        const _ictCache = _tradeSetupCache[coin.symbol] || {};
-        const _ictLines = [];
-        if (_ictCache.orderBlock?.priceInOB)  _ictLines.push(`   ⚡ ${_ictCache.orderBlock.label} 訂單塊確認`);
-        if (_ictCache.fvg && !_ictCache.fvg.filled) _ictLines.push(`   📊 FVG 缺口 $${parseFloat(_ictCache.fvg.mid).toPrecision(5).replace(/\.?0+$/,'')} 未回補`);
-        if (_ictCache.premiumDiscount) {
-          const _pd = _ictCache.premiumDiscount;
-          if ((isLong && _pd.idealForLong) || (!isLong && _pd.idealForShort))
-            _ictLines.push(`   ⚖️ ${_pd.icon} ${_pd.zoneLabel}（${_pd.pctInRange.toFixed(0)}%）SMC 最佳位`);
-        }
-        const _ictBlock = _ictLines.length ? '\n' + _ictLines.join('\n') : '';
-
-        // ── 風險警示橫幅（完整 10 因子評估，與幣種詳情頁相同）──
-        const _riskScore = _scanRisk.score;
-        const _riskLevel = _scanRisk.level;
-        const _riskRecs  = _scanRisk.recs;
-        let _riskBanner = '';
-        if (_riskScore >= 28) {
-          const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 60 ? '⛔⛔' : '⚠️';
-          const _riskHdr   = _riskScore >= 75 ? '極高風險警示' : _riskScore >= 60 ? '高風險警示' : '中風險提示';
-          const _recLine   = _riskRecs[0] ? `\n   ▸ ${_esc(_riskRecs[0])}` : '';
-          const _rec2      = _riskRecs[1] ? `\n   ▸ ${_esc(_riskRecs[1])}` : '';
-          _riskBanner = `${_riskEmoji} <b>${_riskHdr}（${_riskScore}/100）</b>：${_esc(_riskLevel)}${_recLine}${_rec2}\n\n`;
-        }
-
-        // ── 長線加倉計劃（掃描版，用 ATR 估算）──
-        let _scaleBlock = '';
-        if (canScaleIn) {
-          const _ltRisk    = Math.abs(setup.entry - setup.sl) || (setup.entry * 0.015);
-          const _ltTPEst   = isLong ? setup.entry + _ltRisk * 8 : setup.entry - _ltRisk * 8;
-          const _ltTPFmt   = _fmt(Math.max(0, _ltTPEst));
-          const _ltRR      = (_ltRisk > 0 ? Math.abs(_ltTPEst - setup.entry) / _ltRisk : 0).toFixed(1);
-          const _ltPct     = _pct(_ltTPEst, setup.entry);
-          const _scaleN    = 2;
-          const _totalMove = Math.abs(_ltTPEst - setup.entry);
-          const _scaleEmojis = ['🥇', '🥈', '🥉'];
-          const _scaleLines  = Array.from({ length: _scaleN }, (_, i) => {
-            const n   = i + 1;
-            const lvl = isLong
-              ? setup.entry + _totalMove * (n / (_scaleN + 1))
-              : setup.entry - _totalMove * (n / (_scaleN + 1));
-            return `   ${_scaleEmojis[i]} 加倉${n}：$${_fmt(lvl)}`;
-          }).join('\n');
-          _scaleBlock =
-            `🏁 <b>最終止盈：$${_ltTPFmt}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n` +
-            `\n💰 <b>加倉計劃</b>（${_scaleN} 次）\n${_scaleLines}\n`;
-        }
-
-        // ── Telegram 訊息（信心度 → 進場 → 止損 → 止盈 → 進場理由 → 止損理由 → 扣分明細）──
-        const _msg = canScaleIn
-          ? (
-            `💎 <b>加密掃描 Pro — 長線單信號</b>\n` +
-            (_riskBanner ? `${_riskBanner}` : '\n') +
-            `${_dirLabel}：<b>${coin.symbol}</b>\n` +
-            `${_sqLine}\n` +
-            `⏰ ${_ts}\n` +
-            `${_kzLine}${_ictBlock}\n` +
-            `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` +
-            (_biasBlock ? `${_biasBlock}\n\n` : '') +
-            `${_confScore}\n\n` +
-            `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
-            `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
-            _scaleBlock +
-            `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
-            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n` +
-            (_confDeductions ? `${_confDeductions}\n` : '') +
-            `\n${_tags}\n` +
-            `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
-          )
-          : (
-            `🚨 <b>加密掃描 Pro — 短線單信號</b>\n` +
-            (_riskBanner ? `${_riskBanner}` : '\n') +
-            `${_dirLabel}：<b>${coin.symbol}</b>\n` +
-            `${_sqLine}\n` +
-            `⏰ ${_ts}\n` +
-            `${_kzLine}${_ictBlock}\n\n` +
-            (_biasBlock ? `${_biasBlock}\n\n` : '') +
-            `${_confScore}\n\n` +
-            `📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
-            `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
-            `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${setup.rr1}:1)\n` +
-            (setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp2Sign}${_tp2Pct}% | R:R ${setup.rr2}:1)\n` : '') +
-            `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
-            `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n` +
-            (_confDeductions ? `${_confDeductions}\n` : '') +
-            `\n${_tags}\n` +
-            `🔗 <a href="${_siteUrl}">查看 ${_sym} 詳細分析 →</a>`
-          );
-
-        sendTelegramMessage(_ns.tgToken, _ns.tgChatId, _msg);
+        const _tgSetup = Object.assign({}, newTrade, {
+          riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs,
+        });
+        sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
+          buildTelegramText(coin, direction, _tgSetup, _macroCache, window.location.origin + window.location.pathname));
         newTrade.telegramSent = true;
       }
     } catch(_e) { console.warn('[recordSignalsFromScan tg]', _e); }
