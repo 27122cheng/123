@@ -3160,7 +3160,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else _hwrP.push('AI 學習風控通過');
 
     // ④ 大時框趨勢
-    if (bigTrendBlocked) _hwrW.push({ level:'danger', text:`大時框逆勢（${bigTrendBlockReason || '4H/日線反向'}），頂級交易員不逆勢', source:'大時框趨勢' });
+    if (bigTrendBlocked) _hwrW.push({ level:'danger', text:`大時框逆勢（${bigTrendBlockReason || '4H/日線反向'}），頂級交易員不逆勢`, source:'大時框趨勢' });
     else if (isAligned)  _hwrP.push('4H + 日線大時框方向一致');
     else if (bigTrend === 'mixed') _hwrW.push({ level:'caution', text:'4H / 日線趨勢分歧（mixed），大方向不明確', source:'大時框趨勢' });
 
