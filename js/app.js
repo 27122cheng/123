@@ -6987,6 +6987,9 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
   const _sym  = coin.symbol.replace('/USDT', '');
   const _dirLabel  = isLong ? '▲ 做多（Long）' : '▼ 做空（Short）';
   const canScaleIn = !!(setup.canScaleIn || setup.isLongTerm);
+  const _price = parseFloat(coin.price) || 1;
+  const _pSym  = (coin.symbol || '').replace('/', '').toUpperCase();
+  const _px    = v => toPionex(_pSym, _price, v);
 
   // ── AI 週/日趨勢（優先從 macroCache 即時計算，fallback 用 setup 存儲值）──
   let wBias = 'neutral', wBiasLabel = setup.weeklyBias || '', wBiasConf = setup.weeklyConf || 0;
@@ -7120,7 +7123,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
   const _ictCache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache[coin.symbol]) || {};
   const _ictLines = [];
   if (_ictCache.orderBlock?.priceInOB)  _ictLines.push(`   ⚡ ${_ictCache.orderBlock.label} 訂單塊確認`);
-  if (_ictCache.fvg && !_ictCache.fvg.filled) _ictLines.push(`   📊 FVG 缺口 $${parseFloat(_ictCache.fvg.mid).toPrecision(5).replace(/\.?0+$/,'')} 未回補`);
+  if (_ictCache.fvg && !_ictCache.fvg.filled) _ictLines.push(`   📊 FVG 缺口 $${_fmt(_px(parseFloat(_ictCache.fvg.mid)))} 未回補`);
   if (_ictCache.premiumDiscount) {
     const _pd = _ictCache.premiumDiscount;
     if ((isLong && _pd.idealForLong) || (!isLong && _pd.idealForShort))
@@ -7157,9 +7160,9 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
       const lvl = isLong
         ? (setup.entry || 0) + _totalMove * (n / (_scaleN + 1))
         : (setup.entry || 0) - _totalMove * (n / (_scaleN + 1));
-      return `   ${_scaleEmojis[i]} 加倉${n}：$${_fmt(lvl)}`;
+      return `   ${_scaleEmojis[i]} 加倉${n}：$${_fmt(_px(lvl))}`;
     }).join('\n');
-    _scaleBlock = `🏁 <b>最終止盈：$${_ltTPFmt}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n` +
+    _scaleBlock = `🏁 <b>最終止盈：$${_fmt(_px(Math.max(0, _ltTPEst)))}</b>  (${_tp1Sign}${_ltPct}% | R:R ${_ltRR}:1)\n` +
                   `\n💰 <b>加倉計劃</b>（${_scaleN} 次）\n${_scaleLines}\n`;
   }
 
@@ -7167,13 +7170,13 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
   const _ltConfirm = canScaleIn ? `✅ 日線 + 週線雙確認，長線${isLong ? '多頭' : '空頭'}趨勢成立\n\n` : '';
 
   const _priceLines = canScaleIn
-    ? (`📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
-       `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
+    ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b>\n` +
+       `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)\n` +
        _scaleBlock)
-    : (`📍 <b>進場：$${_fmt(setup.entry)}</b>\n` +
-       `🛑 <b>止損：$${_fmt(setup.sl)}</b>  (${_slSign}${_slPct}%)\n` +
-       `🎯 <b>止盈一：$${_fmt(setup.tp1)}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${_rr1}:1)\n` +
-       (_rr2 && setup.tp2 ? `🚀 <b>止盈二：$${_fmt(setup.tp2)}</b>  (${_tp1Sign}${_tp2Pct}% | R:R ${_rr2}:1)\n` : ''));
+    : (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b>\n` +
+       `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)\n` +
+       `🎯 <b>止盈一：$${_fmt(_px(setup.tp1))}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${_rr1}:1)\n` +
+       (_rr2 && setup.tp2 ? `🚀 <b>止盈二：$${_fmt(_px(setup.tp2))}</b>  (${_tp1Sign}${_tp2Pct}% | R:R ${_rr2}:1)\n` : ''));
 
   return `${_hdr}\n` +
     (_riskBanner ? `${_riskBanner}` : '\n') +
@@ -7299,9 +7302,10 @@ function recordSignalsFromScan(data) {
     // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
-    // 嚴格入場門檻：有宏觀時 ≥3/4 同向；無宏觀快取時要求 ≥2/4（幣種面）同向
+    // 入場門檻：有宏觀且方向明確時 ≥3/4；宏觀中性或無快取時 ≥2/4（幣種面）
     const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
-    if (_macroCache ? _factors < 3 : _factors < 2) continue;
+    const _factorMin = (_macroCache && macroNetDir !== 'neutral') ? 3 : 2;
+    if (_factors < _factorMin) continue;
 
     // ADX 過低（< 20）：震盪無趨勢，直接跳過
     if ((parseFloat(coin.adx) || 20) < 20) continue;
