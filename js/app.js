@@ -806,6 +806,14 @@ function buildOpenPositionSetup(t, currentPrice) {
   const ltTag = isLongTermTrade
     ? ' <span class="lt-tag lt-bull">〔長線單〕</span>'
     : ' <span class="lt-tag" style="background:rgba(251,191,36,.15);border-color:rgba(251,191,36,.35);color:#fbbf24">⚡ 短線單</span>';
+  const _openGradeColors = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' };
+  const _openGradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
+  const _openSqTag = t.sqGrade ? (() => {
+    const gc = _openGradeColors[t.sqGrade] || '#9ca3af';
+    const ge = _openGradeEmojis[t.sqGrade] || '📊';
+    const gl = t.sqGradeLabel || '';
+    return ` <span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px">${ge} AI ${t.sqGrade}${gl ? ` ${gl}` : ''}</span>`;
+  })() : '';
 
   // 即時未實現損益
   let unrealHtml = '';
@@ -857,7 +865,7 @@ function buildOpenPositionSetup(t, currentPrice) {
       <div class="verdict-dir">
         <span class="verdict-arrow">${isLong ? '▲' : '▼'}</span>
         <span class="verdict-label">${dirLabel}</span>
-        ${ltTag}
+        ${ltTag}${_openSqTag}
         <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">持倉進行中</span>
       </div>
       <div class="verdict-conf-wrap">
@@ -914,11 +922,19 @@ function buildPendingPositionSetup(t, currentPrice) {
   const _ptTag = t.canScaleIn
     ? `<span style="font-size:0.7rem;font-weight:700;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.35);color:#4ade80;padding:2px 7px;border-radius:20px;margin-left:7px">〔長線單〕</span>`
     : `<span style="font-size:0.7rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:7px">⚡ 短線單</span>`;
+  const _gradeColors = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' };
+  const _gradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
+  const _sqTag = t.sqGrade ? (() => {
+    const gc = _gradeColors[t.sqGrade] || '#9ca3af';
+    const ge = _gradeEmojis[t.sqGrade] || '📊';
+    const gl = t.sqGradeLabel || '';
+    return `<span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px;margin-left:7px">${ge} AI ${t.sqGrade}${gl ? ` ${gl}` : ''}</span>`;
+  })() : '';
 
   return `<div class="pending-banner">
     <div class="pending-icon">⏳</div>
     <div>
-      <div class="pending-title" style="color:${dirColor}">${dirLabel}${_ptTag}</div>
+      <div class="pending-title" style="color:${dirColor}">${dirLabel}${_ptTag}${_sqTag}</div>
       <div class="pending-sub">等待現價觸及進場位後自動確認開倉</div>
     </div>
   </div>
@@ -2625,6 +2641,65 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     entryReasons.push(`🚫 ${bigTrendBlockReason}`);
   }
 
+  // ── 訊號品質 AI 評估（多因子評分 0-10，決定等級與是否過濾）──
+  // 必須在 _tradeSetupCache 賦值前計算，避免 TDZ ReferenceError
+  const _sqFactors = [];
+  let _sqScore = 0;
+  // ① 大時框架同向（4H + 日線）
+  const _sq4hOk = h4?.signal?.includes(isLong ? 'bull' : 'bear');
+  const _sqD1Ok = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
+  if (_sq4hOk && _sqD1Ok) { _sqScore += 2; _sqFactors.push('✅ 4H+日線同向'); }
+  else if (_sq4hOk || _sqD1Ok) { _sqScore += 1; _sqFactors.push('⚠️ 單一大框架確認'); }
+  else { _sqFactors.push('❌ 大框架無確認'); }
+  // ② AI 預測對齊
+  const _sqWkOk = weeklyBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
+  const _sqTdOk = todayBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
+  if (_sqWkOk) { _sqScore += 1; _sqFactors.push('✅ 本週 AI 同向'); }
+  if (_sqTdOk) { _sqScore += 1; _sqFactors.push('✅ 今日 AI 同向'); }
+  // ③ 足跡圖 Delta 確認
+  if (_fpBTS && !_fpBTS.deltaDiv) {
+    const _fpOk = isLong ? (_fpBTS.deltaDir === 'bull') : (_fpBTS.deltaDir === 'bear');
+    if (_fpOk) { _sqScore += 1; _sqFactors.push('✅ 足跡圖 Delta 確認'); }
+    else if (_fpBTS.deltaDir === 'neutral') { /* 中性不加分也不扣 */ }
+    else { _sqFactors.push('❌ 足跡圖 Delta 逆向'); }
+  } else if (_fpBTS?.deltaDiv) { _sqFactors.push('⚡ 足跡圖 Delta 背離'); }
+  // ④ ICT 結構確認（OB / FVG / Kill Zone）
+  let _sqIctCnt = 0;
+  if (_ictOB?.priceInOB || _ictOB4h?.priceInOB) _sqIctCnt++;
+  if ((_ictFVG && !_ictFVG.filled) || (_ictFVG4h && !_ictFVG4h.filled)) _sqIctCnt++;
+  if (_kz?.quality === 'high') _sqIctCnt++;
+  _sqScore += Math.min(2, _sqIctCnt);
+  if (_sqIctCnt >= 2) _sqFactors.push('✅ ICT 多重結構確認');
+  else if (_sqIctCnt === 1) _sqFactors.push('⚠️ ICT 單一結構');
+  // ⑤ ADX 趨勢強度
+  if (adxVal >= 28) { _sqScore += 1; _sqFactors.push(`✅ ADX ${adxVal} 趨勢確立`); }
+  else if (adxVal >= 22) { /* 合格但不加分 */ }
+  else { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
+  // ⑥ 訂單流確認（CVD + Taker）
+  const _sqOFOk = isLong ? (cvdTrend === 'bull' && buyPct > 55) : (cvdTrend === 'bear' && buyPct < 45);
+  if (_sqOFOk) { _sqScore += 1; _sqFactors.push('✅ 訂單流同向確認'); }
+  // ⑦ 無技術逆風（RSI/MACD 均正常）
+  const _sqNoTechRisk = techPenalty === 0;
+  if (_sqNoTechRisk) { _sqScore += 1; _sqFactors.push('✅ 技術面無逆風'); }
+
+  const _sqGrade = _sqScore >= 8 ? 'S'
+                 : _sqScore >= 6 ? 'A'
+                 : _sqScore >= 4 ? 'B'
+                 : _sqScore >= 2 ? 'C' : 'D';
+  const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
+  const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
+
+  // Grade D：訊號品質過低 → AI 過濾，建議觀望
+  if (_sqGrade === 'D') {
+    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: 'D', sqScore: _sqScore };
+    return `<div class="setup-wait">
+      <div class="setup-wait-icon">🤖</div>
+      <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:#ef4444">D 級</strong>），建議觀望</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/10，未達 AI 訊號品質門檻（需 ≥ C 級，評分 ≥ 2）</div>
+      <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
+    </div>`;
+  }
+
   // 緩存完整設置供 Telegram 通知 + AI 分析使用
   _tradeSetupCache[coin.symbol] = {
     direction,
@@ -2695,6 +2770,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ex.hardAdxPenalty = hardAdxPenalty; ex.learnPenalty = learnPenalty;
     ex.macroPenalty = macroOpposePenalty; ex.aiTrendPenalty = aiTrendPenalty;
     ex.techPenalty = techPenalty; ex.chipsPenalty = chipsPenalty;
+    ex.sqGrade = _sqGrade; ex.sqScore = _sqScore; ex.sqGradeLabel = _sqGradeLabel;
     ex.longTermBias = ltBias;
     if (!ex.entryTime) ex.canScaleIn = canScaleIn; // only update for pending (not yet entered) trades
     ex.is4hDayAligned = isDayAligned;
@@ -2760,10 +2836,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ltTP: (canScaleIn && ltTP) ? ltTP : null,
         ltTPReason: (canScaleIn && ltTPReason) ? ltTPReason : null,
         scaleIns: [], peakPrice: null,
+        sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel,
         ...tradeCtx,
       });
       if (tlog.length > 500) tlog.splice(500);
       saveTradeLog(tlog);
+      // ── Telegram 通知（查看幣種詳情頁時新建掛單）──
+      try {
+        const _ns = loadSettings();
+        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+          const _btsSetup = _tradeSetupCache[coin.symbol] || {};
+          sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
+            buildTelegramText(coin, direction, _btsSetup, _macroCache,
+              typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
+        }
+      } catch(_bte) { console.warn('[buildTradeSetup tg]', _bte); }
     } else {
       // 即使未建立新掛單，反方向取消仍需儲存
       if (oppIdx >= 0) saveTradeLog(tlog);
@@ -2835,63 +2922,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
         ${(weeklyOpposed || todayOpposed) ? `<div style="font-size:0.71rem;color:var(--bear);margin-top:6px">⚠️ AI 預測${weeklyOpposed && todayOpposed ? '本週與今日均' : weeklyOpposed ? '本週' : '今日'}與${isLong ? '做多' : '做空'}方向相反，是信心扣分主因之一</div>` : ''}
       </div>
-    </div>`;
-  }
-
-  // ── 訊號品質 AI 評估（多因子評分 0-10，決定等級與是否過濾）──
-  const _sqFactors = [];
-  let _sqScore = 0;
-  // ① 大時框架同向（4H + 日線）
-  const _sq4hOk = h4?.signal?.includes(isLong ? 'bull' : 'bear');
-  const _sqD1Ok = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
-  if (_sq4hOk && _sqD1Ok) { _sqScore += 2; _sqFactors.push('✅ 4H+日線同向'); }
-  else if (_sq4hOk || _sqD1Ok) { _sqScore += 1; _sqFactors.push('⚠️ 單一大框架確認'); }
-  else { _sqFactors.push('❌ 大框架無確認'); }
-  // ② AI 預測對齊
-  const _sqWkOk = weeklyBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
-  const _sqTdOk = todayBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
-  if (_sqWkOk) { _sqScore += 1; _sqFactors.push('✅ 本週 AI 同向'); }
-  if (_sqTdOk) { _sqScore += 1; _sqFactors.push('✅ 今日 AI 同向'); }
-  // ③ 足跡圖 Delta 確認
-  if (_fpBTS && !_fpBTS.deltaDiv) {
-    const _fpOk = isLong ? (_fpBTS.deltaDir === 'bull') : (_fpBTS.deltaDir === 'bear');
-    if (_fpOk) { _sqScore += 1; _sqFactors.push('✅ 足跡圖 Delta 確認'); }
-    else if (_fpBTS.deltaDir === 'neutral') { /* 中性不加分也不扣 */ }
-    else { _sqFactors.push('❌ 足跡圖 Delta 逆向'); }
-  } else if (_fpBTS?.deltaDiv) { _sqFactors.push('⚡ 足跡圖 Delta 背離'); }
-  // ④ ICT 結構確認（OB / FVG / Kill Zone）
-  let _sqIctCnt = 0;
-  if (_ictOB?.priceInOB || _ictOB4h?.priceInOB) _sqIctCnt++;
-  if ((_ictFVG && !_ictFVG.filled) || (_ictFVG4h && !_ictFVG4h.filled)) _sqIctCnt++;
-  if (_kz?.quality === 'high') _sqIctCnt++;
-  _sqScore += Math.min(2, _sqIctCnt);
-  if (_sqIctCnt >= 2) _sqFactors.push('✅ ICT 多重結構確認');
-  else if (_sqIctCnt === 1) _sqFactors.push('⚠️ ICT 單一結構');
-  // ⑤ ADX 趨勢強度
-  if (adxVal >= 28) { _sqScore += 1; _sqFactors.push(`✅ ADX ${adxVal} 趨勢確立`); }
-  else if (adxVal >= 22) { /* 合格但不加分 */ }
-  else { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
-  // ⑥ 訂單流確認（CVD + Taker）
-  const _sqOFOk = isLong ? (cvdTrend === 'bull' && buyPct > 55) : (cvdTrend === 'bear' && buyPct < 45);
-  if (_sqOFOk) { _sqScore += 1; _sqFactors.push('✅ 訂單流同向確認'); }
-  // ⑦ 無技術逆風（RSI/MACD 均正常）
-  const _sqNoTechRisk = techPenalty === 0;
-  if (_sqNoTechRisk) { _sqScore += 1; _sqFactors.push('✅ 技術面無逆風'); }
-
-  const _sqGrade = _sqScore >= 8 ? 'S'
-                 : _sqScore >= 6 ? 'A'
-                 : _sqScore >= 4 ? 'B'
-                 : _sqScore >= 2 ? 'C' : 'D';
-  const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
-  const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
-
-  // Grade D：訊號品質過低 → AI 過濾，建議觀望
-  if (_sqGrade === 'D') {
-    return `<div class="setup-wait">
-      <div class="setup-wait-icon">🤖</div>
-      <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:#ef4444">D 級</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/10，未達 AI 訊號品質門檻（需 ≥ C 級，評分 ≥ 2）</div>
-      <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
 
@@ -6589,6 +6619,26 @@ function recordSignalsFromScan(data) {
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
 
+    // ── 掃描版訊號品質評分（簡化版，使用掃描時可用資料）──
+    let _scanSqScore = 0;
+    const _scanSqFactors = [];
+    const _ssH4Ok  = isLong ? (coin.h4Signal     || '').includes('bull') : (coin.h4Signal     || '').includes('bear');
+    const _ssDayOk = isLong ? (coin.dailySignal   || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
+    const _ssWkOk  = isLong ? (coin.weeklySignal  || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
+    if (_ssH4Ok && _ssDayOk) { _scanSqScore += 2; _scanSqFactors.push('✅ 4H+日線同向'); }
+    else if (_ssH4Ok || _ssDayOk) { _scanSqScore += 1; }
+    if (_ssWkOk) { _scanSqScore += 1; _scanSqFactors.push('✅ 週線同向'); }
+    if (isLong ? wBias.includes('bull') : wBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 本週 AI 同向'); }
+    if (isLong ? tBias.includes('bull') : tBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 今日 AI 同向'); }
+    const _ssFP = _footprintCache[coin.symbol];
+    if (_ssFP && !_ssFP.deltaDiv) {
+      if (isLong ? (_ssFP.deltaDir === 'bull') : (_ssFP.deltaDir === 'bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 足跡圖 Delta 確認'); }
+    }
+    if ((parseFloat(coin.adx) || 20) >= 28) { _scanSqScore += 1; _scanSqFactors.push(`✅ ADX 趨勢確立`); }
+    if (setup.techPenalty === 0) { _scanSqScore += 1; _scanSqFactors.push('✅ 技術面無逆風'); }
+    const _scanSqGrade = _scanSqScore >= 8 ? 'S' : _scanSqScore >= 6 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
+    const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
+
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -6634,6 +6684,7 @@ function recordSignalsFromScan(data) {
       tradeType: 'directional',
       longTermBias: null, canScaleIn,
       scaleIns: [], peakPrice: null,
+      sqGrade: _scanSqGrade, sqScore: _scanSqScore, sqGradeLabel: _scanSqLabel,
     };
     tlog.unshift(newTrade);
     changed = true;
@@ -6650,12 +6701,12 @@ function recordSignalsFromScan(data) {
         const _dirLabel = isLong ? '▲ 做多（Long）' : '▼ 做空（Short）';
         const _siteUrl  = window.location.origin + window.location.pathname;
 
-        // ── AI 訊號品質等級 ──
-        const _sqGradeTG    = setup.sqGrade || 'C';
-        const _sqScoreTG    = setup.sqScore ?? '—';
-        const _sqLabelTG    = setup.sqGradeLabel || '一般訊號';
+        // ── AI 訊號品質等級（使用掃描時計算的等級）──
+        const _sqGradeTG    = _scanSqGrade || 'C';
+        const _sqScoreTG    = _scanSqScore ?? '—';
+        const _sqLabelTG    = _scanSqLabel || '一般訊號';
         const _sqEmoji      = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
-        const _sqFactorsTG  = (setup.sqFactors || []).filter(f => f.startsWith('✅')).join(' · ');
+        const _sqFactorsTG  = _scanSqFactors.filter(f => f.startsWith('✅')).join(' · ');
         const _sqLine       = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（評分 ${_sqScoreTG}/10）` +
                               (_sqFactorsTG ? `\n   ${_sqFactorsTG}` : '');
 
@@ -6859,7 +6910,7 @@ function recordSignalsFromScan(data) {
 
         sendTelegramMessage(_ns.tgToken, _ns.tgChatId, _msg);
       }
-    } catch(_e) {}
+    } catch(_e) { console.warn('[recordSignalsFromScan tg]', _e); }
   }
 
 
@@ -10794,6 +10845,8 @@ async function checkAndSendAlerts(data) {
           tradeType: notifSetup.tradeType || 'directional',
           longTermBias: null, canScaleIn: _isLongTermEntry,
           scaleIns: [], peakPrice: null,
+          sqGrade: notifSetup.sqGrade || null, sqScore: notifSetup.sqScore ?? null,
+          sqGradeLabel: notifSetup.sqGradeLabel || null,
         };
         _tlog2.unshift(_newTrade);
         saveTradeLog(_tlog2);

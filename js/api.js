@@ -524,6 +524,11 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   msg += `${icon} <b>${dirTx}：${coin.symbol}</b>`;
   if (isRange) msg += `  <b>#震盪交易</b>`;
   msg += `\n`;
+  if (setup?.sqGrade && setup.sqGrade !== 'D') {
+    const _sqE = { S:'🏆', A:'🥇', B:'🥈', C:'🥉' }[setup.sqGrade] || '📊';
+    const _sqL = setup.sqGradeLabel || '';
+    msg += `${_sqE} AI 訊號品質：<b>${setup.sqGrade} 級${_sqL ? ` — ${_sqL}` : ''}</b>（評分 ${setup.sqScore ?? '—'}/10）\n`;
+  }
   msg += `📊 RSI <b>${coin.rsi}</b> ｜ ADX <b>${coin.adx}</b>\n\n`;
 
   // ── 震盪交易：宏觀有方向偏向時加入謹慎操作提示 ──────────
