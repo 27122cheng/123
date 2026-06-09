@@ -2920,6 +2920,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   let _recordBlockedByActive = false;   // 已有開倉中的交易
   let _recordBlockedByCooldown = false; // 相同方向在冷卻期內
 
+  // 低勝率評估（函數域宣告，供 else 建倉判斷 & _hwrBannerHtml 共用）
+  const _isLowWinRate =
+    !['S','A','B'].includes(_sqGrade)                                        // 訊號品質 C/D
+    || hardBlocked                                                            // AI 學習硬性攔截
+    || bigTrendBlocked                                                        // 大時框逆勢
+    || (weeklyOpposed && todayOpposed)                                        // 本週+今日 AI 均逆向
+    || macroReasons.filter(r => !r.includes('頂級交易員')).length >= 3       // 宏觀逆風強
+    || adxVal < 18                                                            // ADX 嚴重偏低
+    || learnPenalty >= 10;                                                    // AI 學習強烈警告
+
   if (existIdx >= 0) {
     const ex = tlog[existIdx];
     // 若 entry 缺失（舊版資料）或尚未精煉，或 tp1 為空（舊版 bug），強制更新完整欄位
@@ -2976,16 +2986,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       c.direction === direction &&
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
-
-    // 低勝率評估：不加入持倉，直接觀望（B 級以下含 C/D 均不建倉）
-    const _isLowWinRate =
-      !['S','A','B'].includes(_sqGrade)                                        // 訊號品質 C/D
-      || hardBlocked                                                            // AI 學習硬性攔截
-      || bigTrendBlocked                                                        // 大時框逆勢
-      || (weeklyOpposed && todayOpposed)                                        // 本週+今日 AI 均逆向
-      || macroReasons.filter(r => !r.includes('頂級交易員')).length >= 3       // 宏觀逆風強
-      || adxVal < 18                                                            // ADX 嚴重偏低
-      || learnPenalty >= 10;                                                    // AI 學習強烈警告
 
     // 最低信心門檻：70%
     const _btConfMin = 70;
