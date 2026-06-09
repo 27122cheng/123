@@ -2977,9 +2977,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 低勝率評估：不加入持倉，直接觀望
+    // 低勝率評估：不加入持倉，直接觀望（grade D 才硬性過濾，C 級由 conf >= 65 把關）
     const _isLowWinRate =
-      !['S','A','B'].includes(_sqGrade)                                       // 訊號品質 C/D
+      _sqGrade === 'D'                                                         // 訊號品質最弱（D 級）
       || hardBlocked                                                            // AI 學習硬性攔截
       || bigTrendBlocked                                                        // 大時框逆勢
       || (weeklyOpposed && todayOpposed)                                        // 本週+今日 AI 均逆向
@@ -7080,10 +7080,9 @@ function recordSignalsFromScan(data) {
     // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
-    // 嚴格入場門檻：無宏觀資料時不進場；有宏觀時強制 ≥3/4，僅3個時信心須≥70%
-    if (!_macroCache) continue;
+    // 嚴格入場門檻：有宏觀時 ≥3/4 同向；無宏觀快取時要求 ≥2/4（幣種面）同向
     const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
-    if (_factors < 3) continue;
+    if (_macroCache ? _factors < 3 : _factors < 2) continue;
 
     // ADX 過低（< 20）：震盪無趨勢，直接跳過
     if ((parseFloat(coin.adx) || 20) < 20) continue;
@@ -7111,7 +7110,8 @@ function recordSignalsFromScan(data) {
     // MACD 方向確認：順向70%，逆向73%
     const _scanMacd   = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    const _confMin    = _macdAligned ? 70 : 73;
+    // 無宏觀快取時宏觀扣分為 0，conf 偏高，需提高門檻避免假信號
+    const _confMin    = _macroCache ? (_macdAligned ? 70 : 73) : 75;
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
@@ -7738,6 +7738,13 @@ function updateOpenTrades(data) {
         } catch(_e) {}
         // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 資金流動（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
         freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
+        // 與 buildTradeSetup 對齊：使用 computeSimpleSetup 統一信心度（含 BB 扣分與精確宏觀閾值）
+        if (_fCoin) {
+          try {
+            const _cssNow = computeSimpleSetup(_fCoin, _isL);
+            if (_cssNow?.conf != null) freshConf = _cssNow.conf;
+          } catch(_csse) {}
+        }
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
         // 信心度跌破 60% → 自動取消掃描粗估單（!refined）
