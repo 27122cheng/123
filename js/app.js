@@ -892,12 +892,15 @@ function buildOpenPositionSetup(t, currentPrice) {
     : ' <span class="lt-tag" style="background:rgba(251,191,36,.15);border-color:rgba(251,191,36,.35);color:#fbbf24">⚡ 短線單</span>';
   const _openGradeColors = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' };
   const _openGradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
-  const _openSqTag = t.sqGrade ? (() => {
-    const gc = _openGradeColors[t.sqGrade] || '#9ca3af';
-    const ge = _openGradeEmojis[t.sqGrade] || '📊';
-    const gl = t.sqGradeLabel || '';
-    return ` <span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px">${ge} AI ${t.sqGrade}${gl ? ` ${gl}` : ''}</span>`;
-  })() : '';
+  const _openGradeLabels = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
+  const _openEffConf = t.conf != null ? t.conf : Math.max(0, (t.rawConf||60) - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0));
+  const _openEffGrade = t.sqGrade || (_openEffConf >= 82 ? 'A' : _openEffConf >= 74 ? 'B' : _openEffConf >= 65 ? 'C' : 'D');
+  const _openEffLabel = t.sqGradeLabel || _openGradeLabels[_openEffGrade] || '';
+  const _openSqTag = (() => {
+    const gc = _openGradeColors[_openEffGrade] || '#9ca3af';
+    const ge = _openGradeEmojis[_openEffGrade] || '📊';
+    return ` <span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px">${ge} AI ${_openEffGrade} ${_openEffLabel}</span>`;
+  })();
 
   // 即時未實現損益
   let unrealHtml = '';
@@ -1014,12 +1017,16 @@ function buildPendingPositionSetup(t, currentPrice) {
     : `<span style="font-size:0.7rem;font-weight:700;background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.35);color:#fbbf24;padding:2px 7px;border-radius:20px;margin-left:7px">⚡ 短線單</span>`;
   const _gradeColors = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' };
   const _gradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
-  const _sqTag = t.sqGrade ? (() => {
-    const gc = _gradeColors[t.sqGrade] || '#9ca3af';
-    const ge = _gradeEmojis[t.sqGrade] || '📊';
-    const gl = t.sqGradeLabel || '';
-    return `<span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px;margin-left:7px">${ge} AI ${t.sqGrade}${gl ? ` ${gl}` : ''}</span>`;
-  })() : '';
+  const _gradeLabels = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
+  // 若 sqGrade 缺失（舊版交易），從信心度反推等級
+  const _effConf = t.conf != null ? t.conf : Math.max(0, (t.rawConf||60) - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0));
+  const _effGrade = t.sqGrade || (_effConf >= 82 ? 'A' : _effConf >= 74 ? 'B' : _effConf >= 65 ? 'C' : 'D');
+  const _effLabel = t.sqGradeLabel || _gradeLabels[_effGrade] || '';
+  const _sqTag = (() => {
+    const gc = _gradeColors[_effGrade] || '#9ca3af';
+    const ge = _gradeEmojis[_effGrade] || '📊';
+    return `<span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px;margin-left:7px">${ge} AI ${_effGrade} ${_effLabel}</span>`;
+  })();
 
   // 信心度計算（含所有扣分項，與 buildTradeSetup 一致）
   const _pConf = t.conf != null ? t.conf
