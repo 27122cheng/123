@@ -10017,7 +10017,7 @@ function renderPositionsPage() {
       <div class="pos-card-top">
         <div class="pos-symbol">
           <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-          <span class="pos-dir" style="color:${dirColor}">${dirLabel}${rangeBadge}${ltBadgeOpen}${shortTermBadgeOpen}</span>
+          <span class="pos-dir" style="color:${dirColor}">${dirLabel}${rangeBadge}${ltBadgeOpen}${shortTermBadgeOpen}${(() => { const _og = t.sqGrade || (conf >= 82 ? 'A' : conf >= 74 ? 'B' : conf >= 65 ? 'C' : 'D'); const _gc = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_og] || '#9ca3af'; const _ge = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_og] || '📊'; const _gl = t.sqGradeLabel || { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_og] || ''; return `<span style="font-size:0.7rem;font-weight:700;background:${_gc}22;border:1px solid ${_gc}55;color:${_gc};padding:2px 7px;border-radius:20px;margin-left:6px">${_ge} AI ${_og} ${_gl}</span>`; })()}</span>
         </div>
         <div class="pos-unreal ${unrealR !== null ? (unrealR > 0 ? 'pos-unreal-pos' : unrealR < 0 ? 'pos-unreal-neg' : '') : ''}">
           ${unrealR !== null
@@ -10221,7 +10221,7 @@ function renderPositionsPage() {
               <div class="pos-card-top">
                 <div class="pos-symbol">
                   <span class="pos-sym-name">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></span>
-                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}${ltBadgePend}${shortTermBadgePend}</span>
+                  <span class="pos-dir" style="color:${dirClr}">${dirLbl}${typeLabel}${ltBadgePend}${shortTermBadgePend}${(() => { const _pg = t.sqGrade || (_pConf >= 82 ? 'A' : _pConf >= 74 ? 'B' : _pConf >= 65 ? 'C' : 'D'); const _gc = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_pg] || '#9ca3af'; const _ge = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_pg] || '📊'; const _gl = t.sqGradeLabel || { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_pg] || ''; return `<span style="font-size:0.72rem;font-weight:700;background:${_gc}22;border:1px solid ${_gc}55;color:${_gc};padding:2px 7px;border-radius:20px;margin-left:6px">${_ge} AI ${_pg} ${_gl}</span>`; })()}</span>
                 </div>
                 <div style="font-size:0.8rem;color:var(--neutral);padding:4px 8px;background:rgba(255,215,64,0.1);border-radius:6px">⏳ 等待回踩</div>
               </div>
@@ -11231,8 +11231,8 @@ async function checkAndSendAlerts(data) {
         && (t.status === 'open' || t.status === 'pending'));
       if (_existTrade) {
         if (!_existTrade.telegramSent && s.notifTelegram && s.tgToken && s.tgChatId) {
-          // 補發漏掉的進場通知
-          const _rsSetup = _tradeSetupCache[coin.symbol] || {};
+          // 補發漏掉的進場通知：優先用快取，fallback 用 tlog 存儲的欄位（含 sqGrade）
+          const _rsSetup = Object.assign({}, _existTrade, _tradeSetupCache[coin.symbol] || {});
           try {
             sendTelegramMessage(s.tgToken, s.tgChatId,
               buildTelegramText(coin, dir, _rsSetup, _macroCache, window.location.origin + window.location.pathname));
@@ -11395,6 +11395,13 @@ async function checkAndSendAlerts(data) {
           adx: parseFloat(coin.adx) || 20,
           score: coin.score, trend: coin.trend,
           conf: notifSetup.conf, rawConf: notifSetup.rawConf,
+          hardAdxPenalty: notifSetup.hardAdxPenalty || 0,
+          learnPenalty:   notifSetup.learnPenalty   || 0,
+          macroPenalty:   notifSetup.macroOpposePenalty || notifSetup.macroPenalty || 0,
+          aiTrendPenalty: notifSetup.aiTrendPenalty || 0,
+          techPenalty:    notifSetup.techPenalty    || 0,
+          chipsPenalty:   notifSetup.chipsPenalty   || 0,
+          dirPenalty:     notifSetup.dirPenalty     || 0,
           status: 'pending', outcome: null, tp1Hit: false,
           entryTime: null, exitPrice: null, exitTime: null, pnlR: null, analysis: null,
           refined: false,
@@ -12081,6 +12088,32 @@ function computeSimpleSetup(coin, isLong) {
   const tp1Reason = `${_tp1DescMap[_tp1Tag] || `短線目標 R/R ${_rr1}:1`}${_mtfLabel}，到達後減倉 60%`;
   const tp2Reason = `${_tp2DescMap[_tp2Tag] || `波段目標 R/R ${_rr2}:1`}，剩餘倉位移至成本`;
 
+  // ── 訊號品質評分（與 recordSignalsFromScan 一致的 8 因子掃描版）──
+  let _cssqScore = 0;
+  const _cssqFactors = [];
+  const _cssH4Ok  = isLong ? (coin.h4Signal     || '').includes('bull') : (coin.h4Signal     || '').includes('bear');
+  const _cssDayOk = isLong ? (coin.dailySignal   || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
+  const _cssWkOk  = isLong ? (coin.weeklySignal  || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
+  if (_cssH4Ok && _cssDayOk) { _cssqScore += 2; _cssqFactors.push('✅ 4H+日線同向'); }
+  else if (_cssH4Ok || _cssDayOk) { _cssqScore += 1; }
+  if (_cssWkOk) { _cssqScore += 1; _cssqFactors.push('✅ 週線同向'); }
+  try {
+    if (typeof computeWeeklyAIBias === 'function' && _macroCache) {
+      const _wb2 = computeWeeklyAIBias(_macroCache.fg, _macroCache);
+      if (isLong ? _wb2.bias.includes('bull') : _wb2.bias.includes('bear')) { _cssqScore += 1; _cssqFactors.push('✅ 本週 AI 同向'); }
+    }
+    if (typeof computeTodayAIBias === 'function' && _macroCache) {
+      const _tb2 = computeTodayAIBias(_macroCache.fg, _macroCache);
+      if (isLong ? _tb2.bias.includes('bull') : _tb2.bias.includes('bear')) { _cssqScore += 1; _cssqFactors.push('✅ 今日 AI 同向'); }
+    }
+  } catch(_sse) {}
+  const _cssFP = (typeof _footprintCache !== 'undefined' && _footprintCache[coin.symbol]) || null;
+  if (_cssFP && !_cssFP.deltaDiv && (isLong ? _cssFP.deltaDir === 'bull' : _cssFP.deltaDir === 'bear')) { _cssqScore += 1; _cssqFactors.push('✅ 足跡圖 Delta 確認'); }
+  if (adx >= 28) { _cssqScore += 1; _cssqFactors.push('✅ ADX 趨勢確立'); }
+  if (_sTechPen === 0) { _cssqScore += 1; _cssqFactors.push('✅ 技術面無逆風'); }
+  const sqGrade = _cssqScore >= 8 ? 'S' : _cssqScore >= 6 ? 'A' : _cssqScore >= 4 ? 'B' : _cssqScore >= 2 ? 'C' : 'D';
+  const sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[sqGrade];
+
   return {
     entry, sl, tp1, tp2,
     entryReasons: reasons,                // 陣列版（buildTelegramText 優先使用）
@@ -12102,6 +12135,7 @@ function computeSimpleSetup(coin, isLong) {
     rrBlocked, rrReason,
     isLongTerm: _isLongTermFinal, isShortTerm: _isShortTerm,
     mtfBothAlign: _mtfBothAlign, mtfContraWk: _mtfContraWk, mtfContraDay: _mtfContraDay, mtfContraH4: _mtfContraH4,
+    sqGrade, sqScore: _cssqScore, sqGradeLabel, sqFactors: _cssqFactors,
   };
 }
 
