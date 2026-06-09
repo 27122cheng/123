@@ -1221,16 +1221,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const chipsPenNow = existingActive.chipsPenalty || 0;
       const dirPenNow   = existingActive.dirPenalty   || 0;
 
-      // 資金流動事件動態扣分（confPanelHtml 同步）
+      // 資金流動事件動態扣分（與 buildTradeSetup 一致：high 5，normal 3，中性 2，cap 10）
       let cfPenNow = 0;
       const cfEventsNow = [];
       try {
         const _cfNow = getCapitalFlowBias();
         for (const ev of _cfNow.events) {
-          if (isLongNow  && ev.bear > 0) { cfPenNow += ev.bear >= 1.2 ? 8 : 4; cfEventsNow.push(ev); }
-          if (!isLongNow && ev.bull > 0) { cfPenNow += ev.bull >= 1.2 ? 8 : 4; cfEventsNow.push(ev); }
+          if (isLongNow  && ev.bear > 0) { cfPenNow += ev.bear >= 1.2 ? 5 : 3; cfEventsNow.push(ev); }
+          else if (!isLongNow && ev.bull > 0) { cfPenNow += ev.bull >= 1.2 ? 5 : 3; cfEventsNow.push(ev); }
+          else if (ev.bull === 0 && ev.bear === 0) { cfPenNow += 2; }
         }
-        cfPenNow = Math.min(16, cfPenNow);
+        cfPenNow = Math.min(10, cfPenNow);
       } catch(_e) {}
 
       let rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
@@ -1352,7 +1353,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             ? cfEventsNow.map(ev => {
                 const timeStr = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
                 const aiTag   = ev.isAI ? 'AI預測 ' : '';
-                return `<div style="color:#f59e0b">⚠️ 💹 ${ev.name}（${timeStr}）：${aiTag}${ev.bear > 0 ? '資金流出' : '資金流入'}逆風，扣 -${ev.bear >= 1.2 || ev.bull >= 1.2 ? 8 : 4}%</div>`;
+                return `<div style="color:#f59e0b">⚠️ 💹 ${ev.name}（${timeStr}）：${aiTag}${ev.bear > 0 ? '資金流出' : '資金流入'}逆風，扣 -${ev.bear >= 1.2 || ev.bull >= 1.2 ? 5 : 3}%</div>`;
               }).join('')
             : `<div style="color:#22c55e">✓ 資金流動：無近期逆向事件</div>`}
           ${techPenNow > 0
@@ -2948,6 +2949,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ex.ltTPReason = ltTPReason || null;
     }
     saveTradeLog(tlog);
+    // 同步更新持倉頁面（若目前在持倉頁）確保等級與信心分與詳情一致
+    try { if (typeof renderPositionsPage === 'function') renderPositionsPage(); } catch(_rpe) {}
   } else {
     // ── 反方向未入場掛單自動取消（方向改變時更新方向）──
     // 例：之前是空單 pending，現在訊號改為多方 → 自動取消舊空單，建立新多單
@@ -7706,29 +7709,30 @@ function updateOpenTrades(data) {
           }
           _chipsP = Math.min(12, _chipsP);
         }
-        // F2/F4 大方向+日線逆向動態扣分
+        // 4H+日線逆向動態扣分（與 buildTradeSetup techPenalty 的方向扣分一致：4H +4，日線 +5）
         let _dirP = 0;
         if (_fCoin) {
-          const _fWkSig = (_fCoin.weeklySignal || '');
-          const _fDySig = (_fCoin.dailySignal  || '');
+          const _fH4Sig = (_fCoin.h4Signal    || '');
+          const _fDySig = (_fCoin.dailySignal || '');
           if (_isL) {
-            if (_fWkSig.includes('bear')) _dirP += 7;
+            if (_fH4Sig.includes('bear')) _dirP += 4;
             if (_fDySig.includes('bear') && !_fDySig.includes('neutral')) _dirP += 5;
           } else {
-            if (_fWkSig.includes('bull')) _dirP += 7;
+            if (_fH4Sig.includes('bull')) _dirP += 4;
             if (_fDySig.includes('bull') && !_fDySig.includes('neutral')) _dirP += 5;
           }
-          _dirP = Math.min(14, _dirP);
+          _dirP = Math.min(12, _dirP);
         }
-        // 資金流動事件動態扣分
+        // 資金流動事件動態扣分（與 buildTradeSetup macroOpposePenalty 的資金流扣分一致：high 5，normal 3，中性 2，cap 10）
         let _cfP = 0;
         try {
           const _cfB = getCapitalFlowBias();
           for (const ev of _cfB.events) {
-            if (_isL  && ev.bear > 0) _cfP += ev.bear >= 1.2 ? 8 : 4;
-            if (!_isL && ev.bull > 0) _cfP += ev.bull >= 1.2 ? 8 : 4;
+            if (_isL  && ev.bear > 0) _cfP += ev.bear >= 1.2 ? 5 : 3;
+            else if (!_isL && ev.bull > 0) _cfP += ev.bull >= 1.2 ? 5 : 3;
+            else if (ev.bull === 0 && ev.bear === 0) _cfP += 2;
           }
-          _cfP = Math.min(16, _cfP);
+          _cfP = Math.min(10, _cfP);
         } catch(_e) {}
         // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 資金流動（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
         freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
@@ -8175,8 +8179,9 @@ function sendCancelTelegramNotification(trade, reason) {
       try {
         const _cfC = getCapitalFlowBias();
         for (const ev of _cfC.events) {
-          if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 8 : 4; bullets.push(`💹 ${ev.name}：資金流出逆風 -${p}%`); }
-          if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 8 : 4; bullets.push(`💹 ${ev.name}：資金流入逆風 -${p}%`); }
+          if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 5 : 3; bullets.push(`💹 ${ev.name}：資金流出逆風 -${p}%`); }
+          else if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 5 : 3; bullets.push(`💹 ${ev.name}：資金流入逆風 -${p}%`); }
+          else if (ev.bull === 0 && ev.bear === 0) { bullets.push(`💹 ${ev.name}：資金方向中性 -2%`); }
         }
       } catch(_e) {}
     } catch (e) {}
@@ -11326,10 +11331,11 @@ async function checkAndSendAlerts(data) {
           try {
             const _cfN = getCapitalFlowBias();
             for (const ev of _cfN.events) {
-              if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 8 : 4; cfPen += p; cfReasons.push(`${ev.name}：資金流出逆風 -${p}%`); }
-              if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 8 : 4; cfPen += p; cfReasons.push(`${ev.name}：資金流入逆風 -${p}%`); }
+              if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 5 : 3; cfPen += p; cfReasons.push(`${ev.name}：資金流出逆風 -${p}%`); }
+              else if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 5 : 3; cfPen += p; cfReasons.push(`${ev.name}：資金流入逆風 -${p}%`); }
+              else if (ev.bull === 0 && ev.bear === 0) { cfPen += 2; cfReasons.push(`${ev.name}：資金方向中性 -2%`); }
             }
-            cfPen = Math.min(16, cfPen);
+            cfPen = Math.min(10, cfPen);
           } catch(_e) {}
           notifSetup.macroOpposePenalty = macroPen;
           notifSetup.aiTrendPenalty     = aiTrendPen;
