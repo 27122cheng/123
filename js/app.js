@@ -9892,7 +9892,7 @@ function renderPositionsPage() {
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
       </div></div>
-      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 65% 的訊號時會自動出現</span></div>`;
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 70% 的訊號時會自動出現</span></div>`;
     return;
   }
 
