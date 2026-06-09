@@ -615,20 +615,22 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     const slPct = pct(setup.entry, setup.sl);
     msg += `🛑 <b>止損：$${fmt(setup.sl)}</b>  (${slPct})\n`;
 
-    // ── 13. 止盈一 / 止盈二 ──
     msg += `\n`;
-    const tp1Pct = pct(setup.entry, setup.tp1);
-    msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${rr(setup.rr1)}:1)\n`;
-    if (setup.tp2) {
-      const tp2Pct = pct(setup.entry, setup.tp2);
-      msg += `🚀 <b>止盈二：$${fmt(setup.tp2)}</b>  (${tp2Pct} | R:R ${rr(setup.rr2)}:1)\n`;
-    }
-
-    // ── 14. 最終止盈（長線單）──
-    if (isLongTermSignal && setup.ltTP) {
-      const ltPct = pct(setup.entry, setup.ltTP);
-      msg += `🏁 <b>最終目標：$${fmt(setup.ltTP)}</b>  (${ltPct})\n`;
-      if (setup.ltTPReason) msg += `   ↳ ${setup.ltTPReason}\n`;
+    if (isLongTermSignal) {
+      // ── 13. 最終止盈（長線單）──
+      if (setup.ltTP) {
+        const ltPct = pct(setup.entry, setup.ltTP);
+        msg += `🏁 <b>最終目標：$${fmt(setup.ltTP)}</b>  (${ltPct})\n`;
+        if (setup.ltTPReason) msg += `   ↳ ${setup.ltTPReason}\n`;
+      }
+    } else {
+      // ── 13. 止盈一 / 止盈二（短線單）──
+      const tp1Pct = pct(setup.entry, setup.tp1);
+      msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${rr(setup.rr1)}:1)\n`;
+      if (setup.tp2) {
+        const tp2Pct = pct(setup.entry, setup.tp2);
+        msg += `🚀 <b>止盈二：$${fmt(setup.tp2)}</b>  (${tp2Pct} | R:R ${rr(setup.rr2)}:1)\n`;
+      }
     }
 
     // ── 15. 長線加倉計劃 ──
