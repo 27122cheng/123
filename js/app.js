@@ -8098,8 +8098,9 @@ function sendCancelTelegramNotification(trade, reason) {
   const rawConf   = trade.rawConf || 0;
   const freshConf = trade.conf    || 0;
   const confDrop  = Math.max(0, rawConf - freshConf);
+  const _confThreshold = 65;
   const confLine  = (rawConf > 0 && confDrop > 1)
-    ? `📶 信心度：${rawConf}% → 降至 ${freshConf}%（扣 -${confDrop}%，未達推薦門檻）`
+    ? `📶 信心度：${rawConf}% → 降至 ${freshConf}%（扣 -${confDrop}%${freshConf < _confThreshold ? '，未達推薦門檻' : ''}）`
     : `📶 信心度：${freshConf}%`;
 
   // ── 取消原因 bullets ──

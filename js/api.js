@@ -767,7 +767,7 @@ function buildWeakenedSignalText(coin, direction, setup, siteUrl = '') {
 
   let msg = `🚫 <b>交易建議已取消</b>\n\n`;
   msg += `${icon} <b>${dirTx}：${coin.symbol}</b>\n`;
-  msg += `📶 信心度：<b>${rawConf}%</b> → 降至 <b>${finalConf}%</b>（扣 -${totalDrop}%，未達推薦門檻）\n\n`;
+  msg += `📶 信心度：<b>${rawConf}%</b> → 降至 <b>${finalConf}%</b>（扣 -${totalDrop}%${finalConf < 65 ? '，未達推薦門檻' : ''}）\n\n`;
 
   // 逐項取消原因
   const deducts = [];
