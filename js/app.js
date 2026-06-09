@@ -7575,7 +7575,8 @@ function updateOpenTrades(data) {
   let changed = false;
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
   const toDeleteIds = new Set();      // 取消後立即從 tlog 刪除的 trade id
-  const tp1Hits = []; // trades that just reached TP1 this cycle
+  const tp1Hits = [];      // trades that just reached TP1 this cycle
+  const entryConfirms = []; // trades that just confirmed entry (pending → open)
 
   // ── 清除殘留的 direction='wait' 無效掛單（直接刪除，不留冷卻記錄）──
   for (const trade of tlog) {
@@ -7893,6 +7894,7 @@ function updateOpenTrades(data) {
         trade.status    = 'open';
         trade.entryTime = Date.now();
         changed = true;
+        entryConfirms.push({ trade, coin, cur });
       }
       continue;
     }
@@ -8059,6 +8061,7 @@ function updateOpenTrades(data) {
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
   if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
+  if (entryConfirms.length > 0) sendEntryConfirmNotifications(entryConfirms);
   return cancelledSymbols;
 }
 
@@ -8089,6 +8092,67 @@ async function sendTP1Notifications(hits) {
       msg += `\n\n🔗 <a href="${siteUrl}">查看 ${trade.symbol.replace('/USDT','').replace('USDT','')} 詳細分析 →</a>`;
       sendTelegramMessage(s.tgToken, s.tgChatId, msg);
     }
+  }
+}
+
+function sendEntryConfirmNotifications(confirms) {
+  const s = loadSettings();
+  if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  for (const { trade, coin, cur } of confirms) {
+    try {
+      const isLong   = trade.direction === 'long';
+      const dirIcon  = isLong ? '▲' : '▼';
+      const dirLabel = isLong ? '做多（Long）' : '做空（Short）';
+      const p        = parseFloat(cur) || parseFloat(trade.entry) || 1;
+      const fmt      = v => {
+        if (!v && v !== 0) return '--';
+        return p >= 1000 ? parseFloat(v).toFixed(1) : p >= 1 ? parseFloat(v).toFixed(3) : parseFloat(v).toFixed(6);
+      };
+      const pct = (a, b) => {
+        if (!a || !b) return '';
+        const d = ((b - a) / Math.abs(a) * 100);
+        return (d >= 0 ? '+' : '') + d.toFixed(2) + '%';
+      };
+      const rr = v => (v != null && String(v) !== 'undefined') ? v : '--';
+      const isLT    = trade.canScaleIn === true;
+      const sym     = trade.symbol.replace('/USDT','').replace('USDT','');
+      const time    = new Date().toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+      const conf    = trade.conf ?? Math.min(90, trade.score || 60);
+      const confClr = conf >= 80 ? '高信心' : conf >= 70 ? '達標' : '偏低';
+
+      // 訊號品質等級
+      const _sg = trade.sqGrade || '';
+      const _sqLine = _sg && _sg !== 'D'
+        ? `${{ S:'🏆', A:'🥇', B:'🥈', C:'🥉' }[_sg] || '📊'} AI 訊號品質：<b>${_sg} 級${trade.sqGradeLabel ? ` — ${trade.sqGradeLabel}` : ''}</b>\n`
+        : '';
+
+      let msg = isLT
+        ? `✅ <b>進場確認 — 長線單</b>\n\n`
+        : `✅ <b>進場確認 — 短線單</b>\n\n`;
+      msg += `⏰ ${time}\n`;
+      msg += `${dirIcon} <b>${dirLabel}：${trade.symbol}</b>\n`;
+      msg += _sqLine;
+      msg += `\n📶 信心度：<b>${conf}%</b>（${confClr}）\n\n`;
+      msg += `📍 <b>進場：$${fmt(trade.entry)}</b>\n`;
+      msg += `🛑 <b>止損：$${fmt(trade.sl)}</b>  (${pct(trade.entry, trade.sl)})\n`;
+      msg += `\n`;
+      if (isLT) {
+        if (trade.ltTP) {
+          msg += `🏁 <b>最終目標：$${fmt(trade.ltTP)}</b>  (${pct(trade.entry, trade.ltTP)})\n`;
+        }
+        if (trade.scaleInTargets?.length) {
+          msg += `📈 加倉計劃：${trade.scaleInTargets.map((lv, i) => `加${i+1} $${fmt(lv)}`).join(' → ')}\n`;
+        }
+      } else {
+        if (trade.tp1) msg += `🎯 <b>止盈一：$${fmt(trade.tp1)}</b>  (${pct(trade.entry, trade.tp1)} | R:R ${rr(trade.rr1)}:1)\n`;
+        if (trade.tp2) msg += `🚀 <b>止盈二：$${fmt(trade.tp2)}</b>  (${pct(trade.entry, trade.tp2)} | R:R ${rr(trade.rr2)}:1)\n`;
+      }
+      msg += `\n📊 RSI <b>${coin?.rsi ?? trade.rsi ?? '—'}</b> ｜ ADX <b>${coin?.adx ?? trade.adx ?? '—'}</b>\n`;
+      const siteUrl = window.location.origin + window.location.pathname;
+      msg += `\n#${sym} #crypto #${isLong ? 'long' : 'short'} #進場確認`;
+      msg += `\n\n🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
+      sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+    } catch(_ece) { console.warn('[sendEntryConfirmNotifications]', trade?.symbol, _ece); }
   }
 }
 
