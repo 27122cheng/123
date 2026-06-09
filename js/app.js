@@ -2872,6 +2872,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     longTermBias: ltBias, canScaleIn, ltConf,
     maxScaleIns: canScaleIn ? _aiScaleCount : undefined,
     aiScaleReason: canScaleIn ? _aiScaleReason : undefined,
+    scaleInTargets: canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.level) : [],
     scaleInNewSLs: canScaleIn && scaleInLevels.length ? scaleInLevels.map(s => s.newSL) : [],
     // 三層決策資料（供 Telegram 顯示 AI 邏輯摘要）
     rawConf, macroConf, finalConf,
@@ -9904,7 +9905,7 @@ function renderPositionsPage() {
     const sl      = t.sl      || 0;
     const tp1     = t.tp1     || 0;
     const tp2     = t.tp2     || 0;
-    const risk    = Math.abs(entry - sl) || 1;
+    const risk    = Math.abs(entry - (t.baseSl ?? sl)) || 1;
     const isLong  = t.direction === 'long';
 
     let unrealR   = null, unrealPct = null, priceClr = 'var(--text2)';
