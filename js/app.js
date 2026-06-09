@@ -11261,14 +11261,24 @@ async function checkAndSendAlerts(data) {
         && (t.status === 'open' || t.status === 'pending'));
       if (_existTrade) {
         if (!_existTrade.telegramSent && s.notifTelegram && s.tgToken && s.tgChatId) {
-          // 補發漏掉的進場通知：優先用快取，fallback 用 tlog 存儲的欄位（含 sqGrade）
-          const _rsSetup = Object.assign({}, _existTrade, _tradeSetupCache[coin.symbol] || {});
-          try {
-            sendTelegramMessage(s.tgToken, s.tgChatId,
-              buildTelegramText(coin, dir, _rsSetup, _macroCache, window.location.origin + window.location.pathname));
+          // 補發漏掉的進場通知：使用掛單建立時的原始信心度作為門檻，避免舊掛單或信心度跌落後補發
+          const _retryConf = _existTrade.conf ?? 0;
+          if (_retryConf < 70) {
+            // 信心度不足 70%（含舊版低門檻建立的掛單）→ 靜默抑制，標記已處理
             const _ri = _tlog.findIndex(t => t.id === _existTrade.id);
             if (_ri >= 0) { _tlog[_ri].telegramSent = true; saveTradeLog(_tlog); }
-          } catch(_rse) { console.warn('[checkAndSendAlerts] retry send failed', _rse); }
+          } else {
+            // 優先用快取，fallback 用 tlog 存儲的欄位；sqGrade 優先保留掛單原始值
+            const _cacheSetup = _tradeSetupCache[coin.symbol] || {};
+            const _rsSetup = Object.assign({}, _existTrade, _cacheSetup);
+            if (!_rsSetup.sqGrade && _existTrade.sqGrade) _rsSetup.sqGrade = _existTrade.sqGrade;
+            try {
+              sendTelegramMessage(s.tgToken, s.tgChatId,
+                buildTelegramText(coin, dir, _rsSetup, _macroCache, window.location.origin + window.location.pathname));
+              const _ri = _tlog.findIndex(t => t.id === _existTrade.id);
+              if (_ri >= 0) { _tlog[_ri].telegramSent = true; saveTradeLog(_tlog); }
+            } catch(_rse) { console.warn('[checkAndSendAlerts] retry send failed', _rse); }
+          }
         }
         next[coin.symbol] = { dir, sentAt: now };
         continue;
