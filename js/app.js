@@ -3084,9 +3084,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
-  // ── 信心度 < 70% → 顯示觀望，不顯示交易建議 ──
-  if (conf < 70) {
-    const cColor = conf >= 60 ? '#f59e0b' : '#ef4444';
+  // ── 信心度 < 60% → 顯示觀望，不顯示交易建議 ──
+  if (conf < 60) {
+    const cColor = conf >= 55 ? '#f59e0b' : '#ef4444';
     const confPenLines = [];
     if (hardAdxPenalty > 0)     confPenLines.push(`ADX ${adxVal} 趨勢強度不足，扣 -${hardAdxPenalty}%`);
     if (macroOpposePenalty > 0) confPenLines.push(`宏觀環境逆風，扣 -${macroOpposePenalty}%`);
@@ -7334,7 +7334,7 @@ function recordSignalsFromScan(data) {
     const _scanMacd   = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
     // 無宏觀快取時宏觀扣分為 0，conf 偏高，需提高門檻避免假信號
-    const _confMin    = _macroCache ? (_macdAligned ? 70 : 73) : 75;
+    const _confMin    = _macroCache ? (_macdAligned ? 60 : 63) : 65;
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
@@ -9488,12 +9488,25 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const blockReasons = [];   // 硬封鎖原因
   const defenseChecks = [];  // 所有防線審查項目（供 UI 顯示）
 
-  // ── 歷史止損率 > 90%：直接硬封鎖（最低樣本 5 筆）──
-  if (profile.ready && profile.closed >= 5) {
+  // ── 歷史止損率風控（需超過 100 筆樣本才生效）──
+  if (profile.ready && profile.closed > 100) {
     const _slRate = (profile.losses / profile.closed);
-    if (_slRate > 0.9) {
-      const _slPct = (_slRate * 100).toFixed(1);
-      blockReasons.push(`🚫 歷史止損率 ${_slPct}%（${profile.losses}/${profile.closed} 筆），遠超 90% 安全門檻，AI 風控永久攔截直到勝率回升`);
+    const _slPct  = (_slRate * 100).toFixed(1);
+    if (_slRate > 0.95) {
+      // 止損率超過 95%：直接硬封鎖
+      blockReasons.push(`🚫 歷史止損率 ${_slPct}%（${profile.losses}/${profile.closed} 筆），超過 95% 封鎖門檻，AI 風控攔截直到勝率改善`);
+    } else {
+      // 止損率 95% 以下：按比例扣分，止損率越高扣分越重
+      let _slPen = 0;
+      if (_slRate > 0.90)      _slPen = 20;
+      else if (_slRate > 0.80) _slPen = 15;
+      else if (_slRate > 0.70) _slPen = 10;
+      else if (_slRate > 0.60) _slPen =  6;
+      else if (_slRate > 0.50) _slPen =  3;
+      if (_slPen > 0) {
+        penalty += _slPen;
+        defenseChecks.push({ type: 'slRate', label: `歷史止損率 ${_slPct}%（${profile.closed} 筆樣本）`, count: profile.closed, pass: false, penalty: _slPen });
+      }
     }
   }
 
@@ -11140,7 +11153,7 @@ function showTradeDetail(id) {
       <span style="color:var(--text3);font-size:0.78rem">信心度</span>
       <div class="td-conf-bar"><div style="width:${conf}%;background:${confColor};height:100%;border-radius:4px;transition:width .3s"></div></div>
       <span style="color:${confColor};font-weight:700">${conf}%</span>
-      ${conf >= 85 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 高信心</span>' : conf >= 70 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 達標</span>' : '<span style="font-size:0.7rem;color:#ef4444;margin-left:4px">✗ 未達標</span>'}
+      ${conf >= 85 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 高信心</span>' : conf >= 60 ? '<span style="font-size:0.7rem;color:#22c55e;margin-left:4px">✓ 達標</span>' : '<span style="font-size:0.7rem;color:#ef4444;margin-left:4px">✗ 未達標</span>'}
     </div>
     <div class="td-grid">
       <div class="td-cell" style="grid-column:span 2">
