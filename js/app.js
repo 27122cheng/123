@@ -3044,7 +3044,121 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return chips.length ? `<div class="setup-macro-chips" style="margin-top:6px">${chips.join('')}</div>` : '';
   } catch(e) { return ''; } })();
 
-  return `<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
+  // ── 高勝率評估（整合頂級交易員視角、AI 判斷、信心分、結構因子）──
+  const _hwrBannerHtml = (() => { try {
+    const _hwrW = [];   // { level:'danger'|'caution', text, source }
+    const _hwrP = [];   // pass items
+
+    // ① 訊號品質
+    if (_sqGrade === 'S')      _hwrP.push('訊號品質 S 級（頂級）');
+    else if (_sqGrade === 'A') _hwrP.push('訊號品質 A 級（優質）');
+    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，評分 ${_sqScore}/10）`, source:'AI 訊號品質' });
+    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（評分 ${_sqScore}/10），勝率基礎偏弱`, source:'AI 訊號品質' });
+
+    // ② 信心度
+    if (conf >= 74)      _hwrP.push(`信心度 ${conf}%（高）`);
+    else if (conf >= 65) _hwrW.push({ level:'caution', text:`信心度 ${conf}%（中等，理想需 ≥ 74%）`, source:'綜合信心分' });
+    else                 _hwrW.push({ level:'danger',  text:`信心度 ${conf}%（偏低）`, source:'綜合信心分' });
+
+    // ③ AI 學習攔截
+    if (hardBlocked) _hwrW.push({ level:'danger', text:`AI 學習風控攔截（${blockReasons[0] || '歷史止損模式觸發'}）`, source:'AI 學習' });
+    else _hwrP.push('AI 學習風控通過');
+
+    // ④ 大時框趨勢
+    if (bigTrendBlocked) _hwrW.push({ level:'danger', text:`大時框逆勢（${bigTrendBlockReason || '4H/日線反向'}），頂級交易員不逆勢', source:'大時框趨勢' });
+    else if (isAligned)  _hwrP.push('4H + 日線大時框方向一致');
+    else if (bigTrend === 'mixed') _hwrW.push({ level:'caution', text:'4H / 日線趨勢分歧（mixed），大方向不明確', source:'大時框趨勢' });
+
+    // ⑤ AI 多週期方向
+    if (weeklyOpposed && todayOpposed) _hwrW.push({ level:'danger',  text:'本週 + 今日 AI 趨勢均逆向，市場慣性不利，頂級交易員避免逆勢', source:'AI 趨勢判斷' });
+    else if (weeklyOpposed)            _hwrW.push({ level:'caution', text:'本週 AI 方向逆向，注意大週期阻力', source:'AI 趨勢判斷' });
+    else if (todayOpposed)             _hwrW.push({ level:'caution', text:'今日 AI 方向逆向，短線動能存疑', source:'AI 趨勢判斷' });
+    else _hwrP.push('AI 多週期趨勢方向確認');
+
+    // ⑥ 足跡圖訂單流
+    const _hwrFP = _footprintCache[coin.symbol];
+    if (_hwrFP) {
+      if (_hwrFP.deltaDiv) _hwrW.push({ level:'caution', text:'足跡圖 Delta 背離（價量方向不一致），動能衰竭風險高', source:'足跡訂單流' });
+      else if (_hwrFP.deltaDir === (isLong ? 'bull' : 'bear')) _hwrP.push(`足跡訂單流同向（${isLong ? '主動買盤' : '主動賣盤'}主導）`);
+      else if (_hwrFP.deltaDir && _hwrFP.deltaDir !== 'neutral') _hwrW.push({ level:'caution', text:`足跡訂單流逆向（${_hwrFP.deltaDir === 'bull' ? '買盤' : '賣盤'}主導但方向相反）`, source:'足跡訂單流' });
+    }
+
+    // ⑦ 爆倉牆
+    const _hwrLiq = _liquidationCache[coin.symbol];
+    if (_hwrLiq) {
+      const _pNow = parseFloat(coin.price) || 1;
+      const _hwrWallAgainst = isLong
+        ? (_hwrLiq.longLiqs  || []).find(l => l.price < _pNow && l.price >= _pNow * 0.90 && l.strength > 0)
+        : (_hwrLiq.shortLiqs || []).find(l => l.price > _pNow && l.price <= _pNow * 1.10 && l.strength > 0);
+      const _hwrWallFor = isLong
+        ? (_hwrLiq.shortLiqs || []).find(l => l.price > _pNow && l.price <= _pNow * 1.15 && l.strength > 0)
+        : (_hwrLiq.longLiqs  || []).find(l => l.price < _pNow && l.price >= _pNow * 0.85 && l.strength > 0);
+      if (_hwrWallAgainst) _hwrW.push({ level:'caution', text:`${isLong ? '多單爆倉牆' : '空單爆倉牆'}在進場點附近（$${fmtPrice(_hwrWallAgainst.price)}），可能成為反彈阻礙`, source:'爆倉地圖' });
+      if (_hwrWallFor)     _hwrP.push(`${isLong ? '空單爆倉牆' : '多單爆倉牆'}（$${fmtPrice(_hwrWallFor.price)}）在前方，擠壓行情有利`);
+    }
+
+    // ⑧ 宏觀逆風
+    const _hwrMacro = macroReasons.filter(r => !r.includes('頂級交易員'));
+    if (_hwrMacro.length >= 3)      _hwrW.push({ level:'danger',  text:`宏觀逆風強（${_hwrMacro.length} 項）：${_hwrMacro.slice(0,2).map(r=>r.replace(/，扣.*/,'')).join('；')}`, source:'宏觀分析' });
+    else if (_hwrMacro.length >= 2) _hwrW.push({ level:'caution', text:`宏觀逆風中等（${_hwrMacro.length} 項扣分）`, source:'宏觀分析' });
+    else if (_hwrMacro.length === 0) _hwrP.push('宏觀環境無明顯逆風');
+
+    // ⑨ ADX 趨勢強度
+    if (adxVal >= 28) _hwrP.push(`ADX ${adxVal}（趨勢明確）`);
+    else if (adxVal < 22) _hwrW.push({ level:'caution', text:`ADX ${adxVal} 偏低（< 22），趨勢強度不足`, source:'技術面' });
+
+    // 判斷總體勝率等級
+    const _hwrDanger  = _hwrW.filter(w => w.level === 'danger').length;
+    const _hwrCaution = _hwrW.filter(w => w.level === 'caution').length;
+    const _hwrIsHigh = _hwrDanger === 0 && _hwrCaution <= 1 && (_sqGrade === 'S' || _sqGrade === 'A') && conf >= 70;
+    const _hwrIsLow  = _hwrDanger >= 1 || (_hwrDanger === 0 && _hwrCaution >= 3);
+
+    if (_hwrIsHigh) {
+      return `<div style="background:rgba(34,197,94,.08);border:1.5px solid rgba(34,197,94,.35);border-radius:10px;padding:10px 14px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="font-size:1rem">🏆</span>
+          <span style="font-weight:700;color:#22c55e;font-size:0.86rem">高勝率訊號 — 符合頂級交易員進場條件</span>
+          <span style="font-size:0.7rem;background:rgba(34,197,94,.15);color:#22c55e;padding:1px 8px;border-radius:20px;border:1px solid rgba(34,197,94,.3)">AI 綜合評估</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px">
+          ${_hwrP.map(p => `<span style="font-size:0.72rem;color:#22c55e;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);padding:2px 8px;border-radius:20px">✅ ${p}</span>`).join('')}
+          ${_hwrCaution > 0 ? _hwrW.map(w => `<span style="font-size:0.72rem;color:#f59e0b;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);padding:2px 8px;border-radius:20px">⚠️ ${w.text}</span>`).join('') : ''}
+        </div>
+      </div>`;
+    } else if (_hwrIsLow) {
+      const _hwrSrc = [...new Set(_hwrW.map(w => w.source))].join('、');
+      return `<div style="background:rgba(239,68,68,.08);border:1.5px solid rgba(239,68,68,.4);border-radius:10px;padding:10px 14px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+          <span style="font-size:1rem">🔴</span>
+          <span style="font-weight:700;color:#ef4444;font-size:0.86rem">低勝率警告 — 不符合高勝率進場條件</span>
+          <span style="font-size:0.7rem;background:rgba(239,68,68,.15);color:#ef4444;padding:1px 8px;border-radius:20px;border:1px solid rgba(239,68,68,.3)">AI 風控建議跳過</span>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text3);margin-bottom:5px">參考來源：${_hwrSrc}</div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          ${_hwrW.filter(w=>w.level==='danger').map(w =>
+            `<div style="font-size:0.79rem;color:#ef4444;line-height:1.5">🚫 ${w.text}<span style="font-size:0.68rem;color:var(--text3);margin-left:5px">（${w.source}）</span></div>`).join('')}
+          ${_hwrW.filter(w=>w.level==='caution').map(w =>
+            `<div style="font-size:0.79rem;color:#f59e0b;line-height:1.5">⚠️ ${w.text}<span style="font-size:0.68rem;color:var(--text3);margin-left:5px">（${w.source}）</span></div>`).join('')}
+        </div>
+        ${_hwrP.length ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">${_hwrP.map(p=>`<span style="font-size:0.7rem;color:var(--text3);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);padding:1px 7px;border-radius:20px">✅ ${p}</span>`).join('')}</div>` : ''}
+      </div>`;
+    } else {
+      return `<div style="background:rgba(245,158,11,.07);border:1.5px solid rgba(245,158,11,.35);border-radius:10px;padding:10px 14px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="font-size:1rem">⚠️</span>
+          <span style="font-weight:700;color:#f59e0b;font-size:0.86rem">中等勝率 — 有條件可進場，建議保守操作</span>
+          <span style="font-size:0.7rem;background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 8px;border-radius:20px;border:1px solid rgba(245,158,11,.3)">AI 綜合評估</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px">
+          ${_hwrW.map(w =>
+            `<div style="font-size:0.79rem;color:${w.level==='danger'?'#ef4444':'#f59e0b'};line-height:1.5">${w.level==='danger'?'🚫':'⚠️'} ${w.text}<span style="font-size:0.68rem;color:var(--text3);margin-left:5px">（${w.source}）</span></div>`).join('')}
+        </div>
+        ${_hwrP.length ? `<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:4px">${_hwrP.map(p=>`<span style="font-size:0.7rem;color:#22c55e;background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.18);padding:1px 7px;border-radius:20px">✅ ${p}</span>`).join('')}</div>` : ''}
+      </div>`;
+    }
+  } catch(_hwrE) { return ''; } })();
+
+  return `${_hwrBannerHtml}<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
       <span class="verdict-label">${dirLabel}</span>
