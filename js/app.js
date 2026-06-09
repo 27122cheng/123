@@ -49,6 +49,7 @@ async function init() {
     state.data       = data;
     state.dataSource = source;
     state.filtered   = [...data];
+    refreshPionexPrices().catch(() => {});
   } catch (e) {
     console.error('[init] fetchMarketData 失敗，使用空數據', e);
     state.data     = [];
@@ -193,6 +194,7 @@ function startRefreshCycle() {
     // 資料取得成功，後續渲染步驟各自保護
     state.data       = data;
     state.dataSource = source;
+    refreshPionexPrices().catch(() => {});
     hideScanBar();
     try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); }
     // 先渲染持倉頁面（使用更新前的資料），避免 updateOpenTrades 刪除後顯示空白
@@ -1114,6 +1116,8 @@ function computeKillZone() {
 function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
+  const _pxSym = (coin.symbol || '').replace('/', '').toUpperCase();
+  const _px = v => toPionex(_pxSym, price, v);
 
   // 若已有進行中的開倉或等待進場的掛單，優先顯示對應畫面
   const tlogNow = loadTradeLog();
@@ -1565,9 +1569,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── HTF S/R：4H、日線、週線樞軸位（比 1H 更重要的結構位，優先用於 TP/SL 定位）──
-  const _pl4h = mtfData['4h']?.pivotLevels || {};
-  const _pld1 = mtfData['1d']?.pivotLevels || {};
-  const _plw1 = mtfData['1w']?.pivotLevels || {};
+  const _pl4h = mtfData['4h']?.signal?.pivotLevels || {};
+  const _pld1 = mtfData['1d']?.signal?.pivotLevels || {};
+  const _plw1 = mtfData['1w']?.signal?.pivotLevels || {};
   // 4H + 日線：合併進主池，SL / TP 計算均受益
   const _htfResists = [
     ...(_pl4h.resistances || []),
@@ -3462,40 +3466,40 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
       <div class="level-desc">${entryReasons.join('　')}</div>
-      <div class="level-price-val">${fmtPrice(entry)}</div>
+      <div class="level-price-val">${fmtPrice(_px(entry))}</div>
     </div>
     ${scaleInLevels.map((si, i) => {
       const movePct = ((Math.abs(si.level - entry) / price) * 100).toFixed(1);
       const siRR    = ((Math.abs(si.level - entry) / risk)).toFixed(1);
       return `<div class="level-row level-tp1" style="border-left:3px solid rgba(99,102,241,.5)">
         <div class="level-tag">📈 加倉${i + 1}</div>
-        <div class="level-desc">+${movePct}%，趨勢持續確認加碼${si.snapped ? '（貼近結構位）' : ''}，R/R ${siRR}:1　<span style="color:var(--bear);font-size:0.72rem">加倉後止損移至 ${fmtPrice(si.newSL)}</span></div>
-        <div class="level-price-val" style="color:#a78bfa">${fmtPrice(si.level)}</div>
+        <div class="level-desc">+${movePct}%，趨勢持續確認加碼${si.snapped ? '（貼近結構位）' : ''}，R/R ${siRR}:1　<span style="color:var(--bear);font-size:0.72rem">加倉後止損移至 ${fmtPrice(_px(si.newSL))}</span></div>
+        <div class="level-price-val" style="color:#a78bfa">${fmtPrice(_px(si.level))}</div>
       </div>`;
     }).join('')}
     <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
       <div class="level-tag">🏁 最終止盈</div>
       <div class="level-desc">${ltTPReason}</div>
-      <div class="level-price-val" style="color:var(--bull)">${fmtPrice(ltTP)}</div>
+      <div class="level-price-val" style="color:var(--bull)">${fmtPrice(_px(ltTP))}</div>
     </div>
     ${ltPartialTP ? `<div class="level-row" style="border-left:3px solid rgba(251,191,36,.6)">
       <div class="level-tag">🎯 部分止盈（3R）</div>
       <div class="level-desc">建議在此位置減少50%倉位</div>
-      <div class="level-price-val" style="color:#fbbf24">${fmtPrice(ltPartialTP)}</div>
+      <div class="level-price-val" style="color:#fbbf24">${fmtPrice(_px(ltPartialTP))}</div>
     </div>` : ''}
     <div class="level-row level-sl">
       <div class="level-tag">🛑 初始止損</div>
       <div class="level-desc">${slReason}</div>
-      <div class="level-price-val">${fmtPrice(sl)}</div>
+      <div class="level-price-val">${fmtPrice(_px(sl))}</div>
     </div>
   </div>
   <div class="setup-rules">
     <div class="rules-title">🏆 長線加倉操作守則</div>
     <div class="rule-item">✦ 初始倉位 <strong>2~3%</strong>，每次加倉追加 <strong>1~2%</strong>，${_aiScaleCount}次加倉合計上限 <strong>${_aiScaleCount <= 1 ? '4~5' : _aiScaleCount === 2 ? '6~7' : '8~9'}%</strong></div>
-    <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(sl)}</strong>）；每次加倉確認後止損往前調至各加倉行顯示的位置（鎖住 30% 增量利潤，不讓大幅回吐）</div>
+    <div class="rule-item">✦ 進場後立即設止損（<strong style="color:var(--bear)">${fmtPrice(_px(sl))}</strong>）；每次加倉確認後止損往前調至各加倉行顯示的位置（鎖住 30% 增量利潤，不讓大幅回吐）</div>
     <div class="rule-item">✦ 最後一次加倉後止損接近保本位，確保整體持倉不虧損</div>
-    ${ltPartialTP ? `<div class="rule-item">✦ 🎯 部分止盈（3R）：<strong style="color:#fbbf24">${fmtPrice(ltPartialTP)}</strong> — 建議在此位置減少50%倉位，其餘持倉至最終止盈</div>` : ''}
-    <div class="rule-item">✦ 全倉持有至最終止盈（<strong style="color:${dirColor}">${fmtPrice(ltTP)}</strong>），中途不提前止盈</div>
+    ${ltPartialTP ? `<div class="rule-item">✦ 🎯 部分止盈（3R）：<strong style="color:#fbbf24">${fmtPrice(_px(ltPartialTP))}</strong> — 建議在此位置減少50%倉位，其餘持倉至最終止盈</div>` : ''}
+    <div class="rule-item">✦ 全倉持有至最終止盈（<strong style="color:${dirColor}">${fmtPrice(_px(ltTP))}</strong>），中途不提前止盈</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
   ` : `
@@ -3504,29 +3508,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
       <div class="level-desc">${entryReasons.join('　')}</div>
-      <div class="level-price-val">${fmtPrice(entry)}</div>
+      <div class="level-price-val">${fmtPrice(_px(entry))}</div>
     </div>
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈1</div>
       <div class="level-desc">${tp1Reason}</div>
-      <div class="level-price-val">${fmtPrice(tp1)}</div>
+      <div class="level-price-val">${fmtPrice(_px(tp1))}</div>
     </div>
     <div class="level-row level-tp2">
       <div class="level-tag">🚀 止盈2</div>
       <div class="level-desc">${tp2Reason}</div>
-      <div class="level-price-val">${fmtPrice(tp2)}</div>
+      <div class="level-price-val">${fmtPrice(_px(tp2))}</div>
     </div>
     <div class="level-row level-sl">
       <div class="level-tag">🛑 止損</div>
       <div class="level-desc">${slReason}</div>
-      <div class="level-price-val">${fmtPrice(sl)}</div>
+      <div class="level-price-val">${fmtPrice(_px(sl))}</div>
     </div>
   </div>
   <div class="setup-rules">
     <div class="rules-title">⚡ 短線操作守則</div>
     <div class="rule-item">✦ 單筆倉位最多佔資金 <strong>3~5%</strong>，虧損不超過資金的 <strong>0.5~1%</strong></div>
     <div class="rule-item">✦ 進場後立即掛好止損單，不根據情緒調整止損</div>
-    <div class="rule-item">✦ 到達止盈1（<strong style="color:${dirColor}">${fmtPrice(tp1)}</strong>）即出 60%，剩餘移至成本</div>
+    <div class="rule-item">✦ 到達止盈1（<strong style="color:${dirColor}">${fmtPrice(_px(tp1))}</strong>）即出 60%，剩餘移至成本</div>
     <div class="rule-item">✦ 若 15m K棒轉向且成交量放大，不等止損主動離場</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
@@ -9049,12 +9053,14 @@ function checkPostDataReversal(data) {
     sentAlerts[alertId] = true;
     localStorage.setItem(alertKey, JSON.stringify(sentAlerts));
 
+    const _slPxSym = (trade.symbol || '').replace('/', '').toUpperCase();
+    const _slPx = v => toPionex(_slPxSym, cur || 1, v);
     const fmt     = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
     const dir     = isLong ? '▲ 多' : '▼ 空';
     const pnlSign = currentPnlR >= 0 ? '+' : '';
     const slMove  = isLong
-      ? (suggestNewSl > sl ? `⬆ 上移 ${fmt(sl)} → ${fmt(suggestNewSl)}` : `${fmt(sl)} → ${fmt(suggestNewSl)}`)
-      : (suggestNewSl < sl ? `⬇ 下移 ${fmt(sl)} → ${fmt(suggestNewSl)}` : `${fmt(sl)} → ${fmt(suggestNewSl)}`);
+      ? (suggestNewSl > sl ? `⬆ 上移 ${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}` : `${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}`)
+      : (suggestNewSl < sl ? `⬇ 下移 ${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}` : `${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}`);
 
     const _atrFmt = (atr * 100 / cur).toFixed(2);
 
@@ -9078,11 +9084,11 @@ function checkPostDataReversal(data) {
     const msg =
       `${alertTitle}\n\n` +
       `💎 <b>${trade.symbol}</b> ${dir}\n\n` +
-      `📍 進場：$${fmt(entry)}\n` +
+      `📍 進場：$${fmt(_slPx(entry))}\n` +
       `🛑 <b>建議止損調整</b>\n` +
       `   ${slMove}\n` +
-      `   新止損：<b>$${fmt(suggestNewSl)}</b>\n\n` +
-      `💰 現價：$${fmt(cur)}\n` +
+      `   新止損：<b>$${fmt(_slPx(suggestNewSl))}</b>\n\n` +
+      `💰 現價：$${fmt(_slPx(cur))}\n` +
       `📊 浮動盈虧：<b>${pnlSign}${currentPnlR.toFixed(2)} R</b>\n` +
       `📉 ATR 波動率：${_atrFmt}%\n\n` +
       `${analysisBlock}` +
@@ -9907,6 +9913,8 @@ function renderPositionsPage() {
     const tp2     = t.tp2     || 0;
     const risk    = Math.abs(entry - (t.baseSl ?? sl)) || 1;
     const isLong  = t.direction === 'long';
+    const _tpxSym = (t.symbol || '').replace('/', '').toUpperCase();
+    const _tpx = v => toPionex(_tpxSym, cur || 1, v);
 
     let unrealR   = null, unrealPct = null, priceClr = 'var(--text2)';
     if (cur && entry) {
@@ -9987,9 +9995,9 @@ function renderPositionsPage() {
                   </div>
                 </div>
                 <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
-                  <span style="color:var(--bear)">${fmtPrice(sl)}</span>
-                  <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(cur)}</b></span>
-                  <span style="color:#22c55e">${fmtPrice(finalTP)}</span>
+                  <span style="color:var(--bear)">${fmtPrice(_tpx(sl))}</span>
+                  <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(_tpx(cur))}</b></span>
+                  <span style="color:#22c55e">${fmtPrice(_tpx(finalTP))}</span>
                 </div>
               </div>`;
           }
@@ -10027,9 +10035,9 @@ function renderPositionsPage() {
                 </div>
               </div>
               <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--text3);margin-top:2px">
-                <span style="color:var(--bear)">${fmtPrice(sl)}</span>
-                <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(cur)}</b></span>
-                <span style="color:#22c55e">${fmtPrice(tp2)}</span>
+                <span style="color:var(--bear)">${fmtPrice(_tpx(sl))}</span>
+                <span style="color:var(--text3)">現價 <b style="color:${fillClr}">${fmtPrice(_tpx(cur))}</b></span>
+                <span style="color:#22c55e">${fmtPrice(_tpx(tp2))}</span>
               </div>
             </div>`;
         }
@@ -10054,20 +10062,20 @@ function renderPositionsPage() {
       <div class="pos-grid">
         <div class="pos-cell">
           <div class="pos-cell-lbl">現價</div>
-          <div class="pos-cell-val" style="color:${priceClr}">${cur ? fmtPrice(cur) : '—'}</div>
+          <div class="pos-cell-val" style="color:${priceClr}">${cur ? fmtPrice(_tpx(cur)) : '—'}</div>
         </div>
         <div class="pos-cell">
           <div class="pos-cell-lbl">進場價</div>
-          <div class="pos-cell-val">${fmtPrice(entry)}</div>
+          <div class="pos-cell-val">${fmtPrice(_tpx(entry))}</div>
         </div>
         <div class="pos-cell">
           <div class="pos-cell-lbl">止損</div>
-          <div class="pos-cell-val" style="color:var(--bear)">${fmtPrice(sl)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&sl ? ((isLong?sl-entry:entry-sl)/entry*100).toFixed(2)+'%' : ''}</span></div>
+          <div class="pos-cell-val" style="color:var(--bear)">${fmtPrice(_tpx(sl))}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&sl ? ((isLong?sl-entry:entry-sl)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
         ${isLongTermOpen ? `
         <div class="pos-cell">
           <div class="pos-cell-lbl">最終目標</div>
-          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&(t.ltTP||tp2) ? ((isLong?(t.ltTP||tp2)-entry:entry-(t.ltTP||tp2))/entry*100).toFixed(2)+'%' : ''}</span></div>
+          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(_tpx(t.ltTP || tp2))}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&(t.ltTP||tp2) ? ((isLong?(t.ltTP||tp2)-entry:entry-(t.ltTP||tp2))/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
         ${t.maxScaleIns > 0 ? `
         <div class="pos-cell">
@@ -10091,11 +10099,11 @@ function renderPositionsPage() {
         ` : `
         <div class="pos-cell">
           <div class="pos-cell-lbl">止盈一</div>
-          <div class="pos-cell-val" style="color:var(--bull)">${fmtPrice(tp1)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp1 ? ((isLong?tp1-entry:entry-tp1)/entry*100).toFixed(2)+'%' : ''}</span></div>
+          <div class="pos-cell-val" style="color:var(--bull)">${fmtPrice(_tpx(tp1))}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp1 ? ((isLong?tp1-entry:entry-tp1)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
         <div class="pos-cell">
           <div class="pos-cell-lbl">止盈二</div>
-          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(tp2)}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
+          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(_tpx(tp2))}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
         </div>
         <div class="pos-cell" style="grid-column:span 3">
           <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
@@ -10130,7 +10138,7 @@ function renderPositionsPage() {
           const movePct    = entry ? (((level - entry) / entry) * 100 * (isLong ? 1 : -1)).toFixed(1) : '—';
           const icon  = isDone ? '✅' : isPending ? '⏳' : '📌';
           const clr   = isDone ? '#22c55e' : isPending ? '#f59e0b' : 'var(--text3)';
-          const lbl   = isDone ? `已觸及 @ ${fmtPrice(actualEntry)}` : isPending ? '等待確認' : `目標 ${fmtPrice(level)}`;
+          const lbl   = isDone ? `已觸及 @ ${fmtPrice(_tpx(actualEntry))}` : isPending ? '等待確認' : `目標 ${fmtPrice(_tpx(level))}`;
           return `<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;${i < siTargets.length - 1 ? 'border-bottom:1px solid rgba(255,255,255,.05)' : ''}">
             <div style="display:flex;align-items:center;gap:6px">
               <span>${icon}</span>
@@ -10145,7 +10153,7 @@ function renderPositionsPage() {
           ${rows}
           ${finalTP ? `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0 2px;margin-top:4px;border-top:1px solid rgba(34,197,94,.2)">
             <span style="font-size:0.78rem;color:#4ade80;font-weight:700">🏁 最終目標</span>
-            <span style="font-size:0.82rem;font-weight:700;color:#4ade80">${fmtPrice(finalTP)}</span>
+            <span style="font-size:0.82rem;font-weight:700;color:#4ade80">${fmtPrice(_tpx(finalTP))}</span>
           </div>` : ''}
         </div>`;
       })()}

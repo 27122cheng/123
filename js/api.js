@@ -113,6 +113,33 @@ function tfToBinanceInterval(tf) {
   return { '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' }[tf] || '15m';
 }
 
+/* ---------- Pionex 顯示價格快取 ---------- */
+let _pionexPrices = {};
+
+async function refreshPionexPrices() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const r = await fetch('https://api.pionex.com/api/v1/market/tickers', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j.result && Array.isArray(j.data?.tickers)) {
+      j.data.tickers.forEach(tk => {
+        _pionexPrices[tk.symbol.replace('_', '')] = parseFloat(tk.close);
+      });
+    }
+  } catch {}
+}
+
+function toPionex(sym, binanceCur, level) {
+  if (!level || !binanceCur) return level;
+  const key = sym.replace('/', '').toUpperCase();
+  const px = _pionexPrices[key];
+  if (!px || px <= 0) return level;
+  return level * (px / binanceCur);
+}
+
 /* ---------- 幣安 API 端點（依序嘗試）---------- */
 const BINANCE_HOSTS = [
   'https://api.binance.com',
@@ -504,6 +531,7 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
   const sym   = coin.symbol.replace('/USDT','').replace('USDT','');
 
   const p = parseFloat(coin.price) || 1;
+  const _pSym = (sym + 'USDT').toUpperCase();
   const fmt = v => {
     if (!v && v !== 0) return '--';
     return p >= 1000 ? v.toFixed(1) : p >= 1 ? v.toFixed(3) : v.toFixed(6);
@@ -609,27 +637,27 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
     }
 
     // ── 11. 進場點 ──
-    msg += `📍 <b>進場：$${fmt(setup.entry)}</b>\n`;
+    msg += `📍 <b>進場：$${fmt(toPionex(_pSym, p, setup.entry))}</b>\n`;
 
     // ── 12. 止損點 ──
     const slPct = pct(setup.entry, setup.sl);
-    msg += `🛑 <b>止損：$${fmt(setup.sl)}</b>  (${slPct})\n`;
+    msg += `🛑 <b>止損：$${fmt(toPionex(_pSym, p, setup.sl))}</b>  (${slPct})\n`;
 
     msg += `\n`;
     if (isLongTermSignal) {
       // ── 13. 最終止盈（長線單）──
       if (setup.ltTP) {
         const ltPct = pct(setup.entry, setup.ltTP);
-        msg += `🏁 <b>最終目標：$${fmt(setup.ltTP)}</b>  (${ltPct})\n`;
+        msg += `🏁 <b>最終目標：$${fmt(toPionex(_pSym, p, setup.ltTP))}</b>  (${ltPct})\n`;
         if (setup.ltTPReason) msg += `   ↳ ${setup.ltTPReason}\n`;
       }
     } else {
       // ── 13. 止盈一 / 止盈二（短線單）──
       const tp1Pct = pct(setup.entry, setup.tp1);
-      msg += `🎯 <b>止盈一：$${fmt(setup.tp1)}</b>  (${tp1Pct} | R:R ${rr(setup.rr1)}:1)\n`;
+      msg += `🎯 <b>止盈一：$${fmt(toPionex(_pSym, p, setup.tp1))}</b>  (${tp1Pct} | R:R ${rr(setup.rr1)}:1)\n`;
       if (setup.tp2) {
         const tp2Pct = pct(setup.entry, setup.tp2);
-        msg += `🚀 <b>止盈二：$${fmt(setup.tp2)}</b>  (${tp2Pct} | R:R ${rr(setup.rr2)}:1)\n`;
+        msg += `🚀 <b>止盈二：$${fmt(toPionex(_pSym, p, setup.tp2))}</b>  (${tp2Pct} | R:R ${rr(setup.rr2)}:1)\n`;
       }
     }
 
@@ -644,8 +672,8 @@ function buildTelegramText(coin, direction, setup, macro, siteUrl = '') {
         siTargets.forEach((lv, i) => {
           const newSL  = siNewSLs[i];
           const lvPct  = setup.entry ? (((lv - setup.entry) / Math.abs(setup.entry)) * 100 * (isLong ? 1 : -1)).toFixed(1) : '—';
-          msg += `   加倉${i + 1}：目標 $${fmt(lv)}（${isLong ? '+' : '-'}${lvPct}%）`;
-          if (newSL) msg += `  → 止損移至 $${fmt(newSL)}`;
+          msg += `   加倉${i + 1}：目標 $${fmt(toPionex(_pSym, p, lv))}（${isLong ? '+' : '-'}${lvPct}%）`;
+          if (newSL) msg += `  → 止損移至 $${fmt(toPionex(_pSym, p, newSL))}`;
           msg += `\n`;
         });
       }
