@@ -2701,6 +2701,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (!isLong && _btsMACD > 0) { techPenalty += 3; techPenReasons.push(`MACD 柱狀正值，空頭動能待確認，扣 3%`); }
   const _btsVol = coin.volumeStrength || '';
   if (_btsVol === '低' || _btsVol.includes('弱')) { techPenalty += 3; techPenReasons.push(`成交量弱勢（${_btsVol}），突破動能不足，扣 3%`); }
+  // 實體K棒突破需要放量確認：有突破信號但非高量，假突破風險高
+  {
+    const _hasBreakout = isLong
+      ? (m15?.bullBreak || h1?.bullBreak || h4?.bullBreak)
+      : (m15?.bearBreak || h1?.bearBreak || h4?.bearBreak);
+    if (_hasBreakout) {
+      const _breakWithVol = isLong
+        ? ((m15?.bullBreak && m15?.isHighVol) || (h1?.bullBreak && h1?.isHighVol) || (h4?.bullBreak && h4?.isHighVol))
+        : ((m15?.bearBreak && m15?.isHighVol) || (h1?.bearBreak && h1?.isHighVol) || (h4?.bearBreak && h4?.isHighVol));
+      if (!_breakWithVol) {
+        techPenalty += 8;
+        techPenReasons.push(`實體K棒突破但未見放量確認，假突破風險高，扣 8%`);
+      }
+    }
+  }
   // 大時間框架對立扣分（bigTrendBlocked 已攔截雙雙逆勢，這裡處理單邊逆勢）
   if (!bigTrendBlocked) {
     if (h4?.signal?.includes(isLong ? 'bear' : 'bull')) { techPenalty += 4; techPenReasons.push(`4H 方向（${h4TrendLabel}）與${isLong ? '做多' : '做空'}逆勢，中週期阻力，扣 4%`); }
@@ -11932,6 +11947,8 @@ function computeSimpleSetup(coin, isLong) {
   if (!isLong && _ssMacdH > 0) _sTechPen += 4;
   const _ssVolStr = coin.volumeStrength || '';
   if (_ssVolStr === '低' || _ssVolStr.includes('弱')) _sTechPen += 4;
+  // 多時框同向（4H+日線確認）但成交量仍偏低：突破缺乏放量，假突破風險
+  if (_h4Aligned && _dayAligned && (_ssVolStr === '低' || _ssVolStr.includes('弱'))) _sTechPen += 5;
   _sTechPen = Math.min(18, _sTechPen);
   // 籌碼面扣分 (Taker比例、巨鯨)
   let _sChipsPen = 0;
