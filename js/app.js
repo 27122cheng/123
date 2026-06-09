@@ -2987,8 +2987,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       || adxVal < 18                                                            // ADX 嚴重偏低
       || learnPenalty >= 10;                                                    // AI 學習強烈警告
 
-    // 最低信心門檻：65%
-    const _btConfMin = 65;
+    // 最低信心門檻：70%
+    const _btConfMin = 70;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin && !_isLowWinRate) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
@@ -3079,9 +3079,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
-  // ── 信心度 < 65% → 顯示觀望，不顯示交易建議 ──
-  if (conf < 65) {
-    const cColor = conf >= 55 ? '#f59e0b' : '#ef4444';
+  // ── 信心度 < 70% → 顯示觀望，不顯示交易建議 ──
+  if (conf < 70) {
+    const cColor = conf >= 60 ? '#f59e0b' : '#ef4444';
     const confPenLines = [];
     if (hardAdxPenalty > 0)     confPenLines.push(`ADX ${adxVal} 趨勢強度不足，扣 -${hardAdxPenalty}%`);
     if (macroOpposePenalty > 0) confPenLines.push(`宏觀環境逆風，扣 -${macroOpposePenalty}%`);
@@ -3093,7 +3093,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⚠️</div>
       <div class="setup-wait-title">信心度不足（<strong style="color:${cColor}">${conf}%</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 65%，目前扣分後 ${conf}%，暫不開倉</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 70%，目前扣分後 ${conf}%，暫不開倉</div>
       ${confPenLines.length ? `<ul class="setup-wait-reasons">${confPenLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
       <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
         <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
@@ -7753,9 +7753,9 @@ function updateOpenTrades(data) {
         }
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 信心度跌破 60% → 自動取消掃描粗估單（!refined）
-        if (freshConf < 60 && !trade.entryTime) {
-          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 65%（宏觀/AI/技術面扣分累積）`;
+        // 信心度跌破 65% → 自動取消掃描粗估單（!refined）
+        if (freshConf < 65 && !trade.entryTime) {
+          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 70%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -7767,8 +7767,8 @@ function updateOpenTrades(data) {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
       const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
-      if (_structConf < 60 && !trade.entryTime) {
-        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 65%（ADX/風控規則扣分）`;
+      if (_structConf < 65 && !trade.entryTime) {
+        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 70%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -9474,8 +9474,17 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const profile = getLearnProfile();
   let penalty = 0;
   const warnings = [];
-  const blockReasons = [];   // 100次以上硬封鎖
+  const blockReasons = [];   // 硬封鎖原因
   const defenseChecks = [];  // 所有防線審查項目（供 UI 顯示）
+
+  // ── 歷史止損率 > 90%：直接硬封鎖（最低樣本 5 筆）──
+  if (profile.ready && profile.closed >= 5) {
+    const _slRate = (profile.losses / profile.closed);
+    if (_slRate > 0.9) {
+      const _slPct = (_slRate * 100).toFixed(1);
+      blockReasons.push(`🚫 歷史止損率 ${_slPct}%（${profile.losses}/${profile.closed} 筆），遠超 90% 安全門檻，AI 風控永久攔截直到勝率回升`);
+    }
+  }
 
   // ── 防線比對 helper ──
   const addCheck = (type, label, count, fail, pen, block = false) => {
@@ -10450,6 +10459,11 @@ function renderTradeLogPage() {
         : `<span style="color:var(--bull)">${fmtPrice(t.tp1)}</span>`;
       const tp2Display = isLongTrade ? `<span style="color:var(--text3)">—</span>` : fmtPrice(t.tp2);
 
+      const _tg = t.sqGrade || '?';
+      const _tgc = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_tg] || '#9ca3af';
+      const _tge = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_tg] || '📊';
+      const _tgl = t.sqGradeLabel || { S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_tg] || '';
+      const gradeHtml = _tg !== '?' ? `<span style="font-size:0.7rem;font-weight:700;background:${_tgc}22;border:1px solid ${_tgc}55;color:${_tgc};padding:2px 6px;border-radius:12px;white-space:nowrap">${_tge} ${_tg} ${_tgl}</span>` : '—';
       return `<tr class="tl-row-click" onclick="showTradeDetail('${t.id}')">
         <td style="font-size:0.78rem;min-width:130px">
           <div style="color:var(--text2)">信號 ${fmtDateTime(t.timestamp)}</div>
@@ -10458,6 +10472,7 @@ function renderTradeLogPage() {
         </td>
         <td style="font-weight:600">${t.symbol.replace('/USDT','')}<span style="color:var(--text3)">/USDT</span></td>
         <td>${dirHtml}${typeTag}</td>
+        <td>${gradeHtml}</td>
         <td>${fmtPrice(t.entry)}</td>
         <td style="color:var(--bear)">${fmtPrice(t.sl)}</td>
         <td>${tp1Display}</td>
@@ -10470,7 +10485,7 @@ function renderTradeLogPage() {
     tableHtml = `<div class="tl-table-wrap">
       <table class="tl-table">
         <thead><tr>
-          <th>時間</th><th>幣種</th><th>方向</th><th>進場</th><th>止損</th><th>止盈1</th><th>止盈2</th><th>現狀</th><th>盈虧 R</th>
+          <th>時間</th><th>幣種</th><th>方向</th><th>等級</th><th>進場</th><th>止損</th><th>止盈1</th><th>止盈2</th><th>現狀</th><th>盈虧 R</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -11375,7 +11390,7 @@ async function checkAndSendAlerts(data) {
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
 
-    if (notifConf < 65) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
+    if (notifConf < 70) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
 
     // 信心度達標 → 完整交易信號通知
     if (s.notifBrowser) {
