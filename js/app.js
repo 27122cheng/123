@@ -1229,7 +1229,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         for (const ev of _cfNow.events) {
           if (isLongNow  && ev.bear > 0) { cfPenNow += ev.bear >= 1.2 ? 5 : 3; cfEventsNow.push(ev); }
           else if (!isLongNow && ev.bull > 0) { cfPenNow += ev.bull >= 1.2 ? 5 : 3; cfEventsNow.push(ev); }
-          else if (ev.bull === 0 && ev.bear === 0) { cfPenNow += 2; }
+          else if (ev.bull === 0 && ev.bear === 0) { cfPenNow += 2; cfEventsNow.push(ev); }
         }
         cfPenNow = Math.min(10, cfPenNow);
       } catch(_e) {}
@@ -1353,7 +1353,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
             ? cfEventsNow.map(ev => {
                 const timeStr = ev.isActive ? '進行中' : `${ev.daysUntil}天後`;
                 const aiTag   = ev.isAI ? 'AI預測 ' : '';
-                return `<div style="color:#f59e0b">⚠️ 💹 ${ev.name}（${timeStr}）：${aiTag}${ev.bear > 0 ? '資金流出' : '資金流入'}逆風，扣 -${ev.bear >= 1.2 || ev.bull >= 1.2 ? 5 : 3}%</div>`;
+                const _evPenAmt = (ev.bear > 0 || ev.bull > 0) ? (ev.bear >= 1.2 || ev.bull >= 1.2 ? 5 : 3) : 2;
+                const _evDesc   = ev.bear > 0 ? '資金流出逆風' : ev.bull > 0 ? '資金流入逆風' : '資金方向中性';
+                return `<div style="color:#f59e0b">⚠️ 💹 ${ev.name}（${timeStr}）：${aiTag}${_evDesc}，扣 -${_evPenAmt}%</div>`;
               }).join('')
             : `<div style="color:#22c55e">✓ 資金流動：無近期逆向事件</div>`}
           ${techPenNow > 0
