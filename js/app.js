@@ -8061,9 +8061,28 @@ async function sendTP1Notifications(hits) {
   }
 }
 
+const _CANCEL_TG_DEDUP_KEY = 'csp_cancel_tg_dedup';
+const _CANCEL_TG_DEDUP_TTL = 20 * 60 * 1000;
+function _hasCancelTgSent(symbol, direction) {
+  try {
+    const c = JSON.parse(localStorage.getItem(_CANCEL_TG_DEDUP_KEY) || '{}');
+    const k = symbol.replace('/USDT','') + '_' + direction;
+    return (c[k] || 0) > Date.now() - _CANCEL_TG_DEDUP_TTL;
+  } catch { return false; }
+}
+function _markCancelTgSent(symbol, direction) {
+  try {
+    const c = JSON.parse(localStorage.getItem(_CANCEL_TG_DEDUP_KEY) || '{}');
+    c[symbol.replace('/USDT','') + '_' + direction] = Date.now();
+    localStorage.setItem(_CANCEL_TG_DEDUP_KEY, JSON.stringify(c));
+  } catch {}
+}
+
 function sendCancelTelegramNotification(trade, reason) {
   const s = loadSettings();
   if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  if (_hasCancelTgSent(trade.symbol, trade.direction)) return;
+  _markCancelTgSent(trade.symbol, trade.direction);
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
   const esc = str => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const sym     = trade.symbol.replace('/USDT', '');
@@ -8182,6 +8201,8 @@ function sendCancelTelegramNotification(trade, reason) {
 function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
   const s = loadSettings();
   if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  if (_hasCancelTgSent(trade.symbol, trade.direction)) return;
+  _markCancelTgSent(trade.symbol, trade.direction);
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
   const sym  = trade.symbol.replace('/USDT', '').replace('USDT', '');
   const dir  = trade.direction === 'long' ? '▲ 做多' : '▼ 做空';
