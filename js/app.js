@@ -9535,6 +9535,30 @@ function getLearnProfile() {
   return _learnCache || { ready: false, closed: 0, rules: [], winRate: 50, wins: 0, losses: 0, bestConditions: [] };
 }
 
+/* 逐條規則扣分表（共用：風控計算 applyLearnAdjustment + UI 顯示 buildAILearnPanel）
+   同一組止損率門檻：≥50筆維持標準扣分，20-49筆稍低，3-19筆輕度扣分 */
+function computeRulePenalty(total, rate) {
+  const _t = total || 0, _r = rate || 0;
+  if (_t >= 50) {
+    if (_r >= 0.90) return 12;
+    if (_r >= 0.80) return  8;
+    if (_r >= 0.70) return  5;
+    if (_r >= 0.60) return  3;
+    if (_r >= 0.50) return  2;
+    if (_r >= 0.30) return  1;
+    return 0;
+  }
+  if (_t >= 20) {
+    if (_r >= 0.90) return 10;
+    if (_r >= 0.80) return  7;
+    if (_r >= 0.70) return  4;
+    if (_r >= 0.60) return  2;
+    if (_r >= 0.50) return  1;
+    return 0;
+  }
+  return Math.max(1, Math.min(8, Math.round(_r * 10)));
+}
+
 function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const profile = getLearnProfile();
   const _aiMem  = profile.mem || loadAIMemory();
@@ -9643,29 +9667,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
             blockReasons.push(`🚫 AI規則封鎖：「${_rLabel}」歷史止損率 ${(_rRate * 100).toFixed(0)}%（${_rTotal} 筆），AI 風控攔截`);
             defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: false, penalty: 0, rate: _rRate, blocked: true });
           } else {
-            // 同一組門檻：≥50筆維持原扣分，20-49筆稍低，3-19筆輕度扣分
-            let _rPen = 0;
-            if (_rTotal >= 50) {
-              // ≥50筆（止損率30-95%）：標準扣分
-              if (_rRate >= 0.90)      _rPen = 12;
-              else if (_rRate >= 0.80) _rPen =  8;
-              else if (_rRate >= 0.70) _rPen =  5;
-              else if (_rRate >= 0.60) _rPen =  3;
-              else if (_rRate >= 0.50) _rPen =  2;
-              else if (_rRate >= 0.30) _rPen =  1;
-              else                     _rPen =  0;
-            } else if (_rTotal >= 20) {
-              // 20-49筆：同一組門檻，扣分稍低
-              if (_rRate >= 0.90)      _rPen = 10;
-              else if (_rRate >= 0.80) _rPen =  7;
-              else if (_rRate >= 0.70) _rPen =  4;
-              else if (_rRate >= 0.60) _rPen =  2;
-              else if (_rRate >= 0.50) _rPen =  1;
-              else if (_rRate >= 0.30) _rPen =  0;
-              else                     _rPen =  0;
-            } else {
-              _rPen = Math.max(1, Math.min(8, Math.round(_rRate * 10)));
-            }
+            const _rPen = computeRulePenalty(_rTotal, _rRate);
             penalty += _rPen;
             defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: false, penalty: _rPen, rate: _rRate });
           }
@@ -9865,10 +9867,14 @@ function buildAILearnPanel(closed) {
         const fd = r.firstDetected ? `首次發現 ${fmtDate(r.firstDetected)}` : '';
         const occ = (r.occurrences || 0) > 1 ? `· 出現 ${r.occurrences} 次` : '';
         const memBadge = !r.active ? `<span class="ai-mem-badge">記憶</span>` : '';
-        const _pen = Math.max(1, Math.min(6, Math.round((r.rate || 0) * 8)));
+        const _blocked = (r.total || 0) >= 50 && (r.rate || 0) >= 0.95;
+        const _pen = computeRulePenalty(r.total, r.rate);
+        const _penHtml = _blocked
+          ? `<span style="color:var(--bear);font-weight:700">🚫 觸發封鎖</span>`
+          : `<span style="color:#f59e0b">觸發扣 -${_pen}%</span>`;
         return `<div class="ai-rule-item">
           <div class="ai-rule-cond">⚡ ${r.warning} ${memBadge}</div>
-          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · <span style="color:#f59e0b">觸發扣 -${_pen}%</span>${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
+          <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · ${_penHtml}${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
         </div>`;
       }).join('')
     : `<div class="ai-learn-ok">✅ 目前無高風險模式，歷史條件均衡</div>`;
