@@ -3049,8 +3049,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 最低信心門檻：70%
-    const _btConfMin = 70;
+    // 最低信心門檻：60%
+    const _btConfMin = 60;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin && !_isLowWinRate) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
@@ -3155,7 +3155,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⚠️</div>
       <div class="setup-wait-title">信心度不足（<strong style="color:${cColor}">${conf}%</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 70%，目前扣分後 ${conf}%，暫不開倉</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 60%，目前扣分後 ${conf}%，暫不開倉</div>
       ${confPenLines.length ? `<ul class="setup-wait-reasons">${confPenLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
       <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
         <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
@@ -11710,8 +11710,8 @@ async function checkAndSendAlerts(data) {
         if (!_existTrade.telegramSent && s.notifTelegram && s.tgToken && s.tgChatId) {
           // 補發漏掉的進場通知：使用掛單建立時的原始信心度作為門檻，避免舊掛單或信心度跌落後補發
           const _retryConf = _existTrade.conf ?? 0;
-          if (_retryConf < 70) {
-            // 信心度不足 70%（含舊版低門檻建立的掛單）→ 靜默抑制，標記已處理
+          if (_retryConf < 60) {
+            // 信心度不足 60%（低於進場門檻的舊掛單）→ 靜默抑制，標記已處理
             const _ri = _tlog.findIndex(t => t.id === _existTrade.id);
             if (_ri >= 0) { _tlog[_ri].telegramSent = true; saveTradeLog(_tlog); }
           } else {
@@ -12647,7 +12647,7 @@ function computeSimpleSetup(coin, isLong) {
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
-    learnFiltered: (conf < 70 || hardBlocked) && rawConf >= 70,
+    learnFiltered: (conf < 60 || hardBlocked) && rawConf >= 60,
     hardBlocked,
     isRangeMode: false,
     flipRisks:   [],
