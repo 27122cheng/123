@@ -7454,17 +7454,9 @@ function recordSignalsFromScan(data) {
     const _tLabel = canScaleIn ? '長線單' : '短線單';
     const _tIcon  = canScaleIn ? '💎' : '📡';
     try { if (typeof showToast === 'function') showToast(`${_tIcon} ${_tLabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${setup.conf}%，已加入持倉`, 'success'); } catch(_te) {}
-    try {
-      const _ns = loadSettings();
-      if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
-        const _tgSetup = Object.assign({}, newTrade, {
-          riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs,
-        });
-        sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
-          buildTelegramText(coin, direction, _tgSetup, _macroCache, window.location.origin + window.location.pathname));
-        newTrade.telegramSent = true;
-      }
-    } catch(_e) { console.warn('[recordSignalsFromScan tg]', _e); }
+    // 延遲 Telegram 通知：等 updateOpenTrades 確認此單不會立即被止損記憶/信心度取消後才發送
+    newTrade.pendingNotify = true;
+    newTrade._notifyRisk   = { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs };
   }
 
 
@@ -8080,6 +8072,28 @@ function updateOpenTrades(data) {
       }
     }
   }
+  // 發送延遲通知：只有通過所有取消檢查的新訊號才推送 Telegram
+  const _pendingNotify = tlog.filter(t => t.pendingNotify === true && !toDeleteIds.has(t.id));
+  if (_pendingNotify.length > 0) {
+    try {
+      const _ns = loadSettings();
+      for (const _pnt of _pendingNotify) {
+        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+          try {
+            const _pntCoin = data?.find(d => d.symbol === _pnt.symbol) || { symbol: _pnt.symbol, price: _pnt.entryPrice };
+            const _tgSetup = Object.assign({}, _pnt, _pnt._notifyRisk || {});
+            sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
+              buildTelegramText(_pntCoin, _pnt.direction, _tgSetup, _macroCache, window.location.origin + window.location.pathname));
+            _pnt.telegramSent = true;
+          } catch(_e) { console.warn('[deferred-notify tg]', _pnt.symbol, _e); }
+        }
+        _pnt.pendingNotify  = false;
+        delete _pnt._notifyRisk;
+        changed = true;
+      }
+    } catch(_pne) {}
+  }
+
   if (toDeleteIds.size > 0) {
     tlog.splice(0, tlog.length, ...tlog.filter(t => !toDeleteIds.has(t.id)));
     changed = true;
