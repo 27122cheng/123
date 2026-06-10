@@ -3606,8 +3606,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const failChecks  = defenseChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
     const passChecks  = defenseChecks.filter(c =>  c.pass && c.type !== 'sugg_ref');
     const refChecks   = defenseChecks.filter(c => c.type === 'sugg_ref' && !c.pass);
-    const typeLabel = { rule: '規則', rule_ref: '參考', sugg_ref: '改進建議', memory: '止損記憶', suggestion: '改進建議' };
-    const typeColor = { rule: '#818cf8', rule_ref: '#64748b', sugg_ref: '#34d399', memory: '#f59e0b', suggestion: '#34d399' };
+    const typeLabel = { rule: '規則', rule_ref: '參考', sugg_ref: '改進建議', sugg_required: '必須條件', memory: '止損記憶', suggestion: '改進建議' };
+    const typeColor = { rule: '#818cf8', rule_ref: '#64748b', sugg_ref: '#34d399', sugg_required: '#ef4444', memory: '#f59e0b', suggestion: '#34d399' };
 
     // 各層狀態顏色
     const l1Warn   = macroOpposePenalty > 0 || hardAdxPenalty > 0;
@@ -9707,8 +9707,20 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
           (s.includes('量能') && s.includes('確認') && ctx.volDivergence === 'bearish_div' && direction === 'long') ||
           (s.includes('多週期') && (ctx.mtfAlign ?? 99) <= 1) ||
           ((s.includes('週期') && s.includes('信號一致')) && (ctx.mtfAlign ?? 99) <= 1);
-        // 改進建議僅作為 AI 交易建議參考，不影響信心評分
-        defenseChecks.push({ type: 'sugg_ref', label: s.slice(0, 55), count: cnt, pass: !suggViolated, penalty: 0 });
+        if (cnt >= 100) {
+          // 止損原因出現 ≥100 次：AI 判定改進方法為必須條件，違反直接扣信心分
+          if (suggViolated) {
+            const _sgPen = 10;
+            penalty += _sgPen;
+            warnings.push(`🔒 必須條件未滿足（歷史止損 ${cnt} 次教訓）：${s.slice(0, 50)}，扣 ${_sgPen}%`);
+            defenseChecks.push({ type: 'sugg_required', label: s.slice(0, 55), count: cnt, pass: false, penalty: _sgPen });
+          } else {
+            defenseChecks.push({ type: 'sugg_required', label: s.slice(0, 55), count: cnt, pass: true, penalty: 0 });
+          }
+        } else {
+          // < 100 次：改進建議僅作為 AI 交易建議參考，不影響信心評分
+          defenseChecks.push({ type: 'sugg_ref', label: s.slice(0, 55), count: cnt, pass: !suggViolated, penalty: 0 });
+        }
       }
     }
   }
@@ -9902,11 +9914,13 @@ function buildAILearnPanel(closed) {
   const issuesHtml = memIssues.length
     ? `<div class="ai-learn-section">
         <div class="ai-section-title">📋 過往止損原因記錄（永久保存，跨月累積）</div>
-        ${memIssues.map(iss => `
+        ${memIssues.map(iss => {
+          const _enforced = (iss.count || 0) >= 100 && iss.suggestion;
+          return `
           <div class="ai-issue-row">
-            <div class="ai-issue-txt">⚠️ ${iss.text}<span class="ai-issue-cnt">×${iss.count}</span>${iss.firstDetected ? `<span class="ai-mem-date">首次 ${fmtDate(iss.firstDetected)}</span>` : ''}</div>
-            ${iss.suggestion ? `<div class="ai-sugg-txt">→ ${iss.suggestion}</div>` : ''}
-          </div>`).join('')}
+            <div class="ai-issue-txt">⚠️ ${iss.text}<span class="ai-issue-cnt">×${iss.count}</span>${_enforced ? `<span style="background:rgba(239,68,68,.15);color:#ef4444;border-radius:4px;padding:1px 6px;font-size:0.68rem;margin-left:6px">🔒 必須條件</span>` : ''}${iss.firstDetected ? `<span class="ai-mem-date">首次 ${fmtDate(iss.firstDetected)}</span>` : ''}</div>
+            ${iss.suggestion ? `<div class="ai-sugg-txt">→ ${iss.suggestion}${_enforced ? '（已納入交易分析條件，違反扣 10%）' : ''}</div>` : ''}
+          </div>`; }).join('')}
       </div>`
     : `<div class="ai-learn-section">
         <div class="ai-section-title">📋 過往止損原因記錄（永久保存）</div>
