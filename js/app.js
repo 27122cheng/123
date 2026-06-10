@@ -2699,18 +2699,24 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (!isLong && _btsMACD > 0) { techPenalty += 3; techPenReasons.push(`MACD 柱狀正值，空頭動能待確認，扣 3%`); }
   const _btsVol = coin.volumeStrength || '';
   if (_btsVol === '低' || _btsVol.includes('弱')) { techPenalty += 3; techPenReasons.push(`成交量弱勢（${_btsVol}），突破動能不足，扣 3%`); }
-  // 實體K棒突破需要放量確認：有突破信號但非高量，假突破風險高
+  // 實體K棒突破量能要求：低量突破直接封鎖；非低量但無明確高量則扣分
   {
     const _hasBreakout = isLong
       ? (m15?.bullBreak || h1?.bullBreak || h4?.bullBreak)
       : (m15?.bearBreak || h1?.bearBreak || h4?.bearBreak);
     if (_hasBreakout) {
-      const _breakWithVol = isLong
-        ? ((m15?.bullBreak && m15?.isHighVol) || (h1?.bullBreak && h1?.isHighVol) || (h4?.bullBreak && h4?.isHighVol))
-        : ((m15?.bearBreak && m15?.isHighVol) || (h1?.bearBreak && h1?.isHighVol) || (h4?.bearBreak && h4?.isHighVol));
-      if (!_breakWithVol) {
-        techPenalty += 8;
-        techPenReasons.push(`實體K棒突破但未見放量確認，假突破風險高，扣 8%`);
+      if (_btsVol === '低' || _btsVol.includes('弱')) {
+        // 低量突破：直接封鎖（假突破機率極高，不予進場）
+        techPenalty += 30;
+        techPenReasons.push(`實體K棒突破但量能偏低（${_btsVol}），假突破風險極高，扣 30%`);
+      } else {
+        const _breakWithVol = isLong
+          ? ((m15?.bullBreak && m15?.isHighVol) || (h1?.bullBreak && h1?.isHighVol) || (h4?.bullBreak && h4?.isHighVol))
+          : ((m15?.bearBreak && m15?.isHighVol) || (h1?.bearBreak && h1?.isHighVol) || (h4?.bearBreak && h4?.isHighVol));
+        if (!_breakWithVol) {
+          techPenalty += 8;
+          techPenReasons.push(`實體K棒突破但未見放量確認，假突破風險高，扣 8%`);
+        }
       }
     }
   }
@@ -7346,8 +7352,8 @@ function recordSignalsFromScan(data) {
     // MACD 方向確認：順向70%，逆向73%
     const _scanMacd   = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    // 無宏觀快取時宏觀扣分為 0，conf 偏高，需提高門檻避免假信號
-    const _confMin    = _macroCache ? (_macdAligned ? 60 : 63) : 65;
+    // 信心度門檻：60% 含以上才進場
+    const _confMin    = 60;
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
@@ -8150,7 +8156,7 @@ function sendCancelTelegramNotification(trade, reason) {
   const rawConf   = trade.rawConf || 0;
   const freshConf = trade.conf    || 0;
   const confDrop  = Math.max(0, rawConf - freshConf);
-  const _confThreshold = 65;
+  const _confThreshold = 60;
   const confLine  = (rawConf > 0 && confDrop > 1)
     ? `📶 信心度：${rawConf}% → 降至 ${freshConf}%（扣 -${confDrop}%${freshConf < _confThreshold ? '，未達推薦門檻' : ''}）`
     : `📶 信心度：${freshConf}%`;
