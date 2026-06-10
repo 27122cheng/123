@@ -2601,27 +2601,43 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const todayNeutral  = _tBias === 'neutral' || _tBias === '';
   const todayOpposed  = !todayAligned && !todayNeutral;
 
-  // AI 趨勢對照懲罰（避免與 macroOpposePenalty 重複，只計非宏觀因子的差距）
+  // AI 趨勢對照懲罰（宏觀大方向與交易方向一致時不扣分，宏觀優先於事件預測）
+  // 邏輯：若宏觀已確認偏空/偏多且與進場方向同向，AI事件預測逆向視為雜訊，不重複懲罰
+  const _btsMacroAligned = (!isLong && _btsNetDir.includes('bear')) || (isLong && _btsNetDir.includes('bull'));
   let aiTrendPenalty = 0;
   const aiTrendReasons = [];
-  if (weeklyOpposed) {
-    const pen = _wBias.includes('strong') ? 8 : 5;
-    aiTrendPenalty += pen;
-    aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
-  } else if (weeklyNeutral) {
-    aiTrendPenalty += 2;
-    aiTrendReasons.push(`本週AI預測震盪中性（信心 ${weeklyBiasData.conf || 50}%），方向不明，扣 2%`);
+  if (_btsMacroAligned) {
+    // 宏觀大方向已與交易同向，不因 AI 事件預測而扣分
+    if (weeklyOpposed) {
+      aiTrendReasons.push(`本週AI事件預測 ${weeklyBiasData.biasLabel || _wBias}（逆向），但宏觀大方向已${_btsNetDir.includes('bear') ? '偏空' : '偏多'}，不扣分`);
+    } else {
+      aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}（信心 ${weeklyBiasData.conf || 50}%），與${isLong ? '多' : '空'}方向一致`);
+    }
+    if (todayOpposed) {
+      aiTrendReasons.push(`今日AI事件預測 ${todayBiasData.biasLabel || _tBias}（逆向），宏觀大方向一致，不扣分`);
+    } else {
+      aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}（信心 ${todayBiasData.conf || 50}%），今日方向一致`);
+    }
   } else {
-    aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}（信心 ${weeklyBiasData.conf || 50}%），與${isLong ? '多' : '空'}方向一致`);
-  }
-  if (todayOpposed) {
-    aiTrendPenalty += 5;
-    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}，${isLong ? '多頭' : '空頭'}今日逆風，扣 7%`);
-  } else if (todayNeutral) {
-    aiTrendPenalty += 1;
-    aiTrendReasons.push(`今日AI預測中性觀望（信心 ${todayBiasData.conf || 50}%），方向不確定，扣 1%`);
-  } else {
-    aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}（信心 ${todayBiasData.conf || 50}%），今日方向一致`);
+    if (weeklyOpposed) {
+      const pen = _wBias.includes('strong') ? 8 : 5;
+      aiTrendPenalty += pen;
+      aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
+    } else if (weeklyNeutral) {
+      aiTrendPenalty += 2;
+      aiTrendReasons.push(`本週AI預測震盪中性（信心 ${weeklyBiasData.conf || 50}%），方向不明，扣 2%`);
+    } else {
+      aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}（信心 ${weeklyBiasData.conf || 50}%），與${isLong ? '多' : '空'}方向一致`);
+    }
+    if (todayOpposed) {
+      aiTrendPenalty += 5;
+      aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}，${isLong ? '多頭' : '空頭'}今日逆風，扣 7%`);
+    } else if (todayNeutral) {
+      aiTrendPenalty += 1;
+      aiTrendReasons.push(`今日AI預測中性觀望（信心 ${todayBiasData.conf || 50}%），方向不確定，扣 1%`);
+    } else {
+      aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}（信心 ${todayBiasData.conf || 50}%），今日方向一致`);
+    }
   }
 
   // 數據公布風險：掃描近 8 小時內的高影響事件，標記可能令方向逆轉的節點
@@ -7692,16 +7708,19 @@ function updateOpenTrades(data) {
         }
         let _macP = _agt >= 3 ? 22 : _agt >= 2 ? 15 : _agt >= 1 ? 8 : 0;
         // ADX 不列入 freshConf：建單時 ADX 是靜態品質過濾，不應在每次刷新時重複扣分
+        const _fBigDir = computeMacroNetDir(_fg, _gm);  // 提前計算，供 AI 趨勢扣分判斷使用
+        const _fBdAg = (_isL && _fBigDir.includes('bear')) || (!_isL && _fBigDir.includes('bull'));
+        const _fMacroAligned = (!_isL && _fBigDir.includes('bear')) || (_isL && _fBigDir.includes('bull'));
         const _wb  = computeWeeklyAIBias(_fg, _gm);
         const _tb  = computeTodayAIBias(_fg, _gm);
         const _wOp   = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
         const _tOp   = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
         const _wNeut = _wb.bias === 'neutral';
         const _tNeut = _tb.bias === 'neutral';
-        const _aiP = (_wOp ? (_wb.bias.includes('strong') ? 10 : 6) : _wNeut ? 3 : 0) + (_tOp ? 7 : _tNeut ? 2 : 0);
+        // 宏觀大方向與交易方向一致時，AI事件預測逆向不扣分（宏觀優先）
+        const _aiP = _fMacroAligned ? 0 :
+          ((_wOp ? (_wb.bias.includes('strong') ? 10 : 6) : _wNeut ? 3 : 0) + (_tOp ? 7 : _tNeut ? 2 : 0));
         // 大方向分歧補扣
-        const _fBigDir = computeMacroNetDir(_fg, _gm);
-        const _fBdAg = (_isL && _fBigDir.includes('bear')) || (!_isL && _fBigDir.includes('bull'));
         if (_fBdAg) {
           const _fBdMin = (_fBigDir === 'slight_bear' || _fBigDir === 'slight_bull') ? 4 : 9;
           if (_macP < _fBdMin) _macP = _fBdMin;
@@ -12006,14 +12025,18 @@ function computeSimpleSetup(coin, isLong) {
       const _stb = computeTodayAIBias(_sfg, _sgm);
       const _swBias = _swb.bias || '';
       const _stBias = _stb.bias || '';
-      const _swOp   = isLong ? _swBias.includes('bear') : _swBias.includes('bull');
-      const _stOp   = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
-      const _swNeut = _swBias === 'neutral';
-      const _stNeut = _stBias === 'neutral';
-      if (_swOp)        _sAIPen += _swBias.includes('strong') ? 8 : 5;
-      else if (_swNeut) _sAIPen += 2;
-      if (_stOp)        _sAIPen += 5;
-      else if (_stNeut) _sAIPen += 1;
+      // 宏觀大方向與交易方向一致時，AI事件預測逆向不扣分
+      const _ssMacroAligned = (!isLong && _sBigDir.includes('bear')) || (isLong && _sBigDir.includes('bull'));
+      if (!_ssMacroAligned) {
+        const _swOp   = isLong ? _swBias.includes('bear') : _swBias.includes('bull');
+        const _stOp   = isLong ? _stBias.includes('bear') : _stBias.includes('bull');
+        const _swNeut = _swBias === 'neutral';
+        const _stNeut = _stBias === 'neutral';
+        if (_swOp)        _sAIPen += _swBias.includes('strong') ? 8 : 5;
+        else if (_swNeut) _sAIPen += 2;
+        if (_stOp)        _sAIPen += 5;
+        else if (_stNeut) _sAIPen += 1;
+      }
     } catch(_se) {}
   } else {
     _sMacroPen += 3;  // 無宏觀資料：方向不確定，扣 3%
