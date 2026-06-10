@@ -1160,6 +1160,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         const sig = mtfData[tf]?.signal;
         return sig && (isLongNow ? sig.signal?.includes('bull') : sig.signal?.includes('bear'));
       }).length;
+      const _h4Now = mtfData['4h']?.signal;
+      const _h1Now = mtfData['1h']?.signal;
+      const _bb1hNow = mtfData['1h']?.bb;
       const learnCtxNow = {
         abovePOC:      vp1hNow?.priceAbovePOC ?? null,
         whaleBias:     whale?.bias || null,
@@ -1168,6 +1171,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         slType:        existingActive.entrySlType || 'atr',
         score:         parseFloat(existingActive.score) || 50,
         skipAdxRule:   true,
+        macdHist:      parseFloat(coin.macdHist) || 0,
+        volWeak:       (coin.volumeStrength || '') === '低' || String(coin.volumeStrength||'').includes('弱'),
+        h4Aligned:     isLongNow ? !!_h4Now?.signal?.includes('bull') : !!_h4Now?.signal?.includes('bear'),
+        scoreStrength: (() => { const s = isLongNow ? (parseFloat(existingActive.score)||50) : 100-(parseFloat(existingActive.score)||50); return s >= 75 ? 'strong' : s >= 65 ? 'medium' : 'weak'; })(),
+        killZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
+        weeklyAgainst: isLongNow ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
+        h1Aligned:     isLongNow ? !!(_h1Now?.signal||'').includes('bull') : !!(_h1Now?.signal||'').includes('bear'),
+        bbWalkingBear: !!(_bb1hNow?.walkingBear),
+        bbWalkingBull: !!(_bb1hNow?.walkingBull),
       };
 
       let learnResultNow = { penalty: 0, warnings: [], hardBlocked: false, blockReasons: [], defenseChecks: [] };
@@ -2676,13 +2688,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // AI 學習調整：依歷史止損模式下調信心
   const learnCtx = {
-    abovePOC: vp1h?.priceAbovePOC ?? null,
-    whaleBias: whale?.bias || null,
+    abovePOC:      vp1h?.priceAbovePOC ?? null,
+    whaleBias:     whale?.bias || null,
     volDivergence: mtfData['1h']?.volAI?.divergence || null,
-    mtfAlign: entryMTFAlign,
+    mtfAlign:      entryMTFAlign,
     slType,
-    score: parseFloat(coin.score) || 50,
-    skipAdxRule: true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
+    score:         parseFloat(coin.score) || 50,
+    skipAdxRule:   true,  // hardAdxPenalty 已單獨扣分，避免 low_adx 規則雙重扣分
+    macdHist:      parseFloat(coin.macdHist) || 0,
+    volWeak:       (coin.volumeStrength || '') === '低' || String(coin.volumeStrength||'').includes('弱'),
+    h4Aligned:     isLong ? !!h4?.signal?.includes('bull') : !!h4?.signal?.includes('bear'),
+    scoreStrength: (() => { const s = isLong ? (parseFloat(coin.score)||50) : 100-(parseFloat(coin.score)||50); return s >= 75 ? 'strong' : s >= 65 ? 'medium' : 'weak'; })(),
+    killZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
+    // 新增：週線、1H、BB走軌方向上下文
+    weeklyAgainst: isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
+    h1Aligned:     isLong ? !!(coin.h1Signal||'').includes('bull') : !!(coin.h1Signal||'').includes('bear'),
+    bbWalkingBear: !!(bb1h_?.walkingBear),
+    bbWalkingBull: !!(bb1h_?.walkingBull),
   };
   const adxVal = parseFloat(coin.adx) || 20;
   // 硬性 ADX 門檻（不依賴歷史數據，始終生效）
@@ -2797,7 +2819,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     _risk = computeFullRisk(coin, {
       conf, macroPenalty: macroOpposePenalty, aiTrendPenalty, learnPenalty,
       techPenalty, chipsPenalty, rr1: rr1str,
-      flipRisks, isRangeMode, bigTrendBlocked,
+      flipRisks, isRangeMode, bigTrendBlocked, sqGrade: _sqGrade,
     }, isLong);
   } catch(_re) { console.warn('[buildTradeSetup risk]', coin?.symbol, _re); }
 
@@ -4246,7 +4268,33 @@ function computeWeeklyAIBias(fg, globalMkt) {
     else                      { factorVotes.whaleW =  0; }
   }
 
-  // ⑨ 足跡圖 Delta 聚合（已緩存幣種的主動買賣流向）
+  // ⑨ MACD 動能多空分佈（正值 = 上行動能，負值 = 下行動能）
+  const wMacdW = _getBiasWeight(weights, 'weekly_macdDist');
+  if (coins.length) {
+    const _wMacdBull = coins.filter(c => (parseFloat(c.macdHist)||0) > 0).length;
+    const _wMacdBullPct = Math.round(_wMacdBull / coins.length * 100);
+    if (_wMacdBullPct > 62) {
+      factorVotes.macdDistW = 1; macroBull += 1 * wMacdW;
+      factors.push(`${_wMacdBullPct}% 幣種 MACD 動能向上，本週多頭動能佔優`);
+    } else if (_wMacdBullPct < 38) {
+      factorVotes.macdDistW = -1; macroBear += 1 * wMacdW;
+      factors.push(`${100-_wMacdBullPct}% 幣種 MACD 動能向下，本週空頭動能佔優`);
+    } else { factorVotes.macdDistW = 0; }
+  }
+  // ⑩ ADX 趨勢確立率（≥25 = 趨勢市場，低 = 震盪）
+  const wAdxDistW = _getBiasWeight(weights, 'weekly_adxDist');
+  if (coins.length) {
+    const _wAdxTrend = coins.filter(c => (parseFloat(c.adx)||0) >= 25).length;
+    const _wAdxPct   = Math.round(_wAdxTrend / coins.length * 100);
+    if (_wAdxPct > 55) {
+      factorVotes.adxDistW = 1; macroBull += 0.5 * wAdxDistW;
+      factors.push(`${_wAdxPct}% 幣種趨勢確立（ADX ≥25），本週市場方向性強`);
+    } else if (_wAdxPct < 28) {
+      factorVotes.adxDistW = -1; macroBear += 0.5 * wAdxDistW;
+      factors.push(`僅 ${_wAdxPct}% 幣種趨勢確立，本週市場普遍震盪，訊號可靠性低`);
+    } else { factorVotes.adxDistW = 0; }
+  }
+  // ⑪ 足跡圖 Delta 聚合（已緩存幣種的主動買賣流向）
   const _wFpEntries = Object.values(_footprintCache).filter(fp => fp && fp.deltaDir !== 'neutral');
   if (_wFpEntries.length >= 1) {
     const wFpW = _getBiasWeight(weights, 'weekly_fpDelta');
@@ -4513,7 +4561,33 @@ function computeTodayAIBias(fg, globalMkt) {
     else                      { factorVotes.momentum =  0; }
   }
 
-  // ⑨ 足跡圖累積 Delta 聚合（以已緩存的幣種足跡圖推算今日流向）
+  // ⑨ MACD 動能分佈（今日動能多空格局）
+  const wMacdD = _getBiasWeight(weights, 'daily_macdDist');
+  if (coins.length) {
+    const _dMacdBull = coins.filter(c => (parseFloat(c.macdHist)||0) > 0).length;
+    const _dMacdBullPct = Math.round(_dMacdBull / coins.length * 100);
+    if (_dMacdBullPct > 62) {
+      factorVotes.macdDistD = 1; bull += 1 * wMacdD;
+      reasons.push(`${_dMacdBullPct}% 幣種 MACD 動能向上，今日多頭動能佔優`);
+    } else if (_dMacdBullPct < 38) {
+      factorVotes.macdDistD = -1; bear += 1 * wMacdD;
+      reasons.push(`${100-_dMacdBullPct}% 幣種 MACD 動能向下，今日空頭動能佔優`);
+    } else { factorVotes.macdDistD = 0; }
+  }
+  // ⑩ ADX 趨勢確立率（高 = 方向確定性強）
+  const wAdxDistD = _getBiasWeight(weights, 'daily_adxDist');
+  if (coins.length) {
+    const _dAdxTrend = coins.filter(c => (parseFloat(c.adx)||0) >= 25).length;
+    const _dAdxPct   = Math.round(_dAdxTrend / coins.length * 100);
+    if (_dAdxPct > 55) {
+      factorVotes.adxDistD = 1; bull += 0.5 * wAdxDistD;
+      reasons.push(`${_dAdxPct}% 幣種趨勢確立，今日市場方向性強`);
+    } else if (_dAdxPct < 28) {
+      factorVotes.adxDistD = -1; bear += 0.5 * wAdxDistD;
+      reasons.push(`僅 ${_dAdxPct}% 幣種趨勢確立，今日震盪為主，訊號可靠性低`);
+    } else { factorVotes.adxDistD = 0; }
+  }
+  // ⑪ 足跡圖累積 Delta 聚合（以已緩存的幣種足跡圖推算今日流向）
   const _fpEntries = Object.values(_footprintCache).filter(fp => fp && fp.deltaDir !== 'neutral');
   if (_fpEntries.length >= 1) {
     const wFpD = _getBiasWeight(weights, 'daily_fpDelta');
@@ -7451,6 +7525,10 @@ function recordSignalsFromScan(data) {
       entryMacdHist:      parseFloat(coin.macdHist) || 0,
       entryVolStrength:   coin.volumeStrength || '',
       entryH4Aligned:     _h4Aligned,
+      entryH1Aligned:     isLong ? !!(coin.h1Signal||'').includes('bull') : !!(coin.h1Signal||'').includes('bear'),
+      entryBBWalkingBear: !!(coin.bb?.walkingBear),
+      entryBBWalkingBull: !!(coin.bb?.walkingBull),
+      entryWeeklyAgainst: isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
       entryScoreStrength: (() => { const s = isLong ? coin.score : 100 - coin.score; return s >= 75 ? 'strong' : s >= 65 ? 'medium' : 'weak'; })(),
       entryKillZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
       status: 'pending', outcome: null, tp1Hit: false,
@@ -9659,9 +9737,15 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'low_vol_short'   && direction === 'short' && (ctx.volWeak === true)) ||
         (rule.condition === 'h4_against_long'  && direction === 'long'  && ctx.h4Aligned === false) ||
         (rule.condition === 'h4_against_short' && direction === 'short' && ctx.h4Aligned === false) ||
-        (rule.condition === 'weak_score_long'  && direction === 'long'  && ctx.scoreStrength === 'weak') ||
-        (rule.condition === 'weak_score_short' && direction === 'short' && ctx.scoreStrength === 'weak') ||
-        (rule.condition === 'asia_session_loss' && ctx.killZone === 'asia');
+        (rule.condition === 'weak_score_long'      && direction === 'long'  && ctx.scoreStrength === 'weak') ||
+        (rule.condition === 'weak_score_short'     && direction === 'short' && ctx.scoreStrength === 'weak') ||
+        (rule.condition === 'asia_session_loss'    && ctx.killZone === 'asia') ||
+        (rule.condition === 'weekly_against_long'  && direction === 'long'  && ctx.weeklyAgainst === true) ||
+        (rule.condition === 'weekly_against_short' && direction === 'short' && ctx.weeklyAgainst === true) ||
+        (rule.condition === 'bb_against_long'      && direction === 'long'  && ctx.bbWalkingBear === true) ||
+        (rule.condition === 'bb_against_short'     && direction === 'short' && ctx.bbWalkingBull === true) ||
+        (rule.condition === 'no_h1_align_long'     && direction === 'long'  && ctx.h1Aligned === false) ||
+        (rule.condition === 'no_h1_align_short'    && direction === 'short' && ctx.h1Aligned === false);
       const _rTotal = rule.total || 0;
       const _rRate  = rule.rate  || 0;
       if (_rTotal >= 3) {
@@ -9830,6 +9914,55 @@ function generateTradeAnalysis(trade) {
     suggestions.push('等待至少 2-3 個週期（15m、1h、4h）信號一致再入場');
   }
 
+  // ── MACD 方向分析 ─────────────────────────────────────────────
+  if (isLong && (trade.entryMacdHist || 0) < 0) {
+    issues.push(`進場時 MACD 柱狀線為負值（${(trade.entryMacdHist||0).toFixed(5)}），多頭動能仍在下行中`);
+    suggestions.push('MACD 柱狀線轉正才進多，逆向 MACD 進場止損率顯著偏高');
+  }
+  if (!isLong && (trade.entryMacdHist || 0) > 0) {
+    issues.push(`進場時 MACD 柱狀線為正值，空頭動能仍在上行中`);
+    suggestions.push('MACD 柱狀線轉負才進空，逆向 MACD 進場止損率顯著偏高');
+  }
+
+  // ── 4H 方向確認分析 ───────────────────────────────────────────
+  if (trade.entryH4Aligned === false) {
+    issues.push(`進場時 4H 信號與${isLong ? '做多' : '做空'}方向不一致，缺少中期趨勢確認`);
+    suggestions.push('4H 信號必須同方向才進場，4H 逆向時止損率明顯偏高');
+  }
+
+  // ── Kill Zone 時段分析 ────────────────────────────────────────
+  if (trade.entryKillZone === 'other') {
+    issues.push('進場時間不在高品質 Kill Zone（非倫敦 UTC 7-11 / 紐約 UTC 13-17）');
+    suggestions.push('選擇倫敦或紐約開盤時段進場，流動性充裕，假突破率低，勝率更高');
+  }
+
+  // ── BB 走軌分析 ───────────────────────────────────────────────
+  if (isLong && trade.entryBBWalkingBear) {
+    issues.push('進場時布林通道空頭走軌（連續貼近下軌），趨勢強勢向下，逆向做多');
+    suggestions.push('BB 空頭走軌期間避免做多，等待走軌結束（價格回到中軌附近）後再評估多單');
+  }
+  if (!isLong && trade.entryBBWalkingBull) {
+    issues.push('進場時布林通道多頭走軌（連續貼近上軌），趨勢強勢向上，逆向做空');
+    suggestions.push('BB 多頭走軌期間避免做空，等待走軌結束後再評估空單');
+  }
+
+  // ── 週線信號分析 ──────────────────────────────────────────────
+  if (isLong && trade.entryWeeklyAgainst) {
+    issues.push('週線信號偏空，大週期趨勢仍在下行，做多方向逆大趨勢');
+    suggestions.push('週線信號是最重要的過濾條件，週線偏空時多單止損率大幅偏高，需等週線轉向');
+  }
+  if (!isLong && trade.entryWeeklyAgainst) {
+    issues.push('週線信號偏多，大週期趨勢仍在上行，做空方向逆大趨勢');
+    suggestions.push('週線偏多時空單止損率大幅偏高，需等週線信號轉向後再做空');
+  }
+
+  // ── 訊號品質分析 ──────────────────────────────────────────────
+  if (trade.sqGrade === 'C' || trade.sqGrade === 'D') {
+    const _sqL = trade.sqGradeLabel || (trade.sqGrade === 'C' ? '一般訊號' : '訊號偏弱');
+    issues.push(`進場訊號品質 ${trade.sqGrade} 級（${_sqL}，評分 ${trade.sqScore ?? '—'} 分），多時框確認不足`);
+    suggestions.push('訊號品質需達 B 級以上（多時框對齊 ≥5/9 分）才進場，低品質訊號止損率明顯偏高');
+  }
+
   // ── AI 學習規則違反確認（交叉比對歷史止損模式）────────────────
   const profile = getLearnProfile();
   if (profile.ready && profile.rules.length) {
@@ -9848,6 +9981,16 @@ function generateTradeAnalysis(trade) {
         case 'whale_against_short': return !isLong && trade.entryWhaleBias === 'bull';
         case 'bearish_div_long':    return isLong  && trade.entryVolDivergence === 'bearish_div';
         case 'low_mtf_align':       return (trade.entryMTFAlign ?? 99) <= 1;
+        case 'macd_against_long':   return isLong  && (trade.entryMacdHist || 0) < 0;
+        case 'macd_against_short':  return !isLong && (trade.entryMacdHist || 0) > 0;
+        case 'h4_against_long':     return isLong  && trade.entryH4Aligned === false;
+        case 'h4_against_short':    return !isLong && trade.entryH4Aligned === false;
+        case 'weekly_against_long': return isLong  && trade.entryWeeklyAgainst === true;
+        case 'weekly_against_short': return !isLong && trade.entryWeeklyAgainst === true;
+        case 'bb_against_long':     return isLong  && trade.entryBBWalkingBear === true;
+        case 'bb_against_short':    return !isLong && trade.entryBBWalkingBull === true;
+        case 'no_h1_align_long':    return isLong  && trade.entryH1Aligned === false;
+        case 'no_h1_align_short':   return !isLong && trade.entryH1Aligned === false;
         default: return false;
       }
     });
@@ -11724,6 +11867,26 @@ function computeFullRisk(coin, params, isLong) {
   if (_tcSum > 12)    { score += 10; factors.push('技術/籌碼逆風'); }
   else if (_tcSum > 5){ score += 5;  factors.push('輕微技術/籌碼逆風'); }
 
+  // 11. 巨鯨方向逆向
+  const _whaleBiasR = coin.whaleData?.bias;
+  if (_whaleBiasR) {
+    if ((isLong && _whaleBiasR === 'bear') || (!isLong && _whaleBiasR === 'bull')) {
+      score += 12;
+      factors.push(`巨鯨方向逆向（主力${isLong ? '賣出' : '買入'}）`);
+      recs.push('主力資金方向與進場方向相反，考慮等巨鯨轉向或縮小倉位');
+    }
+  }
+
+  // 12. AI 訊號品質
+  const _sqGradeR = params.sqGrade;
+  if (_sqGradeR === 'D') {
+    score += 12; factors.push('AI 訊號品質 D 級');
+    recs.push('多時框確認不足，訊號偏弱，建議等更強訊號再進場');
+  } else if (_sqGradeR === 'C') {
+    score += 6; factors.push('AI 訊號品質 C 級');
+    recs.push('訊號品質偏低，可縮小倉位或等待更明確信號');
+  }
+
   score = Math.min(100, score);
   const level      = score >= 75 ? '極高風險' : score >= 60 ? '高風險' : score >= 28 ? '中風險' : '低風險';
   const levelColor = score >= 75 ? '#ef4444'  : score >= 60 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
@@ -11971,13 +12134,17 @@ function computeSimpleSetup(coin, isLong) {
   const _ssScoreStr     = _ssDirBase >= 75 ? 'strong' : _ssDirBase >= 65 ? 'medium' : 'weak';
   const _ssKillZone     = (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })();
   const { penalty: learnPenalty, warnings: learnWarn, hardBlocked, blockReasons } = applyLearnAdjustment(direction, rsi, adx, {
-    slType: 'atr',
+    slType:        'atr',
     skipAdxRule:   true,
     macdHist:      parseFloat(coin.macdHist) || 0,
     volWeak:       _ssVolWeak,
     h4Aligned:     _ssH4Aligned,
     scoreStrength: _ssScoreStr,
     killZone:      _ssKillZone,
+    weeklyAgainst: isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
+    h1Aligned:     isLong ? !!(coin.h1Signal||'').includes('bull') : !!(coin.h1Signal||'').includes('bear'),
+    bbWalkingBear: !!(coin.bb?.walkingBear),
+    bbWalkingBull: !!(coin.bb?.walkingBull),
   });
   // rawConf：做多用 score，做空用 100-score（score=30 → 空頭強度70%）
   let rawConf = Math.min(88, _ssDirBase);
