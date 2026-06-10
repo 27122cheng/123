@@ -7796,9 +7796,9 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
-    // 風險評估升至高風險 → 取消未入場掛單
-    // 雙重檢查：buildRisk（UI 顯示）或 computeFullRisk（10因子）任一達高風險即取消
-    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin) {
+    // 風險評估升至高風險 → 取消未入場掛單（信心度需已低於 60% 才取消，與進場門檻一致）
+    // 只有 freshConf < 60 時才做風險二次檢查：信心度 ≥ 60% 的單不因風險評分被取消
+    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && freshConf < 60) {
       try {
         const _brResult = buildRisk(_fCoin);                          // UI 顯示的風險（≥55 = 高風險）
         const _frSetup  = computeSimpleSetup(_fCoin, _isL);
