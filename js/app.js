@@ -3939,21 +3939,109 @@ function buildMarketOutlook(fg, global) {
     }
   } catch(_e) {}
 
-  // 靜態宏觀背景（2026 Q2）
-  bullArgs.push('比特幣現貨 ETF 持續吸引機構配置資金');
-  bullArgs.push('鏈上活躍地址與交易量維持成長趨勢');
-  bearArgs.push('美聯儲政策謹慎，市場等待明確降息信號');
-  bearArgs.push('全球通脹尚未完全降至目標，降息時程仍有不確定性');
+  // 動態宏觀背景（根據即時 FG、市值變化與 BTC 主導率計算）
+  if (fgVal !== null) {
+    if (fgVal >= 65)
+      bullArgs.push(`市場情緒持續偏多（貪婪 ${fgVal}），ETF 機構配置需求活躍，底部支撐力道強`);
+    else if (fgVal >= 50)
+      bullArgs.push(`市場情緒平穩（恐貪 ${fgVal}），風險偏好維持，主力資金未見系統性撤退`);
+    else if (fgVal >= 35)
+      bearArgs.push(`情緒轉謹慎（恐貪 ${fgVal}），主力觀望氣氛重，短線催化劑缺乏`);
+    else
+      bearArgs.push(`市場深度恐慌（恐貪 ${fgVal}），負面情緒主導，籌碼換手壓力仍在消化`);
+  }
+  if (chg > 1.5)
+    bullArgs.push('加密生態鏈上資金持續流入，活躍地址與交易量同步擴張，多頭動能充足');
+  else if (chg >= 0)
+    bullArgs.push('市場溫和淨流入，加密生態穩步成長，等待宏觀催化劑強化上行趨勢');
+  else if (chg < -1.5)
+    bearArgs.push('資金外流明顯，宏觀不確定性壓制風險偏好，鏈上活躍度同步下滑');
+  else
+    bearArgs.push('全球貨幣政策路徑仍有分歧，高利率預期對風險資產持續構成壓制');
 
-  // 即將公佈事件（2026 Q2/Q3）
-  const events = [
-    { date: '5/21', label: 'FOMC 會議紀要', impact: 'high' },
-    { date: '6/11', label: '美國 CPI（5月）', impact: 'high' },
-    { date: '6/18', label: 'FOMC 利率決策', impact: 'high' },
-    { date: '7/10', label: '美國 CPI（6月）', impact: 'high' },
-    { date: '7/30', label: 'FOMC 利率決策', impact: 'high' },
-    { date: '8/14', label: '美國 CPI（7月）', impact: 'high' },
-  ];
+  // 即將公佈重要數據（動態，未來 7 天）
+  const _upcomingEvs = (() => { try { return getWeeklyEconEvents(); } catch(_) { return []; } })();
+  let events;
+  if (_upcomingEvs.length) {
+    events = _upcomingEvs.slice(0, 6).map(ev => ({
+      date:   `${ev.eventTime.getMonth()+1}/${ev.eventTime.getDate()}`,
+      label:  ev.name,
+      impact: ev.impact || 'medium',
+    }));
+  } else {
+    const _fd = n => { const nd = new Date(); nd.setDate(nd.getDate()+n); return `${nd.getMonth()+1}/${nd.getDate()}`; };
+    events = [
+      { date: _fd(1), label: '初請失業金人數（每週四 20:30）', impact: 'medium' },
+      { date: _fd(2), label: 'NFP 非農就業（月初第1個週五）', impact: 'high' },
+      { date: _fd(7), label: 'CPI 消費者物價指數（每月中旬）', impact: 'high' },
+      { date: _fd(14), label: 'FOMC 利率決策（每6週）', impact: 'high' },
+      { date: _fd(3), label: 'EIA 原油庫存（每週三 22:30）', impact: 'medium' },
+    ];
+  }
+
+  // 動態 AI 宏觀預測項目（依即時數據生成，取代靜態卡片）
+  const _predItems = [];
+  if (fgVal !== null) {
+    if (fgVal >= 70)
+      _predItems.push({ event: `情緒過熱警示（恐貪 ${fgVal}，極度貪婪）`, conf: 76, dir: 'bear',
+        text: `偏空 — 歷史上 FG > 70 後常出現 10-20% 修正，建議控制倉位，逢強減倉` });
+    else if (fgVal >= 55)
+      _predItems.push({ event: `情緒健康偏多（恐貪 ${fgVal}，貪婪）`, conf: 71, dir: 'bull',
+        text: `偏多 — 貪婪區通常對應牛市中段，短線仍有上行空間，可順多方向逢回測佈局` });
+    else if (fgVal <= 30)
+      _predItems.push({ event: `恐慌底部吸籌機會（恐貪 ${fgVal}）`, conf: 68, dir: 'bull',
+        text: `偏多 — 歷史上極度恐慌通常為短線底部，可等趨勢確認後分批進場` });
+    else
+      _predItems.push({ event: `市場中性觀望（恐貪 ${fgVal}）`, conf: 58, dir: 'neutral',
+        text: `中性 — 情緒無明確多空信號，建議以技術面為主要進出依據` });
+  }
+  const _wbConf = parseInt(wbData?.conf) || 60;
+  if (wbData.bias === 'strong_bull' || wbData.bias === 'bull' || wbData.bias === 'slight_bull')
+    _predItems.push({ event: `本週宏觀走勢：${wbData.biasLabel}`, conf: _wbConf, dir: 'bull',
+      text: `偏多 — 多因子週線 AI 研判多方佔優，建議順多方向操作，逢低佈局` });
+  else if (wbData.bias === 'strong_bear' || wbData.bias === 'bear' || wbData.bias === 'slight_bear')
+    _predItems.push({ event: `本週宏觀走勢：${wbData.biasLabel}`, conf: _wbConf, dir: 'bear',
+      text: `偏空 — 週線 AI 研判空方主導，建議減少多頭曝險，等待市場轉向確認` });
+  else
+    _predItems.push({ event: `本週宏觀走勢：中性震盪`, conf: _wbConf, dir: 'neutral',
+      text: `中性震盪 — 多空訊號分歧，本週市場可能持續整理，等待關鍵突破確認後操作` });
+  if (dom > 56)
+    _predItems.push({ event: `BTC 主導率偏高（${dom.toFixed(1)}%）`, conf: 72, dir: 'bear',
+      text: `不利山寨 — 資金集中於 BTC，山寨季尚未啟動，BTC 相對強勢優先` });
+  else if (dom < 44)
+    _predItems.push({ event: `山寨季信號（BTC 主導 ${dom.toFixed(1)}%）`, conf: 70, dir: 'bull',
+      text: `偏多（山寨）— 主導率下行代表資金廣泛輪動至山寨幣，多標的輪動機會增加` });
+  else
+    _predItems.push({ event: `BTC 主導率均衡（${dom.toFixed(1)}%）`, conf: 62, dir: 'neutral',
+      text: `均衡格局 — BTC 與山寨同步，依各別技術面操作，無明顯輪動方向` });
+  if (chg > 2)
+    _predItems.push({ event: `市值資金淨流入（+${chg.toFixed(2)}%）`, conf: 74, dir: 'bull',
+      text: `偏多 — 24h 市值顯著上漲，場內資金活躍，多頭動能充足，適合順勢操作` });
+  else if (chg < -2)
+    _predItems.push({ event: `市值資金外流（${chg.toFixed(2)}%）`, conf: 74, dir: 'bear',
+      text: `偏空 — 24h 市值明顯下跌，資金淨流出加速，應減少多頭曝險` });
+  const _nextHigh = _upcomingEvs.find(ev => ev.impact === 'high' && ev.eventTime.getTime() > Date.now());
+  if (_nextHigh) {
+    const _dLeft  = Math.ceil((_nextHigh.eventTime.getTime() - Date.now()) / 86400000);
+    const _dLabel = _dLeft <= 0 ? '今日' : _dLeft === 1 ? '明日' : `${_dLeft}天後`;
+    const _nhDir  = _nextHigh.aiDir || 'neutral';
+    _predItems.push({ event: `${_nextHigh.name}（${_dLabel}）`, conf: _nextHigh.aiConf || 63, dir: _nhDir,
+      text: `${_nhDir === 'bull' ? '偏多' : _nhDir === 'bear' ? '偏空' : '中性'} — ${_nextHigh.aiMarketImpact || _nextHigh.bullIf || '請等數據公布後依實際反應方向操作，事前建議降低倉位'}` });
+  } else {
+    _predItems.push({ event: 'M2 全球流動性週期影響', conf: 67, dir: 'bull',
+      text: '偏多 — M2 貨幣供給成長歷史上與加密牛市高度正相關（滯後 ~3 個月），流動性擴張期加密整體偏多' });
+  }
+  const _pcc = { bull: '#22c55e', bear: '#ef4444', neutral: '#f59e0b' };
+  const _predHtml = _predItems.slice(0, 5).map(p => {
+    const _pc = _pcc[p.dir] || '#f59e0b';
+    return `<div class="macro-pred-item">
+          <div class="macro-pred-header">
+            <span class="macro-pred-event">${p.event}</span>
+            <span class="macro-pred-conf" style="color:${_pc}">信心 ${p.conf}%</span>
+          </div>
+          <div class="macro-pred-impact${p.dir === 'bull' ? ' bull' : p.dir === 'bear' ? ' bear' : ''}">${p.dir === 'bull' ? '📈' : p.dir === 'bear' ? '📉' : '📊'} 預期衝擊：${p.text}</div>
+        </div>`;
+  }).join('');
 
   const total = bullPts + bearPts || 1;
   const bullW = Math.round(bullPts / total * 100);
@@ -4022,41 +4110,7 @@ function buildMarketOutlook(fg, global) {
         }</div>
       </div>
       <div class="macro-ai-pred-list">
-        <div class="macro-pred-item">
-          <div class="macro-pred-header">
-            <span class="macro-pred-event">美聯儲維持利率不變（6月）</span>
-            <span class="macro-pred-conf" style="color:#22c55e">信心 82%</span>
-          </div>
-          <div class="macro-pred-impact bull">📈 預期衝擊：偏多 — 維持不變意味流動性穩定，機構維持風險資產配置，BTC 預計短線 +3% ~ +8%</div>
-        </div>
-        <div class="macro-pred-item">
-          <div class="macro-pred-header">
-            <span class="macro-pred-event">美國 CPI 預測 2.4%~2.6%（5月數據）</span>
-            <span class="macro-pred-conf" style="color:#f59e0b">信心 71%</span>
-          </div>
-          <div class="macro-pred-impact">📊 預期衝擊：中性 — 若低於 2.4% 偏多，高於 2.7% 觸發降息延後預期，加密市場承壓</div>
-        </div>
-        <div class="macro-pred-item">
-          <div class="macro-pred-header">
-            <span class="macro-pred-event">比特幣 ETF 持續淨流入</span>
-            <span class="macro-pred-conf" style="color:#22c55e">信心 78%</span>
-          </div>
-          <div class="macro-pred-impact bull">📈 預期衝擊：偏多 — 機構配置需求持續，每日淨流入維持 3~8 億美元，提供底部支撐</div>
-        </div>
-        <div class="macro-pred-item">
-          <div class="macro-pred-header">
-            <span class="macro-pred-event">美元指數（DXY）走弱趨勢</span>
-            <span class="macro-pred-conf" style="color:#22c55e">信心 65%</span>
-          </div>
-          <div class="macro-pred-impact bull">📈 預期衝擊：偏多 — 美元走弱通常對加密有利，山寨幣受益更明顯</div>
-        </div>
-        <div class="macro-pred-item">
-          <div class="macro-pred-header">
-            <span class="macro-pred-event">全球流動性擴張週期</span>
-            <span class="macro-pred-conf" style="color:#22c55e">信心 74%</span>
-          </div>
-          <div class="macro-pred-impact bull">📈 預期衝擊：偏多 — M2 全球貨幣供給增長歷史上與加密牛市高度相關（滯後 ~3個月）</div>
-        </div>
+        ${_predHtml}
       </div>
     </div>`;
 }
@@ -5274,49 +5328,63 @@ function aiProcessNews(title, body) {
 
   // 生成重點摘要（2條）
   const points = [];
-  if (text.includes('etf')) points.push('ETF 相關資金流向動態值得密切追蹤');
-  if (text.includes('institutional') || text.includes('wall street')) points.push('傳統金融機構持續進場布局加密資產');
-  if (text.includes('regulation') || text.includes('sec') || text.includes('legislation')) points.push('監管環境變化將直接影響市場合規方向');
-  if (text.includes('fed') || text.includes('rate') || text.includes('inflation')) points.push('宏觀貨幣政策走向牽動整體風險資產情緒');
-  if (text.includes('hack') || text.includes('exploit')) points.push('安全事件引發市場恐慌，相關資金短線外流');
-  if (text.includes('adoption') || text.includes('partnership')) points.push('採用率提升有助於長線基本面支撐');
-  if (text.includes('liquidation')) points.push('高槓桿倉位被迫清算，價格波動幅度放大');
-  if (text.includes('upgrade') || text.includes('protocol')) points.push('技術升級提升網絡效能與用戶體驗');
-  if (text.includes('record') || text.includes('all-time')) points.push('歷史新高附近容易出現獲利了結賣壓');
-  if (text.includes('defi') || text.includes('tvl')) points.push('DeFi 總鎖倉量變化反映市場整體資金動向');
+  if (text.includes('etf')) points.push('ETF 相關資金流向動態值得密切追蹤，機構配置方向影響短線');
+  if (text.includes('institutional') || text.includes('wall street') || text.includes('microstrategy')) points.push('傳統金融機構持續進場布局，加密資產機構化程度加深');
+  if (text.includes('regulation') || text.includes('sec') || text.includes('legislation') || text.includes('bill')) points.push('監管環境變化將直接影響市場合規預期與流動性');
+  if (text.includes('fed') || text.includes('rate') || text.includes('inflation') || text.includes('fomc') || text.includes('pivot')) points.push('宏觀貨幣政策走向牽動整體風險資產情緒，加密與股市同步');
+  if (text.includes('hack') || text.includes('exploit') || text.includes('stolen')) points.push('安全事件引發市場恐慌，相關資金短線外流，信心修復需時');
+  if (text.includes('adoption') || text.includes('partnership') || text.includes('integration')) points.push('採用率提升強化鏈上生態，有助長線基本面估值支撐');
+  if (text.includes('liquidation')) points.push('高槓桿倉位被迫清算，價格波動幅度放大，需防連鎖反應');
+  if (text.includes('upgrade') || text.includes('protocol') || text.includes('mainnet')) points.push('技術升級提升網絡效能，有望帶動鏈上活動與用戶採用');
+  if (text.includes('record') || text.includes('all-time')) points.push('歷史新高附近通常出現獲利了結賣壓，注意阻力與回調');
+  if (text.includes('defi') || text.includes('tvl')) points.push('DeFi 總鎖倉量變化反映市場資金偏好與流動性狀況');
+  if (text.includes('rwa') || text.includes('real world asset') || text.includes('tokeniz')) points.push('RWA 代幣化趨勢持續吸引機構資金，加速鏈上金融採用');
+  if (text.includes('tariff') || text.includes('sanction') || text.includes('geopolit') || text.includes('war')) points.push('地緣政治風險升溫，加密資產作為避險資產的角色受到關注');
+  if (text.includes('staking') || text.includes('restaking') || text.includes('yield')) points.push('質押收益率動態影響場內資金留存意願，流動性池規模變化');
+  if (text.includes('ai') && (text.includes('token') || text.includes('agent') || text.includes('model'))) points.push('AI 敘事持續帶動相關代幣輪動，技術熱度支撐短線上行');
+  if (text.includes('nft') || text.includes('gaming') || text.includes('metaverse')) points.push('Web3 應用層敘事輪動，NFT 與遊戲資產的市場熱度值得觀察');
+  if (text.includes('treasury') || text.includes('reserve') || text.includes('sovereign')) points.push('主權/企業資金持有加密資產趨勢確立，供應端持續收縮');
 
   // 若關鍵詞不足，從 body 提取首句
   if (points.length < 2 && body && body.length > 40) {
     const firstSent = body.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+/).find(s => s.length > 30 && s.length < 160);
     if (firstSent) points.push(firstSent.trim());
   }
-  if (points.length === 0) points.push('加密市場持續受到宏觀環境與監管動態雙重影響');
+  if (points.length === 0) points.push('加密市場持續受到宏觀環境與監管動態雙重影響，短線需關注外部催化劑');
 
-  // 市場影響分析
-  const bullKw = ['etf', 'institutional', 'approval', 'bullish', 'surge', 'rally', 'adoption',
-    'inflow', 'halving', 'upgrade', 'partnership', 'launch', 'record', 'milestone',
-    'breakout', 'accumulate', 'approved', 'investment', 'fund', 'all-time', 'bitcoin reserve', 'rate cut'];
+  // 市場影響分析（擴充關鍵詞覆蓋）
+  const bullKw = ['etf', 'institutional', 'approval', 'approved', 'bullish', 'surge', 'rally',
+    'adoption', 'inflow', 'halving', 'upgrade', 'partnership', 'launch', 'record', 'milestone',
+    'breakout', 'accumulate', 'investment', 'fund', 'all-time', 'bitcoin reserve', 'rate cut',
+    'dovish', 'pivot', 'mainnet', 'rwa', 'tokeniz', 'restaking', 'treasury', 'reserve',
+    'whale bought', 'buy the dip', 'accumulation', 'inflows', 'network growth', 'adoption surge'];
   const bearKw = ['hack', 'ban', 'lawsuit', 'crash', 'bubble', 'scam', 'fraud', 'bearish',
     'drop', 'plunge', 'outflow', 'liquidation', 'penalty', 'investigation', 'exploit',
-    'rug pull', 'bankrupt', 'seized', 'delisted', 'restrict', 'charge', 'crackdown'];
+    'rug pull', 'bankrupt', 'seized', 'delisted', 'restrict', 'charge', 'crackdown',
+    'hawkish', 'recession', 'tariff', 'sanction', 'sell-off', 'dump', 'slump', 'downgrade',
+    'rejected', 'ban crypto', 'exchange hacked', 'frozen', 'insolvency', 'de-peg'];
   let bs = 0, rs = 0;
   bullKw.forEach(k => { if (text.includes(k)) bs++; });
   bearKw.forEach(k => { if (text.includes(k)) rs++; });
 
   let sentiment, conf, label, color, impact;
   if (bs > rs) {
-    sentiment = 'bull'; conf = Math.min(84, 52 + bs * 7); label = '偏多'; color = 'var(--bull)';
-    impact = bs >= 3
-      ? `利多信號明確，機構情緒升溫，${subject}短線上行動能增強，可留意突破機會`
-      : `輕微利多，市場情緒小幅改善，${subject}短線受到支撐`;
+    sentiment = 'bull'; conf = Math.min(86, 52 + bs * 6); label = '偏多'; color = 'var(--bull)';
+    impact = bs >= 4
+      ? `強烈利多：機構情緒高漲，${subject}多頭動能顯著增強，上行突破機率升高，可逢回測積極佈局`
+      : bs >= 2
+      ? `利多信號明確，市場情緒改善，${subject}短線受到支撐，注意成交量確認是否同步`
+      : `輕微利多，${subject}短線情緒小幅回暖，方向偏多但動能需進一步確認`;
   } else if (rs > bs) {
-    sentiment = 'bear'; conf = Math.min(84, 52 + rs * 7); label = '偏空'; color = 'var(--bear)';
-    impact = rs >= 3
-      ? `利空壓力較重，風險情緒明顯下降，${subject}短線注意下行風險與止損位置`
-      : `輕微利空，市場情緒略顯謹慎，${subject}短線震盪機率上升`;
+    sentiment = 'bear'; conf = Math.min(86, 52 + rs * 6); label = '偏空'; color = 'var(--bear)';
+    impact = rs >= 4
+      ? `強烈利空：風險情緒明顯惡化，${subject}下行壓力加劇，建議收緊止損、降低曝險`
+      : rs >= 2
+      ? `利空壓力偏重，市場情緒謹慎，${subject}短線注意下行風險，避免過度追多`
+      : `輕微利空，${subject}短線震盪機率上升，觀望為主，等待情緒穩定後再操作`;
   } else {
     sentiment = 'neutral'; conf = 50; label = '中性'; color = 'var(--text3)';
-    impact = `消息面影響有限，市場等待更明確方向，${subject}短線維持盤整格局`;
+    impact = `消息面多空抵消，市場等待更明確方向，${subject}短線維持盤整，建議以技術面為主`;
   }
 
   return { zhTitle, points: points.slice(0, 2), sentiment, conf, label, color, impact };
@@ -5336,11 +5404,14 @@ function buildNewsWidget(items) {
   const _nIcon    = _nOverall === 'bull' ? '▲' : _nOverall === 'bear' ? '▼' : '◆';
   const _nLabel   = sentimentLabel[_nOverall];
   const _nColor   = sentimentColor[_nOverall];
+  const _nBullConf = _nBull > 0 ? Math.round(recent.filter(i=>i.sentiment==='bull').reduce((a,i)=>a+(i.conf??50),0)/_nBull) : 0;
+  const _nBearConf = _nBear > 0 ? Math.round(recent.filter(i=>i.sentiment==='bear').reduce((a,i)=>a+(i.conf??50),0)/_nBear) : 0;
+  const _nTot = recent.length || 1;
   const _nOpinion = _nOverall === 'bull'
-    ? `近期財經新聞多方訊號較強，機構買入、監管利好及基本面正面消息居多，短線情緒偏多。`
+    ? `近期 ${_nTot} 則新聞中 ${_nBull} 則偏多（平均信心 ${_nBullConf}%），機構買入、採用擴張及監管利好訊號居多，短線情緒偏多，可逢回測積極佈局。`
     : _nOverall === 'bear'
-    ? `近期財經新聞空方訊號偏多，市場風險、監管不確定性及宏觀逆風較集中，短線情緒偏空。`
-    : `近期財經新聞多空訊號分歧，市場觀點分散，建議以技術面為主要操作依據。`;
+    ? `近期 ${_nTot} 則新聞中 ${_nBear} 則偏空（平均信心 ${_nBearConf}%），監管風險、宏觀逆風及市場恐慌訊號較集中，短線情緒偏空，建議降低多頭曝險。`
+    : `近期 ${_nTot} 則新聞多空訊號分歧（多 ${_nBull} 空 ${_nBear}），觀點分散，建議以技術面與鏈上數據為主要操作依據，等待明確方向。`;
   const _newsSummaryHtml = `<div style="background:rgba(255,255,255,.05);border-left:3px solid ${_nColor};border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:12px">
     <div style="font-size:0.7rem;color:var(--text3);margin-bottom:4px">🤖 新聞整合研判</div>
     <div style="font-size:1.25rem;font-weight:800;color:${_nColor};margin-bottom:6px">${_nIcon} ${_nLabel}</div>
@@ -5493,6 +5564,12 @@ const _INSIGHT_THEMES = [
   { title: 'Altcoin season rotation Bitcoin dominance breakout rally surge', body: 'altcoin season rotation bitcoin dominance surge rally breakout adoption institutional record', tag: '山寨' },
   { title: 'Solana ecosystem growth DeFi adoption launch partnership upgrade', body: 'solana sol adoption defi launch upgrade integration partnership record milestone growth', tag: 'SOL' },
   { title: 'Crypto exchange volume surge record liquidity market activity', body: 'exchange volume surge record liquidity market activity institutional adoption inflow', tag: '交易所' },
+  { title: 'Real world assets RWA tokenization institutional blockchain adoption launch', body: 'real world assets rwa tokenization institutional blockchain adoption launch fund investment milestone record', tag: 'RWA' },
+  { title: 'AI tokens artificial intelligence crypto NEAR FET ICP launch adoption surge', body: 'artificial intelligence ai tokens near fet icp adoption launch integration partnership surge rally record', tag: 'AI幣' },
+  { title: 'Bitcoin layer 2 Lightning Network Stacks scaling upgrade adoption', body: 'bitcoin layer 2 lightning network stacks scaling upgrade adoption integration milestone launch record', tag: 'BTC L2' },
+  { title: 'Restaking EigenLayer liquid staking protocol TVL growth yield', body: 'restaking eigenlayer liquid staking lrt protocol tvl growth yield adoption launch milestone record', tag: '再質押' },
+  { title: 'Geopolitical risk trade tariff war sanctions inflation hedge bitcoin safe haven', body: 'geopolitical risk trade tariff war sanctions inflation hedge bitcoin safe haven gold alternative institutional', tag: '地緣' },
+  { title: 'NFT gaming metaverse comeback volume surge adoption record launch', body: 'nft gaming metaverse virtual comeback volume surge record launch adoption institutional integration', tag: 'NFT/遊戲' },
 ];
 
 function aiGenerateMarketInsights() {
@@ -8794,9 +8871,33 @@ function sendEconEventAlert(ev, s) {
   const twTime = `${String(ev.twHour).padStart(2,'0')}:${String(ev.twMin).padStart(2,'0')} TW`;
   const tlog   = loadTradeLog();
   const openTrades = tlog.filter(t => t.status === 'open');
-  const tradeNote  = openTrades.length
+
+  // 讀取發送前剛保存的快照，用於生成動態建議語境
+  const todayKey = new Date().toDateString();
+  const snapKey  = `${todayKey}_snap_${ev.name}`;
+  const snap     = JSON.parse(localStorage.getItem(snapKey) || 'null');
+  const _fgSnap  = snap?.fg ?? null;
+  const _chgSnap = snap?.marketCapChange ?? null;
+  const _domSnap = snap?.btcDominance ?? null;
+
+  // 動態語境說明
+  const _fgCtx = _fgSnap != null
+    ? (_fgSnap >= 70 ? `（恐貪 ${_fgSnap}，極度貪婪，獲利了結賣壓風險高）`
+       : _fgSnap >= 55 ? `（恐貪 ${_fgSnap}，貪婪區，情緒較脆弱易反轉）`
+       : _fgSnap <= 30 ? `（恐貪 ${_fgSnap}，極度恐慌，佳數據可觸發急速反彈）`
+       : _fgSnap <= 45 ? `（恐貪 ${_fgSnap}，恐慌區，市場敏感性高）`
+       : '') : '';
+  const _mktCtx = _chgSnap != null
+    ? (_chgSnap > 2 ? '，近24h市場強勢上漲' : _chgSnap < -2 ? '，近24h市場疲弱下跌' : '') : '';
+  const _altCtx = _domSnap != null && _domSnap < 45 ? '（目前山寨季格局，山寨反應可能更劇烈）' : '';
+  const _aiDirCtx = ev.aiDir
+    ? (ev.aiDir === 'bull' ? '，AI預測偏多，若數據符合預測方向可順勢跟進'
+       : ev.aiDir === 'bear' ? '，AI預測偏空，若數據符合預測方向可考慮防守或空單'
+       : '') : '';
+
+  const tradeNote = openTrades.length
     ? `\n⚠️ 目前持有 ${openTrades.length} 筆倉位，數據公布前建議確認止損位置`
-    : '';
+    : '\n✅ 目前無持倉，數據後方向確認再進場機會較佳';
 
   const aDirLabel = (ev.aiDir === 'bull') ? '▲ 偏多' : (ev.aiDir === 'bear') ? '▼ 偏空' : '◆ 中性';
   const aiSection = ev.aiPred
@@ -8815,9 +8916,10 @@ function sendEconEventAlert(ev, s) {
     `📉 若數據差於預期：${ev.bearIf}` +
     aiSection +
     `\n🎯 <b>盤面影響分析</b>\n` +
-    `• 數據公布前 30 分鐘通常出現方向性試探\n` +
-    `• 公布後 5~15 分鐘為高波動期，避免追入\n` +
-    `• 公布後 1 小時若延續方向可考慮跟進${tradeNote}`;
+    `• 數據公布前 30 分鐘通常出現方向性試探${_fgCtx}\n` +
+    `• 公布後 5~15 分鐘為高波動期${_mktCtx}，避免追入${_altCtx}\n` +
+    `• 公布後 1 小時若延續方向且首根確認K棒收線${_aiDirCtx}可考慮跟進` +
+    tradeNote;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 
@@ -8901,10 +9003,15 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
   // ── 判斷市場實際反應（偏多/偏空）──────────────────────────────
   const mktChgNow  = mktNow?.marketCapChange ?? null;
   const fgValNow   = fgNow  ? parseInt(fgNow.value) : null;
+  const domNow     = mktNow?.btcDominance   ?? null;
 
-  // 與快照比較（快照保存的是1小時前的24h市值變化率）
-  const snapChg    = snap?.marketCapChange ?? null;
-  const chgDelta   = (mktChgNow != null && snapChg != null) ? (mktChgNow - snapChg) : null;
+  // 快照對比資料
+  const snapChg  = snap?.marketCapChange ?? null;
+  const snapFg   = snap?.fg              ?? null;
+  const snapDom  = snap?.btcDominance    ?? null;
+  const chgDelta = (mktChgNow != null && snapChg != null) ? (mktChgNow - snapChg) : null;
+  const fgDelta  = (fgValNow  != null && snapFg  != null) ? (fgValNow  - snapFg)  : null;
+  const domDelta = (domNow    != null && snapDom  != null) ? (domNow    - snapDom)  : null;
 
   // 用最近1小時的市值變化量作為方向指標
   const reactionPct = chgDelta ?? mktChgNow ?? 0;
@@ -8927,10 +9034,34 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
     biasDetail = `市場變動幅度小（${reactionPct.toFixed(2)}%），正在消化數據，尚無明確方向`;
   }
 
-  // F&G 方向輔助佐證
-  const fgSupport = fgValNow != null
-    ? `\n💡 恐貪指數：${fgValNow}${biasLabel.includes('多') && fgValNow > 55 ? '，情緒同步偏多，多頭信號強化' : biasLabel.includes('空') && fgValNow < 45 ? '，情緒同步偏空，空頭信號強化' : '，情緒中性，方向信號待確認'}`
+  // 多維輔助指標對比
+  const isBull = biasLabel.includes('多');
+  const isBear = biasLabel.includes('空');
+  const fgLine = fgValNow != null
+    ? `💡 恐貪指數：${fgValNow}${fgDelta != null ? (fgDelta > 0 ? ` ▲+${fgDelta}` : fgDelta < 0 ? ` ▼${fgDelta}` : '') : ''}${isBull && fgValNow > 55 ? '，情緒同步偏多，多頭信號強化' : isBear && fgValNow < 45 ? '，情緒同步偏空，空頭信號強化' : fgValNow > 70 ? '，極度貪婪，注意獲利了結風險' : '，情緒中性，方向信號待確認'}`
     : '';
+  const domLine = domNow != null
+    ? `📊 BTC 主導率：${domNow.toFixed(1)}%${domDelta != null ? (domDelta > 0.5 ? ` ▲+${domDelta.toFixed(1)}%（資金集中 BTC，山寨受壓）` : domDelta < -0.5 ? ` ▼${domDelta.toFixed(1)}%（資金輪動山寨，山寨偏多）` : '（穩定）') : ''}`
+    : '';
+
+  // AI 預測 vs 實際方向吻合度
+  const _aiMatchLine = ev.aiDir && reactionPct !== 0
+    ? (() => {
+        const _match = (ev.aiDir === 'bull' && reactionPct > 0.4) || (ev.aiDir === 'bear' && reactionPct < -0.4);
+        const _aiLabel = ev.aiDir === 'bull' ? '偏多' : ev.aiDir === 'bear' ? '偏空' : '中性';
+        const _actLabel = reactionPct > 0.4 ? '偏多' : reactionPct < -0.4 ? '偏空' : '中性';
+        return `${_match ? '✅' : '❌'} AI 預測（${_aiLabel}）vs 實際（${_actLabel}）：${_match ? '方向吻合，可信度提升' : '方向不符，本次預測誤差，系統將學習修正'}`;
+      })()
+    : '';
+
+  // 操作建議
+  const tradeRec = reactionPct > 1.5
+    ? '📌 操作建議：方向確認偏多，等首根 15m 確認K棒收線後可考慮順多，止損設在近期低點'
+    : reactionPct < -1.5
+    ? '📌 操作建議：方向確認偏空，等首根 15m 確認K棒收線後可考慮空單或清多減倉，止損設在近期高點'
+    : Math.abs(reactionPct) < 0.4
+    ? '📌 操作建議：市場仍在消化數據，暫時觀望，等待 1 小時後方向更明確再行動'
+    : '📌 操作建議：方向尚未明確確立，建議半倉試探或繼續觀望，等趨勢延續信號再加碼';
 
   // 實際公布值（從本地快取讀取）
   const _dkY = ev.eventTime.getFullYear(), _dkM = ev.eventTime.getMonth(), _dkD = ev.eventTime.getDate();
@@ -8948,10 +9079,11 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
       (_actualDirReason ? `💬 ${_actualDirReason}\n` : '')
     : '';
 
-  // AI 預測值（事前預測，供對比）
   const valueRef = ev.aiPred
     ? `🤖 AI 預測值（事前）：${ev.aiPred}（信心 ${ev.aiConf || '--'}%）\n`
     : '';
+
+  const supportLines = [fgLine, domLine, _aiMatchLine].filter(Boolean).join('\n');
 
   const msg =
     `${impactEmoji} <b>數據公布後 AI 盤面影響分析</b>\n\n` +
@@ -8959,8 +9091,10 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
     (valueRef ? valueRef : '') +
     (actualSection ? '\n' + actualSection : '') +
     `\n${biasIcon} <b>市場反應：${biasLabel}</b>\n` +
-    `${biasDetail}${fgSupport}\n\n` +
-    `🤖 <b>AI 分析</b>\n${ev.aiMarketImpact || '請依市場實際反應方向操作，等首根確認K棒收線後再決策。'}\n\n` +
+    `${biasDetail}\n` +
+    (supportLines ? supportLines + '\n' : '') +
+    `\n🤖 <b>AI 分析</b>\n${ev.aiMarketImpact || '請依市場實際反應方向操作，等首根確認K棒收線後再決策。'}\n\n` +
+    tradeRec + '\n\n' +
     (ev.bullIf ? `📈 偏多情境：${ev.bullIf}\n` : '') +
     (ev.bearIf ? `📉 偏空情境：${ev.bearIf}` : '');
 
@@ -12898,23 +13032,42 @@ function computeCapitalFlowAIPred(event, fg, mkt) {
   const dom   = mkt?.btcDominance   || 50;
   let bull = 0, bear = 0;
   const reasons = [];
-  if (fgVal > 65)      { bull += 2; reasons.push(`恐貪 ${fgVal} 市場情緒偏多`); }
-  else if (fgVal > 55) { bull += 1; reasons.push(`恐貪 ${fgVal} 輕微偏多`); }
-  else if (fgVal < 35) { bear += 2; reasons.push(`恐貪 ${fgVal} 市場情緒偏空`); }
-  else if (fgVal < 45) { bear += 1; reasons.push(`恐貪 ${fgVal} 輕微偏空`); }
-  if (chg >  2) { bull += 2; reasons.push(`市值 +${chg.toFixed(1)}% 資金流入`); }
-  else if (chg >  0.5) { bull += 1; reasons.push(`市值 +${chg.toFixed(1)}%`); }
-  else if (chg < -2) { bear += 2; reasons.push(`市值 ${chg.toFixed(1)}% 資金流出`); }
-  else if (chg < -0.5) { bear += 1; reasons.push(`市值 ${chg.toFixed(1)}%`); }
-  if (dom < 45) { bull += 0.5; reasons.push(`BTC 主導 ${dom.toFixed(1)}% 山寨季`); }
-  else if (dom > 57) { bear += 0.5; reasons.push(`BTC 主導 ${dom.toFixed(1)}% 高集中`); }
+
+  // 恐貪指數（分段更細）
+  if (fgVal >= 70)     { bull += 2.5; reasons.push(`恐貪 ${fgVal}（極度貪婪）資金高度活躍`); }
+  else if (fgVal > 60) { bull += 2;   reasons.push(`恐貪 ${fgVal}（貪婪）情緒偏多`); }
+  else if (fgVal > 52) { bull += 1;   reasons.push(`恐貪 ${fgVal} 輕微偏多`); }
+  else if (fgVal < 25) { bear += 2.5; reasons.push(`恐貪 ${fgVal}（極度恐慌）資金撤退`); }
+  else if (fgVal < 38) { bear += 2;   reasons.push(`恐貪 ${fgVal}（恐慌）情緒偏空`); }
+  else if (fgVal < 47) { bear += 1;   reasons.push(`恐貪 ${fgVal} 輕微偏空`); }
+
+  // 市值 24h 變化（分段更細）
+  if (chg > 3)          { bull += 2.5; reasons.push(`市值 +${chg.toFixed(1)}% 強力資金流入`); }
+  else if (chg > 1.5)   { bull += 2;   reasons.push(`市值 +${chg.toFixed(1)}% 資金積極流入`); }
+  else if (chg > 0.5)   { bull += 1;   reasons.push(`市值 +${chg.toFixed(1)}% 小幅流入`); }
+  else if (chg < -3)    { bear += 2.5; reasons.push(`市值 ${chg.toFixed(1)}% 強力資金流出`); }
+  else if (chg < -1.5)  { bear += 2;   reasons.push(`市值 ${chg.toFixed(1)}% 資金明顯外流`); }
+  else if (chg < -0.5)  { bear += 1;   reasons.push(`市值 ${chg.toFixed(1)}% 小幅外流`); }
+
+  // BTC 主導率（反映山寨資金偏好）
+  if (dom < 42)       { bull += 1;   reasons.push(`BTC 主導 ${dom.toFixed(1)}% 山寨季格局，資金廣泛`); }
+  else if (dom < 47)  { bull += 0.5; reasons.push(`BTC 主導 ${dom.toFixed(1)}% 輕微輪動`); }
+  else if (dom > 60)  { bear += 1;   reasons.push(`BTC 主導 ${dom.toFixed(1)}% 高度集中，山寨受壓`); }
+  else if (dom > 55)  { bear += 0.5; reasons.push(`BTC 主導 ${dom.toFixed(1)}% 偏高`); }
+
+  // 事件類型加成（特定事件類型天生有流入/流出傾向）
+  const eventTypeBias = { conference: 0.5, crypto_event: 0.5, holiday_us: -0.3, holiday_global: -0.5 };
+  const typeBias = eventTypeBias[event.type] || 0;
+  if (typeBias > 0) bull += typeBias;
+  else if (typeBias < 0) bear += Math.abs(typeBias);
+
   const total = bull + bear || 1;
   let flow, conf;
-  if (bull >= bear + 1.5)       { flow = 'inflow';        conf = Math.min(78, Math.round(55 + (bull / total) * 28)); }
-  else if (bull >= bear + 0.5)  { flow = 'slight_inflow'; conf = Math.min(72, Math.round(52 + (bull / total) * 22)); }
-  else if (bear >= bull + 1.5)  { flow = 'outflow';       conf = Math.min(78, Math.round(55 + (bear / total) * 28)); }
-  else if (bear >= bull + 0.5)  { flow = 'slight_outflow';conf = Math.min(72, Math.round(52 + (bear / total) * 22)); }
-  else                           { flow = 'neutral';       conf = 50; }
+  if (bull >= bear + 2)        { flow = 'inflow';        conf = Math.min(82, Math.round(58 + (bull / total) * 26)); }
+  else if (bull >= bear + 0.8) { flow = 'slight_inflow'; conf = Math.min(74, Math.round(54 + (bull / total) * 22)); }
+  else if (bear >= bull + 2)   { flow = 'outflow';       conf = Math.min(82, Math.round(58 + (bear / total) * 26)); }
+  else if (bear >= bull + 0.8) { flow = 'slight_outflow';conf = Math.min(74, Math.round(54 + (bear / total) * 22)); }
+  else                          { flow = 'neutral';       conf = Math.max(50, Math.round(50 - Math.abs(bull - bear) * 2)); }
   return { flow, conf, reason: reasons.slice(0, 2).join('、'), isAI: true };
 }
 
