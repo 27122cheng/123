@@ -9506,18 +9506,18 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const blockReasons = [];   // 硬封鎖原因
   const defenseChecks = [];  // 所有防線審查項目（供 UI 顯示）
 
-  // ── 歷史止損率風控（總體，含歸檔記憶；需至少 50 筆樣本才生效）──
+  // ── 歷史止損率風控（總體，含歸檔記憶；滿 20 筆起生效）──
   const _cumStats   = _aiMem.cumStats || {};
   const _totClosed  = Math.max(profile.closed || 0, _cumStats.totalClosed || 0);
   const _totLosses  = Math.max(profile.losses || 0, _cumStats.totalLosses || 0);
-  if (profile.ready && _totClosed >= 50) {
+  if (profile.ready && _totClosed >= 20) {
     const _slRate = _totLosses / _totClosed;
     const _slPct  = (_slRate * 100).toFixed(1);
-    if (_slRate >= 0.95) {
-      // 止損率 ≥ 95%：直接硬封鎖
+    if (_totClosed >= 50 && _slRate >= 0.95) {
+      // ≥50 筆 + 止損率 ≥ 95%：直接硬封鎖
       blockReasons.push(`🚫 歷史止損率 ${_slPct}%（${_totLosses}/${_totClosed} 筆），超過 95% 封鎖門檻，AI 風控攔截直到勝率改善`);
     } else {
-      // 止損率 95% 以下：按比例扣分，止損率越高扣分越重
+      // 滿 20 筆（不達封鎖門檻）：按止損率分級扣分，止損率越高扣分越重
       let _slPen = 0;
       if (_slRate > 0.90)      _slPen = 20;
       else if (_slRate > 0.80) _slPen = 15;
@@ -9594,9 +9594,9 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
             blockReasons.push(`🚫 AI規則封鎖：「${_rLabel}」歷史止損率 ${(_rRate * 100).toFixed(0)}%（${_rTotal} 筆），AI 風控攔截`);
             defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: false, penalty: 0, rate: _rRate, blocked: true });
           } else {
-            // 10筆以上：按止損率分級扣分；3-9筆：輕度扣分
+            // 滿 20 筆未滿 50 筆：按止損率分級扣分；3-19 筆：輕度扣分
             let _rPen = 0;
-            if (_rTotal >= 10) {
+            if (_rTotal >= 20) {
               if (_rRate >= 0.90)      _rPen = 12;
               else if (_rRate >= 0.80) _rPen = 8;
               else if (_rRate >= 0.70) _rPen = 5;
