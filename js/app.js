@@ -67,10 +67,8 @@ async function init() {
   startEconCalendarCheck();
   bindEvents();
   checkApiStatus();
-  // 預載宏觀快取後再執行首次掃描，確保 isRangeMode 依真實宏觀決定
-  _prefetchMacroCache().then(() => {
-    try { recordSignalsFromScan(state.data); } catch(e) { console.error('[init] recordSignalsFromScan 錯誤:', e); }
-  });
+  // 預載宏觀快取（背景計時器每 15 秒會自動掃描，不需在 init 立即呼叫 recordSignalsFromScan）
+  _prefetchMacroCache();
 }
 
 async function _prefetchMacroCache() {
