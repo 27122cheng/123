@@ -9521,21 +9521,24 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       // ≥50 筆 + 止損率 ≥ 95%：直接硬封鎖
       blockReasons.push(`🚫 歷史止損率 ${_slPct}%（${_totLosses}/${_totClosed} 筆），超過 95% 封鎖門檻，AI 風控攔截直到勝率改善`);
     } else {
-      // 按止損率分級扣分（20-49筆樣本少，扣分稍低；≥50筆標準扣分）
+      // 按止損率分級扣分（同一組門檻，≥50筆維持原扣分，20-49筆稍低）
       let _slPen = 0;
       if (_totClosed >= 50) {
+        // ≥50筆：標準扣分（止損率30%起生效）
         if (_slRate > 0.90)      _slPen = 20;
         else if (_slRate > 0.80) _slPen = 15;
         else if (_slRate > 0.70) _slPen = 10;
         else if (_slRate > 0.60) _slPen =  6;
         else if (_slRate > 0.50) _slPen =  3;
+        else if (_slRate > 0.30) _slPen =  1;
       } else {
-        // 20-49筆：扣分稍低（樣本較少，參考性較弱）
+        // 20-49筆：同一組門檻，扣分稍低（樣本較少，參考性較弱）
         if (_slRate > 0.90)      _slPen = 14;
         else if (_slRate > 0.80) _slPen = 10;
         else if (_slRate > 0.70) _slPen =  7;
         else if (_slRate > 0.60) _slPen =  4;
         else if (_slRate > 0.50) _slPen =  2;
+        else if (_slRate > 0.30) _slPen =  0;
       }
       if (_slPen > 0) {
         penalty += _slPen;
@@ -9607,15 +9610,26 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
             blockReasons.push(`🚫 AI規則封鎖：「${_rLabel}」歷史止損率 ${(_rRate * 100).toFixed(0)}%（${_rTotal} 筆），AI 風控攔截`);
             defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: false, penalty: 0, rate: _rRate, blocked: true });
           } else {
-            // 滿 20 筆未滿 50 筆：按止損率分級扣分（稍低）；3-19 筆：輕度扣分
+            // 同一組門檻：≥50筆維持原扣分，20-49筆稍低，3-19筆輕度扣分
             let _rPen = 0;
-            if (_rTotal >= 20) {
+            if (_rTotal >= 50) {
+              // ≥50筆（止損率30-95%）：標準扣分
+              if (_rRate >= 0.90)      _rPen = 12;
+              else if (_rRate >= 0.80) _rPen =  8;
+              else if (_rRate >= 0.70) _rPen =  5;
+              else if (_rRate >= 0.60) _rPen =  3;
+              else if (_rRate >= 0.50) _rPen =  2;
+              else if (_rRate >= 0.30) _rPen =  1;
+              else                     _rPen =  0;
+            } else if (_rTotal >= 20) {
+              // 20-49筆：同一組門檻，扣分稍低
               if (_rRate >= 0.90)      _rPen = 10;
-              else if (_rRate >= 0.80) _rPen = 7;
-              else if (_rRate >= 0.70) _rPen = 4;
-              else if (_rRate >= 0.60) _rPen = 2;
-              else if (_rRate >= 0.50) _rPen = 1;
-              else                     _rPen = 0;
+              else if (_rRate >= 0.80) _rPen =  7;
+              else if (_rRate >= 0.70) _rPen =  4;
+              else if (_rRate >= 0.60) _rPen =  2;
+              else if (_rRate >= 0.50) _rPen =  1;
+              else if (_rRate >= 0.30) _rPen =  0;
+              else                     _rPen =  0;
             } else {
               _rPen = Math.max(1, Math.min(8, Math.round(_rRate * 10)));
             }
