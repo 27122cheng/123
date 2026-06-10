@@ -9147,12 +9147,14 @@ function mergeRulesIntoMemory(freshRules, freshIssues, freshBest, freshStats) {
   for (const rule of freshRules) {
     const existing = mem.rules[rule.condition];
     if (existing) {
-      // 保留最早發現時間，更新最新統計數據
+      // 若匯入規則的樣本數更多，保留匯入的統計數據
+      const keepImportedStats = existing.imported && (existing.total || 0) > (rule.total || 0);
       mem.rules[rule.condition] = {
         ...rule, active: true,
         firstDetected: existing.firstDetected,
         lastUpdated: now,
         occurrences: (existing.occurrences || 1) + 1,
+        ...(keepImportedStats ? { total: existing.total, rate: existing.rate, imported: true } : {}),
       };
     } else {
       mem.rules[rule.condition] = {
@@ -9498,18 +9500,22 @@ function getLearnProfile() {
 
 function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
   const profile = getLearnProfile();
+  const _aiMem  = profile.mem || loadAIMemory();
   let penalty = 0;
   const warnings = [];
   const blockReasons = [];   // 硬封鎖原因
   const defenseChecks = [];  // 所有防線審查項目（供 UI 顯示）
 
-  // ── 歷史止損率風控（需超過 100 筆樣本才生效）──
-  if (profile.ready && profile.closed > 100) {
-    const _slRate = (profile.losses / profile.closed);
+  // ── 歷史止損率風控（總體，含歸檔記憶；需至少 50 筆樣本才生效）──
+  const _cumStats   = _aiMem.cumStats || {};
+  const _totClosed  = Math.max(profile.closed || 0, _cumStats.totalClosed || 0);
+  const _totLosses  = Math.max(profile.losses || 0, _cumStats.totalLosses || 0);
+  if (profile.ready && _totClosed >= 50) {
+    const _slRate = _totLosses / _totClosed;
     const _slPct  = (_slRate * 100).toFixed(1);
-    if (_slRate > 0.95) {
-      // 止損率超過 95%：直接硬封鎖
-      blockReasons.push(`🚫 歷史止損率 ${_slPct}%（${profile.losses}/${profile.closed} 筆），超過 95% 封鎖門檻，AI 風控攔截直到勝率改善`);
+    if (_slRate >= 0.95) {
+      // 止損率 ≥ 95%：直接硬封鎖
+      blockReasons.push(`🚫 歷史止損率 ${_slPct}%（${_totLosses}/${_totClosed} 筆），超過 95% 封鎖門檻，AI 風控攔截直到勝率改善`);
     } else {
       // 止損率 95% 以下：按比例扣分，止損率越高扣分越重
       let _slPen = 0;
@@ -9520,7 +9526,7 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       else if (_slRate > 0.50) _slPen =  3;
       if (_slPen > 0) {
         penalty += _slPen;
-        defenseChecks.push({ type: 'slRate', label: `歷史止損率 ${_slPct}%（${profile.closed} 筆樣本）`, count: profile.closed, pass: false, penalty: _slPen });
+        defenseChecks.push({ type: 'slRate', label: `歷史止損率 ${_slPct}%（${_totClosed} 筆樣本）`, count: _totClosed, pass: false, penalty: _slPen });
       }
     }
   }
@@ -9541,9 +9547,20 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
     }
   };
 
-  // ① 結構化規則（歷史止損統計規則）
-  if (profile.ready && profile.rules.length) {
-    for (const rule of profile.rules) {
+  // ① 結構化規則（歷史止損統計規則，含匯入 AI 記憶）
+  // 合併 profile.rules（即時交易記錄）與 _aiMem.rules（含匯入規則），取樣本數較多者
+  const _effectiveRules = [...(profile.rules || [])];
+  for (const [_mCond, _mRule] of Object.entries(_aiMem.rules || {})) {
+    if (!_mRule.imported) continue;
+    const _ei = _effectiveRules.findIndex(r => r.condition === _mCond);
+    if (_ei === -1) {
+      _effectiveRules.push({ condition: _mCond, total: _mRule.total, rate: _mRule.rate, warning: _mRule.warning });
+    } else if ((_mRule.total || 0) > (_effectiveRules[_ei].total || 0)) {
+      _effectiveRules[_ei] = { ..._effectiveRules[_ei], total: _mRule.total, rate: _mRule.rate };
+    }
+  }
+  if (profile.ready && _effectiveRules.length) {
+    for (const rule of _effectiveRules) {
       const match =
         (rule.condition === 'long_high_rsi'       && direction === 'long'  && rsi > 65) ||
         (rule.condition === 'short_low_rsi'        && direction === 'short' && rsi < 35) ||
@@ -9567,22 +9584,40 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
         (rule.condition === 'weak_score_long'  && direction === 'long'  && ctx.scoreStrength === 'weak') ||
         (rule.condition === 'weak_score_short' && direction === 'short' && ctx.scoreStrength === 'weak') ||
         (rule.condition === 'asia_session_loss' && ctx.killZone === 'asia');
-      // 結構化規則：觸發時扣信心分（上限 8%），止損原因建議納入交易分析
-      if ((rule.total || 0) >= 3) {
+      const _rTotal = rule.total || 0;
+      const _rRate  = rule.rate  || 0;
+      if (_rTotal >= 3) {
         const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
         if (match) {
-          const _rPen = Math.max(1, Math.min(8, Math.round((rule.rate || 0) * 10)));
-          penalty += _rPen;
-          defenseChecks.push({ type: 'rule', label: _rLabel, count: rule.total || 0, pass: false, penalty: _rPen, rate: rule.rate });
+          if (_rTotal >= 50 && _rRate >= 0.95) {
+            // 50筆以上且止損率≥95%：硬封鎖
+            blockReasons.push(`🚫 AI規則封鎖：「${_rLabel}」歷史止損率 ${(_rRate * 100).toFixed(0)}%（${_rTotal} 筆），AI 風控攔截`);
+            defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: false, penalty: 0, rate: _rRate, blocked: true });
+          } else {
+            // 10筆以上：按止損率分級扣分；3-9筆：輕度扣分
+            let _rPen = 0;
+            if (_rTotal >= 10) {
+              if (_rRate >= 0.90)      _rPen = 12;
+              else if (_rRate >= 0.80) _rPen = 8;
+              else if (_rRate >= 0.70) _rPen = 5;
+              else if (_rRate >= 0.60) _rPen = 3;
+              else if (_rRate >= 0.50) _rPen = 2;
+              else                     _rPen = 1;
+            } else {
+              _rPen = Math.max(1, Math.min(8, Math.round(_rRate * 10)));
+            }
+            penalty += _rPen;
+            defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: false, penalty: _rPen, rate: _rRate });
+          }
         } else {
-          defenseChecks.push({ type: 'rule', label: _rLabel, count: rule.total || 0, pass: true, penalty: 0, rate: rule.rate });
+          defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: true, penalty: 0, rate: _rRate });
         }
       }
     }
   }
 
   // ② 止損原因記憶（次數過多才納入風控防線，閾值 10 次以上）
-  const mem = (profile.mem) || loadAIMemory();
+  const mem = _aiMem;
   if (mem.issues) {
     for (const issue of Object.values(mem.issues)) {
       const cnt = issue.count || 0;
@@ -10615,10 +10650,19 @@ function importAIMemory() {
           if (!current.issues[k]) { current.issues[k] = v; }
           else { current.issues[k].count = Math.max(current.issues[k].count, v.count); }
         }
-        // 合併 rules
+        // 合併 rules：匯入樣本數更多時保留匯入的統計數據
         for (const [k, v] of Object.entries(imported.rules || {})) {
-          if (!current.rules[k]) current.rules[k] = { ...v, imported: true };
-          else { current.rules[k] = { ...current.rules[k], imported: true }; }
+          if (!current.rules[k]) {
+            current.rules[k] = { ...v, imported: true };
+          } else {
+            const impTotal = v.total || 0;
+            const curTotal = current.rules[k].total || 0;
+            if (impTotal > curTotal) {
+              current.rules[k] = { ...current.rules[k], total: impTotal, rate: v.rate, warning: v.warning || current.rules[k].warning, imported: true };
+            } else {
+              current.rules[k] = { ...current.rules[k], imported: true };
+            }
+          }
         }
         // 取兩者中較大的累積統計
         const ic = imported.cumStats || {};
