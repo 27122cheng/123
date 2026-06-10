@@ -2917,7 +2917,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/10，需達 B 級（評分 ≥ 5）才進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/9，需達 B 級（評分 ≥ 4）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
@@ -7493,8 +7493,8 @@ function recordSignalsFromScan(data) {
     const _factorMin = (_macroCache && macroNetDir !== 'neutral') ? 3 : 2;
     if (_factors < _factorMin) continue;
 
-    // ADX 過低（< 25）：趨勢未確立，直接跳過（ADX 20-24 仍屬震盪區間）
-    if ((parseFloat(coin.adx) || 20) < 25) continue;
+    // ADX 過低（< 22）：趨勢未確立，直接跳過（22 為趨勢初步成形門檻）
+    if ((parseFloat(coin.adx) || 20) < 22) continue;
 
     // 成交量不得為低（低量趨勢不可靠）
     if ((coin.volumeStrength || '') === '低') continue;
@@ -7560,8 +7560,8 @@ function recordSignalsFromScan(data) {
     // 1H 訊號同向（多週期確認加分）
     const _ssH1Ok = isLong ? (coin.h1Signal || '').includes('bull') : (coin.h1Signal || '').includes('bear');
     if (_ssH1Ok) { _scanSqScore += 1; _scanSqFactors.push('✅ 1H 同向'); }
-    // 最高 9 分；B 級門檻提高至 5（ADX ≥25 已過濾弱勢，需要更多多時框確認）
-    const _scanSqGrade = _scanSqScore >= 8 ? 'S' : _scanSqScore >= 6 ? 'A' : _scanSqScore >= 5 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
+    // 最高 9 分；B 級門檻 ≥4（與 buildTradeSetup 一致，ADX 已從 22 起過濾弱勢）
+    const _scanSqGrade = _scanSqScore >= 8 ? 'S' : _scanSqScore >= 6 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 等級 C/D：訊號品質不足，不建立倉位，不推送 Telegram
     if (!['S','A','B'].includes(_scanSqGrade)) continue;
@@ -12630,8 +12630,8 @@ function computeSimpleSetup(coin, isLong) {
   if (_cssFP && !_cssFP.deltaDiv && (isLong ? _cssFP.deltaDir === 'bull' : _cssFP.deltaDir === 'bear')) { _cssqScore += 1; _cssqFactors.push('✅ 足跡圖 Delta 確認'); }
   if (adx >= 28) { _cssqScore += 1; _cssqFactors.push('✅ ADX 趨勢確立'); }
   if (_sTechPen === 0) { _cssqScore += 1; _cssqFactors.push('✅ 技術面無逆風'); }
-  // 最高 9 分；B 級門檻提高至 5（與 recordSignalsFromScan 一致）
-  const sqGrade = _cssqScore >= 8 ? 'S' : _cssqScore >= 6 ? 'A' : _cssqScore >= 5 ? 'B' : _cssqScore >= 2 ? 'C' : 'D';
+  // 最高 9 分；B 級門檻 ≥4（與 buildTradeSetup 及 recordSignalsFromScan 一致）
+  const sqGrade = _cssqScore >= 8 ? 'S' : _cssqScore >= 6 ? 'A' : _cssqScore >= 4 ? 'B' : _cssqScore >= 2 ? 'C' : 'D';
   const sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[sqGrade];
 
   return {
