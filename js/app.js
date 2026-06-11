@@ -5349,7 +5349,17 @@ function aiProcessNews(title, body) {
     (text.includes('layer 2') || text.includes('l2') || text.includes('scaling')) ? `${subject}擴容升級取得重要進展` :
     (text.includes('defi') || text.includes('decentralized')) ? `DeFi 生態出現重要事件` :
     (text.includes('nft') || text.includes('non-fungible')) ? `NFT 市場動態，交易量出現明顯變化` :
-    (title.length > 60 ? title.slice(0, 57) + '…' : title);
+    (text.includes('whale') || text.includes('wallets moved') || text.includes('large transfer')) ? `${subject}巨鯨大額移倉，鏈上動向引發市場關注` :
+    (text.includes('scam') || text.includes('fraud') || text.includes('rug pull') || text.includes('arrest')) ? `⚠️ 加密詐騙/執法事件：${subject}市場安全警示` :
+    (text.includes('volume') || text.includes('trading activity')) ? `${subject}交易量出現顯著變動，市場熱度值得追蹤` :
+    (text.includes('listing') || text.includes('listed on') || text.includes('delisted')) ? `交易所上架/下架動態，${subject}流動性出現變化` :
+    (text.includes('analyst') || text.includes('predict') || text.includes('forecast') || text.includes('target')) ? `分析師看法：${subject}走勢預測出現新觀點` :
+    (text.includes('memecoin') || text.includes('meme coin') || text.includes('meme token')) ? `迷因幣熱潮持續，社群情緒推動短線行情` :
+    (text.includes('altcoin') || text.includes('alt season') || text.includes('alts')) ? `山寨幣輪動訊號出現，資金流向值得關注` :
+    (text.includes('network') || text.includes('mainnet') || text.includes('testnet') || text.includes('upgrade')) ? `${subject}網絡/協議出現重要更新動態` :
+    (text.includes('tokeniz') || text.includes('rwa') || text.includes('real world')) ? `真實資產代幣化（RWA）趨勢加速，鏈上金融採用擴張` :
+    (text.includes('staking') || text.includes('validator') || text.includes('yield')) ? `${subject}質押/收益機制出現新動態，場內資金留存變化` :
+    `${subject} 最新市場動態`;
 
   // 生成重點摘要（2條）
   const points = [];
@@ -5464,7 +5474,7 @@ function buildNewsWidget(items) {
     const tagClose = item.url ? '</a>' : '</div>';
     return `${tagOpen}
       <div class="news-ai-title">${_orig || _zhTitle}</div>
-      ${_orig && _zhTitle ? `<div style="font-size:0.78rem;color:#a78bfa;margin-top:3px;line-height:1.4">${_zhTitle}</div>` : ''}
+      ${_orig && _zhTitle && (_zhTitle.match(/[一-鿿]/g) || []).length >= 4 ? `<div style="font-size:0.78rem;color:#a78bfa;margin-top:3px;line-height:1.4">${_zhTitle}</div>` : ''}
       ${pointsHtml ? `<div class="news-keypoints">${pointsHtml}</div>` : ''}
       <div class="news-meta">
         <span>${item.source || ''}</span>
