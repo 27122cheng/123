@@ -7828,7 +7828,7 @@ function updateOpenTrades(data) {
     } catch(e) {}
   }
 
-  // ── 信心度崩跌取消：動態計算 freshConf，低於 70% 時自動撤單（所有類型含震盪單）──
+  // ── 信心度崩跌取消：動態計算 freshConf，低於 50% 時自動撤單（所有類型含震盪單）──
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     const baseConf   = trade.rawConf || trade.conf || 100;
@@ -10327,7 +10327,7 @@ function renderPositionsPage() {
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
       </div></div>
-      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 70% 的訊號時會自動出現</span></div>`;
+      <div class="pos-empty">目前沒有進行中的交易推薦<br><span style="font-size:0.83rem;color:var(--text3)">掃描到信心度 ≥ 50% 的訊號時會自動出現</span></div>`;
     return;
   }
 
