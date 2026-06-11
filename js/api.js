@@ -1260,7 +1260,7 @@ async function fetchCryptoNews() {
         body:        strip(item.description || item.content || ''),
         url:         item.link  || '',
         source:      src.name,
-        publishedAt: item.pubDate || null,
+        publishedAt: item.pubDate ? new Date(item.pubDate).getTime() : null,
       })).filter(it => it.title.length > 10);
       if (items.length < 3) continue;
       _cryptoNewsCache  = items;
@@ -1287,7 +1287,7 @@ async function fetchCryptoNews() {
           body:        strip(it.description || ''),
           url:         it.url  || '',
           source:      it.news_site || 'CoinGecko',
-          publishedAt: it.created_at || null,
+          publishedAt: it.created_at ? new Date(it.created_at).getTime() : null,
         })).filter(it => it.title.length > 10);
         if (items.length >= 3) {
           _cryptoNewsCache  = items;

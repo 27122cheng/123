@@ -5451,15 +5451,22 @@ function buildNewsWidget(items) {
     const conf     = item.conf ?? 50;
     const confColor = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
     const timeAgo  = item.publishedAt ? (() => {
-      const m = Math.round((Date.now() - item.publishedAt) / 60000);
+      const ts = typeof item.publishedAt === 'number' ? item.publishedAt : new Date(item.publishedAt).getTime();
+      if (isNaN(ts)) return '';
+      const m = Math.round((Date.now() - ts) / 60000);
       return m < 60 ? `${m} 分鐘前` : m < 1440 ? `${Math.round(m/60)} 小時前` : `${Math.round(m/1440)} 天前`;
     })() : '';
+    const _orig = item.originalTitle || '';
+    const _nonAsciiRatio = _orig ? (_orig.match(/[^\x00-\x7F]/g) || []).length / _orig.length : 0;
+    const _displayTitle  = _orig
+      ? (_nonAsciiRatio >= 0.2 ? `${_orig} （${item.zhTitle}）` : _orig)
+      : (item.zhTitle || item.title || '');
     const pointsHtml = (item.points || []).map(p => `<div class="news-point">• ${p}</div>`).join('');
     const tag = item.url ? 'a' : 'div';
     const tagOpen  = item.url ? `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">` : `<div class="news-item ${sentClass}">`;
     const tagClose = item.url ? '</a>' : '</div>';
     return `${tagOpen}
-      <div class="news-ai-title">${item.zhTitle || item.title}</div>
+      <div class="news-ai-title">${_displayTitle}</div>
       ${pointsHtml ? `<div class="news-keypoints">${pointsHtml}</div>` : ''}
       <div class="news-meta">
         <span>${item.source || ''}</span>
@@ -5630,13 +5637,17 @@ async function loadDashboardNews() {
     try {
       const realItems = await fetchCryptoNews();
       if (realItems && realItems.length >= 3) {
-        const processed = realItems.map(item => {
+        const _3mAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
+        const _filtered = realItems.filter(it => !it.publishedAt || it.publishedAt >= _3mAgo);
+        const _toProcess = _filtered.length >= 3 ? _filtered : realItems;
+        const processed = _toProcess.map(item => {
           const ai = aiProcessNews(item.title, item.body);
           return {
             ...ai,
-            url:         item.url,
-            source:      `📰 ${item.source}`,
-            publishedAt: item.publishedAt,
+            originalTitle: item.title,
+            url:           item.url,
+            source:        `📰 ${item.source}`,
+            publishedAt:   item.publishedAt,
           };
         });
         // 確認容器仍存在（用戶可能已切換頁面）
