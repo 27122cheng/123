@@ -3066,9 +3066,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 最低信心門檻：50%
+    // 最低信心門檻：50%（_isLowWinRate 的各條件已全數反映在信心扣分內，以 conf 作唯一門檻）
     const _btConfMin = 50;
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin && !_isLowWinRate) {
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -3094,6 +3094,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ltPartialTP: ltPartialTP || null,
         scaleIns: [], peakPrice: null,
         sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel,
+        lowWinRate: _isLowWinRate || undefined,
         ...tradeCtx,
       });
       if (tlog.length > 500) tlog.splice(500);
@@ -3311,18 +3312,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // 低勝率用已計算的 _isLowWinRate（與 tlog 封鎖邏輯完全一致）
     if (_isLowWinRate) {
       const _waitSrc = [...new Set(_hwrW.map(w => w.source))].join('、');
-      return `<div style="background:rgba(100,116,139,.08);border:1.5px solid rgba(100,116,139,.3);border-radius:10px;padding:10px 14px;margin-bottom:10px">
+      return `<div style="background:rgba(245,158,11,.07);border:1.5px solid rgba(245,158,11,.35);border-radius:10px;padding:10px 14px;margin-bottom:10px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-          <span style="font-size:1rem">⏸</span>
-          <span style="font-weight:700;color:var(--text2);font-size:0.86rem">建議觀望 — 本次不符合高勝率進場條件</span>
-          <span style="font-size:0.7rem;background:rgba(100,116,139,.15);color:var(--text3);padding:1px 8px;border-radius:20px;border:1px solid rgba(100,116,139,.25)">未加入持倉</span>
+          <span style="font-size:1rem">⚠️</span>
+          <span style="font-weight:700;color:#f59e0b;font-size:0.86rem">低勝率風險訊號 — 已加入持倉，建議小倉位保守操作</span>
+          <span style="font-size:0.7rem;background:rgba(245,158,11,.15);color:#f59e0b;padding:1px 8px;border-radius:20px;border:1px solid rgba(245,158,11,.3)">⚠️ 低勝率標記</span>
         </div>
-        <div style="font-size:0.73rem;color:var(--text3);margin-bottom:5px">評估依據：${_waitSrc}</div>
+        <div style="font-size:0.73rem;color:var(--text3);margin-bottom:5px">風險來源：${_waitSrc || '多重逆風因子'}</div>
         <div style="display:flex;flex-direction:column;gap:3px">
           ${_hwrW.filter(w=>w.level==='danger').map(w =>
-            `<div style="font-size:0.77rem;color:var(--text2);line-height:1.5">• ${w.text}<span style="font-size:0.67rem;color:var(--text3);margin-left:4px">（${w.source}）</span></div>`).join('')}
+            `<div style="font-size:0.77rem;color:#ef4444;line-height:1.5">🚫 ${w.text}<span style="font-size:0.67rem;color:var(--text3);margin-left:4px">（${w.source}）</span></div>`).join('')}
           ${_hwrW.filter(w=>w.level==='caution').map(w =>
-            `<div style="font-size:0.77rem;color:var(--text2);line-height:1.5">• ${w.text}<span style="font-size:0.67rem;color:var(--text3);margin-left:4px">（${w.source}）</span></div>`).join('')}
+            `<div style="font-size:0.77rem;color:#f59e0b;line-height:1.5">⚠️ ${w.text}<span style="font-size:0.67rem;color:var(--text3);margin-left:4px">（${w.source}）</span></div>`).join('')}
         </div>
       </div>`;
     }
