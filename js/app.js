@@ -5621,9 +5621,32 @@ function aiGenerateMarketInsights() {
   });
 }
 
-function loadDashboardNews() {
+async function loadDashboardNews() {
   const el = document.getElementById('news-body');
-  if (el) el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
+  if (el) {
+    // 先顯示本地 AI 新聞（即時可見，不等待網路）
+    el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
+    // 非同步拉取真實新聞，完成後替換
+    try {
+      const realItems = await fetchCryptoNews();
+      if (realItems && realItems.length >= 3) {
+        const processed = realItems.map(item => {
+          const ai = aiProcessNews(item.title, item.body);
+          return {
+            ...ai,
+            url:         item.url,
+            source:      `📰 ${item.source}`,
+            publishedAt: item.publishedAt,
+          };
+        });
+        // 確認容器仍存在（用戶可能已切換頁面）
+        const elNow = document.getElementById('news-body');
+        if (elNow) elNow.innerHTML = buildNewsWidget(processed);
+      }
+    } catch(e) {
+      console.warn('[loadDashboardNews] 真實新聞載入失敗:', e?.message);
+    }
+  }
   const cfEl = document.getElementById('capital-flow-body');
   if (cfEl) cfEl.innerHTML = buildCapitalFlowEventsWidget();
 }

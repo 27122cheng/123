@@ -1226,3 +1226,79 @@ function saveSettings(patch) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
   return next;
 }
+
+/* ── 真實加密貨幣新聞抓取（RSS via rss2json + CoinGecko fallback）── */
+let _cryptoNewsCache = null;
+let _cryptoNewsFetchAt = 0;
+
+async function fetchCryptoNews() {
+  const TTL = 25 * 60 * 1000; // 25 分鐘快取
+  if (_cryptoNewsCache && Date.now() - _cryptoNewsFetchAt < TTL) return _cryptoNewsCache;
+
+  const RSS_SOURCES = [
+    { url: 'https://cointelegraph.com/rss',                             name: 'CoinTelegraph' },
+    { url: 'https://www.coindesk.com/arc/outboundfeeds/rss/',           name: 'CoinDesk'      },
+    { url: 'https://decrypt.co/feed',                                   name: 'Decrypt'       },
+    { url: 'https://thedefiant.io/api/feed',                            name: 'The Defiant'   },
+    { url: 'https://bitcoinmagazine.com/.rss/full/',                    name: 'Bitcoin Mag'   },
+  ];
+
+  const strip = html => (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 250);
+
+  for (const src of RSS_SOURCES) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(src.url)}&count=10`;
+      const r = await fetch(apiUrl, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j.status !== 'ok' || !Array.isArray(j.items) || j.items.length === 0) continue;
+      const items = j.items.slice(0, 8).map(item => ({
+        title:       (item.title || '').trim(),
+        body:        strip(item.description || item.content || ''),
+        url:         item.link  || '',
+        source:      src.name,
+        publishedAt: item.pubDate || null,
+      })).filter(it => it.title.length > 10);
+      if (items.length < 3) continue;
+      _cryptoNewsCache  = items;
+      _cryptoNewsFetchAt = Date.now();
+      console.log(`[fetchCryptoNews] 取得 ${items.length} 則來自 ${src.name}`);
+      return items;
+    } catch(e) {
+      console.warn(`[fetchCryptoNews] ${src.name} 失敗:`, e?.message);
+    }
+  }
+
+  // 最終 fallback：CoinGecko news
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch('https://api.coingecko.com/api/v3/news?per_page=12', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (r.ok) {
+      const j = await r.json();
+      const arr = Array.isArray(j) ? j : (j.data || []);
+      if (arr.length > 0) {
+        const items = arr.slice(0, 8).map(it => ({
+          title:       (it.title || '').trim(),
+          body:        strip(it.description || ''),
+          url:         it.url  || '',
+          source:      it.news_site || 'CoinGecko',
+          publishedAt: it.created_at || null,
+        })).filter(it => it.title.length > 10);
+        if (items.length >= 3) {
+          _cryptoNewsCache  = items;
+          _cryptoNewsFetchAt = Date.now();
+          return items;
+        }
+      }
+    }
+  } catch(e) {
+    console.warn('[fetchCryptoNews] CoinGecko fallback 失敗:', e?.message);
+  }
+
+  return null;
+}
