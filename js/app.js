@@ -1919,7 +1919,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
               rangeStruct: { rangeHigh: _rs.rangeHigh, rangeLow: _rs.rangeLow, rangeMid: _rs.rangeMid },
             };
             const tlogR = loadTradeLog();
-            const hasActiveR = tlogR.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+            const hasActiveR = tlogR.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending') && t.entry);
             if (!hasActiveR) {
               tlogR.push({
                 id: `${coin.symbol}_${Date.now()}`,
@@ -7972,16 +7972,9 @@ function updateOpenTrades(data) {
           // （震盪單本來就在中性市場建立，方向性扣分會誤殺合法震盪單）
           freshConf = Math.max(0, baseConf - _adxPen - _learnPen);
         } else {
-          // 方向性單：完整扣分 + computeSimpleSetup 統一校正
-          // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 資金流動（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
+          // 方向性單：完整扣分（宏觀/AI/技術/籌碼/大方向等動態因子）
+          // rawConf 為建單時基礎分，各項懲罰依最新市場數據重算，確保信心度動態反映市況
           freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
-          // 與 buildTradeSetup 對齊：使用 computeSimpleSetup 統一信心度（含 BB 扣分與精確宏觀閾值）
-          if (_fCoin) {
-            try {
-              const _cssNow = computeSimpleSetup(_fCoin, _isL);
-              if (_cssNow?.conf != null) freshConf = _cssNow.conf;
-            } catch(_csse) {}
-          }
         }
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
