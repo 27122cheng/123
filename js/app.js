@@ -6668,6 +6668,7 @@ async function renderCoinDetail(symbol) {
     fetchWhaleTrades(symbol),
     fetchFootprintData(symbol),
     fetchLiquidationMap(symbol),
+    refreshPionexPrices(),
   ]);
 
   // 足跡圖緩存（供 AI 分析函數讀取）

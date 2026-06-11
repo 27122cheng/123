@@ -119,17 +119,30 @@ let _pionexPrices = {};
 async function refreshPionexPrices() {
   try {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 6000);
+    const t = setTimeout(() => ctrl.abort(), 8000);
     const r = await fetch('https://api.pionex.com/api/v1/market/tickers', { signal: ctrl.signal });
     clearTimeout(t);
-    if (!r.ok) return;
+    if (!r.ok) { console.warn('[Pionex] API 回應錯誤:', r.status); return; }
     const j = await r.json();
     if (j.result && Array.isArray(j.data?.tickers)) {
       j.data.tickers.forEach(tk => {
-        _pionexPrices[tk.symbol.replace('_', '')] = parseFloat(tk.close);
+        // 支援 BTC_USDT → BTCUSDT 及 BTC_USDT_PERP 等格式
+        _pionexPrices[tk.symbol.replace(/_/g, '')] = parseFloat(tk.close);
+        _pionexPrices[tk.symbol.replace('_USDT', 'USDT').replace(/_/g, '')] = parseFloat(tk.close);
       });
+    } else {
+      console.warn('[Pionex] 回應格式異常，嘗試備用解析');
+      // 備用：若 result 不在預期位置，嘗試直接找 tickers 陣列
+      const tickers = j.tickers || j.data || [];
+      if (Array.isArray(tickers)) {
+        tickers.forEach(tk => {
+          if (tk.symbol) _pionexPrices[tk.symbol.replace(/_/g, '')] = parseFloat(tk.close || tk.last || tk.price || 0);
+        });
+      }
     }
-  } catch {}
+  } catch(e) {
+    console.warn('[Pionex] 價格取得失敗:', e?.message || e);
+  }
 }
 
 function toPionex(sym, binanceCur, level) {
