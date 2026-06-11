@@ -7454,7 +7454,7 @@ function recordSignalsFromScan(data) {
 
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
-  // 短線條件：宏觀有方向時 ≥3/4 同向；宏觀中性或無快取時 ≥2/4 同向 + 最終信心度 ≥ 60%
+  // 短線條件：宏觀有方向時 ≥3/4 同向；宏觀中性或無快取時 ≥2/4 同向 + 最終信心度 ≥ 50%
   // 長線升級：同時滿足日線信號 + 週線信號均同方向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
@@ -7942,14 +7942,21 @@ function updateOpenTrades(data) {
           }
           _cfP = Math.min(10, _cfP);
         } catch(_e) {}
-        // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 資金流動（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
-        freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
-        // 與 buildTradeSetup 對齊：使用 computeSimpleSetup 統一信心度（含 BB 扣分與精確宏觀閾值）
-        if (_fCoin) {
-          try {
-            const _cssNow = computeSimpleSetup(_fCoin, _isL);
-            if (_cssNow?.conf != null) freshConf = _cssNow.conf;
-          } catch(_csse) {}
+        if (trade.tradeType === 'range') {
+          // 震盪單：只扣學習懲罰，不套用方向性宏觀/AI/技術扣分
+          // （震盪單本來就在中性市場建立，方向性扣分會誤殺合法震盪單）
+          freshConf = Math.max(0, baseConf - _adxPen - _learnPen);
+        } else {
+          // 方向性單：完整扣分 + computeSimpleSetup 統一校正
+          // 最終信心度 = rawConf - ADX（靜態）- 學習（最新）- 宏觀（動態）- AI趨勢（動態）- 資金流動（動態）- 技術面（動態）- 籌碼面（動態）- 大方向（動態）
+          freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
+          // 與 buildTradeSetup 對齊：使用 computeSimpleSetup 統一信心度（含 BB 扣分與精確宏觀閾值）
+          if (_fCoin) {
+            try {
+              const _cssNow = computeSimpleSetup(_fCoin, _isL);
+              if (_cssNow?.conf != null) freshConf = _cssNow.conf;
+            } catch(_csse) {}
+          }
         }
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
