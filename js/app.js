@@ -1347,16 +1347,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         cfPenNow = Math.min(10, cfPenNow);
       } catch(_e) {}
 
+      const bbPenNow    = existingActive.bbPenalty || 0;
       let rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      let freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow);
-      // 統一使用 computeSimpleSetup 計算最終信心度，同步 rawConf 避免顯示扣分與最終值不一致
-      try {
-        const _ssNow = computeSimpleSetup(coin, isLongNow);
-        if (_ssNow?.conf != null) {
-          freshConf  = _ssNow.conf;
-          if (_ssNow.rawConf != null) rawConfNow = _ssNow.rawConf;
-        }
-      } catch(_sse) {}
+      let freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow - bbPenNow);
       if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
@@ -1389,7 +1382,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
-      const bbPenNow    = existingActive.bbPenalty || 0;
       const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + cfPenNow + techPenNow + chipsPenNow + dirPenNow + bbPenNow;
 
       // 已進場：顯示進場時鎖定的信心度，不再動態重算（進場後市況變化不影響已開倉決策）
@@ -3136,17 +3128,25 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (hardBlocked) {
       blockReasons.slice(0, 3).forEach(r => deductLines.push(r));
     } else {
+      const _cfBaseDed = 100 - rawConf;
+      if (_cfBaseDed > 0)         deductLines.push(`入場評估（信號強度、RR、型態等），扣 -${_cfBaseDed}%`);
       if (hardAdxPenalty > 0)     deductLines.push(`ADX ${adxVal} 過低（${adxVal < 18 ? '< 18' : '< 22'}），扣 -${hardAdxPenalty}%`);
       if (macroOpposePenalty > 0) deductLines.push(`宏觀環境逆風，扣 -${macroOpposePenalty}%`);
       if (aiTrendPenalty > 0)     deductLines.push(`AI 趨勢預測逆向（本週/今日），扣 -${aiTrendPenalty}%`);
       if (learnPenalty > 0)       deductLines.push(`止損歷史記憶觸發，扣 -${learnPenalty}%`);
+      if (techPenalty > 0)        deductLines.push(`技術面逆風（RSI/MACD/BB/大時框），扣 -${techPenalty}%`);
+      if (chipsPenalty > 0)       deductLines.push(`籌碼面逆風（Taker/巨鯨），扣 -${chipsPenalty}%`);
     }
+    const _cfBaseDed = 100 - rawConf;
     const confFlow = [
-      `<span style="color:var(--text3);font-size:0.73rem">原始 ${rawConf}%</span>`,
-      hardAdxPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.73rem">→ ADX -${hardAdxPenalty}</span>` : '',
-      macroOpposePenalty > 0 ? `<span style="color:#f59e0b;font-size:0.73rem">→ 宏觀 -${macroOpposePenalty}</span>` : '',
-      aiTrendPenalty > 0     ? `<span style="color:#f59e0b;font-size:0.73rem">→ AI -${aiTrendPenalty}</span>` : '',
-      learnPenalty > 0       ? `<span style="color:#f59e0b;font-size:0.73rem">→ 風控 -${learnPenalty}</span>` : '',
+      `<span style="color:var(--text3);font-size:0.73rem">滿分 100%</span>`,
+      _cfBaseDed > 0        ? `<span style="color:#f59e0b;font-size:0.73rem">→ 入場 -${_cfBaseDed}</span>` : '',
+      hardAdxPenalty > 0    ? `<span style="color:#f59e0b;font-size:0.73rem">→ ADX -${hardAdxPenalty}</span>` : '',
+      macroOpposePenalty > 0? `<span style="color:#f59e0b;font-size:0.73rem">→ 宏觀 -${macroOpposePenalty}</span>` : '',
+      aiTrendPenalty > 0    ? `<span style="color:#f59e0b;font-size:0.73rem">→ AI -${aiTrendPenalty}</span>` : '',
+      learnPenalty > 0      ? `<span style="color:#f59e0b;font-size:0.73rem">→ 風控 -${learnPenalty}</span>` : '',
+      techPenalty > 0       ? `<span style="color:#f59e0b;font-size:0.73rem">→ 技術 -${techPenalty}</span>` : '',
+      chipsPenalty > 0      ? `<span style="color:#f59e0b;font-size:0.73rem">→ 籌碼 -${chipsPenalty}</span>` : '',
       `<span style="color:var(--text3);font-size:0.73rem">= 最終</span> <span style="font-weight:700;color:${cColor(conf)}">${conf}%</span>`,
     ].filter(Boolean).join(' ');
     const _wClrW = weeklyOpposed ? 'var(--bear)' : weeklyNeutral ? '#f59e0b' : 'var(--bull)';
