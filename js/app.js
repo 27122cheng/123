@@ -963,7 +963,7 @@ function buildOpenPositionSetup(t, currentPrice) {
       <div class="verdict-conf-wrap">
         <span style="font-size:0.78rem;color:var(--text3)">信心度</span>
         <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confClr}"></div></div>
-        <span style="color:${confClr};font-weight:700;font-size:0.9rem">${conf}%</span>
+        <span style="color:${confClr};font-weight:700;font-size:0.9rem">${conf}%</span>${conf < 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">偏低信心</span>' : ''}
       </div>
       ${isLongTermTrade ? `<div style="font-size:0.7rem;color:#4ade80;margin-top:4px">✅ 日線信號 + 週線信號均同向確認</div>` : ''}
     </div>
@@ -2808,7 +2808,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
   const finalConf = conf;
   // 最終防線：被AI風控硬封鎖 OR 信心低於60% → 觀望
-  if (conf < 60 || hardBlocked) direction = 'wait';
+  if (conf < 50 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -3049,8 +3049,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 最低信心門檻：60%
-    const _btConfMin = 60;
+    // 最低信心門檻：50%
+    const _btConfMin = 50;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin && !_isLowWinRate) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
@@ -3141,8 +3141,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
-  // ── 信心度 < 60% → 顯示觀望，不顯示交易建議 ──
-  if (conf < 60) {
+  // ── 信心度 < 50% → 顯示觀望，不顯示交易建議 ──
+  if (conf < 50) {
     const cColor = conf >= 55 ? '#f59e0b' : '#ef4444';
     const confPenLines = [];
     if (hardAdxPenalty > 0)     confPenLines.push(`ADX ${adxVal} 趨勢強度不足，扣 -${hardAdxPenalty}%`);
@@ -3155,7 +3155,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `<div class="setup-wait">
       <div class="setup-wait-icon">⚠️</div>
       <div class="setup-wait-title">信心度不足（<strong style="color:${cColor}">${conf}%</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 60%，目前扣分後 ${conf}%，暫不開倉</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 50%，目前扣分後 ${conf}%，暫不開倉</div>
       ${confPenLines.length ? `<ul class="setup-wait-reasons">${confPenLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
       <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
         <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
@@ -3338,10 +3338,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <span style="font-size:0.7rem;font-weight:700;background:${_sqGradeColor}22;border:1px solid ${_sqGradeColor}55;color:${_sqGradeColor};padding:1px 7px;border-radius:20px;margin-left:6px" title="${_sqFactors.join(' | ')}">AI ${_sqGrade} ${_sqGradeLabel}</span>
       <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">${isRangeMode ? '震盪高低點快進快出' : '15m ~ 1h 時間框架'}</span>
     </div>
-    ${conf >= 60 ? `<div class="verdict-conf-wrap">
+    ${conf >= 50 ? `<div class="verdict-conf-wrap">
       <span style="font-size:0.78rem;color:var(--text3)">信心度</span>
       <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${dirColor}"></div></div>
-      <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf}%</span>
+      <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf}%</span>${conf < 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">偏低信心</span>' : ''}
     </div>` : ''}
     ${bbChipsHtml}
   </div>
@@ -7265,7 +7265,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
       if (!isLong && _whale.bias === 'bull' && (_whale.bigBuyCount ||0) >= 3) _penLines.push(`   ↳ 籌碼面：巨鯨持續買入（${_whale.bigBuyCount}筆大買），扣 5%`);
     }
   }
-  const _confScore      = `📶 信心度：<b>${setup.conf}%</b>`;
+  const _confScore      = `📶 信心度：<b>${setup.conf}%</b>${setup.conf < 70 ? '（⚠️ 偏低信心）' : ''}`;
   const _confDeductions = _penLines.length ? _penLines.join('\n') : '';
 
   // ── 週/日 AI 走勢 & 預警 ──
@@ -7520,8 +7520,8 @@ function recordSignalsFromScan(data) {
     const _scanMacd   = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
     if (!_macdAligned) continue;
-    // 信心度門檻：60% 含以上才進場
-    const _confMin    = 60;
+    // 信心度門檻：50% 含以上才進場
+    const _confMin    = 50;
     if (setup.conf < _confMin) continue;
 
     // 完整風險評估（10 因子）
@@ -7952,9 +7952,9 @@ function updateOpenTrades(data) {
         }
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 信心度跌破 60% → 自動取消掃描粗估單（與進場門檻一致）
-        if (freshConf < 60 && !trade.entryTime) {
-          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 60%（宏觀/AI/技術面扣分累積）`;
+        // 信心度跌破 50% → 自動取消掃描粗估單（與進場門檻一致）
+        if (freshConf < 50 && !trade.entryTime) {
+          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 50%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -7966,8 +7966,8 @@ function updateOpenTrades(data) {
       // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
       const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
-      if (_structConf < 60 && !trade.entryTime) {
-        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 60%（ADX/風控規則扣分）`;
+      if (_structConf < 50 && !trade.entryTime) {
+        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 50%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -7975,9 +7975,9 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
-    // 風險評估升至高風險 → 取消未入場掛單（信心度需已低於 60% 才取消，與進場門檻一致）
-    // 只有 freshConf < 60 時才做風險二次檢查：信心度 ≥ 60% 的單不因風險評分被取消
-    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && freshConf < 60) {
+    // 風險評估升至高風險 → 取消未入場掛單（信心度需已低於 50% 才取消，與進場門檻一致）
+    // 只有 freshConf < 50 時才做風險二次檢查：信心度 ≥ 50% 的單不因風險評分被取消
+    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && freshConf < 50) {
       try {
         const _brResult = buildRisk(_fCoin);                          // UI 顯示的風險（≥55 = 高風險）
         const _frSetup  = computeSimpleSetup(_fCoin, _isL);
@@ -11710,7 +11710,7 @@ async function checkAndSendAlerts(data) {
         if (!_existTrade.telegramSent && s.notifTelegram && s.tgToken && s.tgChatId) {
           // 補發漏掉的進場通知：使用掛單建立時的原始信心度作為門檻，避免舊掛單或信心度跌落後補發
           const _retryConf = _existTrade.conf ?? 0;
-          if (_retryConf < 60) {
+          if (_retryConf < 50) {
             // 信心度不足 60%（低於進場門檻的舊掛單）→ 靜默抑制，標記已處理
             const _ri = _tlog.findIndex(t => t.id === _existTrade.id);
             if (_ri >= 0) { _tlog[_ri].telegramSent = true; saveTradeLog(_tlog); }
@@ -12647,7 +12647,7 @@ function computeSimpleSetup(coin, isLong) {
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
-    learnFiltered: (conf < 60 || hardBlocked) && rawConf >= 60,
+    learnFiltered: (conf < 50 || hardBlocked) && rawConf >= 50,
     hardBlocked,
     isRangeMode: false,
     flipRisks:   [],
