@@ -5457,16 +5457,14 @@ function buildNewsWidget(items) {
       return m < 60 ? `${m} 分鐘前` : m < 1440 ? `${Math.round(m/60)} 小時前` : `${Math.round(m/1440)} 天前`;
     })() : '';
     const _orig = item.originalTitle || '';
-    const _nonAsciiRatio = _orig ? (_orig.match(/[^\x00-\x7F]/g) || []).length / _orig.length : 0;
-    const _displayTitle  = _orig
-      ? (_nonAsciiRatio >= 0.2 ? `${_orig} （${item.zhTitle}）` : _orig)
-      : (item.zhTitle || item.title || '');
+    const _zhTitle = item.zhTitle || '';
     const pointsHtml = (item.points || []).map(p => `<div class="news-point">• ${p}</div>`).join('');
     const tag = item.url ? 'a' : 'div';
     const tagOpen  = item.url ? `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">` : `<div class="news-item ${sentClass}">`;
     const tagClose = item.url ? '</a>' : '</div>';
     return `${tagOpen}
-      <div class="news-ai-title">${_displayTitle}</div>
+      <div class="news-ai-title">${_orig || _zhTitle}</div>
+      ${_orig && _zhTitle ? `<div style="font-size:0.78rem;color:#a78bfa;margin-top:3px;line-height:1.4">${_zhTitle}</div>` : ''}
       ${pointsHtml ? `<div class="news-keypoints">${pointsHtml}</div>` : ''}
       <div class="news-meta">
         <span>${item.source || ''}</span>
