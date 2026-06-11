@@ -1110,6 +1110,105 @@ function computeKillZone() {
   return { name: '盤整時段', code: 'off', emoji: '😴', quality: 'low', desc: '非主力時段，等待機會' };
 }
 
+/* ── H4 區間結構偵測（3+ 收針拒絕確認區間高低點）─────────────── */
+function detectRangeStructure(coin, h4Raw, h4Signal, d1Signal, atr) {
+  const price = parseFloat(coin.price) || 0;
+  if (!price) return { isRange: false };
+  const _atr = atr || h4Signal?.atr || price * 0.012;
+  if (!h4Raw || h4Raw.length < 20) {
+    const _sH = h4Signal?.swingHigh || d1Signal?.swingHigh;
+    const _sL = h4Signal?.swingLow  || d1Signal?.swingLow;
+    if (!_sH || !_sL || _sH - _sL < _atr * 2) return { isRange: false };
+    if (price < _sL * 0.98 || price > _sH * 1.02) return { isRange: false };
+    return { isRange: true, rangeHigh: _sH, rangeLow: _sL,
+      rangeMid: (_sH + _sL) / 2, rangeWidth: _sH - _sL,
+      resistanceTouches: 2, supportTouches: 2,
+      resistancePinBars: 1, supportPinBars: 1, qualityScore: 1.0 };
+  }
+  const cc = h4Raw.map(k => ({
+    o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]),
+    c: parseFloat(k[4]), v: parseFloat(k[5]),
+  })).filter(c => c.c > 0);
+  if (cc.length < 15) return { isRange: false };
+  const tol = _atr * 0.9, rawH = [], rawL = [];
+  for (let i = 2; i < cc.length - 2; i++) {
+    const c = cc[i];
+    const body = Math.max(Math.abs(c.c - c.o), _atr * 0.04);
+    const up = c.h - Math.max(c.c, c.o), dn = Math.min(c.c, c.o) - c.l;
+    if (c.h > cc[i-1].h && c.h > cc[i-2].h && c.h > cc[i+1].h && c.h > cc[i+2].h)
+      rawH.push({ p: c.h, pin: up >= body * 1.5 || up >= _atr * 0.25 });
+    if (c.l < cc[i-1].l && c.l < cc[i-2].l && c.l < cc[i+1].l && c.l < cc[i+2].l)
+      rawL.push({ p: c.l, pin: dn >= body * 1.5 || dn >= _atr * 0.25 });
+  }
+  const cluster = pts => {
+    const z = [];
+    for (const pt of pts) {
+      const ex = z.find(zn => Math.abs(zn.p - pt.p) <= tol);
+      if (ex) { ex.n++; ex.p = (ex.p * (ex.n - 1) + pt.p) / ex.n; if (pt.pin) ex.pins++; }
+      else z.push({ p: pt.p, n: 1, pins: pt.pin ? 1 : 0 });
+    }
+    return z;
+  };
+  const resZ = cluster(rawH).filter(z => z.p > price * 1.002);
+  const supZ = cluster(rawL).filter(z => z.p < price * 0.998);
+  if (!resZ.length || !supZ.length) return { isRange: false };
+  const bR = resZ.sort((a, b) => (b.pins * 2 + b.n) - (a.pins * 2 + a.n))[0];
+  const bS = supZ.sort((a, b) => (b.pins * 2 + b.n) - (a.pins * 2 + a.n))[0];
+  if (!bR || !bS || bR.n < 2 || bS.n < 2) return { isRange: false };
+  const rH = bR.p, rL = bS.p, rW = rH - rL;
+  if (rW < _atr * 2.0) return { isRange: false };
+  if (price < rL * 0.99 || price > rH * 1.01) return { isRange: false };
+  const rec = cc.slice(-15);
+  if (Math.max(...rec.map(c => c.h)) > rH * 1.025 ||
+      Math.min(...rec.map(c => c.l)) < rL * 0.975) return { isRange: false };
+  const totN = bR.n + bS.n, totP = bR.pins + bS.pins;
+  const qual = Math.min(3, (totN >= 8 ? 2 : totN >= 5 ? 1.5 : 1) + (totP >= 4 ? 1 : totP >= 2 ? 0.5 : 0));
+  return { isRange: true, rangeHigh: rH, rangeLow: rL, rangeMid: (rH + rL) / 2,
+    rangeWidth: rW, resistanceTouches: bR.n, supportTouches: bS.n,
+    resistancePinBars: bR.pins, supportPinBars: bS.pins, qualityScore: qual };
+}
+
+/* ── 偵測區間邊緣反轉信號（H4 收針 / 吞噬 / RSI / BB%B）──────── */
+function detectRangeReversal(coin, h4Raw, rangeDir, rangeStruct, atr) {
+  const rIsLong = rangeDir === 'long';
+  const rsi     = parseFloat(coin.rsi) || 50;
+  const pctB    = coin.bb?.pctB ?? 0.5;
+  const sigs    = [];
+  let   str     = 0;
+  if (h4Raw && h4Raw.length >= 4) {
+    const cc = h4Raw.map(k => ({
+      o: parseFloat(k[1]), h: parseFloat(k[2]), l: parseFloat(k[3]),
+      c: parseFloat(k[4]), v: parseFloat(k[5]),
+    })).filter(c => c.c > 0);
+    if (cc.length >= 4) {
+      const lc = cc[cc.length - 2], prev = cc[cc.length - 3];
+      const body = Math.max(Math.abs(lc.c - lc.o), atr * 0.04);
+      const up   = lc.h - Math.max(lc.c, lc.o), dn = Math.min(lc.c, lc.o) - lc.l;
+      if (rIsLong) {
+        if      (dn >= body * 1.5) { sigs.push(lc.c > lc.o ? '多頭收針（下影線看漲）' : '多頭收針（下影線拒絕）'); str += dn >= body * 2 ? 2.5 : 2; }
+        else if (dn >= body)       { sigs.push('下影線拒絕支撐');   str += 1; }
+        if (lc.c > lc.o && lc.o <= prev.c && lc.c >= prev.o) { sigs.push('看漲吞噬'); str += 1.5; }
+      } else {
+        if      (up >= body * 1.5) { sigs.push(lc.c < lc.o ? '空頭收針（上影線看跌）' : '空頭收針（上影線拒絕）'); str += up >= body * 2 ? 2.5 : 2; }
+        else if (up >= body)       { sigs.push('上影線拒絕壓力');   str += 1; }
+        if (lc.c < lc.o && lc.o >= prev.c && lc.c <= prev.o) { sigs.push('看跌吞噬'); str += 1.5; }
+      }
+      const avgV = cc.slice(-10, -2).reduce((a, c) => a + c.v, 0) / 8;
+      if (avgV > 0 && lc.v >= avgV * 1.3 && ((rIsLong && lc.c > lc.o) || (!rIsLong && lc.c < lc.o))) {
+        sigs.push('量能確認'); str += 0.5;
+      }
+    }
+  }
+  if      (rIsLong  && rsi <= 35) { sigs.push(`RSI ${rsi} 超賣`);  str += 1.5; }
+  else if (!rIsLong && rsi >= 65) { sigs.push(`RSI ${rsi} 超買`);  str += 1.5; }
+  else if (rIsLong  && rsi <= 45) { sigs.push(`RSI ${rsi} 偏低`);  str += 0.5; }
+  else if (!rIsLong && rsi >= 55) { sigs.push(`RSI ${rsi} 偏高`);  str += 0.5; }
+  if      (rIsLong  && pctB <= 0.20) { sigs.push(`BB%B ${pctB.toFixed(2)} 近下軌`); str += 0.5; }
+  else if (!rIsLong && pctB >= 0.80) { sigs.push(`BB%B ${pctB.toFixed(2)} 近上軌`); str += 0.5; }
+  return { hasReversal: str >= 2, signals: sigs.length ? sigs : [rIsLong ? '支撐觀察中' : '壓力觀察中'],
+    strength: str, pattern: sigs[0] || '' };
+}
+
 /* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
 function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const price = parseFloat(coin.price) || 0;
@@ -1729,237 +1828,163 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
-  // ── 震盪模式（宏觀+今日AI均為中性）→ 給出震盪交易建議 ──────────
-  if (isRangeMode && !bigTrendBlocked) {
-    const bb1hPctB  = bb1h_?.pctB ?? 0.5;
-    // 判斷震盪方向：BB%B 或 RSI 任一達到極值即可觸發
-    let rangeDir = null;
-    if      (bb1hPctB >= 0.76 || rsi > 63) rangeDir = 'short';
-    else if (bb1hPctB <= 0.24 || rsi < 37) rangeDir = 'long';
+  // ── H4 區間震盪偵測（3+ 收針確認高低點，有效反轉信號後才出建議）────────
+  try {
+    const _h4Raw = mtfData['4h']?.raw;
+    const _rs = detectRangeStructure(coin, _h4Raw, h4, d1sig_, atr);
+    if (_rs.isRange && !bigTrendBlocked) {
+      const _rtol = atr * 0.7;
+      let _rDir = null;
+      if      (price <= _rs.rangeLow  + _rtol) _rDir = 'long';
+      else if (price >= _rs.rangeHigh - _rtol) _rDir = 'short';
+      if (_rDir) {
+        const _rev = detectRangeReversal(coin, _h4Raw, _rDir, _rs, atr);
+        if (_rev.hasReversal) {
+          const _rIsLong = _rDir === 'long';
+          // ── 信心度：宏觀扣分 → AI趨勢扣分 → 技術扣分 → 止損記憶扣分 ──
+          const _rBase = Math.min(80, 60 + Math.round(_rs.qualityScore * 6));
+          let _rMacroPen = 0;
+          try {
+            if (fearGreed || globalMkt) {
+              const _rfgV = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+              const _rchg = globalMkt?.marketCapChange || 0;
+              const _rdom = globalMkt?.btcDominance   || 50;
+              let _ragt = 0;
+              if (_rIsLong) {
+                if (_rchg < -2) _ragt++;
+                if (_rdom > 58) _ragt++;
+                if (_rfgV < 30) _ragt++;
+                if (_rfgV > 75) _ragt += 0.5;
+              } else {
+                if (_rchg > 2)  _ragt++;
+                if (_rdom < 44) _ragt++;
+                if (_rfgV > 70) _ragt++;
+                if (_rfgV < 25) _ragt += 0.5;
+              }
+              _rMacroPen = _ragt >= 3 ? 18 : _ragt >= 2 ? 12 : _ragt >= 1 ? 5 : 0;
+            }
+          } catch(_rme) {}
+          let _rAIPen = 0;
+          try {
+            const _rwBias = weeklyBiasData.bias || '';
+            const _rtBias = todayBiasData.bias  || '';
+            if (_rIsLong ? _rwBias.includes('bear') : _rwBias.includes('bull'))
+              _rAIPen += _rwBias.includes('strong') ? 8 : 4;
+            if (_rIsLong ? _rtBias.includes('bear') : _rtBias.includes('bull'))
+              _rAIPen += 5;
+          } catch(_rae) {}
+          const _rAdxPen = coin.adx < 15 ? 10 : coin.adx < 18 ? 5 : 0;
+          let _rLearnPen = 0, _rHardBlocked = false;
+          try {
+            const _rLearn = applyLearnAdjustment(_rDir, rsi, coin.adx || 20, {});
+            _rLearnPen = _rLearn.penalty || 0;
+            _rHardBlocked = _rLearn.hardBlocked || false;
+          } catch(_rle) {}
+          const _rConf = Math.max(0, _rBase - _rMacroPen - _rAIPen - _rAdxPen - _rLearnPen);
 
-    // 方向確認：宏觀、週線AI、今日AI 三者中 2+ 個需與震盪方向同向才執行
-    const _rMBull = (_btsNetDir === 'strong_bull' || _btsNetDir === 'bull' || _btsNetDir === 'slight_bull') ? 1 : 0;
-    const _rWBull = weeklyBiasData.bias?.includes('bull') ? 1 : 0;
-    const _rTBull = todayBiasData.bias?.includes('bull')  ? 1 : 0;
-    const _rMBear = (_btsNetDir === 'strong_bear' || _btsNetDir === 'bear' || _btsNetDir === 'slight_bear') ? 1 : 0;
-    const _rWBear = weeklyBiasData.bias?.includes('bear') ? 1 : 0;
-    const _rTBear = todayBiasData.bias?.includes('bear')  ? 1 : 0;
-    if (rangeDir === 'long'  && (_rMBull + _rWBull + _rTBull) < 2) rangeDir = null;
-    if (rangeDir === 'short' && (_rMBear + _rWBear + _rTBear) < 2) rangeDir = null;
-
-    if (rangeDir) {
-      const rRawConf = Math.min(80, 65 + Math.round(Math.abs(bb1hPctB - 0.5) * 50));
-      let rLearnPen = 0, rHardBlocked = false;
-      try { ({ penalty: rLearnPen, hardBlocked: rHardBlocked } = applyLearnAdjustment(rangeDir, rsi, coin.adx || 20, {})); } catch(e) {}
-      // 宏觀 + AI 逆風扣分（依震盪方向計算）
-      const _rIsLongDir = rangeDir === 'long';
-      let _rMacroPen = 0, _rAIPen = 0;
-      try {
-        if (fearGreed || globalMkt) {
-          const _rfgV = fearGreed ? parseInt(fearGreed.value || '50') : 50;
-          const _rchg = globalMkt?.marketCapChange || 0;
-          const _rdom = globalMkt?.btcDominance   || 50;
-          let _ragt = 0;
-          if (_rIsLongDir) {
-            if (_rchg < -2) _ragt++;
-            if (_rdom > 58) _ragt++;
-            if (_rfgV < 30) _ragt++;
-            if (_rfgV > 75) _ragt += 0.5;
-          } else {
-            if (_rchg > 2)  _ragt++;
-            if (_rdom < 44) _ragt++;
-            if (_rfgV > 70) _ragt++;
-            if (_rfgV < 25) _ragt += 0.5;
+          if (_rConf >= 50 && !_rHardBlocked) {
+            // TP1 = 區間中點；TP2 = 對面邊界
+            const _rTP1   = _rs.rangeMid;
+            const _rTP2   = _rIsLong ? _rs.rangeHigh : _rs.rangeLow;
+            const _rSL    = _rIsLong ? _rs.rangeLow - atr * 0.3 : _rs.rangeHigh + atr * 0.3;
+            const _rEntry = price;
+            const _rRisk  = Math.abs(_rEntry - _rSL) || atr * 0.5;
+            const _rRR1   = (Math.abs(_rTP1 - _rEntry) / _rRisk).toFixed(1);
+            const _rRR2   = (Math.abs(_rTP2 - _rEntry) / _rRisk).toFixed(1);
+            const _rIcon  = _rIsLong ? '▲' : '▼';
+            const _rColor = _rIsLong ? 'var(--bull)' : 'var(--bear)';
+            const _rSlReason   = `${_rIsLong ? '跌破' : '突破'}區間${_rIsLong ? '低點' : '高點'} ${fmtPrice(_rIsLong ? _rs.rangeLow : _rs.rangeHigh)} 止損`;
+            const _rTp1Reason  = `區間中點止盈 ${fmtPrice(_rTP1)}，R/R ${_rRR1}:1`;
+            const _rTp2Reason  = `區間${_rIsLong ? '高點' : '低點'}延伸目標 ${fmtPrice(_rTP2)}，R/R ${_rRR2}:1`;
+            const rEntryReasons = [
+              `🔄 H4區間震盪（高點${_rs.resistanceTouches}次/${_rs.resistancePinBars}根收針，低點${_rs.supportTouches}次/${_rs.supportPinBars}根收針）`,
+              `${_rIsLong ? '支撐區' : '壓力區'} ${fmtPrice(_rIsLong ? _rs.rangeLow : _rs.rangeHigh)} 出現反轉：${_rev.signals.join('、')}`,
+              `本週 ${weeklyBiasData.biasLabel} ／ 今日 ${todayBiasData.biasLabel}`,
+            ];
+            _tradeSetupCache[coin.symbol] = {
+              direction: _rDir, tradeType: 'range',
+              entry: _rEntry, sl: _rSL, tp1: _rTP1, tp2: _rTP2,
+              entryReason: rEntryReasons.join('，'),
+              entryReasons: [...rEntryReasons],
+              slReason: _rSlReason, tp1Reason: _rTp1Reason, tp2Reason: _rTp2Reason,
+              rr1: _rRR1, rr2: _rRR2, atr, conf: _rConf, rawConf: _rBase,
+              learnPenalty: _rLearnPen, hardAdxPenalty: _rAdxPen,
+              macroPenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
+              weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
+              todayBias: todayBiasData.biasLabel, todayConf: todayBiasData.conf,
+              rangeMacroDir: _btsNetDir, bigTrend: 'range', bigTrendBlocked: false,
+              h4TrendLabel, d1TrendLabel, hardBlocked: false,
+              blockReasons: [], learnWarnings: [], defenseChecks: [],
+              flipRisks: [], macroReasons: [], aiTrendReasons: [],
+              rangeStruct: { rangeHigh: _rs.rangeHigh, rangeLow: _rs.rangeLow, rangeMid: _rs.rangeMid },
+            };
+            const tlogR = loadTradeLog();
+            const hasActiveR = tlogR.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
+            if (!hasActiveR) {
+              tlogR.push({
+                id: `${coin.symbol}_${Date.now()}`,
+                symbol: coin.symbol, direction: _rDir, tradeType: 'range',
+                entry: _rEntry, sl: _rSL, tp1: _rTP1, tp2: _rTP2,
+                entryReason: rEntryReasons[1],
+                slReason: _rSlReason, tp1Reason: _rTp1Reason, tp2Reason: _rTp2Reason,
+                conf: _rConf, rawConf: _rBase, atr,
+                learnPenalty: _rLearnPen, hardAdxPenalty: _rAdxPen,
+                macroPenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
+                status: 'pending', entryTime: null, timestamp: Date.now(),
+                score: coin.score, adx: coin.adx, rsi,
+                refined: false, scaleIns: [],
+              });
+              saveTradeLog(tlogR);
+            }
+            return `<div class="setup-verdict ${_rIsLong ? 'verdict-long' : 'verdict-short'}">
+              <div class="verdict-dir">
+                <span class="verdict-arrow">${_rIcon}</span>
+                <span class="verdict-label">${_rIsLong ? '區間做多' : '區間做空'}</span>
+                <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">🔄 震盪交易</span>
+                <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">區間高低點來回操作</span>
+              </div>
+              <div class="verdict-conf-wrap">
+                <span style="font-size:0.78rem;color:var(--text3)">信心度</span>
+                <div class="conf-bar"><div class="conf-fill" style="width:${_rConf}%;background:${_rColor}"></div></div>
+                <span style="color:${_rColor};font-weight:700;font-size:0.9rem">${_rConf}%</span>${_rConf < 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">偏低信心</span>' : ''}
+              </div>
+              <div style="margin-top:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:10px 12px;font-size:0.8rem">
+                <div style="color:var(--text2);font-weight:600;margin-bottom:6px">🔄 H4 區間震盪分析</div>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+                  <span style="font-size:0.73rem;color:var(--text3)">區間高點：<b style="color:var(--bear)">${fmtPrice(_rs.rangeHigh)}</b>（${_rs.resistanceTouches}次觸碰，${_rs.resistancePinBars}根收針）</span>
+                  <span style="font-size:0.73rem;color:var(--text3)">區間低點：<b style="color:var(--bull)">${fmtPrice(_rs.rangeLow)}</b>（${_rs.supportTouches}次觸碰，${_rs.supportPinBars}根收針）</span>
+                </div>
+                <div style="color:var(--text3);font-size:0.73rem;margin-bottom:4px">反轉信號：<b style="color:${_rColor}">${_rev.signals.join('、')}</b>（強度 ${_rev.strength.toFixed(1)}）</div>
+                <div style="color:var(--text3);font-size:0.73rem">本週 AI：<b style="color:var(--text2)">${weeklyBiasData.biasLabel}</b> ／ 今日 AI：<b style="color:var(--text2)">${todayBiasData.biasLabel}</b></div>
+              </div>
+            </div>
+            <div class="setup-levels" style="margin-top:10px">
+              <div class="level-row level-entry">
+                <div class="level-tag">📍 進場位</div>
+                <div class="level-desc">${_rIsLong ? '支撐區' : '壓力區'} ${fmtPrice(_rIsLong ? _rs.rangeLow : _rs.rangeHigh)} 附近出現反轉，確認進場</div>
+                <div class="level-price-val">${fmtPrice(_rEntry)}</div>
+              </div>
+              <div class="level-row level-tp1">
+                <div class="level-tag">🎯 止盈一</div>
+                <div class="level-desc">${_rTp1Reason}</div>
+                <div class="level-price-val">${fmtPrice(_rTP1)}</div>
+              </div>
+              <div class="level-row level-tp2">
+                <div class="level-tag">🚀 止盈二</div>
+                <div class="level-desc">${_rTp2Reason}</div>
+                <div class="level-price-val">${fmtPrice(_rTP2)}</div>
+              </div>
+              <div class="level-row level-sl">
+                <div class="level-tag">🛑 止損</div>
+                <div class="level-desc">${_rSlReason}</div>
+                <div class="level-price-val">${fmtPrice(_rSL)}</div>
+              </div>
+            </div>`;
           }
-          _rMacroPen = _ragt >= 3 ? 18 : _ragt >= 2 ? 12 : _ragt >= 1 ? 5 : 0;
         }
-        const _rwBias = weeklyBiasData.bias || '';
-        const _rtBias = todayBiasData.bias  || '';
-        const _rwOp = _rIsLongDir ? _rwBias.includes('bear') : _rwBias.includes('bull');
-        const _rtOp = _rIsLongDir ? _rtBias.includes('bear') : _rtBias.includes('bull');
-        if (_rwOp) _rAIPen += _rwBias.includes('strong') ? 8 : 4;
-        if (_rtOp) _rAIPen += 5;
-      } catch(_re) {}
-      // 最終信心度：ADX不適用震盪單，扣學習+宏觀+AI
-      const rConf = Math.max(0, rRawConf - rLearnPen - _rMacroPen - _rAIPen);
-
-      // 門檻檢查：扣完所有分後 < 65% 或 AI 硬封鎖 → 不顯示也不記錄
-      if (rConf >= 65 && !rHardBlocked) {
-      const rIsLong  = rangeDir === 'long';
-      const rIcon    = rIsLong ? '▲' : '▼';
-      const rColor   = rIsLong ? 'var(--bull)' : 'var(--bear)';
-      // 震盪進場：優先貼近 1H S/R 結構位（精度進場）
-      const _rNearSup = supps.find(s => (price - s) < atr * 1.8);
-      const _rNearRes = resists.find(r => (r - price) < atr * 1.8);
-      const rEntry = rIsLong
-        ? (_rNearSup ? Math.min(price, _rNearSup + atr * 0.12) : Math.max(supps[0] || price - atr * 1.2, price - atr * 1.5))
-        : (_rNearRes ? Math.max(price, _rNearRes - atr * 0.12) : Math.min(resists[0] || price + atr * 1.2, price + atr * 1.5));
-      // D1/4H 引線高低點——震盪止損止盈的主要依據
-      const _rWickSupps = [
-        ...(_pld1.swingLow    ? [_pld1.swingLow]    : []),
-        ...(_pl4h.swingLow    ? [_pl4h.swingLow]    : []),
-        ...(_pld1.supports    || []),
-        ...(_pl4h.supports    || []),
-      ].filter(s => s > 0 && s < price * 0.999).sort((a, b) => b - a);
-      const _rWickResists = [
-        ...(_pld1.swingHigh   ? [_pld1.swingHigh]   : []),
-        ...(_pl4h.swingHigh   ? [_pl4h.swingHigh]   : []),
-        ...(_pld1.resistances || []),
-        ...(_pl4h.resistances || []),
-      ].filter(r => r > price * 1.001).sort((a, b) => a - b);
-      // 止損：優先 D1/4H 引線外側，次選 1H 結構，最後 ATR
-      const _rSlWick = rIsLong
-        ? _rWickSupps.find(s => s < rEntry * 0.998 && s > rEntry - atr * 3)
-        : _rWickResists.find(r => r > rEntry * 1.002 && r < rEntry + atr * 3);
-      const rSL = rIsLong
-        ? (_rSlWick   ? _rSlWick   - atr * 0.20
-          : _rNearSup ? _rNearSup  - atr * 0.25
-          : rEntry - atr * 0.9)
-        : (_rSlWick   ? _rSlWick   + atr * 0.20
-          : _rNearRes ? _rNearRes  + atr * 0.25
-          : rEntry + atr * 0.9);
-      // TP1：優先 D1/4H 引線壓力/支撐，次選 1H S/R
-      const _rTP1WickTarget = rIsLong
-        ? _rWickResists.find(r => r > rEntry + atr * 0.3 && r <= rEntry + atr * 2.5)
-        : _rWickSupps.find(s  => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.5);
-      const _rTP1Target = _rTP1WickTarget || (rIsLong
-        ? resists.find(r => r > rEntry + atr * 0.3 && r <= rEntry + atr * 2.0)
-        : supps.find(s  => s < rEntry - atr * 0.3 && s >= rEntry - atr * 2.0));
-      const rTP1 = _rTP1Target || (rIsLong ? rEntry + atr * 0.8 : rEntry - atr * 0.8);
-      // TP2：BB%B 極端或信心 ≥ 70 才延伸；優先 D1/4H 引線
-      const _rHasTP2 = Math.abs(bb1hPctB - 0.5) >= 0.27 || rConf >= 65;
-      const _rTP2WickTarget = _rHasTP2 ? (rIsLong
-        ? _rWickResists.find(r => r > rTP1 + price * 0.003 && r <= rEntry + atr * 3.5)
-        : _rWickSupps.find(s  => s < rTP1 - price * 0.003 && s >= rEntry - atr * 3.5)) : null;
-      const _rTP2Target = _rHasTP2 ? (_rTP2WickTarget || (rIsLong
-        ? resists.find(r => r > rTP1 + price * 0.003 && r <= rEntry + atr * 2.5)
-        : supps.find(s  => s < rTP1 - price * 0.003 && s >= rEntry - atr * 2.5))) : null;
-      const rTP2 = _rHasTP2
-        ? (_rTP2Target || (rIsLong ? rEntry + atr * 1.5 : rEntry - atr * 1.5))
-        : null;
-      const rRisk = Math.abs(rEntry - rSL) || atr;
-      const rRR1  = (Math.abs(rTP1 - rEntry) / rRisk).toFixed(1);
-      const rRR2  = rTP2 ? (Math.abs(rTP2 - rEntry) / rRisk).toFixed(1) : null;
-      // reason labels
-      const _rSlStructLabel = rIsLong
-        ? (_rSlWick   ? `D1/4H引線低點 ${fmtPrice(_rSlWick)} 外側`
-          : _rNearSup ? `${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)} 外側` : 'ATR×0.9')
-        : (_rSlWick   ? `D1/4H引線高點 ${fmtPrice(_rSlWick)} 外側`
-          : _rNearRes ? `${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)} 外側` : 'ATR×0.9');
-      const _rSlReason = rIsLong
-        ? ((_rSlWick || _rNearSup) ? `跌破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價下方）`)
-        : ((_rSlWick || _rNearRes) ? `突破${_rSlStructLabel}止損離場` : `震盪範圍外緊湊止損（ATR×0.9，現價上方）`);
-      const _rTp1Reason = _rTP1Target
-        ? `震盪${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP1Target)}（${_rTP1WickTarget ? 'D1/4H引線' : _htfTfLabel(_rTP1Target)+'結構'}），快速止盈 R/R ${rRR1}:1`
-        : `震盪快速止盈（ATR×0.8），R/R ${rRR1}:1`;
-      const _rTp2Reason = _rHasTP2
-        ? (_rTP2Target
-          ? `震盪延伸${rIsLong ? '壓力' : '支撐'} ${fmtPrice(_rTP2Target)}（${_rTP2WickTarget ? 'D1/4H引線' : _htfTfLabel(_rTP2Target)}，BB%B極端/高信心）`
-          : `震盪延伸目標（ATR×1.5，BB%B極端/高信心）`)
-        : null;
-      const rEntryReasons = [
-        `🔄 震盪交易模式（宏觀+今日AI中性）`,
-        rIsLong
-          ? `RSI ${rsi}（偏低）${bb1hPctB <= 0.24 ? `，BB%B ${bb1hPctB.toFixed(2)}（近下軌）` : ''}，震盪低點做多${_rNearSup ? `（${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)}）` : ''}`
-          : `RSI ${rsi}（偏高）${bb1hPctB >= 0.76 ? `，BB%B ${bb1hPctB.toFixed(2)}（近上軌）` : ''}，震盪高點做空${_rNearRes ? `（${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)}）` : ''}`,
-        `本週 ${weeklyBiasData.biasLabel} ／ 今日 ${todayBiasData.biasLabel}`,
-      ];
-
-      // 更新快取（供 Telegram 通知使用）
-      _tradeSetupCache[coin.symbol] = {
-        direction: rangeDir, tradeType: 'range',
-        entry: rEntry, sl: rSL, tp1: rTP1, tp2: rTP2,
-        entryReason: rEntryReasons.join('，'),
-        entryReasons: [...rEntryReasons],
-        slReason: _rSlReason,
-        tp1Reason: _rTp1Reason,
-        tp2Reason: _rTp2Reason,
-        rr1: rRR1, rr2: rRR2, atr, conf: rConf, rawConf: rRawConf,
-        learnPenalty: rLearnPen, hardAdxPenalty: 0,
-        macroPenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
-        weeklyBias: weeklyBiasData.biasLabel, weeklyConf: weeklyBiasData.conf,
-        weeklyRangeMode: true,
-        todayBias: todayBiasData.biasLabel, todayConf: todayBiasData.conf,
-        todayRangeMode: true,
-        rangeMacroDir: _btsNetDir,
-        bigTrend: 'mixed', bigTrendBlocked: false, h4TrendLabel, d1TrendLabel,
-        hardBlocked: false, macroOpposePenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
-        flipRisks: [], macroReasons: [], aiTrendReasons: [],
-        blockReasons: [], learnWarnings: [], defenseChecks: [],
-      };
-
-      // 也寫入交易記錄（震盪掛單）
-      const tlogR = loadTradeLog();
-      const hasActiveR = tlogR.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
-      if (!hasActiveR) {
-        tlogR.push({
-          id: `${coin.symbol}_${Date.now()}`,
-          symbol: coin.symbol, direction: rangeDir, tradeType: 'range',
-          entry: rEntry, sl: rSL, tp1: rTP1, tp2: rTP2,
-          entryReason: rEntryReasons[1],
-          slReason: _rSlReason,
-          tp1Reason: _rTp1Reason,
-          tp2Reason: _rTp2Reason,
-          conf: rConf, rawConf: rRawConf, atr,
-          learnPenalty: rLearnPen, hardAdxPenalty: 0,
-          macroPenalty: _rMacroPen, aiTrendPenalty: _rAIPen,
-          status: 'pending', entryTime: null, timestamp: Date.now(),
-          score: coin.score, adx: coin.adx, rsi,
-          refined: false, scaleIns: [],
-        });
-        saveTradeLog(tlogR);
       }
-
-      return `<div class="setup-verdict ${rIsLong ? 'verdict-long' : 'verdict-short'}">
-        <div class="verdict-dir">
-          <span class="verdict-arrow">${rIcon}</span>
-          <span class="verdict-label">${rIsLong ? '震盪做多' : '震盪做空'}</span>
-          <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;padding:2px 8px;border-radius:20px;font-size:0.72rem;font-weight:700;background:rgba(99,102,241,.15);border:1px solid rgba(99,102,241,.3);color:#a5b4fc">🔄 震盪交易</span>
-          <span style="font-size:0.72rem;color:var(--text3);margin-left:8px">震盪高低點快進快出</span>
-        </div>
-        <div class="verdict-conf-wrap">
-          <span style="font-size:0.78rem;color:var(--text3)">信心度</span>
-          <div class="conf-bar"><div class="conf-fill" style="width:${rConf}%;background:${rColor}"></div></div>
-          <span style="color:${rColor};font-weight:700;font-size:0.9rem">${rConf}%</span>
-        </div>
-        <div style="margin-top:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:10px 12px;font-size:0.8rem">
-          <div style="color:var(--text2);font-weight:600;margin-bottom:6px">🔄 震盪行情分析</div>
-          <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:6px">
-            <span style="font-size:0.73rem;color:var(--text3)">宏觀大方向：<b style="color:${_btsNetDir.includes('bull') ? 'var(--bull)' : _btsNetDir.includes('bear') ? 'var(--bear)' : 'var(--text2)'}">${_btsNetDir === 'neutral' ? '◆ 中性' : _btsNetDir === 'slight_bull' ? '↑ 輕偏多' : _btsNetDir === 'slight_bear' ? '↓ 輕偏空' : _btsNetDir.includes('bull') ? '▲ 看漲' : '▼ 看跌'}</b></span>
-            <span style="font-size:0.73rem;color:var(--text3)">4H：<b style="color:${_h4Bull_r ? 'var(--bull)' : _h4Bear_r ? 'var(--bear)' : 'var(--text2)'}">${h4TrendLabel}</b></span>
-            <span style="font-size:0.73rem;color:var(--text3)">日線：<b style="color:${_dayBull_r ? 'var(--bull)' : _dayBear_r ? 'var(--bear)' : 'var(--text2)'}">${d1TrendLabel}</b></span>
-          </div>
-          <div style="color:var(--text3);font-size:0.73rem;margin-bottom:4px">本週 AI：<b style="color:var(--text2)">${weeklyBiasData.biasLabel}</b> ／ 今日 AI：<b style="color:var(--text2)">${todayBiasData.biasLabel}</b></div>
-          <div style="color:var(--text3);font-size:0.73rem">${rEntryReasons[1]}</div>
-        </div>
-      </div>
-      <div class="setup-levels" style="margin-top:10px">
-        <div class="level-row level-entry">
-          <div class="level-tag">📍 進場位</div>
-          <div class="level-desc">${rIsLong
-            ? (_rNearSup ? `${_htfTfLabel(_rNearSup)}支撐 ${fmtPrice(_rNearSup)} 上方確認，震盪低點做多` : '震盪低點附近')
-            : (_rNearRes ? `${_htfTfLabel(_rNearRes)}壓力 ${fmtPrice(_rNearRes)} 下方確認，震盪高點做空` : '震盪高點附近')}</div>
-          <div class="level-price-val">${fmtPrice(rEntry)}</div>
-        </div>
-        <div class="level-row level-tp1">
-          <div class="level-tag">🎯 快速止盈</div>
-          <div class="level-desc">${_rTp1Reason}</div>
-          <div class="level-price-val">${fmtPrice(rTP1)}</div>
-        </div>
-        ${rTP2 ? `<div class="level-row level-tp2">
-          <div class="level-tag">🚀 延伸目標</div>
-          <div class="level-desc">${_rTp2Reason} R/R ${rRR2}:1</div>
-          <div class="level-price-val">${fmtPrice(rTP2)}</div>
-        </div>` : ''}
-        <div class="level-row level-sl">
-          <div class="level-tag">🛑 止損</div>
-          <div class="level-desc">${_rSlReason}</div>
-          <div class="level-price-val">${fmtPrice(rSL)}</div>
-        </div>
-      </div>`;
-      } // ─── end if (rConf >= 70 && !rHardBlocked) ───
     }
-  }
+  } catch(_rse) { console.warn('[range detect]', coin?.symbol, _rse); }
 
   const isLong   = direction === 'long';
   const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
