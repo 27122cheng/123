@@ -3392,6 +3392,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ltPartialTP: ltPartialTP || null,
     ltTP: (canScaleIn && ltTP) ? ltTP : null,
     ltTPReason: (canScaleIn && ltTPReason) ? ltTPReason : null,
+    // 極端頂/底反轉辨識（供 Telegram 顯示反轉可能性）
+    extremeRev: _extremeRev,
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -7807,6 +7809,30 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
   }
   const _ictBlock = _ictLines.length ? '\n' + _ictLines.join('\n') : '';
 
+  // ── 極端頂/底反轉可能性 ──
+  let _revBlock = '';
+  try {
+    const _er = setup.extremeRev || _ictCache.extremeRev;
+    if (_er && _er.confidence >= 60) {
+      const _erIsTop  = _er.direction === 'top';
+      const _erIcon   = _erIsTop ? '📉' : '📈';
+      const _erDirZh  = _erIsTop ? '頂部' : '底部';
+      const _erStatus = _er.confidence >= 98
+        ? `⚡ <b>已達 98% 門檻，可考慮反向${_erIsTop ? '做空' : '做多'}</b>`
+        : _er.confidence >= 85
+          ? `⚠️ 潛在反轉（距 98% 門檻還差 ${98 - _er.confidence} 分）`
+          : `🔭 早期觀察（距門檻 ${98 - _er.confidence} 分）`;
+      const _erTop3 = (_er.signals || [])
+        .slice().sort((a, b) => (b.pts || 0) - (a.pts || 0)).slice(0, 3)
+        .map(s => `   • ${_esc(s.label)}（+${s.pts}）`).join('\n');
+      _revBlock = `\n${_erIcon} <b>${_erDirZh}反轉可能性：${_er.confidence}/100</b>\n   ${_erStatus}\n${_erTop3}\n`;
+      if (_er.confidence >= 85) {
+        const _erAgainst = (_erIsTop && isLong) || (!_erIsTop && !isLong);
+        if (_erAgainst) _revBlock += `   ⚠️ 反轉方向與本單${isLong ? '做多' : '做空'}相反，建議減倉或提前止盈\n`;
+      }
+    }
+  } catch(_e) {}
+
   // ── 風險警示 ──
   const _riskScore = setup.riskScore || _ictCache.riskScore || 0;
   const _riskLevel = setup.riskLevel || _ictCache.riskLevel || '低風險';
@@ -7867,6 +7893,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
     `\n📋 <b>進場理由</b>\n${_reasonsBullets}\n` +
     `📌 <b>止損理由</b>：${_esc(setup.slReason)}\n` +
     (_confDeductions ? `${_confDeductions}\n` : '') +
+    _revBlock +
     `\n${_tags}\n` +
     `🔗 <a href="${siteUrl}">查看 ${_sym} 詳細分析 →</a>`;
 }
