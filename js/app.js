@@ -1209,10 +1209,396 @@ function detectRangeReversal(coin, h4Raw, rangeDir, rangeStruct, atr) {
     strength: str, pattern: sigs[0] || '' };
 }
 
+/* ── 極端頂/底部辨識（多訊號聚合，信心≥98% 才建議反向交易）─────── */
+function detectExtremeReversal(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
+  const price = parseFloat(coin.price) || 0;
+  const rsi   = parseFloat(coin.rsi)   || 50;
+  const pctB  = coin.bb?.pctB ?? 0.5;
+  const macdH = parseFloat(coin.macdHist) || 0;
+  const adxV  = parseFloat(coin.adx) || 20;
+
+  const raw1h = mtfData['1h']?.raw || [];
+  const raw4h = mtfData['4h']?.raw || [];
+  const raw1d = mtfData['1d']?.raw || [];
+
+  const vol1h  = mtfData['1h']?.volAI    || {};
+  const vol4h  = mtfData['4h']?.volAI    || {};
+  const of1h   = mtfData['1h']?.orderFlow || {};
+  const bb1h_  = mtfData['1h']?.bb        || {};
+  const bb4h_  = mtfData['4h']?.bb        || {};
+  const h4s    = mtfData['4h']?.signal    || {};
+  const d1s    = mtfData['1d']?.signal    || {};
+  const w1s    = mtfData['1w']?.signal    || {};
+  const tr1h   = mtfData['1h']?.traps     || {};
+  const tr4h   = mtfData['4h']?.traps     || {};
+
+  const fgVal  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+  const mktChg = globalMkt?.marketCapChange || 0;
+
+  // Parse candles: [ts, open, high, low, close, vol]
+  const pc = raw => (raw || []).map(k => ({
+    o: parseFloat(k[1]), h: parseFloat(k[2]),
+    l: parseFloat(k[3]), c: parseFloat(k[4]), v: parseFloat(k[5]),
+  })).filter(c => c.c > 0 && c.h >= c.l);
+
+  // Volume divergence: price makes new extreme but volume shrinks → exhaustion
+  const volDiv = raw => {
+    const cc = pc(raw);
+    if (cc.length < 20) return {};
+    const r = cc.slice(-8), o = cc.slice(-18, -8);
+    if (!r.length || !o.length) return {};
+    const rHi = Math.max(...r.map(c => c.h)), oHi = Math.max(...o.map(c => c.h));
+    const rLo = Math.min(...r.map(c => c.l)), oLo = Math.min(...o.map(c => c.l));
+    const rV  = r.reduce((s, c) => s + c.v, 0) / r.length;
+    const oV  = o.reduce((s, c) => s + c.v, 0) / o.length;
+    const vFall = oV > 0 && rV < oV * 0.82;
+    const vRise = oV > 0 && rV > oV * 1.20;
+    const lc = r[r.length - 1];
+    return {
+      bearDiv:   rHi > oHi * 1.003 && vFall,
+      bullDiv:   rLo < oLo * 0.997 && vFall,
+      climaxTop: rHi > oHi * 1.001 && vRise && lc && lc.c < lc.o,
+      climaxBot: rLo < oLo * 0.999 && vRise && lc && lc.c > lc.o,
+    };
+  };
+
+  // Per-candle RSI divergence: compare price swing vs RSI swing
+  const rsiDiv = raw => {
+    const cc = pc(raw);
+    if (cc.length < 30) return { bear: false, bull: false };
+    const N = 14;
+    const closes = cc.map(c => c.c);
+    const rsiArr = [];
+    for (let i = N; i < closes.length; i++) {
+      let g = 0, l = 0;
+      for (let j = i - N + 1; j <= i; j++) {
+        const d = closes[j] - closes[j - 1];
+        if (d > 0) g += d; else l -= d;
+      }
+      const ag = g / N, al = l / N;
+      rsiArr.push(al === 0 ? 100 : 100 - 100 / (1 + ag / al));
+    }
+    if (rsiArr.length < 10) return { bear: false, bull: false };
+    const n  = rsiArr.length;
+    const sl = cc.slice(cc.length - rsiArr.length);
+    const rA = rsiArr.slice(n - 5), rB = rsiArr.slice(n - 10, n - 5);
+    const pA = sl.slice(n - 5),     pB = sl.slice(n - 10, n - 5);
+    const mxR1 = Math.max(...rA), mxR2 = Math.max(...rB);
+    const mnR1 = Math.min(...rA), mnR2 = Math.min(...rB);
+    const mxP1 = Math.max(...pA.map(c => c.h)), mxP2 = Math.max(...pB.map(c => c.h));
+    const mnP1 = Math.min(...pA.map(c => c.l)), mnP2 = Math.min(...pB.map(c => c.l));
+    return {
+      bear: mxP1 > mxP2 * 1.003 && mxR1 < mxR2 - 3,
+      bull: mnP1 < mnP2 * 0.997 && mnR1 > mnR2 + 3,
+    };
+  };
+
+  // Reversal candlestick patterns
+  const candlePat = (raw, forTop) => {
+    const cc = pc(raw);
+    if (cc.length < 3) return [];
+    const found = [];
+    for (let i = Math.max(1, cc.length - 5); i < cc.length; i++) {
+      const c = cc[i], p = cc[i - 1];
+      const body = Math.abs(c.c - c.o), range = c.h - c.l;
+      if (range < 1e-10) continue;
+      const upW = c.h - Math.max(c.c, c.o), dnW = Math.min(c.c, c.o) - c.l;
+      if (forTop) {
+        if (upW >= body * 2 && upW >= range * 0.45)
+          found.push(c.c < c.o ? '射擊之星' : '上影線拒壓');
+        if (c.c < c.o && p.c > p.o && c.o >= p.c * 0.998 && c.c <= p.o * 1.002)
+          found.push('看跌吞噬');
+        if (i >= 2) {
+          const pp = cc[i - 2];
+          if (pp.c > pp.o && body < range * 0.35 && c.c < c.o && c.c < (pp.c + pp.o) / 2)
+            found.push('黃昏之星');
+        }
+      } else {
+        if (dnW >= body * 2 && dnW >= range * 0.45)
+          found.push(c.c > c.o ? '鎚子線' : '下影線支撐');
+        if (c.c > c.o && p.c < p.o && c.o <= p.c * 1.002 && c.c >= p.o * 0.998)
+          found.push('看漲吞噬');
+        if (i >= 2) {
+          const pp = cc[i - 2];
+          if (pp.c < pp.o && body < range * 0.35 && c.c > c.o && c.c > (pp.c + pp.o) / 2)
+            found.push('晨星');
+        }
+      }
+    }
+    return [...new Set(found)];
+  };
+
+  // Is current price within 2.5% of historical high/low cluster?
+  const atHistLevel = (raw, forTop) => {
+    const cc = pc(raw);
+    if (cc.length < 40) return false;
+    const hist   = cc.slice(-80, -3);
+    const levels = forTop ? hist.map(c => c.h) : hist.map(c => c.l);
+    levels.sort((a, b) => forTop ? b - a : a - b);
+    const avg5 = levels.slice(0, 5).reduce((s, v) => s + v, 0) / 5;
+    const pct  = forTop ? (price / avg5 - 1) : (avg5 / price - 1);
+    return Math.abs(pct) < 0.025;
+  };
+
+  // Build score for one direction
+  const scoreDir = forTop => {
+    const sigs = [];
+    let pts = 0;
+    const add = (label, p, cat) => { pts += p; sigs.push({ label, pts: p, cat }); };
+
+    const vd1h = volDiv(raw1h), vd4h = volDiv(raw4h);
+    const rd1h = rsiDiv(raw1h), rd4h = rsiDiv(raw4h);
+    const cp4h = candlePat(raw4h, forTop), cp1h = candlePat(raw1h, forTop);
+
+    // ── 1. Volume exhaustion / divergence (max 20) ──────────────
+    if (forTop) {
+      if (vol1h.isClimax && vol1h.bias === 'bull')          add('1H 量能衰竭頂部（極量+小實體，買盤動能耗盡）',  12, 'vol');
+      else if (vd1h.climaxTop)                               add('1H 爆量見頂後急跌（買力衰竭型頂部）',           10, 'vol');
+      else if (vol1h.isSpike && vol1h.bias === 'bull')       add('1H 買方爆量（末段拉升風險）',                    5, 'vol');
+      if (vd1h.bearDiv)                                      add('1H 量能頂部背離（新高但量縮）',                  6, 'vol');
+      if (vol4h.isClimax && vol4h.bias === 'bull')           add('4H 量能衰竭頂部確認',                            5, 'vol');
+      else if (vd4h.bearDiv)                                 add('4H 量能頂部背離（中週期）',                      3, 'vol');
+    } else {
+      if (vol1h.isClimax && vol1h.bias === 'bear')           add('1H 量能衰竭底部（極量+小實體，賣盤動能耗盡）',  12, 'vol');
+      else if (vd1h.climaxBot)                               add('1H 爆量見底後急漲（賣力衰竭型底部）',           10, 'vol');
+      else if (vol1h.isSpike && vol1h.bias === 'bear')       add('1H 賣方爆量（末段殺跌風險）',                    5, 'vol');
+      if (vd1h.bullDiv)                                      add('1H 量能底部背離（新低但量縮）',                  6, 'vol');
+      if (vol4h.isClimax && vol4h.bias === 'bear')           add('4H 量能衰竭底部確認',                            5, 'vol');
+      else if (vd4h.bullDiv)                                 add('4H 量能底部背離（中週期）',                      3, 'vol');
+    }
+
+    // ── 2. RSI / MACD / BB momentum divergence (max 22) ────────
+    if (forTop) {
+      if (rsi > 78)                                          add(`RSI ${rsi} 嚴重超買（歷史頂部常見區間）`,       10, 'momentum');
+      else if (rsi > 70)                                     add(`RSI ${rsi} 超買頂部警戒`,                        6, 'momentum');
+      if (rd1h.bear)                                         add('1H RSI 頂部背離（價格新高但 RSI 走低）',        10, 'momentum');
+      else if (rd4h.bear)                                    add('4H RSI 頂部背離（中週期動能衰退）',              7, 'momentum');
+      if (bb1h_?.bbDivBear)                                  add('BB 頂背離（1H 新高未觸上軌）',                   5, 'momentum');
+      if (bb4h_?.bbDivBear)                                  add('4H BB 頂背離（中週期頂部）',                     3, 'momentum');
+      if (pctB >= 0.95)                                      add(`BB%B ${pctB.toFixed(2)} 極度超買（觸及上軌）`,  5, 'momentum');
+      else if (pctB >= 0.85)                                 add(`BB%B ${pctB.toFixed(2)} 近上軌`,                 2, 'momentum');
+      if (macdH > 0 && rd1h.bear)                           add('MACD 正值同時出現背離（動能衰竭）',               5, 'momentum');
+    } else {
+      if (rsi < 22)                                          add(`RSI ${rsi} 嚴重超賣（歷史底部常見區間）`,       10, 'momentum');
+      else if (rsi < 30)                                     add(`RSI ${rsi} 超賣底部警戒`,                        6, 'momentum');
+      if (rd1h.bull)                                         add('1H RSI 底部背離（價格新低但 RSI 走高）',        10, 'momentum');
+      else if (rd4h.bull)                                    add('4H RSI 底部背離（中週期動能復甦）',              7, 'momentum');
+      if (bb1h_?.bbDivBull)                                  add('BB 底背離（1H 新低未觸下軌）',                   5, 'momentum');
+      if (bb4h_?.bbDivBull)                                  add('4H BB 底背離（中週期底部）',                     3, 'momentum');
+      if (pctB <= 0.05)                                      add(`BB%B ${pctB.toFixed(2)} 極度超賣（觸及下軌）`,  5, 'momentum');
+      else if (pctB <= 0.15)                                 add(`BB%B ${pctB.toFixed(2)} 近下軌`,                 2, 'momentum');
+      if (macdH < 0 && rd1h.bull)                           add('MACD 負值同時出現背離（動能轉強）',               5, 'momentum');
+    }
+
+    // ── 3. Price structure & candlestick patterns (max 18) ──────
+    if (atHistLevel(raw1d, forTop))                          add(forTop ? '日線歷史壓力區間（±2.5%）' : '日線歷史支撐區間（±2.5%）', 8, 'struct');
+    if (atHistLevel(raw4h, forTop))                          add(forTop ? '4H 前高壓力確認' : '4H 前低支撐確認', 4, 'struct');
+    if (cp4h.length > 0) {
+      const p4 = Math.min(6, cp4h.length * 4);
+      add(`4H 反轉K線（${cp4h.join('·')}）`, p4, 'struct');
+    }
+    if (cp1h.length > 0 && cp4h.length === 0)               add(`1H 反轉K線（${cp1h.join('·')}）`, 3, 'struct');
+    if (forTop) {
+      if (tr1h.sweepBear || tr4h.sweepBear)                 add('流動性掃蕩後急跌（止損獵殺完成）',               5, 'struct');
+      if (tr1h.twoB_Bear)                                    add('雙棒頂部反轉確認',                               3, 'struct');
+      if (tr1h.po3Bear)                                      add('PO3 空頭訂單塊確認',                             3, 'struct');
+    } else {
+      if (tr1h.sweepBull || tr4h.sweepBull)                 add('流動性掃蕩後急漲（止損獵殺完成）',               5, 'struct');
+      if (tr1h.twoB_Bull)                                    add('雙棒底部反轉確認',                               3, 'struct');
+      if (tr1h.po3Bull)                                      add('PO3 多頭訂單塊確認',                             3, 'struct');
+    }
+
+    // ── 4. Order flow (max 15) ────────────────────────────────────
+    if (forTop) {
+      if (of1h.cvdTrend === 'bear')                         add('訂單流 CVD 轉空（主動賣盤主導）',               7, 'flow');
+      else if (of1h.cvdTrend === 'neutral')                  add('訂單流 CVD 中性（買力減弱）',                    2, 'flow');
+      const bP = of1h.buyPct ?? 50;
+      if (bP <= 38)                                          add(`主動賣方佔比 ${100 - bP}%（強勁賣壓）`,          5, 'flow');
+      else if (bP <= 46)                                     add(`買方佔比 ${bP}% 偏弱`,                           2, 'flow');
+      if (deriv?.takerBuySell < 0.80)                        add(`Taker 賣盤主導（${(deriv.takerBuySell||1).toFixed(2)}）`, 3, 'flow');
+      if (whale?.bias === 'bear' && (whale.bigSellCount || 0) >= 3)
+                                                             add(`巨鯨連續賣出（${whale.bigSellCount} 筆）`,       3, 'flow');
+    } else {
+      if (of1h.cvdTrend === 'bull')                         add('訂單流 CVD 轉多（主動買盤主導）',               7, 'flow');
+      else if (of1h.cvdTrend === 'neutral')                  add('訂單流 CVD 中性（賣力減弱）',                    2, 'flow');
+      const bP = of1h.buyPct ?? 50;
+      if (bP >= 62)                                          add(`主動買方佔比 ${bP}%（強勁買壓）`,               5, 'flow');
+      else if (bP >= 54)                                     add(`買方佔比 ${bP}% 偏強`,                           2, 'flow');
+      if (deriv?.takerBuySell > 1.20)                        add(`Taker 買盤主導（${(deriv.takerBuySell||1).toFixed(2)}）`, 3, 'flow');
+      if (whale?.bias === 'bull' && (whale.bigBuyCount || 0) >= 3)
+                                                             add(`巨鯨連續買入（${whale.bigBuyCount} 筆）`,        3, 'flow');
+    }
+
+    // ── 5. Sentiment & macro extremes (max 12) ────────────────────
+    if (forTop) {
+      if (fgVal > 85)                                        add(`恐貪指數 ${fgVal}（極度貪婪 — 歷史頂部區間）`, 7, 'sentiment');
+      else if (fgVal > 75)                                   add(`恐貪指數 ${fgVal}（貪婪 — 頂部風險）`,           3, 'sentiment');
+      if (mktChg > 5)                                        add(`市值急漲 +${mktChg.toFixed(1)}%（市場過熱）`,   3, 'sentiment');
+      else if (mktChg > 2)                                   add(`市值上漲 +${mktChg.toFixed(1)}%（偏熱）`,        1, 'sentiment');
+      const dom = globalMkt?.btcDominance || 50;
+      if (dom < 42)                                          add(`BTC主導率 ${dom.toFixed(1)}%（山寨季末段過熱）`, 2, 'sentiment');
+    } else {
+      if (fgVal < 15)                                        add(`恐貪指數 ${fgVal}（極度恐慌 — 歷史底部區間）`, 7, 'sentiment');
+      else if (fgVal < 25)                                   add(`恐貪指數 ${fgVal}（恐慌 — 底部風險釋放）`,       3, 'sentiment');
+      if (mktChg < -5)                                       add(`市值大跌 ${mktChg.toFixed(1)}%（恐慌拋售）`,    3, 'sentiment');
+      else if (mktChg < -2)                                  add(`市值下跌 ${mktChg.toFixed(1)}%（悲觀）`,         1, 'sentiment');
+      const dom = globalMkt?.btcDominance || 50;
+      if (dom > 60)                                          add(`BTC主導率 ${dom.toFixed(1)}%（資金避險集中）`,   2, 'sentiment');
+    }
+
+    // ── 6. Multi-timeframe alignment (max 15) ─────────────────────
+    if (forTop) {
+      if (h4s?.signal?.includes('bear'))                    add('4H 時框轉空確認',                               5, 'mtf');
+      if (d1s?.signal?.includes('bear'))                    add('日線方向做空',                                   5, 'mtf');
+      if (w1s?.signal?.includes('bear'))                    add('週線壓制（大週期空方）',                         5, 'mtf');
+    } else {
+      if (h4s?.signal?.includes('bull'))                    add('4H 時框轉多確認',                               5, 'mtf');
+      if (d1s?.signal?.includes('bull'))                    add('日線方向做多',                                   5, 'mtf');
+      if (w1s?.signal?.includes('bull'))                    add('週線支撐（大週期多方）',                         5, 'mtf');
+    }
+
+    // ── 7. Trend exhaustion & structure extras (max 8) ────────────
+    if (adxV < 18)                                           add('ADX < 18（趨勢動能枯竭）',                      5, 'extra');
+    else if (adxV < 22)                                      add('ADX < 22（趨勢動能減弱）',                      2, 'extra');
+    if (bb1h_?.tags?.includes('BB收窄蓄力'))
+                                                             add('BB 收窄後蓄能釋放（可能為反向爆發）',           3, 'extra');
+
+    return { pts: Math.min(100, pts), sigs };
+  };
+
+  const top = scoreDir(true);
+  const bot = scoreDir(false);
+
+  const result = {
+    topScore: top.pts, topSignals: top.sigs,
+    bottomScore: bot.pts, bottomSignals: bot.sigs,
+    direction: null, confidence: 0, signals: [],
+  };
+
+  if (top.pts >= bot.pts && top.pts >= 60) {
+    result.direction  = 'top';
+    result.confidence = top.pts;
+    result.signals    = top.sigs;
+  } else if (bot.pts > top.pts && bot.pts >= 60) {
+    result.direction  = 'bottom';
+    result.confidence = bot.pts;
+    result.signals    = bot.sigs;
+  }
+  return result;
+}
+
+/* ── 極端反轉 HTML 渲染（供 buildTradeSetup 呼叫）──────────────── */
+function buildExtremeRevHtml(er, coin, mtfData) {
+  try {
+    if (!er || er.confidence < 60) return '';
+    const price  = parseFloat(coin.price) || 0;
+    const isTop  = er.direction === 'top';
+    const conf   = er.confidence;
+
+    // Compute ATR from 1h candles
+    const raw1h = mtfData['1h']?.raw || [];
+    const cc = raw1h.map(k => ({ h: parseFloat(k[2]), l: parseFloat(k[3]), c: parseFloat(k[4]) })).filter(c => c.c > 0);
+    let atr = price * 0.012;
+    if (cc.length >= 15) {
+      const atrs = [];
+      for (let i = 1; i < Math.min(cc.length, 15); i++)
+        atrs.push(Math.max(cc[i].h - cc[i].l, Math.abs(cc[i].h - cc[i-1].c), Math.abs(cc[i].l - cc[i-1].c)));
+      atr = atrs.reduce((s, v) => s + v, 0) / atrs.length;
+    }
+    const recentHi = cc.length >= 10 ? Math.max(...cc.slice(-10).map(c => c.h)) : price * 1.02;
+    const recentLo = cc.length >= 10 ? Math.min(...cc.slice(-10).map(c => c.l)) : price * 0.98;
+    const sl  = isTop ? recentHi + atr * 0.3  : recentLo  - atr * 0.3;
+    const tp1 = isTop ? price - atr * 2.0      : price     + atr * 2.0;
+    const tp2 = isTop ? price - atr * 3.5      : price     + atr * 3.5;
+
+    const _pxSym = (coin.symbol || '').replace('/', '').toUpperCase();
+    const _px = v => { try { return toPionex(_pxSym, price, v); } catch(e) { return v.toFixed(4); } };
+
+    const catLabel = { vol:'量能', momentum:'動能/背離', struct:'價格結構', flow:'訂單流', sentiment:'市場情緒', mtf:'多時框', extra:'補充指標' };
+    const catColor = { vol:'#60a5fa', momentum:'#f59e0b', struct:'#a78bfa', flow:'#34d399', sentiment:'#f87171', mtf:'#e879f9', extra:'#94a3b8' };
+
+    const grouped = {};
+    for (const s of er.signals) {
+      if (!grouped[s.cat]) grouped[s.cat] = [];
+      grouped[s.cat].push(s);
+    }
+
+    const confColor   = conf >= 98 ? '#ef4444' : conf >= 85 ? '#f97316' : '#60a5fa';
+    const isHighConf  = conf >= 98;
+    const revColor    = isTop ? 'var(--bear)' : 'var(--bull)';
+    const revRgb      = isTop ? '239,68,68' : '34,197,94';
+    const dirLabel    = isTop ? '頂部' : '底部';
+    const revDirLabel = isTop ? '做空' : '做多';
+    const revIcon     = isTop ? '📉' : '📈';
+
+    const levelBadge = isHighConf
+      ? `<span style="background:${confColor};color:#fff;font-size:0.63rem;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:6px;letter-spacing:.3px">⚡ 高精確反轉</span>`
+      : conf >= 85
+        ? `<span style="background:#f97316;color:#fff;font-size:0.63rem;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:6px">⚠️ 潛在反轉</span>`
+        : `<span style="background:#60a5fa22;color:#60a5fa;font-size:0.63rem;padding:2px 8px;border-radius:10px;margin-left:6px">🔭 早期觀察</span>`;
+
+    const sigHtml = Object.entries(grouped).map(([cat, sigs]) => `
+      <div style="margin-bottom:7px">
+        <div style="font-size:0.67rem;font-weight:700;color:${catColor[cat]||'#94a3b8'};text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">${catLabel[cat]||cat}</div>
+        ${sigs.map(s => `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+          <span style="font-size:0.7rem;color:var(--text2)">${s.label}</span>
+          <span style="font-size:0.69rem;font-weight:700;color:${catColor[cat]||'#94a3b8'};margin-left:8px;white-space:nowrap">+${s.pts}</span>
+        </div>`).join('')}
+      </div>`).join('');
+
+    const tradeHtml = isHighConf ? `
+      <div style="margin-top:10px;padding:10px 12px;background:rgba(${revRgb},.08);border:1.5px solid rgba(${revRgb},.4);border-radius:9px">
+        <div style="font-size:0.75rem;font-weight:700;color:${revColor};margin-bottom:8px">${revIcon} 建議反向交易 — ${revDirLabel}（逆勢高信心）</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:0.71rem">
+          <div style="background:rgba(255,255,255,.04);padding:5px 8px;border-radius:7px">
+            <div style="color:var(--text3);margin-bottom:1px">進場</div>
+            <div style="font-weight:700;color:var(--text1)">${_px(price)}</div>
+          </div>
+          <div style="background:rgba(239,68,68,.08);padding:5px 8px;border-radius:7px">
+            <div style="color:var(--text3);margin-bottom:1px">止損</div>
+            <div style="font-weight:700;color:var(--bear)">${_px(sl)}</div>
+          </div>
+          <div style="background:rgba(34,197,94,.08);padding:5px 8px;border-radius:7px">
+            <div style="color:var(--text3);margin-bottom:1px">目標①</div>
+            <div style="font-weight:700;color:var(--bull)">${_px(tp1)}</div>
+          </div>
+          <div style="background:rgba(34,197,94,.12);padding:5px 8px;border-radius:7px">
+            <div style="color:var(--text3);margin-bottom:1px">目標②</div>
+            <div style="font-weight:700;color:var(--bull)">${_px(tp2)}</div>
+          </div>
+        </div>
+        <div style="font-size:0.67rem;color:#f59e0b;margin-top:7px">⚠️ 逆勢反向交易風險較高，建議倉位控制在正常的 50% 以內，務必嚴格止損</div>
+      </div>` : conf >= 85 ? `
+      <div style="margin-top:8px;padding:8px 10px;background:rgba(249,115,22,.07);border:1px solid rgba(249,115,22,.3);border-radius:8px;font-size:0.7rem;color:#f97316">
+        ⚠️ 信號強度尚未達到 98% 建議門檻（還需 <strong>${98 - conf}%</strong>），建議等待更多確認訊號後再考慮反向操作
+      </div>` : '';
+
+    return `<div style="margin-top:14px;padding:12px 13px;background:rgba(${revRgb},.04);border:1.5px solid rgba(${revRgb},.22);border-radius:11px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px">
+        <div style="font-size:0.75rem;font-weight:700;color:var(--text1)">${revIcon} ${dirLabel}辨識分析${levelBadge}</div>
+        <div style="font-size:0.88rem;font-weight:900;color:${confColor}">${conf}<span style="font-size:0.65rem;font-weight:400;color:var(--text3)">/100</span></div>
+      </div>
+      <div style="background:rgba(255,255,255,.07);border-radius:4px;height:4px;margin-bottom:7px;overflow:hidden">
+        <div style="width:${Math.min(100,conf)}%;height:100%;background:linear-gradient(90deg,${isTop?'#f59e0b,#ef4444':'#22d3ee,#22c55e'});border-radius:4px"></div>
+      </div>
+      <div style="font-size:0.67rem;color:var(--text3);margin-bottom:9px">
+        反向交易觸發門檻：98%
+        <span style="color:${isHighConf?'#22c55e':'#94a3b8'}">${isHighConf ? '✅ 已達標，可考慮反向交易' : `（距門檻還需 ${98 - conf} 分）`}</span>
+        &nbsp;·&nbsp; 對手方向信號積分：<strong style="color:${isTop?'#60a5fa':'#f97316'}">${er.direction==='top'?er.bottomScore:er.topScore}/100</strong>
+      </div>
+      <div>${sigHtml}</div>
+      ${tradeHtml}
+    </div>`;
+  } catch(e) { console.warn('[buildExtremeRevHtml]', e); return ''; }
+}
+
 /* ── 交易建議（支撐壓力 + 訂單流 + RSI 三位一體）────────────── */
 function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return '<div class="adv-loading">價格數據不可用</div>';
+  // 極端頂/底部辨識（在所有早期返回之前計算）
+  const _extremeRev = (() => { try { return detectExtremeReversal(coin, mtfData, deriv, globalMkt, whale, fearGreed); } catch(_e) { return { direction: null, confidence: 0, signals: [], topScore: 0, bottomScore: 0 }; } })();
+  const _erHtml = () => buildExtremeRevHtml(_extremeRev, coin, mtfData);
   const _pxSym = (coin.symbol || '').replace('/', '').toUpperCase();
   const _px = v => toPionex(_pxSym, price, v);
 
@@ -2868,6 +3254,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_tClrR}40;color:${_tClrR}">📅 今日 ${todayBiasData?.biasLabel || '—'}（${todayBiasData?.conf || 50}%）</span>
         </div>
       </div>
+      ${_erHtml()}
     </div>`;
   }
 
@@ -3164,6 +3551,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_tClrW}40;color:${_tClrW}">📅 今日 ${todayBiasData?.biasLabel || '—'}（${todayBiasData?.conf || 50}%）</span>
         </div>
       </div>
+      ${_erHtml()}
     </div>`;
   }
 
@@ -3191,8 +3579,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
         ${(weeklyOpposed || todayOpposed) ? `<div style="font-size:0.71rem;color:var(--bear);margin-top:6px">⚠️ AI 預測${weeklyOpposed && todayOpposed ? '本週與今日均' : weeklyOpposed ? '本週' : '今日'}與${isLong ? '做多' : '做空'}方向相反，是信心扣分主因之一</div>` : ''}
       </div>
+      ${_erHtml()}
     </div>`;
   }
+
+  // 極端反轉點分析面板
+  const _erPanelHtml = _erHtml();
 
   // ── 宏觀經濟摘要 ──
   const fgVal  = fearGreed ? parseInt(fearGreed.value) : null;
@@ -3813,7 +4205,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
       </div>
     </div>`;
-  } catch(e) { console.warn('[buildTradeSetup] AI panel render error:', e); return ''; } })()}`;
+  } catch(e) { console.warn('[buildTradeSetup] AI panel render error:', e); return ''; } })()}
+  ${_erPanelHtml}`;
 }
 
 /* ── 局勢重點（純本地指標合成，無外部 API）───────────────────── */
