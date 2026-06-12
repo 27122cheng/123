@@ -9,7 +9,7 @@ const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓�
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
-let   _erScanTimer     = null;  // 極端反轉背景輪掃（每 20 秒更新 BTC/ETH）
+let   _erScanTimer     = null;  // 極端反轉背景輪掃（每日 08:30 台灣時間更新 BTC/ETH）
 let   _erScanRunning   = false;
 
 /* ── 狀態 ───────────────────────────────────────────────────── */
@@ -198,10 +198,24 @@ function startRefreshCycle() {
     }
   }, 15000);
 
-  // 極端反轉背景輪掃：每 60 秒更新 BTC / ETH 反轉分析
-  clearInterval(_erScanTimer);
-  _erScanTimer = setInterval(() => { backgroundExtremeRevScan(); }, 60000);
-  setTimeout(() => { backgroundExtremeRevScan(); }, 5000);  // 啟動後 5 秒先掃第一批
+  // 極端反轉背景輪掃：每日 08:30 台灣時間（UTC+8 = UTC 00:30）
+  clearTimeout(_erScanTimer);
+  _erScanTimer = null;
+  (function scheduleErScan() {
+    const nowUTC = Date.now();
+    const d = new Date(nowUTC);
+    // 今日 08:30 TW = UTC 00:30
+    const t830 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 30, 0, 0);
+    const msToNext = t830 > nowUTC ? t830 - nowUTC : t830 + 86400000 - nowUTC;
+    _erScanTimer = setTimeout(() => {
+      backgroundExtremeRevScan().then(() => renderErDashboardWidget());
+      scheduleErScan();
+    }, msToNext);
+    // 若目前已超過今日 08:30 且尚未掃描，立即執行
+    if (nowUTC >= t830 && (_tradeSetupCache['BTC/USDT']?.extremeRevTime || 0) < t830) {
+      setTimeout(() => backgroundExtremeRevScan().then(() => renderErDashboardWidget()), 5000);
+    }
+  })();
 
   const secs = state.settings.refreshInterval || 60;
   state.countdown = secs;
@@ -5958,6 +5972,56 @@ function buildNewsWidget(items) {
   ${newsHtml}`;
 }
 
+function renderErDashboardWidget() {
+  const el = document.getElementById('er-dashboard-body');
+  if (!el) return;
+  const cache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache) ? _tradeSetupCache : {};
+  const rows = ['BTC/USDT', 'ETH/USDT'].map(sym => {
+    const er = cache[sym]?.extremeRev;
+    if (!er) return `<div style="color:var(--text3);font-size:0.82rem;padding:4px 0">📊 <b>${sym}</b> — 反轉數據計算中…</div>`;
+    if (!er.direction) {
+      return `<div style="font-size:0.82rem;padding:4px 0;color:var(--text2)">📊 <b>${sym}</b> — 無顯著反轉訊號（頂部 ${er.topScore||0} / 底部 ${er.bottomScore||0}）</div>`;
+    }
+    const isTop = er.direction === 'top';
+    const icon = isTop ? '📉' : '📈';
+    const zh = isTop ? '頂部' : '底部';
+    const conf = er.confidence || 0;
+    const barColor = conf >= 98 ? 'var(--bear)' : conf >= 85 ? '#f59e0b' : 'var(--bull)';
+    const status = conf >= 98
+      ? `<span style="color:var(--bear)">⚡ 已達 98% 門檻，可考慮反向${isTop ? '做空' : '做多'}</span>`
+      : conf >= 85
+        ? `<span style="color:#f59e0b">⚠️ 潛在反轉（距門檻 ${98 - conf} 分）</span>`
+        : `<span style="color:var(--text3)">🔭 早期觀察（距門檻 ${98 - conf} 分）</span>`;
+    const topSigs = (er.signals || []).slice().sort((a,b)=>(b.pts||0)-(a.pts||0)).slice(0,2)
+      .map(s=>`<span style="font-size:0.71rem;color:var(--text3)">• ${s.label}（+${s.pts}）</span>`).join(' ');
+    return `<div style="margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+        <span style="font-weight:700;font-size:0.85rem">${icon} ${sym} — ${zh}反轉</span>
+        <span style="font-weight:800;font-size:0.9rem;color:${barColor}">${conf}/100</span>
+      </div>
+      <div style="background:rgba(255,255,255,.06);border-radius:4px;height:5px;margin-bottom:4px">
+        <div style="width:${conf}%;height:100%;background:${barColor};border-radius:4px"></div>
+      </div>
+      <div style="margin-bottom:3px">${status}</div>
+      ${topSigs ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${topSigs}</div>` : ''}
+    </div>`;
+  });
+  const lastTime = Math.max(
+    cache['BTC/USDT']?.extremeRevTime || 0,
+    cache['ETH/USDT']?.extremeRevTime || 0
+  );
+  const timeStr = lastTime
+    ? new Date(lastTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })
+    : '—';
+  el.innerHTML = `
+    <div class="outlook-header">
+      <span class="outlook-title">🔄 頂/底反轉可能性</span>
+      <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">最後更新 ${timeStr}</span>
+    </div>
+    <div style="padding:4px 0">${rows.join('')}</div>
+    <div style="font-size:0.71rem;color:var(--text3);margin-top:6px">每日 08:30 台灣時間自動更新（BTC / ETH）</div>`;
+}
+
 async function loadDashboardMacro() {
   const el = document.getElementById('market-outlook-body');
   let fg = null, global = null;
@@ -5967,6 +6031,7 @@ async function loadDashboardMacro() {
   } catch {
     if (el) el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
   }
+  renderErDashboardWidget();
   loadDashboardNews();
 }
 
