@@ -9,8 +9,7 @@ const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓�
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
-let   _erScanTimer     = null;  // 極端反轉背景輪掃（每 20 秒一批，輪流更新所有幣種）
-let   _erScanIdx       = 0;
+let   _erScanTimer     = null;  // 極端反轉背景輪掃（每 20 秒更新 BTC/ETH）
 let   _erScanRunning   = false;
 
 /* ── 狀態 ───────────────────────────────────────────────────── */
@@ -151,19 +150,18 @@ function hideLoading() {
   setTimeout(() => document.getElementById('loading-overlay').classList.add('hide'), 400);
 }
 
-/* ── 極端反轉背景輪掃：自動為所有掃描幣種更新頂/底反轉分析 ────────
-   每批處理 3 個幣種（各需 6 次 K 線請求），輪流掃完整個清單後從頭再來，
-   讓 Telegram 每日簡報與通知能取得全部幣種的最新反轉信心，無需手動開啟詳情頁 */
+/* ── 極端反轉背景輪掃：自動更新 BTC / ETH 頂/底反轉分析 ────────
+   只追蹤 BTC 與 ETH 兩大主流幣（各需 6 次 K 線請求），每輪都更新，
+   讓 Telegram 每日簡報與通知能取得最新反轉信心，無需手動開啟詳情頁 */
 async function backgroundExtremeRevScan() {
   if (_erScanRunning) return;
   if (!state.data || !state.data.length) return;
   _erScanRunning = true;
   try {
-    const coins = state.data;
-    const BATCH = 3;
-    for (let n = 0; n < BATCH && n < coins.length; n++) {
-      const coin = coins[_erScanIdx % coins.length];
-      _erScanIdx = (_erScanIdx + 1) % coins.length;
+    const coins = state.data.filter(c =>
+      c?.symbol === 'BTC/USDT' || c?.symbol === 'ETH/USDT');
+    for (let n = 0; n < coins.length; n++) {
+      const coin = coins[n];
       if (!coin?.symbol) continue;
       try {
         const mtfData = await fetchMTFKlines(coin.symbol);
@@ -200,9 +198,9 @@ function startRefreshCycle() {
     }
   }, 15000);
 
-  // 極端反轉背景輪掃：每 20 秒一批（3 幣），約 4 分鐘輪完 36 個幣種
+  // 極端反轉背景輪掃：每 60 秒更新 BTC / ETH 反轉分析
   clearInterval(_erScanTimer);
-  _erScanTimer = setInterval(() => { backgroundExtremeRevScan(); }, 20000);
+  _erScanTimer = setInterval(() => { backgroundExtremeRevScan(); }, 60000);
   setTimeout(() => { backgroundExtremeRevScan(); }, 5000);  // 啟動後 5 秒先掃第一批
 
   const secs = state.settings.refreshInterval || 60;
@@ -9250,17 +9248,16 @@ function buildDailyBriefingMsg(fg, mkt) {
     }
   } catch (e) { todayAISection = '（計算失敗）'; }
 
-  // ── 極端頂/底反轉可能性（取自已分析幣種快取，依信心排序）──
+  // ── 極端頂/底反轉可能性（僅顯示 BTC / ETH 兩大主流幣）──
   const reversalSection = (() => {
     try {
       const cache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache) ? _tradeSetupCache : {};
-      const list = Object.entries(cache)
-        .map(([sym, s]) => ({ sym, er: s?.extremeRev }))
-        .filter(x => x.er && x.er.direction && x.er.confidence >= 60)
-        .sort((a, b) => b.er.confidence - a.er.confidence)
-        .slice(0, 5);
-      if (!list.length) return '• 目前已分析幣種中無顯著頂/底反轉訊號';
-      return list.map(({ sym, er }) => {
+      const lines = ['BTC/USDT', 'ETH/USDT'].map(sym => {
+        const er = cache[sym]?.extremeRev;
+        if (!er) return `📊 <b>${esc(sym)}</b> 反轉數據計算中…`;
+        if (!er.direction) {
+          return `📊 <b>${esc(sym)}</b> 無顯著反轉訊號（頂部 ${er.topScore || 0} / 底部 ${er.bottomScore || 0}）`;
+        }
         const isTop  = er.direction === 'top';
         const icon   = isTop ? '📉' : '📈';
         const zh     = isTop ? '頂部' : '底部';
@@ -9271,7 +9268,8 @@ function buildDailyBriefingMsg(fg, mkt) {
             : `🔭 早期觀察（距門檻 ${98 - er.confidence} 分）`;
         const topSig = (er.signals || []).slice().sort((a, b) => (b.pts || 0) - (a.pts || 0))[0];
         return `${icon} <b>${esc(sym)}</b> ${zh}反轉 ${er.confidence}/100\n   ${status}${topSig ? `\n   • ${esc(topSig.label)}（+${topSig.pts}）` : ''}`;
-      }).join('\n');
+      });
+      return lines.join('\n');
     } catch(e) { return '• 反轉掃描暫無數據'; }
   })();
 
