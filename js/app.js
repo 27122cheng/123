@@ -9,6 +9,9 @@ const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓�
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
+let   _erScanTimer     = null;  // 極端反轉背景輪掃（每 20 秒一批，輪流更新所有幣種）
+let   _erScanIdx       = 0;
+let   _erScanRunning   = false;
 
 /* ── 狀態 ───────────────────────────────────────────────────── */
 const state = {
@@ -148,6 +151,39 @@ function hideLoading() {
   setTimeout(() => document.getElementById('loading-overlay').classList.add('hide'), 400);
 }
 
+/* ── 極端反轉背景輪掃：自動為所有掃描幣種更新頂/底反轉分析 ────────
+   每批處理 3 個幣種（各需 6 次 K 線請求），輪流掃完整個清單後從頭再來，
+   讓 Telegram 每日簡報與通知能取得全部幣種的最新反轉信心，無需手動開啟詳情頁 */
+async function backgroundExtremeRevScan() {
+  if (_erScanRunning) return;
+  if (!state.data || !state.data.length) return;
+  _erScanRunning = true;
+  try {
+    const coins = state.data;
+    const BATCH = 3;
+    for (let n = 0; n < BATCH && n < coins.length; n++) {
+      const coin = coins[_erScanIdx % coins.length];
+      _erScanIdx = (_erScanIdx + 1) % coins.length;
+      if (!coin?.symbol) continue;
+      try {
+        const mtfData = await fetchMTFKlines(coin.symbol);
+        const er = detectExtremeReversal(
+          coin, mtfData,
+          coin.derivData || null,
+          _macroCache || null,
+          coin.whaleData || null,
+          _macroCache?.fg || null
+        );
+        if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
+        _tradeSetupCache[coin.symbol].extremeRev = er;
+        _tradeSetupCache[coin.symbol].extremeRevTime = Date.now();
+      } catch(e) { /* 單一幣種失敗不中斷輪掃 */ }
+      // 批內限流，避免瞬間打滿 K 線 API
+      await new Promise(r => setTimeout(r, 700));
+    }
+  } finally { _erScanRunning = false; }
+}
+
 /* ── 自动刷新 ───────────────────────────────────────────────── */
 function startRefreshCycle() {
   clearInterval(state.refreshTimer);
@@ -163,6 +199,11 @@ function startRefreshCycle() {
       try { renderPositionsPage(); } catch(e) {}
     }
   }, 15000);
+
+  // 極端反轉背景輪掃：每 20 秒一批（3 幣），約 4 分鐘輪完 36 個幣種
+  clearInterval(_erScanTimer);
+  _erScanTimer = setInterval(() => { backgroundExtremeRevScan(); }, 20000);
+  setTimeout(() => { backgroundExtremeRevScan(); }, 5000);  // 啟動後 5 秒先掃第一批
 
   const secs = state.settings.refreshInterval || 60;
   state.countdown = secs;
