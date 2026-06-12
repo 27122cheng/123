@@ -9,7 +9,7 @@ const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓�
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
-let   _erScanTimer     = null;  // 極端反轉背景輪掃（每日 08:30 台灣時間更新 BTC/ETH）
+let   _erScanTimer     = null;  // 極端反轉背景輪掃（台灣時間 00/06/12/18 每6小時更新 BTC/ETH）
 let   _erScanRunning   = false;
 
 /* ── 狀態 ───────────────────────────────────────────────────── */
@@ -198,21 +198,34 @@ function startRefreshCycle() {
     }
   }, 15000);
 
-  // 極端反轉背景輪掃：每日 08:30 台灣時間（UTC+8 = UTC 00:30）
+  // 極端反轉背景輪掃：台灣時間 00/06/12/18 時（UTC 16/22/04/10）每 6 小時更新 BTC/ETH
   clearTimeout(_erScanTimer);
   _erScanTimer = null;
   (function scheduleErScan() {
     const nowUTC = Date.now();
     const d = new Date(nowUTC);
-    // 今日 08:30 TW = UTC 00:30
-    const t830 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 30, 0, 0);
-    const msToNext = t830 > nowUTC ? t830 - nowUTC : t830 + 86400000 - nowUTC;
+    // 台灣時間 00/06/12/18 = UTC 16/22/04/10
+    const scanHoursUTC = [4, 10, 16, 22];
+    const todayBase = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    // 下一個掃描點
+    let msToNext = Infinity;
+    for (const h of scanHoursUTC) {
+      const t = todayBase + h * 3600000;
+      if (t > nowUTC) msToNext = Math.min(msToNext, t - nowUTC);
+    }
+    if (msToNext === Infinity) msToNext = todayBase + 86400000 + scanHoursUTC[0] * 3600000 - nowUTC;
     _erScanTimer = setTimeout(() => {
       backgroundExtremeRevScan().then(() => renderErDashboardWidget());
       scheduleErScan();
     }, msToNext);
-    // 若目前已超過今日 08:30 且尚未掃描，立即執行
-    if (nowUTC >= t830 && (_tradeSetupCache['BTC/USDT']?.extremeRevTime || 0) < t830) {
+    // 找最近一個已過的掃描點；若尚未掃描則立即執行
+    let lastScanPoint = 0;
+    for (const h of scanHoursUTC) {
+      const t = todayBase + h * 3600000;
+      if (t <= nowUTC) lastScanPoint = Math.max(lastScanPoint, t);
+    }
+    if (lastScanPoint === 0) lastScanPoint = todayBase - 86400000 + scanHoursUTC[3] * 3600000;
+    if ((_tradeSetupCache['BTC/USDT']?.extremeRevTime || 0) < lastScanPoint) {
       setTimeout(() => backgroundExtremeRevScan().then(() => renderErDashboardWidget()), 5000);
     }
   })();
@@ -6019,7 +6032,7 @@ function renderErDashboardWidget() {
       <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">最後更新 ${timeStr}</span>
     </div>
     <div style="padding:4px 0">${rows.join('')}</div>
-    <div style="font-size:0.71rem;color:var(--text3);margin-top:6px">每日 08:30 台灣時間自動更新（BTC / ETH）</div>`;
+    <div style="font-size:0.71rem;color:var(--text3);margin-top:6px">台灣時間 00 / 06 / 12 / 18 時自動更新（BTC / ETH）</div>`;
 }
 
 async function loadDashboardMacro() {
