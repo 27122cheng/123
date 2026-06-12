@@ -1446,6 +1446,32 @@ function detectExtremeReversal(coin, mtfData, deriv, globalMkt, whale, fearGreed
       if (dom > 60)                                          add(`BTC主導率 ${dom.toFixed(1)}%（資金避險集中）`,   2, 'sentiment');
     }
 
+    // ── 5b. 公開輿論（真實財經新聞頭條情緒，反指邏輯：一面倒 = 反轉風險）──
+    try {
+      const newsItems = (typeof _newsSentimentCache !== 'undefined' && Array.isArray(_newsSentimentCache)) ? _newsSentimentCache : [];
+      if (newsItems.length >= 5) {
+        const _48h = Date.now() - 48 * 60 * 60 * 1000;
+        const recent = newsItems.filter(n => !n.publishedAt || n.publishedAt >= _48h);
+        const pool = recent.length >= 5 ? recent : newsItems;
+        const bullN = pool.filter(n => n.sentiment === 'bull' || n.sentiment === 'bullish').length;
+        const bearN = pool.filter(n => n.sentiment === 'bear' || n.sentiment === 'bearish').length;
+        const total = pool.length;
+        const bullPct = total > 0 ? bullN / total : 0;
+        const bearPct = total > 0 ? bearN / total : 0;
+        if (forTop) {
+          // 輿論極端看多 = 市場過熱反指；輿論明顯轉空 = 頂部後續確認
+          if (bullPct >= 0.75 && bullN >= 5)      add(`公開輿論一面倒看多（${bullN}/${total} 條新聞，過熱反指訊號）`, 4, 'crowd');
+          else if (bullPct >= 0.60 && bullN >= 4) add(`公開輿論偏多（${bullN}/${total} 條，情緒偏熱）`,               2, 'crowd');
+          if (bearPct >= 0.55 && bearN >= 4)      add(`新聞輿論已轉空（${bearN}/${total} 條，頂部確認跡象）`,         3, 'crowd');
+        } else {
+          // 輿論極端看空 = 恐慌投降反指；輿論明顯轉多 = 底部後續確認
+          if (bearPct >= 0.75 && bearN >= 5)      add(`公開輿論一面倒看空（${bearN}/${total} 條新聞，恐慌投降反指）`, 4, 'crowd');
+          else if (bearPct >= 0.60 && bearN >= 4) add(`公開輿論偏空（${bearN}/${total} 條，情緒悲觀）`,               2, 'crowd');
+          if (bullPct >= 0.55 && bullN >= 4)      add(`新聞輿論已轉多（${bullN}/${total} 條，底部確認跡象）`,         3, 'crowd');
+        }
+      }
+    } catch(e) {}
+
     // ── 6. Multi-timeframe alignment (max 15) ─────────────────────
     if (forTop) {
       if (h4s?.signal?.includes('bear'))                    add('4H 時框轉空確認',                               5, 'mtf');
@@ -1514,8 +1540,8 @@ function buildExtremeRevHtml(er, coin, mtfData) {
     const _pxSym = (coin.symbol || '').replace('/', '').toUpperCase();
     const _px = v => { try { return toPionex(_pxSym, price, v); } catch(e) { return v.toFixed(4); } };
 
-    const catLabel = { vol:'量能', momentum:'動能/背離', struct:'價格結構', flow:'訂單流', sentiment:'市場情緒', mtf:'多時框', extra:'補充指標' };
-    const catColor = { vol:'#60a5fa', momentum:'#f59e0b', struct:'#a78bfa', flow:'#34d399', sentiment:'#f87171', mtf:'#e879f9', extra:'#94a3b8' };
+    const catLabel = { vol:'量能', momentum:'動能/背離', struct:'價格結構', flow:'訂單流', sentiment:'市場情緒', crowd:'公開輿論', mtf:'多時框', extra:'補充指標' };
+    const catColor = { vol:'#60a5fa', momentum:'#f59e0b', struct:'#a78bfa', flow:'#34d399', sentiment:'#f87171', crowd:'#fbbf24', mtf:'#e879f9', extra:'#94a3b8' };
 
     const grouped = {};
     for (const s of er.signals) {
@@ -6030,35 +6056,37 @@ function aiGenerateMarketInsights() {
   });
 }
 
+// 真實新聞情緒快取（供極端反轉「公開輿論」分析使用）
+let _newsSentimentCache = [];
+
 async function loadDashboardNews() {
   const el = document.getElementById('news-body');
-  if (el) {
-    // 先顯示本地 AI 新聞（即時可見，不等待網路）
-    el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
-    // 非同步拉取真實新聞，完成後替換
-    try {
-      const realItems = await fetchCryptoNews();
-      if (realItems && realItems.length >= 3) {
-        const _3mAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
-        const _filtered = realItems.filter(it => !it.publishedAt || it.publishedAt >= _3mAgo);
-        const _toProcess = _filtered.length >= 3 ? _filtered : realItems;
-        const processed = _toProcess.map(item => {
-          const ai = aiProcessNews(item.title, item.body);
-          return {
-            ...ai,
-            originalTitle: item.title,
-            url:           item.url,
-            source:        `📰 ${item.source}`,
-            publishedAt:   item.publishedAt,
-          };
-        });
-        // 確認容器仍存在（用戶可能已切換頁面）
-        const elNow = document.getElementById('news-body');
-        if (elNow) elNow.innerHTML = buildNewsWidget(processed);
-      }
-    } catch(e) {
-      console.warn('[loadDashboardNews] 真實新聞載入失敗:', e?.message);
+  // 先顯示本地 AI 新聞（即時可見，不等待網路）
+  if (el) el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
+  // 非同步拉取真實新聞：無論容器是否存在都抓取（極端反轉「公開輿論」分析依賴此快取）
+  try {
+    const realItems = await fetchCryptoNews();
+    if (realItems && realItems.length >= 3) {
+      const _3mAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
+      const _filtered = realItems.filter(it => !it.publishedAt || it.publishedAt >= _3mAgo);
+      const _toProcess = _filtered.length >= 3 ? _filtered : realItems;
+      const processed = _toProcess.map(item => {
+        const ai = aiProcessNews(item.title, item.body);
+        return {
+          ...ai,
+          originalTitle: item.title,
+          url:           item.url,
+          source:        `📰 ${item.source}`,
+          publishedAt:   item.publishedAt,
+        };
+      });
+      _newsSentimentCache = processed;
+      // 確認容器仍存在（用戶可能已切換頁面）
+      const elNow = document.getElementById('news-body');
+      if (elNow) elNow.innerHTML = buildNewsWidget(processed);
     }
+  } catch(e) {
+    console.warn('[loadDashboardNews] 真實新聞載入失敗:', e?.message);
   }
   const cfEl = document.getElementById('capital-flow-body');
   if (cfEl) cfEl.innerHTML = buildCapitalFlowEventsWidget();
