@@ -8705,9 +8705,9 @@ function updateOpenTrades(data) {
         continue;
       }
 
-      // 進場確認：訊號後等 2 分鐘，確保 Telegram 通知已送達後才確認入場
-      // 設計：T=0 訊號出現 → T<120s 觀察期（不入場）→ T≥120s 等回踩
-      const MIN_PENDING_SECS = 120; // 2 分鐘最低觀察期
+      // 進場確認：訊號後等 1 分鐘，確保 Telegram 通知已送達後才確認入場
+      // 設計：T=0 訊號出現 → T<60s 觀察期（不入場）→ T≥60s 等回踩
+      const MIN_PENDING_SECS = 60; // 1 分鐘最低觀察期
       const tradeAge = (Date.now() - (trade.timestamp || 0)) / 1000;
       if (tradeAge < MIN_PENDING_SECS) continue; // 太新，跳過進場確認
 
