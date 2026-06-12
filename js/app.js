@@ -9209,7 +9209,33 @@ function buildDailyBriefingMsg(fg, mkt) {
     }
   } catch (e) { todayAISection = '（計算失敗）'; }
 
+  // ── 極端頂/底反轉可能性（取自已分析幣種快取，依信心排序）──
+  const reversalSection = (() => {
+    try {
+      const cache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache) ? _tradeSetupCache : {};
+      const list = Object.entries(cache)
+        .map(([sym, s]) => ({ sym, er: s?.extremeRev }))
+        .filter(x => x.er && x.er.direction && x.er.confidence >= 60)
+        .sort((a, b) => b.er.confidence - a.er.confidence)
+        .slice(0, 5);
+      if (!list.length) return '• 目前已分析幣種中無顯著頂/底反轉訊號';
+      return list.map(({ sym, er }) => {
+        const isTop  = er.direction === 'top';
+        const icon   = isTop ? '📉' : '📈';
+        const zh     = isTop ? '頂部' : '底部';
+        const status = er.confidence >= 98
+          ? `⚡ 已達 98% 門檻，可考慮反向${isTop ? '做空' : '做多'}`
+          : er.confidence >= 85
+            ? `⚠️ 潛在反轉（距 98% 門檻還差 ${98 - er.confidence} 分）`
+            : `🔭 早期觀察（距門檻 ${98 - er.confidence} 分）`;
+        const topSig = (er.signals || []).slice().sort((a, b) => (b.pts || 0) - (a.pts || 0))[0];
+        return `${icon} <b>${esc(sym)}</b> ${zh}反轉 ${er.confidence}/100\n   ${status}${topSig ? `\n   • ${esc(topSig.label)}（+${topSig.pts}）` : ''}`;
+      }).join('\n');
+    } catch(e) { return '• 反轉掃描暫無數據'; }
+  })();
+
   return `📊 <b>每日市場簡報</b> ${dateStr}\n\n` +
+    `🔄 <b>頂/底反轉可能性</b>\n${reversalSection}\n\n` +
     `📅 <b>昨日市場回顧</b>\n${yesterdaySection}\n\n` +
     `💰 <b>昨日盈虧報告</b>\n${yesterdayPnlSection}\n\n` +
     `🌐 <b>加密市場大方向</b>\n${marketDirSection}\n\n` +
