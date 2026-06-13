@@ -3549,7 +3549,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
     // 最低信心門檻：50%（_isLowWinRate 的各條件已全數反映在信心扣分內，以 conf 作唯一門檻）
     const _btConfMin = 50;
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin) {
+    // 嚴格記錄條件（與背景掃描器對齊，以更嚴格的標準為主）：
+    // ① R/R >= 1.3（與 computeSimpleSetup rrBlocked 一致）
+    // ② 風險分數 < 55（掃描器門檻，UI 仍在 60 顯示觀望警告）
+    const _btRR = parseFloat(rr1str) || 0;
+    const _btRROk = _btRR >= 1.3;
+    const _btRiskOk = _risk.score < 55;
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin && _btRROk && _btRiskOk) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
