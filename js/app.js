@@ -8092,74 +8092,31 @@ function recordSignalsFromScan(data) {
   const _tNeutral = !tBias.includes('bull') && !tBias.includes('bear') || tbRangeMode;
 
   // ══════════════════════════════════════════════════════════════
-  // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
-  // 入場門檻：至少 2/4 方向因素同向 + 最終信心度 ≥ 50%
-  // 長線升級：同時滿足日線信號 + 週線信號均同方向 → canScaleIn=true
+  // 統一掃描迴圈 ── 邏輯與 buildTradeSetup 記錄時完全一致
+  // 條件：幣種有明確方向（score ≠ 50）+ 無活躍倉位 + 無冷卻 + 信心度 ≥ 50% + SQ 評分 B+
+  // 長線升級：日線 + 週線均同向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
     if (coin.score === 50) continue;
     const isLong    = coin.score > 50;
     const direction = isLong ? 'long' : 'short';
 
-    // 強烈宏觀硬封鎖
+    // 強烈宏觀硬封鎖（與 buildTradeSetup macroBlockedForRecord 完全一致）
     if (isLong  && blockLong)  continue;
     if (!isLong && blockShort) continue;
 
-    // ── 4 大方向條件計分 ──
-    // F1 宏觀（slight_bull/bull/strong_bull 均算同向；neutral/無快取 → false）
-    const _f1 = isLong ? macroNetDir.includes('bull') : macroNetDir.includes('bear');
-    // F2 大方向：週線 K 線同向，或幣種評分達極強信號門檻（多頭 ≥70 / 空頭 ≤30，純評分替代要求更高）
-    const _f2 = isLong
-      ? (!!coin.weeklySignal?.includes('bull') || coin.score >= 70)
-      : (!!coin.weeklySignal?.includes('bear') || coin.score <= 30);
-    // F3 周/日AI預測：周AI 或 日AI 任一明確同向即計分
-    const _f3 = _macroCache
-      ? ((isLong ? wBias.includes('bull') : wBias.includes('bear')) ||
-         (isLong ? tBias.includes('bull') : tBias.includes('bear')))
-      : false;
-    // F4 日線確認：必須有明確日線信號；4H trend 替代只接受「強勢」趨勢
-    const _dtBull    = coin.dailySignal?.includes('bull');
-    const _dtBear    = coin.dailySignal?.includes('bear');
-    const _dtNeutral = !coin.dailySignal || coin.dailySignal === 'neutral';
-    const _f4 = isLong
-      ? (_dtBull || (_dtNeutral && coin.trend === '強勢看漲'))
-      : (_dtBear || (_dtNeutral && coin.trend === '強勢看跌'));
-
-    // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
-    if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
-
-    // 入場門檻：至少 2/4 因素同向（降低門檻讓背景掃描與手動查看幣種詳情一致）
-    const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
-    if (_factors < 2) continue;
-
-    // ADX 過低（< 20）：趨勢未確立，直接跳過
-    if ((parseFloat(coin.adx) || 20) < 20) continue;
-
-    // 成交量不得為低（低量趨勢不可靠）
-    if ((coin.volumeStrength || '') === '低') continue;
-
-    // 4H 方向同向加分（不再為硬性要求，改由 SQ 評分控制）
-    const _h4Sig     = coin.h4Signal || '';
-    const _h4Aligned = isLong ? _h4Sig.includes('bull') : _h4Sig.includes('bear');
-
-    // RSI 極端值過濾：超買不做多，超賣不做空
-    const _rsiVal = parseFloat(coin.rsi) || 50;
-    if (isLong  && _rsiVal > 72) continue;
-    if (!isLong && _rsiVal < 28) continue;
-
+    // 已有活躍倉位或在冷卻期 → 跳過
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
 
+    // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-    // MACD 方向（不再為硬性要求，改為 SQ 評分軟性計分）
-    const _scanMacd    = parseFloat(coin.macdHist) || 0;
-    const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    // 信心度門檻：50% 含以上才進場
-    const _confMin    = 50;
-    if (setup.conf < _confMin) continue;
+
+    // 信心度門檻：50%（與 buildTradeSetup _btConfMin 完全一致）
+    if (setup.conf < 50) continue;
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -8176,6 +8133,10 @@ function recordSignalsFromScan(data) {
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
+
+    // MACD 方向（僅供 SQ 評分使用）
+    const _scanMacd    = parseFloat(coin.macdHist) || 0;
+    const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
 
     // ── 掃描版訊號品質評分（簡化版，使用掃描時可用資料）──
     let _scanSqScore = 0;
