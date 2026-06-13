@@ -8093,7 +8093,7 @@ function recordSignalsFromScan(data) {
 
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 短線條件優先，日線+週線同向時自動升級為長線單
-  // 短線條件：宏觀有方向時 ≥3/4 同向；宏觀中性或無快取時 ≥2/4 同向 + 最終信心度 ≥ 50%
+  // 入場門檻：至少 2/4 方向因素同向 + 最終信心度 ≥ 50%
   // 長線升級：同時滿足日線信號 + 週線信號均同方向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
@@ -8128,21 +8128,19 @@ function recordSignalsFromScan(data) {
     // 全中性觀望：宏觀中性 + 週/日AI均無方向 + 幣種本身也無明確方向信號 → 跳過
     if (_macroCache && macroNetDir === 'neutral' && _wNeutral && _tNeutral && !_f2 && !_f4) continue;
 
-    // 入場門檻：有宏觀且方向明確時 ≥3/4；宏觀中性或無快取時 ≥2/4（幣種面）
+    // 入場門檻：至少 2/4 因素同向（降低門檻讓背景掃描與手動查看幣種詳情一致）
     const _factors = [_f1, _f2, _f3, _f4].filter(Boolean).length;
-    const _factorMin = (_macroCache && macroNetDir !== 'neutral') ? 3 : 2;
-    if (_factors < _factorMin) continue;
+    if (_factors < 2) continue;
 
-    // ADX 過低（< 22）：趨勢未確立，直接跳過（22 為趨勢初步成形門檻）
-    if ((parseFloat(coin.adx) || 20) < 22) continue;
+    // ADX 過低（< 20）：趨勢未確立，直接跳過
+    if ((parseFloat(coin.adx) || 20) < 20) continue;
 
     // 成交量不得為低（低量趨勢不可靠）
     if ((coin.volumeStrength || '') === '低') continue;
 
-    // 4H 方向必須與進場方向一致（多時間框架硬性要求）
-    const _h4Sig      = coin.h4Signal || '';
-    const _h4Aligned  = isLong ? _h4Sig.includes('bull') : _h4Sig.includes('bear');
-    if (!_h4Aligned) continue;
+    // 4H 方向同向加分（不再為硬性要求，改由 SQ 評分控制）
+    const _h4Sig     = coin.h4Signal || '';
+    const _h4Aligned = isLong ? _h4Sig.includes('bull') : _h4Sig.includes('bear');
 
     // RSI 極端值過濾：超買不做多，超賣不做空
     const _rsiVal = parseFloat(coin.rsi) || 50;
@@ -8156,10 +8154,9 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-    // MACD 方向確認：必須同向才進場（逆向 MACD 代表動能仍在反方向）
-    const _scanMacd   = parseFloat(coin.macdHist) || 0;
+    // MACD 方向（不再為硬性要求，改為 SQ 評分軟性計分）
+    const _scanMacd    = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
-    if (!_macdAligned) continue;
     // 信心度門檻：50% 含以上才進場
     const _confMin    = 50;
     if (setup.conf < _confMin) continue;
@@ -8187,7 +8184,7 @@ function recordSignalsFromScan(data) {
     const _ssDayOk = isLong ? (coin.dailySignal   || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
     const _ssWkOk  = isLong ? (coin.weeklySignal  || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
     if (_ssH4Ok && _ssDayOk) { _scanSqScore += 2; _scanSqFactors.push('✅ 4H+日線同向'); }
-    else if (_ssH4Ok || _ssDayOk) { _scanSqScore += 1; }
+    else if (_ssH4Ok || _ssDayOk) { _scanSqScore += 1; _scanSqFactors.push(_ssH4Ok ? '✅ 4H同向' : '✅ 日線同向'); }
     if (_ssWkOk) { _scanSqScore += 1; _scanSqFactors.push('✅ 週線同向'); }
     if (isLong ? wBias.includes('bull') : wBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 本週 AI 同向'); }
     if (isLong ? tBias.includes('bull') : tBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 今日 AI 同向'); }
@@ -8200,7 +8197,9 @@ function recordSignalsFromScan(data) {
     // 1H 訊號同向（多週期確認加分）
     const _ssH1Ok = isLong ? (coin.h1Signal || '').includes('bull') : (coin.h1Signal || '').includes('bear');
     if (_ssH1Ok) { _scanSqScore += 1; _scanSqFactors.push('✅ 1H 同向'); }
-    // 最高 9 分；B 級門檻 ≥4（與 buildTradeSetup 一致，ADX 已從 22 起過濾弱勢）
+    // MACD 方向加分（不再作為硬性過濾，改為 SQ 軟性評分）
+    if (_macdAligned) { _scanSqScore += 1; _scanSqFactors.push('✅ MACD 同向'); }
+    // 最高 10 分（加入 MACD）；B 級門檻 ≥4（與 buildTradeSetup 一致）
     const _scanSqGrade = _scanSqScore >= 8 ? 'S' : _scanSqScore >= 6 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 等級 C/D：訊號品質不足，不建立倉位，不推送 Telegram
