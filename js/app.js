@@ -1692,7 +1692,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _extremeRev = (() => { try { return detectExtremeReversal(coin, mtfData, deriv, globalMkt, whale, fearGreed); } catch(_e) { return { direction: null, confidence: 0, signals: [], topScore: 0, bottomScore: 0 }; } })();
   const _erHtml = () => buildExtremeRevHtml(_extremeRev, coin, mtfData);
   const _pxSym = (coin.symbol || '').replace('/', '').toUpperCase();
-  const _px = v => toPionex(_pxSym, price, v);
+  const _px = v => { try { return toPionex(_pxSym, price, v); } catch(e) { return v.toFixed(4); } };
 
   // 若已有進行中的開倉或等待進場的掛單，優先顯示對應畫面
   const tlogNow = loadTradeLog();
@@ -7784,7 +7784,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
   const canScaleIn = !!(setup.canScaleIn || setup.isLongTerm);
   const _price = parseFloat(coin.price) || 1;
   const _pSym  = (coin.symbol || '').replace('/', '').toUpperCase();
-  const _px    = v => toPionex(_pSym, _price, v);
+  const _px    = v => { try { return toPionex(_pSym, _price, v); } catch(e) { return v.toFixed(4); } };
 
   // ── AI 週/日趨勢（優先從 macroCache 即時計算，fallback 用 setup 存儲值）──
   let wBias = 'neutral', wBiasLabel = setup.weeklyBias || '', wBiasConf = setup.weeklyConf || 0;
@@ -9993,7 +9993,7 @@ function checkPostDataReversal(data) {
     localStorage.setItem(alertKey, JSON.stringify(sentAlerts));
 
     const _slPxSym = (trade.symbol || '').replace('/', '').toUpperCase();
-    const _slPx = v => toPionex(_slPxSym, cur || 1, v);
+    const _slPx = v => { try { return toPionex(_slPxSym, cur || 1, v); } catch(e) { return v.toFixed(4); } };
     const fmt     = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
     const dir     = isLong ? '▲ 多' : '▼ 空';
     const pnlSign = currentPnlR >= 0 ? '+' : '';
@@ -11009,7 +11009,7 @@ function renderPositionsPage() {
     const risk    = Math.abs(entry - (t.baseSl ?? sl)) || 1;
     const isLong  = t.direction === 'long';
     const _tpxSym = (t.symbol || '').replace('/', '').toUpperCase();
-    const _tpx = v => toPionex(_tpxSym, cur || 1, v);
+    const _tpx = v => { try { return toPionex(_tpxSym, cur || 1, v); } catch(e) { return v.toFixed(4); } };
 
     let unrealR   = null, unrealPct = null, priceClr = 'var(--text2)';
     if (cur && entry) {
