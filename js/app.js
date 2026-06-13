@@ -13907,3 +13907,4 @@ function buildCapitalFlowEventsWidget() {
   </div>
   ${body}`;
 }
+// v20260613-restored
