@@ -8207,7 +8207,7 @@ function recordSignalsFromScan(data) {
       entryVolBreakout:   false,
       entryMacdHist:      parseFloat(coin.macdHist) || 0,
       entryVolStrength:   coin.volumeStrength || '',
-      entryH4Aligned:     _h4Aligned,
+      entryH4Aligned:     _ssH4Ok,
       entryH1Aligned:     isLong ? !!(coin.h1Signal||'').includes('bull') : !!(coin.h1Signal||'').includes('bear'),
       entryBBWalkingBear: !!(coin.bb?.walkingBear),
       entryBBWalkingBull: !!(coin.bb?.walkingBull),
