@@ -3414,12 +3414,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (_risk.score <= 54) { _sqFactors.push(`⚠️ 風控中等（${_risk.score}分）`); }
   else { _sqFactors.push(`❌ 風控偏高（${_risk.score}分）`); }
   if (_risk.factors?.length) _risk.factors.slice(0, 3).forEach(f => _sqFactors.push(`　▸ ${f}`));
-  // ── 止損原因/建議供 AI 參考（不影響 SQ 評分，不顯示信心度扣分）──
+  // ── 參考分析：宏觀 / AI 趨勢 / 歷史止損（不影響 SQ 評分，供決策參考）──
+  if (macroOpposePenalty > 0 && macroReasons.length) {
+    _sqFactors.push(`📉 宏觀逆風（信心 -${macroOpposePenalty}%）`);
+    macroReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  }
+  if (aiTrendPenalty > 0 && aiTrendReasons.length) {
+    _sqFactors.push(`📆 AI 趨勢預測逆向（信心 -${aiTrendPenalty}%）`);
+    aiTrendReasons.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  }
   if (hardBlocked && blockReasons.length) {
     _sqFactors.push(`🚫 歷史止損封鎖（${blockReasons.length} 條規則觸發）`);
     blockReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
   } else if (learnPenalty > 0 && learnWarnings.length) {
-    _sqFactors.push(`📚 止損記憶參考（${learnPenalty}% 扣分觸發）`);
+    _sqFactors.push(`📚 止損記憶扣分（信心 -${learnPenalty}%）`);
     learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
   }
 
