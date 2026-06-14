@@ -3399,11 +3399,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // ⑦ 無技術逆風（RSI/MACD 均正常）
   const _sqNoTechRisk = techPenalty === 0;
   if (_sqNoTechRisk) { _sqScore += 1; _sqFactors.push('✅ 技術面無逆風'); }
+  // ⑧ 信心度（整合入訊號品質，不再作為獨立門檻）
+  if (conf >= 65) { _sqScore += 2; _sqFactors.push(`✅ 信心度 ${conf}%`); }
+  else if (conf >= 55) { _sqScore += 1; _sqFactors.push(`✅ 信心度 ${conf}%`); }
+  else { _sqFactors.push(`⚠️ 信心度 ${conf}% 偏低`); }
+  // ⑨ 盈虧比品質（止損扣分整合入訊號品質）
+  const _sqRR1 = parseFloat(rr1str) || 0;
+  if (_sqRR1 >= 2.0) { _sqScore += 1; _sqFactors.push(`✅ R/R ${_sqRR1.toFixed(1)}:1 優良`); }
+  else if (_sqRR1 >= 1.3) { /* 合格但不加分 */ }
+  else { _sqFactors.push(`❌ R/R ${_sqRR1.toFixed(1)}:1 盈虧比不足`); }
 
-  const _sqGrade = _sqScore >= 8 ? 'S'
-                 : _sqScore >= 6 ? 'A'
-                 : _sqScore >= 4 ? 'B'
-                 : _sqScore >= 2 ? 'C' : 'D';
+  const _sqGrade = _sqScore >= 10 ? 'S'
+                 : _sqScore >= 7  ? 'A'
+                 : _sqScore >= 4  ? 'B'
+                 : _sqScore >= 2  ? 'C' : 'D';
   const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
@@ -3413,7 +3422,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/9，需達 B 級（評分 ≥ 4）才進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 B 級（評分 ≥ 4）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
@@ -3547,15 +3556,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 最低信心門檻：50%（_isLowWinRate 的各條件已全數反映在信心扣分內，以 conf 作唯一門檻）
-    const _btConfMin = 50;
-    // 嚴格記錄條件（與背景掃描器對齊，以更嚴格的標準為主）：
-    // ① R/R >= 1.3（與 computeSimpleSetup rrBlocked 一致）
-    // ② 風險分數 < 55（掃描器門檻，UI 仍在 60 顯示觀望警告）
-    const _btRR = parseFloat(rr1str) || 0;
-    const _btRROk = _btRR >= 1.3;
+    // 信心度與 R/R 已整合入 SQ 訊號品質評分，SQ B+ 為唯一品質門檻
+    // 風險分數 < 55 作為獨立風控保留（UI 仍在 60 才顯示觀望警告）
     const _btRiskOk = _risk.score < 55;
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && conf >= _btConfMin && _btRROk && _btRiskOk) {
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRiskOk) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -8119,10 +8123,6 @@ function recordSignalsFromScan(data) {
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
-    if (setup.rrBlocked)   continue;  // R/R < 1.3 → 觀望
-
-    // 信心度門檻：50%（與 buildTradeSetup _btConfMin 完全一致）
-    if (setup.conf < 50) continue;
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -8164,10 +8164,19 @@ function recordSignalsFromScan(data) {
     // 1H 訊號同向（多週期確認加分）
     const _ssH1Ok = isLong ? (coin.h1Signal || '').includes('bull') : (coin.h1Signal || '').includes('bear');
     if (_ssH1Ok) { _scanSqScore += 1; _scanSqFactors.push('✅ 1H 同向'); }
-    // MACD 方向加分（不再作為硬性過濾，改為 SQ 軟性評分）
+    // MACD 方向加分
     if (_macdAligned) { _scanSqScore += 1; _scanSqFactors.push('✅ MACD 同向'); }
-    // 最高 10 分（加入 MACD）；B 級門檻 ≥4（與 buildTradeSetup 一致）
-    const _scanSqGrade = _scanSqScore >= 8 ? 'S' : _scanSqScore >= 6 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
+    // 信心度（整合入訊號品質，不再作為獨立門檻）
+    if (setup.conf >= 65) { _scanSqScore += 2; _scanSqFactors.push(`✅ 信心度 ${setup.conf}%`); }
+    else if (setup.conf >= 55) { _scanSqScore += 1; _scanSqFactors.push(`✅ 信心度 ${setup.conf}%`); }
+    else { _scanSqFactors.push(`⚠️ 信心度 ${setup.conf}% 偏低`); }
+    // 盈虧比品質（止損扣分整合入訊號品質）
+    const _sqRRScan = parseFloat(setup.rr1) || 0;
+    if (_sqRRScan >= 2.0) { _scanSqScore += 1; _scanSqFactors.push(`✅ R/R ${_sqRRScan.toFixed(1)}:1 優良`); }
+    else if (_sqRRScan >= 1.3) { /* 合格但不加分 */ }
+    else { _scanSqFactors.push(`❌ R/R ${_sqRRScan.toFixed(1)}:1 盈虧比不足`); }
+    // 最高 13 分；B 級門檻 ≥4（含信心度+R/R 整合）
+    const _scanSqGrade = _scanSqScore >= 10 ? 'S' : _scanSqScore >= 7 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 等級 C/D：訊號品質不足，不建立倉位，不推送 Telegram
     if (!['S','A','B'].includes(_scanSqGrade)) continue;
