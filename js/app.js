@@ -8889,7 +8889,8 @@ function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 風控分數已整合入 SQ 評分，不再作為獨立硬性封鎖
+    // 高風險/極高風險（score >= 60）→ 強制觀望，不建立倉位
+    if (_scanRisk.score >= 60) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
