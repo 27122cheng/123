@@ -2522,11 +2522,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_raw4h?.length >= 5 && typeof detectFairValueGaps === 'function') _ictFVG4h = detectFairValueGaps(_raw4h, isLong);
   } catch(_icte) { console.warn('[ICT analysis]', _icte); }
 
-  // ── 圖形識別（傳統技術形態 + ICT）──
+  // ── 圖形識別（傳統技術形態 + ICT）── 以 4H K線為主
   let _chartPat = { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
   try {
-    if (_raw1h?.length >= 30 && typeof detectChartPatterns === 'function')
-      _chartPat = detectChartPatterns(_raw1h, isLong);
+    if (_raw4h?.length >= 30 && typeof detectChartPatterns === 'function')
+      _chartPat = detectChartPatterns(_raw4h, isLong);
   } catch(_cpe) {}
 
   // ── 真假突破確認 ──
@@ -3498,25 +3498,57 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
+  // ── 分析面板（ICT + 圖形，所有情況均顯示）──
+  const _compactAnalysisHtml = (() => { try {
+    const _kzLine = `⏰ ${_kz?.emoji || ''} ${_kz?.name || '非獵殺時段'}`;
+    const _obLine = (_ictOB?.priceInOB || _ictOB4h?.priceInOB) ? '📦 OB 價格在訂單塊內' : (_ictOB || _ictOB4h) ? '📦 OB 附近' : '📦 無明顯 OB';
+    const _fvgLine = ((_ictFVG && !_ictFVG.filled) || (_ictFVG4h && !_ictFVG4h.filled)) ? '📊 FVG 未回補（吸引回填）' : '📊 無未填 FVG';
+    const _pdLine = _ictPD ? `⚖️ ${_ictPD.zoneLabel}（${_ictPD.pctInRange.toFixed(0)}% 位置）` : '';
+    const _ictItems = [_kzLine, _obLine, _fvgLine, _pdLine].filter(Boolean);
+    const _cpItems = _chartPat.patterns.length
+      ? _chartPat.patterns.slice(0, 5).map(p => {
+          const clr = p.aligned === true ? '#22c55e' : p.aligned === false ? '#ef4444' : '#f59e0b';
+          const stateTag = p.status === 'forming'
+            ? `<span style="font-size:0.66rem;color:#f59e0b;margin-left:3px">🔄 形成中</span>`
+            : `<span style="font-size:0.66rem;color:#22c55e;margin-left:3px">✅ 已確認</span>`;
+          return `<div style="font-size:0.72rem;color:${clr};margin-bottom:2px">${p.emoji} ${p.name}${stateTag}</div>`;
+        }).join('')
+      : '<div style="font-size:0.72rem;color:var(--text3)">無明顯形態</div>';
+    const _bwLine = (!_breakoutCheck?.confirmed && _breakoutCheck?.warn)
+      ? `<div style="font-size:0.7rem;color:#ef4444;margin-top:4px">⚡ ${_breakoutCheck.warn}</div>` : '';
+    return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+      <div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.2);border-radius:8px;padding:8px 12px">
+        <div style="font-size:0.73rem;font-weight:700;color:#a78bfa;margin-bottom:5px">🧠 ICT / SMC / SNR</div>
+        ${_ictItems.map(i => `<div style="font-size:0.72rem;color:var(--text2);margin-bottom:2px">${i}</div>`).join('')}
+      </div>
+      <div style="background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2);border-radius:8px;padding:8px 12px">
+        <div style="font-size:0.73rem;font-weight:700;color:#fbbf24;margin-bottom:5px">📐 圖形偵測（4H）</div>
+        ${_cpItems}${_bwLine}
+      </div>
+    </div>`;
+  } catch(_cae) { return ''; } })();
+
   // R/R < 1.3 硬性封鎖（優先於 SQ 等級，無論訊號強度均不進場）
   if (parseFloat(rr1str) < 1.3 && direction !== 'wait') {
-    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore };
+    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore, chartPat: _chartPat };
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🚫</div>
       <div class="setup-wait-title">盈虧比不足（R/R <strong style="color:#ef4444">${parseFloat(rr1str).toFixed(1)}:1</strong>），硬性封鎖進場</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 R/R ≥ 1.3:1，當前 ${parseFloat(rr1str).toFixed(1)}:1 不達標，無論訊號品質如何均不進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
+      ${_compactAnalysisHtml}
     </div>`;
   }
 
   // Grade B/C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
   if (!['S','A'].includes(_sqGrade)) {
-    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore };
+    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore, chartPat: _chartPat };
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 A 級（評分 ≥ 7）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
+      ${_compactAnalysisHtml}
     </div>`;
   }
 
@@ -3524,6 +3556,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   _tradeSetupCache[coin.symbol] = {
     direction,
     entry, sl, tp1, tp2,
+    chartPat: _chartPat,
     entryReason: entryReasons.join('，'),
     entryReasons: [...entryReasons],   // 陣列原始版，避免逗號分割錯誤
     slReason, tp1Reason, tp2Reason,
@@ -6154,13 +6187,36 @@ function renderErDashboardWidget() {
   const timeStr = lastTime
     ? new Date(lastTime).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })
     : '—';
+  const _erPatHtml = (() => { try {
+    const _pLines = ['BTC/USDT', 'ETH/USDT'].map(sym => {
+      const cp = cache[sym]?.chartPat;
+      if (!cp || !cp.patterns.length)
+        return `<div style="font-size:0.78rem;color:var(--text3)">📐 <b>${sym.replace('/USDT','')}</b> — 無明顯形態</div>`;
+      const confirmed = cp.patterns.filter(p => p.status !== 'forming');
+      const forming   = cp.patterns.filter(p => p.status === 'forming');
+      const parts = [
+        ...confirmed.slice(0, 2).map(p => {
+          const clr = p.aligned === true ? 'var(--bull)' : p.aligned === false ? 'var(--bear)' : '#f59e0b';
+          return `<span style="color:${clr};font-size:0.72rem">${p.emoji} ${p.name}</span>`;
+        }),
+        ...forming.slice(0, 1).map(p => `<span style="color:#f59e0b;font-size:0.72rem">${p.emoji} ${p.name} 🔄</span>`)
+      ];
+      return `<div style="margin-bottom:4px"><span style="font-size:0.8rem;font-weight:700">📐 ${sym.replace('/USDT','')}</span>　${parts.join('　')}</div>`;
+    });
+    return `<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.07)">
+      <div style="font-size:0.73rem;font-weight:700;color:#fbbf24;margin-bottom:5px">📐 技術圖形識別（4H）</div>
+      ${_pLines.join('')}
+    </div>`;
+  } catch(_e) { return ''; } })();
+
   el.innerHTML = `
     <div class="outlook-header">
       <span class="outlook-title">🔄 頂/底反轉可能性</span>
       <span class="outlook-bias" style="color:var(--text3);font-size:0.78rem">最後更新 ${timeStr}</span>
     </div>
     <div style="padding:4px 0">${rows.join('')}</div>
-    <div style="font-size:0.71rem;color:var(--text3);margin-top:6px">台灣時間 00 / 06 / 12 / 18 時自動更新（BTC / ETH）</div>`;
+    <div style="font-size:0.71rem;color:var(--text3);margin-top:6px">台灣時間 00 / 06 / 12 / 18 時自動更新（BTC / ETH）</div>
+    ${_erPatHtml}`;
 }
 
 async function loadDashboardMacro() {
@@ -9452,8 +9508,25 @@ function buildDailyBriefingMsg(fg, mkt) {
     } catch(e) { return '• 反轉掃描暫無數據'; }
   })();
 
+  const chartPatSection = (() => { try {
+    const _cpCache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache) ? _tradeSetupCache : {};
+    const lines = ['BTC/USDT', 'ETH/USDT'].map(sym => {
+      const cp = _cpCache[sym]?.chartPat;
+      if (!cp || !cp.patterns.length) return `📐 ${sym.replace('/USDT','')} — 無明顯形態`;
+      const confirmed = cp.patterns.filter(p => p.status !== 'forming').slice(0, 2);
+      const forming   = cp.patterns.filter(p => p.status === 'forming').slice(0, 1);
+      const parts = [
+        ...confirmed.map(p => `${p.emoji} ${p.name}（${p.aligned === true ? '同向' : p.aligned === false ? '逆向' : '中性'}）`),
+        ...forming.map(p => `${p.emoji} ${p.name} 🔄形成中`)
+      ];
+      return `📐 ${sym.replace('/USDT','')} — ${parts.join('  |  ')}`;
+    });
+    return lines.join('\n');
+  } catch(_e) { return '• 圖形數據暫無'; } })();
+
   return `📊 <b>每日市場簡報</b> ${dateStr}\n\n` +
     `🔄 <b>頂/底反轉可能性</b>\n${reversalSection}\n\n` +
+    `📐 <b>技術圖形識別（BTC / ETH 4H）</b>\n${chartPatSection}\n\n` +
     `📅 <b>昨日市場回顧</b>\n${yesterdaySection}\n\n` +
     `💰 <b>昨日盈虧報告</b>\n${yesterdayPnlSection}\n\n` +
     `🌐 <b>加密市場大方向</b>\n${marketDirSection}\n\n` +

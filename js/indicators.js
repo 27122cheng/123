@@ -939,7 +939,7 @@ function detectChartPatterns(klines, isLong) {
         if (midVl.length) {
           const neck = Math.min(...midVl.map(v => v.price));
           if ((p1.price - neck) / p1.price > 0.02)
-            patterns.push({ name: 'M頂（雙頂）', emoji: '🔻', aligned: !isLong, strength: 'strong',
+            patterns.push({ name: 'M頂（雙頂）', emoji: '🔻', aligned: !isLong, strength: 'strong', status: 'confirmed',
               desc: `雙頂 $${fp(p1.price)}/$${fp(p2.price)} 頸線 $${fp(neck)}` });
         }
       }
@@ -954,7 +954,7 @@ function detectChartPatterns(klines, isLong) {
         if (midPk.length) {
           const neck = Math.max(...midPk.map(p => p.price));
           if ((neck - v1.price) / v1.price > 0.02)
-            patterns.push({ name: 'W底（雙底）', emoji: '🔺', aligned: isLong, strength: 'strong',
+            patterns.push({ name: 'W底（雙底）', emoji: '🔺', aligned: isLong, strength: 'strong', status: 'confirmed',
               desc: `雙底 $${fp(v1.price)}/$${fp(v2.price)} 頸線 $${fp(neck)}` });
         }
       }
@@ -967,7 +967,7 @@ function detectChartPatterns(klines, isLong) {
         const v1 = vl.filter(v => v.i > ls.i && v.i < hd.i);
         const v2 = vl.filter(v => v.i > hd.i && v.i < rs.i);
         if (v1.length && v2.length)
-          patterns.push({ name: '頭肩頂', emoji: '👤🔻', aligned: !isLong, strength: 'strong',
+          patterns.push({ name: '頭肩頂', emoji: '👤🔻', aligned: !isLong, strength: 'strong', status: 'confirmed',
             desc: `左肩 $${fp(ls.price)} 頭 $${fp(hd.price)} 右肩 $${fp(rs.price)}` });
       }
     }
@@ -979,7 +979,7 @@ function detectChartPatterns(klines, isLong) {
         const p1 = pk.filter(p => p.i > ls.i && p.i < hd.i);
         const p2 = pk.filter(p => p.i > hd.i && p.i < rs.i);
         if (p1.length && p2.length)
-          patterns.push({ name: '頭肩底', emoji: '👤🔺', aligned: isLong, strength: 'strong',
+          patterns.push({ name: '頭肩底', emoji: '👤🔺', aligned: isLong, strength: 'strong', status: 'confirmed',
             desc: `左肩 $${fp(ls.price)} 頭 $${fp(hd.price)} 右肩 $${fp(rs.price)}` });
       }
     }
@@ -993,11 +993,11 @@ function detectChartPatterns(klines, isLong) {
       const norm = avgH || 1;
       const hN = hSlope / norm, lN = lSlope / norm;
       if (hN < -0.0002 && lN > 0.0002)
-        patterns.push({ name: '對稱收斂三角', emoji: '📐', aligned: null, strength: 'moderate', desc: '高低點收斂，等待突破方向' });
+        patterns.push({ name: '對稱收斂三角', emoji: '📐', aligned: null, strength: 'moderate', status: 'confirmed', desc: '高低點收斂，等待突破方向' });
       else if (Math.abs(hN) < 0.0001 && lN > 0.0002)
-        patterns.push({ name: '上升三角（偏多）', emoji: '📐🔺', aligned: isLong, strength: 'moderate', desc: '底部抬升、阻力平穩，多頭蓄力' });
+        patterns.push({ name: '上升三角（偏多）', emoji: '📐🔺', aligned: isLong, strength: 'moderate', status: 'confirmed', desc: '底部抬升、阻力平穩，多頭蓄力' });
       else if (hN < -0.0002 && Math.abs(lN) < 0.0001)
-        patterns.push({ name: '下降三角（偏空）', emoji: '📐🔻', aligned: !isLong, strength: 'moderate', desc: '高點下移、支撐平穩，空頭蓄力' });
+        patterns.push({ name: '下降三角（偏空）', emoji: '📐🔻', aligned: !isLong, strength: 'moderate', status: 'confirmed', desc: '高點下移、支撐平穩，空頭蓄力' });
     }
 
     // ⑥ 旗形（Flag）
@@ -1013,7 +1013,7 @@ function detectChartPatterns(klines, isLong) {
         if (consPct < polePct * 0.4) {
           const bullPole = closes[poleEnd + 5] > opens[poleEnd];
           patterns.push({ name: bullPole ? '多頭旗形' : '空頭旗形', emoji: bullPole ? '🚩🔺' : '🚩🔻',
-            aligned: bullPole ? isLong : !isLong, strength: 'moderate',
+            aligned: bullPole ? isLong : !isLong, strength: 'moderate', status: 'confirmed',
             desc: `急${bullPole ? '升' : '跌'} ${polePct.toFixed(1)}% 後盤整 ${consPct.toFixed(1)}%` });
         }
       }
@@ -1031,7 +1031,7 @@ function detectChartPatterns(klines, isLong) {
         const bullDist = cur > accH * 1.003;
         const bearDist = cur < accL * 0.997;
         if (hasManip && (bullDist || bearDist))
-          patterns.push({ name: 'PO3 積累→操縱→分配', emoji: '🎯', aligned: bullDist ? isLong : !isLong, strength: 'strong',
+          patterns.push({ name: 'PO3 積累→操縱→分配', emoji: '🎯', aligned: bullDist ? isLong : !isLong, strength: 'strong', status: 'confirmed',
             desc: `積累 ${accR.toFixed(1)}% 盤整後${bullDist ? '多頭' : '空頭'}發動` });
       }
     }
@@ -1045,10 +1045,10 @@ function detectChartPatterns(klines, isLong) {
       const rc3L  = Math.min(...lows.slice(n - 3));
       const preC  = closes[n - 5];
       if (cur > prevH * 1.003 && rc3L > prevH * 0.990 && preC < prevH * 1.008)
-        patterns.push({ name: '突破回踩踩穩（多）', emoji: '✅🔺', aligned: isLong, strength: 'strong',
+        patterns.push({ name: '突破回踩踩穩（多）', emoji: '✅🔺', aligned: isLong, strength: 'strong', status: 'confirmed',
           desc: `突破前高 $${fp(prevH)} 後回測站穩，多頭延伸確認` });
       else if (cur < prevL * 0.997 && rc3H < prevL * 1.010 && preC > prevL * 0.992)
-        patterns.push({ name: '跌破回測確認（空）', emoji: '✅🔻', aligned: !isLong, strength: 'strong',
+        patterns.push({ name: '跌破回測確認（空）', emoji: '✅🔻', aligned: !isLong, strength: 'strong', status: 'confirmed',
           desc: `跌破前低 $${fp(prevL)} 回測承壓，空頭延伸確認` });
     }
 
@@ -1059,10 +1059,10 @@ function detectChartPatterns(klines, isLong) {
       const rcH   = Math.max(...highs.slice(n - 5));
       const rcL   = Math.min(...lows.slice(n - 5));
       if (rcH > prevH * 1.003)
-        patterns.push({ name: 'BOS 結構突破（偏多）', emoji: '🏗️🔺', aligned: isLong, strength: 'moderate',
+        patterns.push({ name: 'BOS 結構突破（偏多）', emoji: '🏗️🔺', aligned: isLong, strength: 'moderate', status: 'confirmed',
           desc: `近5K突破前高 $${fp(prevH)}，多頭結構確立` });
       else if (rcL < prevL * 0.997)
-        patterns.push({ name: 'BOS 結構突破（偏空）', emoji: '🏗️🔻', aligned: !isLong, strength: 'moderate',
+        patterns.push({ name: 'BOS 結構突破（偏空）', emoji: '🏗️🔻', aligned: !isLong, strength: 'moderate', status: 'confirmed',
           desc: `近5K跌破前低 $${fp(prevL)}，空頭結構確立` });
     }
 
@@ -1075,10 +1075,10 @@ function detectChartPatterns(klines, isLong) {
       const midH   = Math.max(...highs.slice(n - 18, n - 6));
       const midL   = Math.min(...lows.slice(n - 18, n - 6));
       if (trend === 'down' && rcH > midH * 1.005)
-        patterns.push({ name: 'CHoCH 結構轉換（空轉多）', emoji: '🔄🔺', aligned: isLong, strength: 'strong',
+        patterns.push({ name: 'CHoCH 結構轉換（空轉多）', emoji: '🔄🔺', aligned: isLong, strength: 'strong', status: 'confirmed',
           desc: '下跌趨勢中出現首個更高高點，方向可能轉換' });
       else if (trend === 'up' && rcL < midL * 0.995)
-        patterns.push({ name: 'CHoCH 結構轉換（多轉空）', emoji: '🔄🔻', aligned: !isLong, strength: 'strong',
+        patterns.push({ name: 'CHoCH 結構轉換（多轉空）', emoji: '🔄🔻', aligned: !isLong, strength: 'strong', status: 'confirmed',
           desc: '上漲趨勢中出現首個更低低點，方向可能轉換' });
     }
 
@@ -1089,18 +1089,56 @@ function detectChartPatterns(klines, isLong) {
       const rcH   = Math.max(...highs.slice(n - 3));
       const rcL   = Math.min(...lows.slice(n - 3));
       if (rcL < prevL * 0.997 && cur > prevL * 1.002)
-        patterns.push({ name: '流動性掃除（偏多）', emoji: '💧🔺', aligned: isLong, strength: 'strong',
+        patterns.push({ name: '流動性掃除（偏多）', emoji: '💧🔺', aligned: isLong, strength: 'strong', status: 'confirmed',
           desc: `掃除前低 $${fp(prevL)} 後反彈，ICT 流動性獵取做多` });
       else if (rcH > prevH * 1.003 && cur < prevH * 0.998)
-        patterns.push({ name: '流動性掃除（偏空）', emoji: '💧🔻', aligned: !isLong, strength: 'strong',
+        patterns.push({ name: '流動性掃除（偏空）', emoji: '💧🔻', aligned: !isLong, strength: 'strong', status: 'confirmed',
           desc: `掃除前高 $${fp(prevH)} 後回落，ICT 流動性獵取做空` });
+    }
+
+    // ── 形成中（Forming）形態偵測 ──
+    // M頂形成中：一個峰頂已出現，現價接近峰頂水平
+    if (pk.length >= 1 && patterns.every(p => p.name !== 'M頂（雙頂）')) {
+      const lastPk = pk[pk.length - 1];
+      if (Math.abs(cur - lastPk.price) / lastPk.price < 0.025 && cur < lastPk.price)
+        patterns.push({ name: 'M頂形成中', emoji: '🔻⏳', aligned: !isLong, strength: 'weak', status: 'forming',
+          desc: `現價接近前峰 $${fp(lastPk.price)}，觀察是否形成雙頂` });
+    }
+    // W底形成中：一個谷底已出現，現價接近谷底水平
+    if (vl.length >= 1 && patterns.every(p => p.name !== 'W底（雙底）')) {
+      const lastVl = vl[vl.length - 1];
+      if (Math.abs(cur - lastVl.price) / lastVl.price < 0.025 && cur > lastVl.price)
+        patterns.push({ name: 'W底形成中', emoji: '🔺⏳', aligned: isLong, strength: 'weak', status: 'forming',
+          desc: `現價接近前谷 $${fp(lastVl.price)}，觀察是否形成雙底` });
+    }
+    // 三角收斂形成中：2+ 峰谷但尚未 3 個
+    if (pk.length === 2 && vl.length === 2 && patterns.every(p => !p.name.includes('三角'))) {
+      const hS = (pk[1].price - pk[0].price) / Math.max(1, pk[1].i - pk[0].i) / (pk[0].price || 1);
+      const lS = (vl[1].price - vl[0].price) / Math.max(1, vl[1].i - vl[0].i) / (vl[0].price || 1);
+      if (hS < -0.0001 && lS > 0.0001)
+        patterns.push({ name: '收斂三角形成中', emoji: '📐⏳', aligned: null, strength: 'weak', status: 'forming',
+          desc: '高低點開始收斂，三角形態初步成形' });
+    }
+    // BOS 臨近形成中：現價接近前期重要高低點
+    if (n >= 20) {
+      const pHigh = Math.max(...highs.slice(n - 20, n - 5));
+      const pLow  = Math.min(...lows.slice(n - 20, n - 5));
+      if (patterns.every(p => !p.name.includes('BOS'))) {
+        if (isLong && cur > pHigh * 0.996 && cur < pHigh * 1.003)
+          patterns.push({ name: 'BOS 突破前高臨近', emoji: '🏗️⏳', aligned: isLong, strength: 'weak', status: 'forming',
+            desc: `現價接近前高 $${fp(pHigh)}，觀察是否有效突破` });
+        else if (!isLong && cur < pLow * 1.004 && cur > pLow * 0.997)
+          patterns.push({ name: 'BOS 跌破前低臨近', emoji: '🏗️⏳', aligned: !isLong, strength: 'weak', status: 'forming',
+            desc: `現價接近前低 $${fp(pLow)}，觀察是否有效跌破` });
+      }
     }
 
     const aligned  = patterns.filter(p => p.aligned === true);
     const opposing = patterns.filter(p => p.aligned === false);
     const neutral  = patterns.filter(p => p.aligned === null);
-    const strongA  = aligned.filter(p => p.strength === 'strong');
-    const score    = strongA.length >= 2 ? 2 : strongA.length === 1 ? 2 : aligned.length >= 1 ? 1 : 0;
+    const confirmedAligned = aligned.filter(p => p.status !== 'forming');
+    const strongA  = confirmedAligned.filter(p => p.strength === 'strong');
+    const score    = strongA.length >= 2 ? 2 : strongA.length >= 1 ? 2 : confirmedAligned.length >= 1 ? 1 : 0;
 
     return { patterns, score, aligned, opposing, neutral };
   } catch(_cpe) { console.warn('[chartPatterns]', _cpe); return { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] }; }
