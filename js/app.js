@@ -3585,6 +3585,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // ICT/SMC/SNR 分析資料
     killZone: _kz, orderBlock: _ictOB, fvg: _ictFVG, premiumDiscount: _ictPD,
     orderBlock4h: _ictOB4h, fvg4h: _ictFVG4h, ictBonus: _ictBonus,
+    breakoutCheck: _breakoutCheck,
     // AI 訊號品質等級（供 Telegram 顯示）
     sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel, sqFactors: _sqFactors,
     // 長線部分止盈位（3R）
@@ -4095,94 +4096,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       </div>` : ''}
   </div>
 
-  ${(() => { try { return `<!-- ═══ ICT / SMC / SNR 分析面板 ═══ -->
-  <div style="background:rgba(16,24,39,.7);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
-    <div style="font-weight:700;color:#a78bfa;margin-bottom:7px;font-size:0.8rem">🧠 ICT / SMC / SNR 智能分析</div>
-    <!-- Kill Zone -->
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-      <span style="color:var(--text3);min-width:70px">⏰ 獵殺時段</span>
-      <span style="color:${_kz.quality === 'high' ? '#22c55e' : _kz.quality === 'medium' ? '#f59e0b' : 'var(--text3)'};font-weight:600">${_kz.emoji} ${_kz.name}</span>
-      <span style="color:var(--text3);font-size:0.72rem">${_kz.desc}</span>
-      ${_kz.quality === 'high' ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">黃金窗口</span>` : ''}
-    </div>
-    <!-- Order Block -->
-    ${(_ictOB || _ictOB4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
-      <span style="color:var(--text3);min-width:70px">📦 訂單塊</span>
-      <div>
-        ${_ictOB ? `<div style="color:${_ictOB.priceInOB ? '#22c55e' : '#f59e0b'}">1H ${_ictOB.label}　$${fmtPrice(_ictOB.low)} – $${fmtPrice(_ictOB.high)}${_ictOB.priceInOB ? ' ✅ 價格在 OB 內' : ''}</div>` : ''}
-        ${_ictOB4h ? `<div style="color:${_ictOB4h.priceInOB ? '#22c55e' : '#f59e0b'}">4H ${_ictOB4h.label}　$${fmtPrice(_ictOB4h.low)} – $${fmtPrice(_ictOB4h.high)}${_ictOB4h.priceInOB ? ' ✅ 價格在 OB 內' : ''}</div>` : ''}
-      </div>
-    </div>` : `<div style="color:var(--text3);margin-bottom:6px">📦 訂單塊　<span style="opacity:.6">當前範圍無明顯 OB</span></div>`}
-    <!-- FVG -->
-    ${(_ictFVG || _ictFVG4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
-      <span style="color:var(--text3);min-width:70px">📊 FVG 缺口</span>
-      <div>
-        ${_ictFVG ? `<div style="color:${_ictFVG.filled ? 'var(--text3)' : '#a78bfa'}">1H　$${fmtPrice(_ictFVG.low)} – $${fmtPrice(_ictFVG.high)}（${(_ictFVG.size).toFixed(2)}%）${_ictFVG.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
-        ${_ictFVG4h ? `<div style="color:${_ictFVG4h.filled ? 'var(--text3)' : '#a78bfa'}">4H　$${fmtPrice(_ictFVG4h.low)} – $${fmtPrice(_ictFVG4h.high)}（${(_ictFVG4h.size).toFixed(2)}%）${_ictFVG4h.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
-      </div>
-    </div>` : `<div style="color:var(--text3);margin-bottom:6px">📊 FVG 缺口　<span style="opacity:.6">近期無明顯缺口</span></div>`}
-    <!-- Premium / Discount -->
-    ${_ictPD ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-      <span style="color:var(--text3);min-width:70px">⚖️ 價格位置</span>
-      <span style="color:${_ictPD.idealForLong ? '#22c55e' : _ictPD.idealForShort ? '#ef4444' : '#f59e0b'};font-weight:600">${_ictPD.icon} ${_ictPD.zoneLabel}（${_ictPD.pctInRange.toFixed(0)}% 位置）</span>
-      <span style="color:var(--text3);font-size:0.72rem">均衡點 $${fmtPrice(_ictPD.equilibrium)}</span>
-      ${(isLong && _ictPD.idealForLong) || (!isLong && _ictPD.idealForShort) ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">SMC 最佳進場</span>` : ''}
-    </div>` : ''}
-    <!-- SNR Key Levels -->
-    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
-      <span style="color:var(--text3);min-width:70px">🎯 關鍵 S/R</span>
-      <div style="color:var(--text2);font-size:0.72rem;line-height:1.8">
-        ${parseFloat(coin.ema200) > 0 ? `EMA200 $${fmtPrice(parseFloat(coin.ema200))}　` : ''}${parseFloat(coin.ema50) > 0 ? `EMA50 $${fmtPrice(parseFloat(coin.ema50))}　` : ''}${vp1h?.poc ? `POC $${fmtPrice(vp1h.poc)}　` : ''}${bb1h_?.upper ? `BB上 $${fmtPrice(bb1h_.upper)}　BB下 $${fmtPrice(bb1h_.lower)}` : ''}
-      </div>
-    </div>
-    <!-- Footprint -->
-    ${(() => { try {
-      const _fp = _footprintCache[coin.symbol];
-      if (!_fp) return '';
-      const _fmtFP = v => parseFloat(v).toPrecision(4).replace(/\.?0+$/, '');
-      const _dirClr  = _fp.deltaDir === 'bull' ? '#22c55e' : _fp.deltaDir === 'bear' ? '#ef4444' : 'var(--text3)';
-      const _dirTx   = _fp.deltaDir === 'bull' ? '▲ 買盤主導' : _fp.deltaDir === 'bear' ? '▼ 賣盤主導' : '◆ 均衡';
-      const _divWarn = _fp.deltaDiv ? ` <span style="background:rgba(239,68,68,.15);color:#ef4444;padding:1px 5px;border-radius:3px;font-size:0.68rem">⚡ Delta 背離</span>` : '';
-      return `<div style="display:flex;align-items:flex-start;gap:8px">
-        <span style="color:var(--text3);min-width:70px">📈 足跡圖</span>
-        <div style="font-size:0.72rem;line-height:1.8">
-          <span style="color:${_dirClr}">${_dirTx}</span>${_divWarn}
-          &nbsp;&nbsp;POC $${_fmtFP(_fp.poc)}
-          ${_fp.absorption ? '　<span style="color:#22c55e;font-size:0.68rem">🔵 吸籌</span>' : ''}
-        </div>
-      </div>`;
-    } catch(_fpe) { return ''; } })()}
-    ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
-  </div>`; } catch(_icpe) { console.warn('[ICT panel]', _icpe); return ''; } })()}
-
-  ${(() => { try {
-    const _cpRows = _chartPat.patterns.length
-      ? _chartPat.patterns.map(p => {
-          const clr = p.aligned === true ? '#22c55e' : p.aligned === false ? '#ef4444' : '#f59e0b';
-          const tag = p.aligned === true ? '✅ 同向' : p.aligned === false ? '❌ 逆向' : '⚠️ 中性';
-          const stateTag = p.status === 'forming'
-            ? `<span style="font-size:0.66rem;color:#f59e0b;margin-left:3px">🔄 形成中</span>`
-            : `<span style="font-size:0.66rem;color:#22c55e;margin-left:3px">✅ 已確認</span>`;
-          return `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:4px">
-        <span style="color:${clr};font-size:0.7rem;white-space:nowrap;min-width:44px">${tag}</span>
-        <div style="font-size:0.72rem;line-height:1.5">
-          <span style="color:var(--text1)">${p.emoji} ${p.name}</span>${stateTag}
-          <span style="color:var(--text3);font-size:0.68rem">　${p.desc}</span>
-        </div>
-      </div>`;
-        }).join('')
-      : `<div style="font-size:0.72rem;color:var(--text3)">目前 4H 圖表無明顯技術形態，待形成中訊號</div>`;
-    const _bwarn = (!_breakoutCheck.confirmed && _breakoutCheck.warn)
-      ? `<div style="margin-top:6px;padding:5px 8px;background:rgba(239,68,68,.08);border-left:2px solid #ef4444;border-radius:4px;font-size:0.7rem;color:#ef4444">⚡ 突破確認不足：${_breakoutCheck.warn}</div>`
-      : '';
-    return `<!-- ═══ 圖形偵測面板 ═══ -->
-  <div style="background:rgba(16,24,39,.7);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
-    <div style="font-weight:700;color:#fbbf24;margin-bottom:7px;font-size:0.8rem">📐 技術圖形識別（4H）</div>
-    ${_cpRows}
-    ${_bwarn}
-    ${_chartPat.score > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ 圖形評分加成 <strong>+${Math.min(2,_chartPat.score)} 分</strong></div>` : ''}
-  </div>`;
-  } catch(_cppe) { console.warn('[chartPat panel]', _cppe); return ''; } })()}
 
   ${macroBlockedForRecord ? `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⚠️ 宏觀大方向${isLong ? '極端偏空' : '極端偏多'}，信心度已扣分反映，訊號已記入持倉供參考</div>` : ''}
   ${_recordBlockedByCooldown ? (() => { const cancelledT = loadCancelCooldowns().find(c => c.symbol === coin.symbol && c.direction === direction && (Date.now() - (c.cancelTime||0)) < SIGNAL_COOLDOWN); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
@@ -7378,6 +7291,112 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
 }
 
 
+/* ── ICT / SMC / SNR + 圖形識別面板（獨立渲染，置於多週期信號分析下）── */
+function buildICTSMRPanel(symbol, coin, mtfData) {
+  try {
+    const setup = _tradeSetupCache[symbol];
+    if (!setup || setup.direction === 'wait') return '';
+    const isLong       = setup.direction === 'long';
+    const _kz          = setup.killZone;
+    const _ictOB       = setup.orderBlock;
+    const _ictOB4h     = setup.orderBlock4h;
+    const _ictFVG      = setup.fvg;
+    const _ictFVG4h    = setup.fvg4h;
+    const _ictPD       = setup.premiumDiscount;
+    const _ictBonus    = setup.ictBonus || 0;
+    const _chartPat    = setup.chartPat || { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
+    const _brkChk      = setup.breakoutCheck || { confirmed: true, warn: '' };
+    const vp1h         = mtfData['1h']?.vp;
+    const bb1h_        = mtfData['1h']?.bb;
+
+    const ictHtml = (() => { try {
+      if (!_kz) return '';
+      return `<div style="background:rgba(16,24,39,.7);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
+    <div style="font-weight:700;color:#a78bfa;margin-bottom:7px;font-size:0.8rem">🧠 ICT / SMC / SNR 智能分析</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">⏰ 獵殺時段</span>
+      <span style="color:${_kz.quality === 'high' ? '#22c55e' : _kz.quality === 'medium' ? '#f59e0b' : 'var(--text3)'};font-weight:600">${_kz.emoji} ${_kz.name}</span>
+      <span style="color:var(--text3);font-size:0.72rem">${_kz.desc}</span>
+      ${_kz.quality === 'high' ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">黃金窗口</span>` : ''}
+    </div>
+    ${(_ictOB || _ictOB4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">📦 訂單塊</span>
+      <div>
+        ${_ictOB ? `<div style="color:${_ictOB.priceInOB ? '#22c55e' : '#f59e0b'}">1H ${_ictOB.label}　$${fmtPrice(_ictOB.low)} – $${fmtPrice(_ictOB.high)}${_ictOB.priceInOB ? ' ✅ 價格在 OB 內' : ''}</div>` : ''}
+        ${_ictOB4h ? `<div style="color:${_ictOB4h.priceInOB ? '#22c55e' : '#f59e0b'}">4H ${_ictOB4h.label}　$${fmtPrice(_ictOB4h.low)} – $${fmtPrice(_ictOB4h.high)}${_ictOB4h.priceInOB ? ' ✅ 價格在 OB 內' : ''}</div>` : ''}
+      </div>
+    </div>` : `<div style="color:var(--text3);margin-bottom:6px">📦 訂單塊　<span style="opacity:.6">當前範圍無明顯 OB</span></div>`}
+    ${(_ictFVG || _ictFVG4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">📊 FVG 缺口</span>
+      <div>
+        ${_ictFVG ? `<div style="color:${_ictFVG.filled ? 'var(--text3)' : '#a78bfa'}">1H　$${fmtPrice(_ictFVG.low)} – $${fmtPrice(_ictFVG.high)}（${(_ictFVG.size).toFixed(2)}%）${_ictFVG.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
+        ${_ictFVG4h ? `<div style="color:${_ictFVG4h.filled ? 'var(--text3)' : '#a78bfa'}">4H　$${fmtPrice(_ictFVG4h.low)} – $${fmtPrice(_ictFVG4h.high)}（${(_ictFVG4h.size).toFixed(2)}%）${_ictFVG4h.filled ? '已回補' : '⚡ 未回補'}</div>` : ''}
+      </div>
+    </div>` : `<div style="color:var(--text3);margin-bottom:6px">📊 FVG 缺口　<span style="opacity:.6">近期無明顯缺口</span></div>`}
+    ${_ictPD ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">⚖️ 價格位置</span>
+      <span style="color:${_ictPD.idealForLong ? '#22c55e' : _ictPD.idealForShort ? '#ef4444' : '#f59e0b'};font-weight:600">${_ictPD.icon} ${_ictPD.zoneLabel}（${_ictPD.pctInRange.toFixed(0)}% 位置）</span>
+      <span style="color:var(--text3);font-size:0.72rem">均衡點 $${fmtPrice(_ictPD.equilibrium)}</span>
+      ${(isLong && _ictPD.idealForLong) || (!isLong && _ictPD.idealForShort) ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">SMC 最佳進場</span>` : ''}
+    </div>` : ''}
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
+      <span style="color:var(--text3);min-width:70px">🎯 關鍵 S/R</span>
+      <div style="color:var(--text2);font-size:0.72rem;line-height:1.8">
+        ${parseFloat(coin.ema200) > 0 ? `EMA200 $${fmtPrice(parseFloat(coin.ema200))}　` : ''}${parseFloat(coin.ema50) > 0 ? `EMA50 $${fmtPrice(parseFloat(coin.ema50))}　` : ''}${vp1h?.poc ? `POC $${fmtPrice(vp1h.poc)}　` : ''}${bb1h_?.upper ? `BB上 $${fmtPrice(bb1h_.upper)}　BB下 $${fmtPrice(bb1h_.lower)}` : ''}
+      </div>
+    </div>
+    ${(() => { try {
+      const _fp = _footprintCache[coin.symbol];
+      if (!_fp) return '';
+      const _fmtFP = v => parseFloat(v).toPrecision(4).replace(/\.?0+$/, '');
+      const _dirClr = _fp.deltaDir === 'bull' ? '#22c55e' : _fp.deltaDir === 'bear' ? '#ef4444' : 'var(--text3)';
+      const _dirTx  = _fp.deltaDir === 'bull' ? '▲ 買盤主導' : _fp.deltaDir === 'bear' ? '▼ 賣盤主導' : '◆ 均衡';
+      const _divWarn = _fp.deltaDiv ? ` <span style="background:rgba(239,68,68,.15);color:#ef4444;padding:1px 5px;border-radius:3px;font-size:0.68rem">⚡ Delta 背離</span>` : '';
+      return `<div style="display:flex;align-items:flex-start;gap:8px">
+        <span style="color:var(--text3);min-width:70px">📈 足跡圖</span>
+        <div style="font-size:0.72rem;line-height:1.8">
+          <span style="color:${_dirClr}">${_dirTx}</span>${_divWarn}
+          &nbsp;&nbsp;POC $${_fmtFP(_fp.poc)}
+          ${_fp.absorption ? '　<span style="color:#22c55e;font-size:0.68rem">🔵 吸籌</span>' : ''}
+        </div>
+      </div>`;
+    } catch(_fpe) { return ''; } })()}
+    ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
+  </div>`;
+    } catch(_ie) { return ''; } })();
+
+    const cpHtml = (() => { try {
+      const _cpRows = _chartPat.patterns.length
+        ? _chartPat.patterns.map(p => {
+            const clr = p.aligned === true ? '#22c55e' : p.aligned === false ? '#ef4444' : '#f59e0b';
+            const tag = p.aligned === true ? '✅ 同向' : p.aligned === false ? '❌ 逆向' : '⚠️ 中性';
+            const stateTag = p.status === 'forming'
+              ? `<span style="font-size:0.66rem;color:#f59e0b;margin-left:3px">🔄 形成中</span>`
+              : `<span style="font-size:0.66rem;color:#22c55e;margin-left:3px">✅ 已確認</span>`;
+            return `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:4px">
+          <span style="color:${clr};font-size:0.7rem;white-space:nowrap;min-width:44px">${tag}</span>
+          <div style="font-size:0.72rem;line-height:1.5">
+            <span style="color:var(--text1)">${p.emoji} ${p.name}</span>${stateTag}
+            <span style="color:var(--text3);font-size:0.68rem">　${p.desc}</span>
+          </div>
+        </div>`;
+          }).join('')
+        : `<div style="font-size:0.72rem;color:var(--text3)">目前 4H 圖表無明顯技術形態，待形成中訊號</div>`;
+      const _bwarn = (!_brkChk.confirmed && _brkChk.warn)
+        ? `<div style="margin-top:6px;padding:5px 8px;background:rgba(239,68,68,.08);border-left:2px solid #ef4444;border-radius:4px;font-size:0.7rem;color:#ef4444">⚡ 突破確認不足：${_brkChk.warn}</div>`
+        : '';
+      return `<div style="background:rgba(16,24,39,.7);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
+    <div style="font-weight:700;color:#fbbf24;margin-bottom:7px;font-size:0.8rem">📐 技術圖形識別（4H）</div>
+    ${_cpRows}
+    ${_bwarn}
+    ${_chartPat.score > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ 圖形評分加成 <strong>+${Math.min(2,_chartPat.score)} 分</strong></div>` : ''}
+  </div>`;
+    } catch(_ce) { return ''; } })();
+
+    return ictHtml + cpHtml;
+  } catch(_e) { return ''; }
+}
+
 /* ── 幣種詳情（async）────────────────────────────────────── */
 async function renderCoinDetail(symbol) {
   const coin = state.data.find(d => d.symbol === symbol);
@@ -7515,6 +7534,22 @@ async function renderCoinDetail(symbol) {
   setSafe('deriv-body',     () => buildDerivativesPanel(deriv));
   setSafe('setup-body',     () => buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed));
   setSafe('mtf-body',       () => buildMTFTable(mtfData));
+
+  // ICT / SMC / SNR + 圖形識別（置於多週期信號分析下方，僅 A/S 級信號顯示）
+  const _ictSection = document.getElementById('ict-section');
+  const _ictBody    = document.getElementById('ict-body');
+  if (_ictSection && _ictBody) {
+    try {
+      const _ictHtml = buildICTSMRPanel(symbol, coin, mtfData);
+      if (_ictHtml) {
+        _ictBody.innerHTML = _ictHtml;
+        _ictSection.style.display = '';
+      } else {
+        _ictSection.style.display = 'none';
+      }
+    } catch (_ie) { _ictSection.style.display = 'none'; }
+  }
+
   setSafe('of-body',        () => buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
   setSafe('fp-body',        () => buildFootprintPanel(_footprintCache[symbol], coin));
   setSafe('liq-body',       () => buildLiquidationPanel(_liquidationCache[symbol], coin, mtfData));
