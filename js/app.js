@@ -2522,6 +2522,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_raw4h?.length >= 5 && typeof detectFairValueGaps === 'function') _ictFVG4h = detectFairValueGaps(_raw4h, isLong);
   } catch(_icte) { console.warn('[ICT analysis]', _icte); }
 
+  // ── 圖形識別（傳統技術形態 + ICT）──
+  let _chartPat = { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
+  try {
+    if (_raw1h?.length >= 30 && typeof detectChartPatterns === 'function')
+      _chartPat = detectChartPatterns(_raw1h, isLong);
+  } catch(_cpe) {}
+
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
@@ -3414,6 +3421,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (_risk.score <= 54) { _sqFactors.push(`⚠️ 風控中等（${_risk.score}分）`); }
   else { _sqFactors.push(`❌ 風控偏高（${_risk.score}分）`); }
   if (_risk.factors?.length) _risk.factors.slice(0, 3).forEach(f => _sqFactors.push(`　▸ ${f}`));
+  // ⑩ 技術圖形識別（傳統形態 + ICT）
+  _sqScore += Math.min(2, _chartPat.score);
+  if (_chartPat.aligned.length > 0) {
+    _sqFactors.push(`✅ 圖形確認（${_chartPat.aligned.length} 種形態同向）`);
+    _chartPat.aligned.slice(0, 3).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
+  } else if (_chartPat.neutral.length > 0) {
+    _sqFactors.push(`⚠️ 中性圖形（等待突破確認）`);
+    _chartPat.neutral.slice(0, 2).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
+  } else if (_chartPat.patterns.length === 0) {
+    _sqFactors.push(`⬜ 圖形識別：無明顯形態`);
+  }
+  if (_chartPat.opposing.length > 0) {
+    _sqFactors.push(`❌ 逆向圖形警告（${_chartPat.opposing.length} 種）`);
+    _chartPat.opposing.slice(0, 2).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
+  }
   // ── 參考分析：宏觀 / AI 趨勢 / 歷史止損（不影響 SQ 評分，供決策參考）──
   if (macroOpposePenalty > 0 && macroReasons.length) {
     _sqFactors.push(`📉 宏觀逆風（信心 -${macroOpposePenalty}%）`);

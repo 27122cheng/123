@@ -898,3 +898,210 @@ function computePremiumDiscount(klines) {
     idealForShort: zone === 'premium'  || zone === 'slight_premium',
   };
 }
+
+/* ── 傳統技術圖形識別（SQ ⑩）──────────────────────────────── */
+function detectChartPatterns(klines, isLong) {
+  if (!klines || klines.length < 30) return { patterns: [], score: 0, aligned: [], opposing: [] };
+  try {
+    const n      = klines.length;
+    const opens  = klines.map(k => parseFloat(k[1]));
+    const highs  = klines.map(k => parseFloat(k[2]));
+    const lows   = klines.map(k => parseFloat(k[3]));
+    const closes = klines.map(k => parseFloat(k[4]));
+    const cur    = closes[n - 1];
+    const fp     = v => parseFloat(v).toPrecision(5).replace(/\.?0+$/, '');
+
+    // 找局部極值（pivot）
+    function findPivots(win, lb) {
+      const start = Math.max(0, n - lb);
+      const pk = [], vl = [];
+      for (let i = start + win; i < n - win; i++) {
+        let isPk = true, isVl = true;
+        for (let j = 1; j <= win; j++) {
+          if (highs[i-j] >= highs[i] || highs[i+j] >= highs[i]) isPk = false;
+          if (lows[i-j]  <= lows[i]  || lows[i+j]  <= lows[i])  isVl = false;
+        }
+        if (isPk) pk.push({ i, price: highs[i] });
+        if (isVl) vl.push({ i, price: lows[i] });
+      }
+      return { pk, vl };
+    }
+
+    const { pk, vl } = findPivots(3, 80);
+    const patterns = [];
+
+    // ① M頂（雙頂）
+    if (pk.length >= 2) {
+      const p1 = pk[pk.length - 2], p2 = pk[pk.length - 1];
+      const sim = Math.abs(p1.price - p2.price) / p1.price;
+      if (sim < 0.03) {
+        const midVl = vl.filter(v => v.i > p1.i && v.i < p2.i);
+        if (midVl.length) {
+          const neck = Math.min(...midVl.map(v => v.price));
+          if ((p1.price - neck) / p1.price > 0.02)
+            patterns.push({ name: 'M頂（雙頂）', emoji: '🔻', aligned: !isLong, strength: 'strong',
+              desc: `雙頂 $${fp(p1.price)}/$${fp(p2.price)} 頸線 $${fp(neck)}` });
+        }
+      }
+    }
+
+    // ② W底（雙底）
+    if (vl.length >= 2) {
+      const v1 = vl[vl.length - 2], v2 = vl[vl.length - 1];
+      const sim = Math.abs(v1.price - v2.price) / v1.price;
+      if (sim < 0.03) {
+        const midPk = pk.filter(p => p.i > v1.i && p.i < v2.i);
+        if (midPk.length) {
+          const neck = Math.max(...midPk.map(p => p.price));
+          if ((neck - v1.price) / v1.price > 0.02)
+            patterns.push({ name: 'W底（雙底）', emoji: '🔺', aligned: isLong, strength: 'strong',
+              desc: `雙底 $${fp(v1.price)}/$${fp(v2.price)} 頸線 $${fp(neck)}` });
+        }
+      }
+    }
+
+    // ③ 頭肩頂
+    if (pk.length >= 3) {
+      const ls = pk[pk.length - 3], hd = pk[pk.length - 2], rs = pk[pk.length - 1];
+      if (hd.price > ls.price && hd.price > rs.price && Math.abs(ls.price - rs.price) / ls.price < 0.08) {
+        const v1 = vl.filter(v => v.i > ls.i && v.i < hd.i);
+        const v2 = vl.filter(v => v.i > hd.i && v.i < rs.i);
+        if (v1.length && v2.length)
+          patterns.push({ name: '頭肩頂', emoji: '👤🔻', aligned: !isLong, strength: 'strong',
+            desc: `左肩 $${fp(ls.price)} 頭 $${fp(hd.price)} 右肩 $${fp(rs.price)}` });
+      }
+    }
+
+    // ④ 頭肩底
+    if (vl.length >= 3) {
+      const ls = vl[vl.length - 3], hd = vl[vl.length - 2], rs = vl[vl.length - 1];
+      if (hd.price < ls.price && hd.price < rs.price && Math.abs(ls.price - rs.price) / ls.price < 0.08) {
+        const p1 = pk.filter(p => p.i > ls.i && p.i < hd.i);
+        const p2 = pk.filter(p => p.i > hd.i && p.i < rs.i);
+        if (p1.length && p2.length)
+          patterns.push({ name: '頭肩底', emoji: '👤🔺', aligned: isLong, strength: 'strong',
+            desc: `左肩 $${fp(ls.price)} 頭 $${fp(hd.price)} 右肩 $${fp(rs.price)}` });
+      }
+    }
+
+    // ⑤ 收斂三角形
+    if (pk.length >= 3 && vl.length >= 3) {
+      const rPk = pk.slice(-3), rVl = vl.slice(-3);
+      const hSlope = (rPk[2].price - rPk[0].price) / Math.max(1, rPk[2].i - rPk[0].i);
+      const lSlope = (rVl[2].price - rVl[0].price) / Math.max(1, rVl[2].i - rVl[0].i);
+      const avgH = rPk.reduce((s, p) => s + p.price, 0) / 3;
+      const norm = avgH || 1;
+      const hN = hSlope / norm, lN = lSlope / norm;
+      if (hN < -0.0002 && lN > 0.0002)
+        patterns.push({ name: '對稱收斂三角', emoji: '📐', aligned: null, strength: 'moderate', desc: '高低點收斂，等待突破方向' });
+      else if (Math.abs(hN) < 0.0001 && lN > 0.0002)
+        patterns.push({ name: '上升三角（偏多）', emoji: '📐🔺', aligned: isLong, strength: 'moderate', desc: '底部抬升、阻力平穩，多頭蓄力' });
+      else if (hN < -0.0002 && Math.abs(lN) < 0.0001)
+        patterns.push({ name: '下降三角（偏空）', emoji: '📐🔻', aligned: !isLong, strength: 'moderate', desc: '高點下移、支撐平穩，空頭蓄力' });
+    }
+
+    // ⑥ 旗形（Flag）
+    if (n >= 20) {
+      const poleEnd = n - 12;
+      const poleH = Math.max(...highs.slice(poleEnd, poleEnd + 6));
+      const poleL = Math.min(...lows.slice(poleEnd, poleEnd + 6));
+      const polePct = (poleH - poleL) / (poleL || 1) * 100;
+      if (polePct > 3) {
+        const consH = Math.max(...highs.slice(poleEnd + 6));
+        const consL = Math.min(...lows.slice(poleEnd + 6));
+        const consPct = (consH - consL) / (consL || 1) * 100;
+        if (consPct < polePct * 0.4) {
+          const bullPole = closes[poleEnd + 5] > opens[poleEnd];
+          patterns.push({ name: bullPole ? '多頭旗形' : '空頭旗形', emoji: bullPole ? '🚩🔺' : '🚩🔻',
+            aligned: bullPole ? isLong : !isLong, strength: 'moderate',
+            desc: `急${bullPole ? '升' : '跌'} ${polePct.toFixed(1)}% 後盤整 ${consPct.toFixed(1)}%` });
+        }
+      }
+    }
+
+    // ⑦ PO3（積累→操縱→分配）
+    if (n >= 30) {
+      const accH = Math.max(...highs.slice(n - 30, n - 20));
+      const accL = Math.min(...lows.slice(n - 30, n - 20));
+      const accR  = (accH - accL) / (accL || 1) * 100;
+      if (accR < 3) {
+        const manH = Math.max(...highs.slice(n - 20, n - 10));
+        const manL = Math.min(...lows.slice(n - 20, n - 10));
+        const hasManip = manH > accH * 1.004 || manL < accL * 0.996;
+        const bullDist = cur > accH * 1.003;
+        const bearDist = cur < accL * 0.997;
+        if (hasManip && (bullDist || bearDist))
+          patterns.push({ name: 'PO3 積累→操縱→分配', emoji: '🎯', aligned: bullDist ? isLong : !isLong, strength: 'strong',
+            desc: `積累 ${accR.toFixed(1)}% 盤整後${bullDist ? '多頭' : '空頭'}發動` });
+      }
+    }
+
+    // ⑧ 突破回踩確認（盤整突破回踩踩穩）
+    if (n >= 15) {
+      const lb = Math.min(40, n - 10);
+      const prevH = Math.max(...highs.slice(n - lb, n - 8));
+      const prevL = Math.min(...lows.slice(n - lb, n - 8));
+      const rc3H  = Math.max(...highs.slice(n - 3));
+      const rc3L  = Math.min(...lows.slice(n - 3));
+      const preC  = closes[n - 5];
+      if (cur > prevH * 1.003 && rc3L > prevH * 0.990 && preC < prevH * 1.008)
+        patterns.push({ name: '突破回踩踩穩（多）', emoji: '✅🔺', aligned: isLong, strength: 'strong',
+          desc: `突破前高 $${fp(prevH)} 後回測站穩，多頭延伸確認` });
+      else if (cur < prevL * 0.997 && rc3H < prevL * 1.010 && preC > prevL * 0.992)
+        patterns.push({ name: '跌破回測確認（空）', emoji: '✅🔻', aligned: !isLong, strength: 'strong',
+          desc: `跌破前低 $${fp(prevL)} 回測承壓，空頭延伸確認` });
+    }
+
+    // ⑨ BOS（市場結構突破）
+    if (n >= 25) {
+      const prevH = Math.max(...highs.slice(n - 20, n - 5));
+      const prevL = Math.min(...lows.slice(n - 20, n - 5));
+      const rcH   = Math.max(...highs.slice(n - 5));
+      const rcL   = Math.min(...lows.slice(n - 5));
+      if (rcH > prevH * 1.003)
+        patterns.push({ name: 'BOS 結構突破（偏多）', emoji: '🏗️🔺', aligned: isLong, strength: 'moderate',
+          desc: `近5K突破前高 $${fp(prevH)}，多頭結構確立` });
+      else if (rcL < prevL * 0.997)
+        patterns.push({ name: 'BOS 結構突破（偏空）', emoji: '🏗️🔻', aligned: !isLong, strength: 'moderate',
+          desc: `近5K跌破前低 $${fp(prevL)}，空頭結構確立` });
+    }
+
+    // ⑩ CHoCH（結構轉換信號）
+    if (n >= 30) {
+      const trendH = closes.slice(n - 25, n - 10);
+      const trend  = trendH[trendH.length - 1] > trendH[0] ? 'up' : 'down';
+      const rcH    = Math.max(...highs.slice(n - 6));
+      const rcL    = Math.min(...lows.slice(n - 6));
+      const midH   = Math.max(...highs.slice(n - 18, n - 6));
+      const midL   = Math.min(...lows.slice(n - 18, n - 6));
+      if (trend === 'down' && rcH > midH * 1.005)
+        patterns.push({ name: 'CHoCH 結構轉換（空轉多）', emoji: '🔄🔺', aligned: isLong, strength: 'strong',
+          desc: '下跌趨勢中出現首個更高高點，方向可能轉換' });
+      else if (trend === 'up' && rcL < midL * 0.995)
+        patterns.push({ name: 'CHoCH 結構轉換（多轉空）', emoji: '🔄🔻', aligned: !isLong, strength: 'strong',
+          desc: '上漲趨勢中出現首個更低低點，方向可能轉換' });
+    }
+
+    // ⑪ 流動性掃除（Liquidity Sweep）
+    if (n >= 15) {
+      const prevH = Math.max(...highs.slice(n - 15, n - 3));
+      const prevL = Math.min(...lows.slice(n - 15, n - 3));
+      const rcH   = Math.max(...highs.slice(n - 3));
+      const rcL   = Math.min(...lows.slice(n - 3));
+      if (rcL < prevL * 0.997 && cur > prevL * 1.002)
+        patterns.push({ name: '流動性掃除（偏多）', emoji: '💧🔺', aligned: isLong, strength: 'strong',
+          desc: `掃除前低 $${fp(prevL)} 後反彈，ICT 流動性獵取做多` });
+      else if (rcH > prevH * 1.003 && cur < prevH * 0.998)
+        patterns.push({ name: '流動性掃除（偏空）', emoji: '💧🔻', aligned: !isLong, strength: 'strong',
+          desc: `掃除前高 $${fp(prevH)} 後回落，ICT 流動性獵取做空` });
+    }
+
+    const aligned  = patterns.filter(p => p.aligned === true);
+    const opposing = patterns.filter(p => p.aligned === false);
+    const neutral  = patterns.filter(p => p.aligned === null);
+    const strongA  = aligned.filter(p => p.strength === 'strong');
+    const score    = strongA.length >= 2 ? 2 : strongA.length === 1 ? 2 : aligned.length >= 1 ? 1 : 0;
+
+    return { patterns, score, aligned, opposing, neutral };
+  } catch(_cpe) { console.warn('[chartPatterns]', _cpe); return { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] }; }
+}
