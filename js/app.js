@@ -3408,9 +3408,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (_sqRR1 >= 2.0) { _sqScore += 1; _sqFactors.push(`✅ R/R ${_sqRR1.toFixed(1)}:1 優良`); }
   else if (_sqRR1 >= 1.3) { /* 合格但不加分 */ }
   else { _sqFactors.push(`❌ R/R ${_sqRR1.toFixed(1)}:1 盈虧比不足`); }
+  // ⑩ 風控分數（整合入訊號品質，hardBlocked 為最後防線）
+  if (_risk.score <= 20) { _sqScore += 2; _sqFactors.push(`✅ 風控優良（${_risk.score}分）`); }
+  else if (_risk.score <= 40) { _sqScore += 1; _sqFactors.push(`✅ 風控良好（${_risk.score}分）`); }
+  else if (_risk.score <= 54) { _sqFactors.push(`⚠️ 風控中等（${_risk.score}分）`); }
+  else { _sqFactors.push(`❌ 風控偏高（${_risk.score}分）`); }
 
-  const _sqGrade = _sqScore >= 10 ? 'S'
-                 : _sqScore >= 7  ? 'A'
+  const _sqGrade = _sqScore >= 11 ? 'S'
+                 : _sqScore >= 8  ? 'A'
                  : _sqScore >= 4  ? 'B'
                  : _sqScore >= 2  ? 'C' : 'D';
   const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
@@ -3422,7 +3427,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 B 級（評分 ≥ 4）才進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/14，需達 B 級（評分 ≥ 4）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
@@ -3556,10 +3561,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // 信心度與 R/R 已整合入 SQ 訊號品質評分，SQ B+ 為唯一品質門檻
-    // 風險分數 < 55 作為獨立風控保留（UI 仍在 60 才顯示觀望警告）
-    const _btRiskOk = _risk.score < 55;
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRiskOk) {
+    // 信心度、R/R、風控分數均整合入 SQ 訊號品質評分，hardBlocked 為最後防線
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -8134,8 +8137,7 @@ function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 中高風險及以上（≥55）→ 觀望（原60，降至55更保守）
-    if (_scanRisk.score >= 55) continue;
+    // 風控分數已整合入 SQ 評分，不再作為獨立硬性封鎖
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
@@ -8175,8 +8177,13 @@ function recordSignalsFromScan(data) {
     if (_sqRRScan >= 2.0) { _scanSqScore += 1; _scanSqFactors.push(`✅ R/R ${_sqRRScan.toFixed(1)}:1 優良`); }
     else if (_sqRRScan >= 1.3) { /* 合格但不加分 */ }
     else { _scanSqFactors.push(`❌ R/R ${_sqRRScan.toFixed(1)}:1 盈虧比不足`); }
-    // 最高 13 分；B 級門檻 ≥4（含信心度+R/R 整合）
-    const _scanSqGrade = _scanSqScore >= 10 ? 'S' : _scanSqScore >= 7 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
+    // 風控分數（整合入訊號品質，hardBlocked 為最後防線）
+    if (_scanRisk.score <= 20) { _scanSqScore += 2; _scanSqFactors.push(`✅ 風控優良（${_scanRisk.score}分）`); }
+    else if (_scanRisk.score <= 40) { _scanSqScore += 1; _scanSqFactors.push(`✅ 風控良好（${_scanRisk.score}分）`); }
+    else if (_scanRisk.score <= 54) { _scanSqFactors.push(`⚠️ 風控中等（${_scanRisk.score}分）`); }
+    else { _scanSqFactors.push(`❌ 風控偏高（${_scanRisk.score}分）`); }
+    // 最高 15 分；B 級門檻 ≥4（含信心度+R/R+風控整合）
+    const _scanSqGrade = _scanSqScore >= 11 ? 'S' : _scanSqScore >= 8 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 等級 C/D：訊號品質不足，不建立倉位，不推送 Telegram
     if (!['S','A','B'].includes(_scanSqGrade)) continue;
