@@ -3581,7 +3581,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="setup-wait-title">盈虧比不足（R/R <strong style="color:#ef4444">${parseFloat(rr1str).toFixed(1)}:1</strong>），硬性封鎖進場</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 R/R ≥ 1.3:1，當前 ${parseFloat(rr1str).toFixed(1)}:1 不達標，無論訊號品質如何均不進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
-      ${_ictAnalysisHtml}
     </div>`;
   }
 
@@ -3593,7 +3592,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 A 級（評分 ≥ 7）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
-      ${_ictAnalysisHtml}
     </div>`;
   }
 
@@ -3826,7 +3824,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <span style="font-size:0.73rem;padding:3px 10px;border-radius:16px;border:1px solid ${_tClrW}40;color:${_tClrW}">📅 今日 ${todayBiasData?.biasLabel || '—'}（${todayBiasData?.conf || 50}%）</span>
         </div>
       </div>
-      ${_ictAnalysisHtml}
       ${_erHtml()}
     </div>`;
   }
@@ -3855,7 +3852,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
         ${(weeklyOpposed || todayOpposed) ? `<div style="font-size:0.71rem;color:var(--bear);margin-top:6px">⚠️ AI 預測${weeklyOpposed && todayOpposed ? '本週與今日均' : weeklyOpposed ? '本週' : '今日'}與${isLong ? '做多' : '做空'}方向相反，是信心扣分主因之一</div>` : ''}
       </div>
-      ${_ictAnalysisHtml}
       ${_erHtml()}
     </div>`;
   }
