@@ -2585,22 +2585,38 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _ltTdAgr   = (_ltIsLong && _tBias.includes('bull'))      || (!_ltIsLong && _tBias.includes('bear'));
   const _ltAlignCnt = (_ltMacAgr ? 1 : 0) + (_ltWkAgr ? 1 : 0) + (_ltTdAgr ? 1 : 0);
 
-  // 短線單：日線同向（且非長線單）才顯示 ⚡ 短線標籤
+  // 多週期同向判斷
   const dayS   = mtfData['1d']?.signal;
   const wkS    = mtfData['1w']?.signal;
   const dayBullSig = dayS?.signal?.includes('bull');
   const dayBearSig = dayS?.signal?.includes('bear');
   const wkBullSig  = wkS?.signal?.includes('bull');
   const wkBearSig  = wkS?.signal?.includes('bear');
+  const m15BullSig = m15?.signal?.includes('bull');
+  const m15BearSig = m15?.signal?.includes('bear');
+  const h1BullSig  = h1?.signal?.includes('bull');
+  const h1BearSig  = h1?.signal?.includes('bear');
+  const h4BullSig  = h4?.signal?.includes('bull');
+  const h4BearSig  = h4?.signal?.includes('bear');
+
+  // 短線單：15m + 1H + 4H + 日線全部同向
+  const _4tfAligned = isLong
+    ? (m15BullSig && h1BullSig && h4BullSig && dayBullSig)
+    : (m15BearSig && h1BearSig && h4BearSig && dayBearSig);
+
+  // 長線單：15m + 1H + 4H + 日線 + 週線全部同向
+  const _5tfAligned = _4tfAligned && (isLong ? wkBullSig : wkBearSig);
+
   const isDayAligned = isLong ? dayBullSig : dayBearSig;
 
-  // 長線單條件：日線 + 週線同方向即認定（純 MTF 時間框架確認，不依 ltBias/ltConf 門檻）
-  const _dayWkAligned = isLong ? (dayBullSig && wkBullSig) : (dayBearSig && wkBearSig);
+  // 長線單條件：五週期全部同向
+  const _dayWkAligned = _5tfAligned;
   let canScaleIn = _dayWkAligned;
   let ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
-  // 根據類型更新 dirLabel，避免出現「短線做多 〔長線單〕」矛盾文字
+  // 根據類型更新 dirLabel
   if (canScaleIn) dirLabel = isLong ? '長線做多' : '長線做空';
-  else if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
+  else if (!isRangeMode && _4tfAligned) dirLabel = isLong ? '短線做多' : '短線做空';
+  else if (!isRangeMode && isDayAligned) dirLabel = isLong ? '做多' : '做空';
   else if (!isRangeMode) dirLabel = isLong ? '做多' : '做空';
 
   // ── ICT / SMC / SNR 分析（Kill Zone + Order Block + FVG + Premium/Discount）──
@@ -8441,7 +8457,6 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
     `${_sqLine}\n` +
     `📶 信心度：<b>${setup.conf}%</b>${setup.conf < 70 ? '（⚠️ 偏低信心）' : ''}\n` +
     `\n${_priceLines}\n` +
-    `\n✅ <b>各方向確認</b>\n${_dirLines.join('\n')}\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n📉 <b>信心度扣分</b>\n${_penLines.join('\n')}\n` : '') +
     _riskBanner +
