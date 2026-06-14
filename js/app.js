@@ -275,6 +275,8 @@ function startRefreshCycle() {
     }
     try { recordSignalsFromScan(data); } catch(e) { console.error('[refresh] recordSignalsFromScan 錯誤:', e); }
     try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
+    // 自動掃描長線/短線狀態變化（異步，不阻塞主掃描；每幣種 30 分鐘最多一次）
+    backgroundMonitorLongTermStatus().catch(e => console.warn('[ltMonitor] 掃描錯誤:', e));
     try {
       // 掃描完成後重新渲染持倉頁面（含新增信號），同時刷新因取消而需更新的幣種詳情
       if (state.currentPage === 'positions') renderPositionsPage();
@@ -9150,6 +9152,131 @@ async function backgroundRefineNewTrades() {
     }
   }
 }
+/* ── 自動掃描長線/短線狀態監控（不依賴手動開啟幣種詳情）──────── */
+const _ltMonitorTimestamps = {};          // { [symbol]: lastCheckMs }
+const _LT_MONITOR_INTERVAL = 30 * 60 * 1000; // 每 30 分鐘最多檢查一次
+
+async function backgroundMonitorLongTermStatus() {
+  const tlog = loadTradeLog();
+  const now  = Date.now();
+  const targets = tlog.filter(t =>
+    (t.status === 'pending' || t.status === 'active') &&
+    t.tradeType === 'directional'
+  );
+  if (!targets.length) return;
+
+  // 僅處理距離上次檢查超過 30 分鐘的幣種
+  const toCheck = targets.filter(t => {
+    const last = _ltMonitorTimestamps[t.symbol] || 0;
+    return (now - last) >= _LT_MONITOR_INTERVAL;
+  }).slice(0, 3); // 每批最多 3 筆，避免 API 負荷
+
+  if (!toCheck.length) return;
+
+  for (const trade of toCheck) {
+    _ltMonitorTimestamps[trade.symbol] = now;
+    try {
+      const mtfData = await fetchMTFKlines(trade.symbol);
+      const isLong  = trade.direction === 'long';
+      const d1Sig   = mtfData['1d']?.signal;
+      const w1Sig   = mtfData['1w']?.signal;
+      const d1Ok    = isLong ? d1Sig?.signal?.includes('bull') : d1Sig?.signal?.includes('bear');
+      const w1Ok    = isLong ? w1Sig?.signal?.includes('bull') : w1Sig?.signal?.includes('bear');
+      const canScaleInNow = !!(d1Ok && w1Ok);
+
+      const tlogEdit = loadTradeLog();
+      const idx = tlogEdit.findIndex(t => t.id === trade.id);
+      if (idx < 0) continue;
+
+      const wasLT = tlogEdit[idx].canScaleIn === true;
+      if (wasLT === canScaleInNow) continue; // 狀態未改變，跳過
+
+      const fmt      = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+      const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
+
+      if (wasLT && !canScaleInNow) {
+        // ── 長線 → 短線降格 ──
+        tlogEdit[idx].canScaleIn = false;
+        tlogEdit[idx].ltTP       = null;
+        saveTradeLog(tlogEdit);
+        try {
+          const s = loadSettings();
+          if (s.notifTelegram && s.tgToken && s.tgChatId) {
+            sendTelegramMessage(s.tgToken, s.tgChatId,
+              `⬇️ <b>長線降格通知</b>\n\n` +
+              `💎➡️📡 <b>${trade.symbol}</b>  ${dirLabel}\n` +
+              `自動掃描偵測：日線/週線多時框架對齊條件不再成立\n` +
+              `已從 <b>長線單</b> 降格為 <b>短線單</b>\n\n` +
+              `📍 進場位：$${fmt(trade.entry)}\n` +
+              `🔑 止損：$${fmt(trade.sl)}\n` +
+              `⚠️ 請重新評估持倉策略`
+            );
+          }
+        } catch(e) {}
+        console.info('[ltMonitor] 降格', trade.symbol);
+
+      } else if (!wasLT && canScaleInNow) {
+        // ── 短線 → 長線升格 ──
+        let ltBull = 0, ltBear = 0;
+        const ltW = { '1d': 1, '1w': 3, '1M': 4 };
+        for (const [tf, w] of Object.entries(ltW)) {
+          const sig = mtfData[tf]?.signal;
+          if (!sig) continue;
+          if (sig.signal?.includes('bull')) ltBull += w;
+          if (sig.signal?.includes('bear')) ltBear += w;
+          const rsi = sig.rsi || 50;
+          if (rsi < 42) ltBull += w * 0.4;
+          if (rsi > 58) ltBear += w * 0.4;
+        }
+        const ltBias  = computeLongTermBias(mtfData);
+        const ltRaw   = ltBias === 'long' ? ltBull : ltBias === 'short' ? ltBear : 0;
+        const ltConf  = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRaw * 8)) : 0;
+
+        const price    = parseFloat(trade.entryPrice || trade.entry) || 0;
+        const atr      = price * 0.013;
+        const origRisk = Math.abs((trade.entry || 0) - (trade.sl || 0)) || atr;
+        const d1sig    = mtfData['1d']?.signal;
+        const ltRes    = isLong ? (d1sig?.resistance || price * 1.12) : (d1sig?.support || price * 0.88);
+        const ltTP     = isLong ? Math.min(price * 1.35, ltRes) : Math.max(price * 0.65, ltRes);
+        const ltRRraw  = origRisk > 0 ? Math.abs(ltTP - (trade.entry || 0)) / origRisk : 0;
+
+        const _bgScaleCount  = (ltConf >= 90 && ltRRraw >= 5.0) ? 3
+                             : (ltConf >= 87 && ltRRraw >= 4.0) ? 2 : 1;
+        const _bgScaleReason = _bgScaleCount === 3 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 3 次加倉`
+                             : _bgScaleCount === 2 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 2 次加倉`
+                             : `長線信心 ${ltConf}%，建議 1 次加倉（保守佈局）`;
+
+        tlogEdit[idx].canScaleIn    = true;
+        tlogEdit[idx].ltTP          = ltTP;
+        tlogEdit[idx].ltConf        = ltConf;
+        tlogEdit[idx].longTermBias  = ltBias;
+        tlogEdit[idx].maxScaleIns   = _bgScaleCount;
+        tlogEdit[idx].aiScaleReason = _bgScaleReason;
+        saveTradeLog(tlogEdit);
+
+        const confIcon = ltConf >= 90 ? '🟢' : ltConf >= 85 ? '🟡' : '🟠';
+        try {
+          const s = loadSettings();
+          if (s.notifTelegram && s.tgToken && s.tgChatId) {
+            sendTelegramMessage(s.tgToken, s.tgChatId,
+              `🏆 <b>長線單升級通知</b>\n\n` +
+              `📡➡️💎 <b>${trade.symbol}</b>  ${dirLabel}\n` +
+              `自動掃描偵測：日線與週線多時框架對齊\n` +
+              `${confIcon} 長線信心度：<b>${ltConf}%</b>\n` +
+              `🏁 長線目標：<b>$${fmt(ltTP)}</b>\n` +
+              `📍 進場位：$${fmt(trade.entry)}\n\n` +
+              `🤖 ${_bgScaleReason}`
+            );
+          }
+        } catch(e) {}
+        console.info('[ltMonitor] 升格', trade.symbol);
+      }
+    } catch(e) {
+      console.warn('[ltMonitor]', trade.symbol, e);
+    }
+  }
+}
+
 function updateOpenTrades(data) {
   const tlog = loadTradeLog();
   let changed = false;
