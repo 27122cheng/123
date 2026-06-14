@@ -8994,6 +8994,7 @@ function _markCancelTgSent(symbol, direction) {
 function sendCancelTelegramNotification(trade, reason) {
   const s = loadSettings();
   if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+  if (!trade.telegramSent) return; // 建單通知尚未送出 → 跳過取消通知（用戶從未看過此單）
   if (_hasCancelTgSent(trade.symbol, trade.direction)) return;
   _markCancelTgSent(trade.symbol, trade.direction);
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
