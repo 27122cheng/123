@@ -4156,7 +4156,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
     // R/R < 1.3 硬性封鎖；風控與 R/R 品質已整合入 SQ 評分；hardBlocked 為最後防線
     const _btRROk = parseFloat(rr1str) >= 1.3;
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk) {
+    // 短線需 4 時框同向（日+4H+1H+15m），長線需 5 時框（含週線）
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk && _4tfAligned) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
