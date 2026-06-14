@@ -3431,12 +3431,37 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
   }
 
+  // 歷史止損記憶分析（failChecks 即使無扣分也顯示，供 AI 參考）
+  const _defChecks  = learnResult?.defenseChecks || [];
+  const _failChecks = _defChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
+  if (hardBlocked && blockReasons.length) {
+    _sqFactors.push(`🚫 歷史止損封鎖（${blockReasons.length} 條規則觸發）`);
+    blockReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  } else if (_failChecks.length) {
+    _sqFactors.push(`⚠️ 止損記憶警告（${_failChecks.length} 項觸發）`);
+    _failChecks.slice(0, 3).forEach(c => _sqFactors.push(`　▸ ${c.label}（${c.count}次止損記錄）`));
+  } else if (learnPenalty > 0 && learnWarnings.length) {
+    _sqFactors.push(`📚 止損記憶扣分（-${learnPenalty}%）`);
+    learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  }
+
   const _sqGrade = _sqScore >= 10 ? 'S'
                  : _sqScore >= 7  ? 'A'
                  : _sqScore >= 4  ? 'B'
                  : _sqScore >= 2  ? 'C' : 'D';
   const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
+
+  // R/R < 1.3 硬性封鎖（優先於 SQ 等級，無論訊號強度均不進場）
+  if (parseFloat(rr1str) < 1.3 && direction !== 'wait') {
+    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore };
+    return `<div class="setup-wait">
+      <div class="setup-wait-icon">🚫</div>
+      <div class="setup-wait-title">盈虧比不足（R/R <strong style="color:#ef4444">${parseFloat(rr1str).toFixed(1)}:1</strong>），硬性封鎖進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 R/R ≥ 1.3:1，當前 ${parseFloat(rr1str).toFixed(1)}:1 不達標，無論訊號品質如何均不進場</div>
+      <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
+    </div>`;
+  }
 
   // Grade B/C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
   if (!['S','A'].includes(_sqGrade)) {
@@ -11565,6 +11590,11 @@ function renderTradeLogPage() {
       const _tge = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_tg] || '📊';
       const _tgl = t.sqGradeLabel || { S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_tg] || '';
       const gradeHtml = _tg !== '?' ? `<span style="font-size:0.7rem;font-weight:700;background:${_tgc}22;border:1px solid ${_tgc}55;color:${_tgc};padding:2px 6px;border-radius:12px;white-space:nowrap">${_tge} ${_tg} ${_tgl}</span>` : '—';
+      const _exitColor = (t.outcome === 'sl' || t.outcome === 'be') ? 'var(--bear)' : 'var(--bull)';
+      const _exitLabel = { tp1:'止盈一觸發', tp2:'止盈二觸發', sl:'止損觸發', be:'保本出場' }[t.outcome] || '';
+      const exitPriceHtml = t.exitPrice
+        ? `<div style="color:${_exitColor};font-size:0.78rem">${fmtPrice(t.exitPrice)}</div><div style="font-size:0.68rem;color:var(--text3)">${_exitLabel}</div>`
+        : '—';
       return `<tr class="tl-row-click" onclick="showTradeDetail('${t.id}')">
         <td style="font-size:0.78rem;min-width:130px">
           <div style="color:var(--text2)">信號 ${fmtDateTime(t.timestamp)}</div>
@@ -11578,6 +11608,7 @@ function renderTradeLogPage() {
         <td style="color:var(--bear)">${fmtPrice(t.sl)}</td>
         <td>${tp1Display}</td>
         <td style="color:#22c55e">${tp2Display}</td>
+        <td>${exitPriceHtml}</td>
         <td>${statusHtml}</td>
         <td>${pnlHtml}</td>
       </tr>`;
@@ -11586,7 +11617,7 @@ function renderTradeLogPage() {
     tableHtml = `<div class="tl-table-wrap">
       <table class="tl-table">
         <thead><tr>
-          <th>時間</th><th>幣種</th><th>方向</th><th>等級</th><th>進場</th><th>止損</th><th>止盈1</th><th>止盈2</th><th>現狀</th><th>盈虧 R</th>
+          <th>時間</th><th>幣種</th><th>方向</th><th>等級</th><th>進場</th><th>止損</th><th>止盈1</th><th>止盈2</th><th>結算價</th><th>現狀</th><th>盈虧 R</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
