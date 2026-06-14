@@ -3083,6 +3083,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       : `擺動低點 ${fmtPrice(swLow)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
   }
 
+  // 儲存短線 tp1/tp2（若長線降格時還原用，必須在 canScaleIn 覆蓋前存）
+  let _stTp1 = tp1, _stTp2 = tp2, _stTp1R = tp1Reason, _stTp2R = tp2Reason;
+
   // ── 長線單：覆蓋 tp1/tp2 為長線最終止盈，並計算三個加倉位 ──────
   // 觸發條件：ltBias === direction && ltConf >= 85（canScaleIn = true）
   let ltTP = null, ltTPReason = '', scaleInLevels = [], _aiScaleCount = 1, _aiScaleReason = '';
@@ -3866,6 +3869,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
   }
 
+  // ⑲ 長線單額外審查（月線逆向 / EMA200 距離追高）
+  if (canScaleIn) try {
+    const _sqMon = mtfData['1M']?.signal;
+    if (_sqMon?.signal) {
+      const _sqMonOpp = isLong ? _sqMon.signal.includes('bear') : _sqMon.signal.includes('bull');
+      if (_sqMonOpp) { _sqScore -= 1; _sqFactors.push(`❌ 月線趨勢逆向（長線持倉風險）-1`); }
+      else            { _sqFactors.push(`✅ 月線同向（${isLong ? '月線偏多' : '月線偏空'}，長線一致）`); }
+    }
+    const _sqE200 = parseFloat(coin.ema200) || 0;
+    if (_sqE200 > 0 && price > 0) {
+      const _sqE200Pct = (price - _sqE200) / price * 100;
+      if (isLong  && _sqE200Pct > 15) { _sqScore -= 1; _sqFactors.push(`❌ 現價高於 EMA200 逾 ${_sqE200Pct.toFixed(1)}%，長線追高風險 -1`); }
+      else if (!isLong && _sqE200Pct < -15) { _sqScore -= 1; _sqFactors.push(`❌ 現價低於 EMA200 逾 ${Math.abs(_sqE200Pct).toFixed(1)}%，長線追空風險 -1`); }
+      else { _sqFactors.push(`✅ EMA200 距離適中（${_sqE200Pct > 0 ? '+' : ''}${_sqE200Pct.toFixed(1)}%）`); }
+    }
+  } catch(_sqLTE) {}
+
   // 分數 floor 為 0，等級重新校準（全數據模式最高約 20 分）
   _sqScore = Math.max(0, _sqScore);
   const _sqGrade = _sqScore >= 19 ? 'SSS'
@@ -3972,6 +3992,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">全數據多因子評分 ${_sqScore} 分，需達 A 級（≥ 10 分）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
+  }
+
+  // 長線單門檻：必須達 S 級（≥ 14 分），否則降格為短線單
+  if (canScaleIn && !['SSS','SS','S'].includes(_sqGrade)) {
+    canScaleIn = false; ltTP = null; ltTag = '';
+    tp1 = _stTp1; tp2 = _stTp2; tp1Reason = _stTp1R; tp2Reason = _stTp2R;
+    if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
+    else dirLabel = isLong ? '做多' : '做空';
+    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（14分），已降格為短線單`);
   }
 
   // 緩存完整設置供 Telegram 通知 + AI 分析使用
