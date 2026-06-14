@@ -1105,3 +1105,42 @@ function detectChartPatterns(klines, isLong) {
     return { patterns, score, aligned, opposing, neutral };
   } catch(_cpe) { console.warn('[chartPatterns]', _cpe); return { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] }; }
 }
+
+/* ── 真假突破確認（量能 + 收盤站穩）──────────────────────────── */
+function verifyBreakoutConfirmed(klines, isLong) {
+  if (!klines || klines.length < 12) return { confirmed: true, warn: '' };
+  try {
+    const n      = klines.length;
+    const highs  = klines.map(k => parseFloat(k[2]));
+    const lows   = klines.map(k => parseFloat(k[3]));
+    const closes = klines.map(k => parseFloat(k[4]));
+    const vols   = klines.map(k => parseFloat(k[5]));
+    const cur    = closes[n - 1];
+    const fp     = v => parseFloat(v).toPrecision(5).replace(/\.?0+$/, '');
+
+    const lb     = Math.min(40, n - 6);
+    const prevH  = Math.max(...highs.slice(n - lb, n - 5));
+    const prevL  = Math.min(...lows.slice(n - lb, n - 5));
+    const avgVol = vols.slice(n - 20, n - 5).reduce((a, b) => a + b, 0) / Math.max(1, Math.min(15, n - 5));
+
+    if (isLong) {
+      if (cur <= prevH * 1.001) return { confirmed: true, warn: '' };
+      const closesAbove = closes.slice(n - 5).filter(c => c > prevH * 0.998).length;
+      const closeBelow  = closes.slice(n - 5).some(c => c < prevH * 0.993);
+      const breakVol    = Math.max(...vols.slice(Math.max(0, n - 8), n - 1));
+      if (closeBelow)      return { confirmed: false, warn: `突破後收盤跌回前高 $${fp(prevH)} 以下，疑似假突破` };
+      if (closesAbove < 2) return { confirmed: false, warn: `突破前高 $${fp(prevH)} 但收盤站穩不足（${closesAbove}/5根），等待確認` };
+      if (breakVol < avgVol * 1.05) return { confirmed: false, warn: `突破量能偏低（均量 ${(breakVol/avgVol*100).toFixed(0)}%），需放量確認真突破` };
+      return { confirmed: true, warn: '' };
+    } else {
+      if (cur >= prevL * 0.999) return { confirmed: true, warn: '' };
+      const closesBelow = closes.slice(n - 5).filter(c => c < prevL * 1.002).length;
+      const closeAbove  = closes.slice(n - 5).some(c => c > prevL * 1.007);
+      const breakVol    = Math.max(...vols.slice(Math.max(0, n - 8), n - 1));
+      if (closeAbove)      return { confirmed: false, warn: `跌破後收盤反彈回前低 $${fp(prevL)} 以上，疑似假跌破` };
+      if (closesBelow < 2) return { confirmed: false, warn: `跌破前低 $${fp(prevL)} 但收盤站穩不足（${closesBelow}/5根），等待確認` };
+      if (breakVol < avgVol * 1.05) return { confirmed: false, warn: `跌破量能偏低（均量 ${(breakVol/avgVol*100).toFixed(0)}%），需放量確認真跌破` };
+      return { confirmed: true, warn: '' };
+    }
+  } catch(_e) { return { confirmed: true, warn: '' }; }
+}

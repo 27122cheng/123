@@ -2529,6 +2529,24 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       _chartPat = detectChartPatterns(_raw1h, isLong);
   } catch(_cpe) {}
 
+  // ── 真假突破確認 ──
+  let _breakoutCheck = { confirmed: true, warn: '' };
+  const _hasBreakPatterns = _chartPat.patterns.some(p => p.name.includes('突破') || p.name.includes('BOS') || p.name.includes('CHoCH'));
+  if (_hasBreakPatterns && _raw1h?.length >= 12 && typeof verifyBreakoutConfirmed === 'function') {
+    try { _breakoutCheck = verifyBreakoutConfirmed(_raw1h, isLong); } catch(_bce) {}
+    // 假突破：將突破類型pattern標記為未確認（移出aligned，歸入neutral）
+    if (!_breakoutCheck.confirmed) {
+      _chartPat.patterns = _chartPat.patterns.map(p =>
+        (p.name.includes('突破') || p.name.includes('BOS')) && p.aligned === true
+          ? { ...p, aligned: null, strength: 'weak', desc: p.desc + '（⚠️ 待確認）' }
+          : p
+      );
+      _chartPat.aligned  = _chartPat.patterns.filter(p => p.aligned === true);
+      _chartPat.neutral  = _chartPat.patterns.filter(p => p.aligned === null);
+      _chartPat.score    = Math.max(0, _chartPat.score - 1);
+    }
+  }
+
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
@@ -2703,6 +2721,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
     if (!entryReasons.length) entryReasons.push('15m/1h 空頭信號共振');
   }
+
+  // 圖形識別進場理由
+  if (_chartPat.aligned.length > 0)
+    _chartPat.aligned.slice(0, 2).forEach(p => entryReasons.push(`${p.emoji} ${p.name}：${p.desc}`));
+  if (!_breakoutCheck.confirmed && _breakoutCheck.warn)
+    entryReasons.push(`⚠️ 突破待確認：${_breakoutCheck.warn}`);
 
   // ── ICT/SMC 進場理由補充（共同適用多空）──
   try {
@@ -4099,6 +4123,32 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     } catch(_fpe) { return ''; } })()}
     ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
   </div>`; } catch(_icpe) { console.warn('[ICT panel]', _icpe); return ''; } })()}
+
+  ${(() => { try {
+    if (!_chartPat.patterns.length) return '';
+    const _cpClr = { aligned: '#22c55e', opposing: '#ef4444', neutral: '#f59e0b' };
+    const _cpRows = _chartPat.patterns.map(p => {
+      const clr = p.aligned === true ? '#22c55e' : p.aligned === false ? '#ef4444' : '#f59e0b';
+      const tag = p.aligned === true ? '✅ 同向' : p.aligned === false ? '❌ 逆向' : '⚠️ 中性';
+      return `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:4px">
+        <span style="color:${clr};font-size:0.7rem;white-space:nowrap;min-width:44px">${tag}</span>
+        <div style="font-size:0.72rem;line-height:1.5">
+          <span style="color:var(--text1)">${p.emoji} ${p.name}</span>
+          <span style="color:var(--text3);font-size:0.68rem">　${p.desc}</span>
+        </div>
+      </div>`;
+    }).join('');
+    const _bwarn = (!_breakoutCheck.confirmed && _breakoutCheck.warn)
+      ? `<div style="margin-top:6px;padding:5px 8px;background:rgba(239,68,68,.08);border-left:2px solid #ef4444;border-radius:4px;font-size:0.7rem;color:#ef4444">⚡ 突破確認不足：${_breakoutCheck.warn}</div>`
+      : '';
+    return `<!-- ═══ 圖形偵測面板 ═══ -->
+  <div style="background:rgba(16,24,39,.7);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
+    <div style="font-weight:700;color:#fbbf24;margin-bottom:7px;font-size:0.8rem">📐 技術圖形識別</div>
+    ${_cpRows}
+    ${_bwarn}
+    ${_chartPat.score > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ 圖形評分加成 <strong>+${Math.min(2,_chartPat.score)} 分</strong></div>` : ''}
+  </div>`;
+  } catch(_cppe) { console.warn('[chartPat panel]', _cppe); return ''; } })()}
 
   ${macroBlockedForRecord ? `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⚠️ 宏觀大方向${isLong ? '極端偏空' : '極端偏多'}，信心度已扣分反映，訊號已記入持倉供參考</div>` : ''}
   ${_recordBlockedByCooldown ? (() => { const cancelledT = loadCancelCooldowns().find(c => c.symbol === coin.symbol && c.direction === direction && (Date.now() - (c.cancelTime||0)) < SIGNAL_COOLDOWN); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
