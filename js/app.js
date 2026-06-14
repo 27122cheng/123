@@ -4011,13 +4011,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (_tDGIdx >= 0) { _tlogDG[_tDGIdx].canScaleIn = false; _tlogDG[_tDGIdx].ltTP = null; saveTradeLog(_tlogDG); }
       const _sDG = loadSettings();
       if (_sDG.notifTelegram && _sDG.tgToken && _sDG.tgChatId) {
+        const _dgSetup = {
+          entry, sl, tp1, tp2, conf, canScaleIn: false,
+          sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel,
+          riskScore: _risk.score, riskLevel: _risk.level, riskRecs: _risk.recs,
+          weeklyBias: weeklyBiasData?.biasLabel, weeklyConf: weeklyBiasData?.conf,
+          todayBias: todayBiasData?.biasLabel, todayConf: todayBiasData?.conf,
+          macroOpposePenalty, techPenalty, chipsPenalty,
+        };
         sendTelegramMessage(_sDG.tgToken, _sDG.tgChatId,
-          `⬇️ <b>長線降格通知</b>\n\n` +
-          `💎➡️📡 <b>${coin.symbol}</b>  ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
-          `訊號品質 <b>${_sqGrade} 級（${_sqScore}分）</b> 低於 S 級（14分）\n` +
-          `已從 <b>長線單</b> 降格為 <b>短線單</b>\n\n` +
-          `🔑 止盈目標已還原為短線：TP1 $${fmtPrice(tp1)}、TP2 $${fmtPrice(tp2)}\n` +
-          `⚠️ 請重新評估持倉策略`
+          buildTelegramText(coin, direction, _dgSetup, _macroCache,
+            window.location.origin + window.location.pathname,
+            { headerOverride: '⬇️ <b>加密掃描 Pro — 降級短線單信號</b>' }
+          )
         );
       }
     } catch(_ltDgE) {}
@@ -8539,7 +8545,7 @@ function inCooldown(tlog, symbol, direction) {
 }
 
 /* ── Telegram 訊息建構（buildTradeSetup / checkAndSendAlerts / recordSignalsFromScan 共用）── */
-function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
+function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const isLong    = direction === 'long';
   const _fmt  = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
   const _pct  = (a, b) => b ? ((Math.abs(a - b) / Math.abs(b)) * 100).toFixed(2) : '0.00';
@@ -8758,7 +8764,8 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl) {
   }
 
   // ── 價格區塊 ──
-  const _hdr = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
+  const _hdrDefault = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
+  const _hdr = (opts && opts.headerOverride) ? opts.headerOverride : _hdrDefault;
   const _priceLines = canScaleIn
     ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b>\n` +
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)` +
@@ -9121,16 +9128,33 @@ async function backgroundRefineNewTrades() {
           try {
             const s = loadSettings();
             if (s.notifTelegram && s.tgToken && s.tgChatId) {
-              const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-              const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
-              const confIcon = ltConf >= 90 ? '🟢' : ltConf >= 85 ? '🟡' : '🟠';
+              const _bgCoin = {
+                symbol: tlogEdit[idx].symbol,
+                price: tlogEdit[idx].entryPrice || tlogEdit[idx].entry || 0,
+                score: tlogEdit[idx].score || 50,
+                weeklySignal: mtfData['1w']?.signal?.signal || '',
+                dailySignal:  mtfData['1d']?.signal?.signal || '',
+                h4Signal:     mtfData['4h']?.signal?.signal || '',
+                h1Signal:     mtfData['1h']?.signal?.signal || '',
+                signal15m:    mtfData['15m']?.signal?.signal || '',
+                rsi: tlogEdit[idx].rsi || 50,
+                adx: tlogEdit[idx].adx || 20,
+              };
+              const _bgUpSetup = Object.assign({}, _tradeSetupCache?.[tlogEdit[idx].symbol] || {}, {
+                entry: tlogEdit[idx].entry, sl: tlogEdit[idx].sl,
+                tp1: ltTP, tp2: ltTP, conf: tlogEdit[idx].conf || 60,
+                canScaleIn: true, ltConf, longTermBias: ltBias,
+                maxScaleIns: _bgScaleCount, aiScaleReason: _bgScaleReason,
+                scaleInTargets: bgScaleInLevels.map(s_ => s_.level),
+                scaleInNewSLs: bgScaleInLevels.map(s_ => s_.newSL),
+                sqGrade: tlogEdit[idx].sqGrade, sqScore: tlogEdit[idx].sqScore,
+                sqGradeLabel: tlogEdit[idx].sqGradeLabel,
+              });
               sendTelegramMessage(s.tgToken, s.tgChatId,
-                `🏆 <b>長線單升級通知</b>\n\n` +
-                `💎 <b>${tlogEdit[idx].symbol}</b>  ${dirLabel}\n` +
-                `${confIcon} 長線信心度：<b>${ltConf}%</b>\n` +
-                `🏁 長線目標：<b>$${fmt(ltTP)}</b>\n` +
-                `📍 進場位：$${fmt(tlogEdit[idx].entry)}\n\n` +
-                `🤖 ${_bgScaleReason}`
+                buildTelegramText(_bgCoin, tlogEdit[idx].direction, _bgUpSetup, _macroCache,
+                  window.location.origin + window.location.pathname,
+                  { headerOverride: '🔼 <b>加密掃描 Pro — 長線單升級信號</b>' }
+                )
               );
             }
           } catch(e) {}
@@ -9141,16 +9165,30 @@ async function backgroundRefineNewTrades() {
         try {
           const s = loadSettings();
           if (s.notifTelegram && s.tgToken && s.tgChatId) {
-            const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-            const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
+            const _bgCoin = {
+              symbol: tlogEdit[idx].symbol,
+              price: tlogEdit[idx].entryPrice || tlogEdit[idx].entry || 0,
+              score: tlogEdit[idx].score || 50,
+              weeklySignal: mtfData['1w']?.signal?.signal || '',
+              dailySignal:  mtfData['1d']?.signal?.signal || '',
+              h4Signal:     mtfData['4h']?.signal?.signal || '',
+              h1Signal:     mtfData['1h']?.signal?.signal || '',
+              signal15m:    mtfData['15m']?.signal?.signal || '',
+              rsi: tlogEdit[idx].rsi || 50,
+              adx: tlogEdit[idx].adx || 20,
+            };
+            const _bgDgSetup = Object.assign({}, _tradeSetupCache?.[tlogEdit[idx].symbol] || {}, {
+              entry: tlogEdit[idx].entry, sl: tlogEdit[idx].sl,
+              tp1: tlogEdit[idx].tp1, tp2: tlogEdit[idx].tp2,
+              conf: tlogEdit[idx].conf || 60, canScaleIn: false,
+              sqGrade: tlogEdit[idx].sqGrade, sqScore: tlogEdit[idx].sqScore,
+              sqGradeLabel: tlogEdit[idx].sqGradeLabel,
+            });
             sendTelegramMessage(s.tgToken, s.tgChatId,
-              `⬇️ <b>長線降格通知</b>\n\n` +
-              `💎➡️📡 <b>${tlogEdit[idx].symbol}</b>  ${dirLabel}\n` +
-              `多時框架對齊條件不再成立（日線/週線方向變化）\n` +
-              `已從 <b>長線單</b> 降格為 <b>短線單</b>\n\n` +
-              `📍 進場位：$${fmt(tlogEdit[idx].entry)}\n` +
-              `🔑 止損：$${fmt(tlogEdit[idx].sl)}\n` +
-              `⚠️ 請重新評估持倉策略`
+              buildTelegramText(_bgCoin, tlogEdit[idx].direction, _bgDgSetup, _macroCache,
+                window.location.origin + window.location.pathname,
+                { headerOverride: '⬇️ <b>加密掃描 Pro — 降級短線單信號</b>' }
+              )
             );
           }
         } catch(e) {}
@@ -9222,8 +9260,19 @@ async function backgroundMonitorLongTermStatus() {
       const wasLT = tlogEdit[idx].canScaleIn === true;
       if (wasLT === canScaleInNow) continue; // 狀態未改變，跳過
 
-      const fmt      = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
-      const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
+      // 構建 coin 物件（供 buildTelegramText 使用）
+      const _monCoin = {
+        symbol: trade.symbol,
+        price: trade.entryPrice || trade.entry || 0,
+        score: trade.score || 50,
+        weeklySignal: mtfData['1w']?.signal?.signal || '',
+        dailySignal:  mtfData['1d']?.signal?.signal || '',
+        h4Signal:     mtfData['4h']?.signal?.signal || '',
+        h1Signal:     mtfData['1h']?.signal?.signal || '',
+        signal15m:    mtfData['15m']?.signal?.signal || '',
+        rsi: trade.rsi || 50,
+        adx: trade.adx || 20,
+      };
 
       if (wasLT && !canScaleInNow) {
         // ── 長線 → 短線降格 ──
@@ -9233,14 +9282,18 @@ async function backgroundMonitorLongTermStatus() {
         try {
           const s = loadSettings();
           if (s.notifTelegram && s.tgToken && s.tgChatId) {
+            const _monDgSetup = Object.assign({}, _tradeSetupCache?.[trade.symbol] || {}, {
+              entry: trade.entry, sl: trade.sl,
+              tp1: trade.tp1, tp2: trade.tp2,
+              conf: trade.conf || 60, canScaleIn: false,
+              sqGrade: trade.sqGrade, sqScore: trade.sqScore,
+              sqGradeLabel: trade.sqGradeLabel,
+            });
             sendTelegramMessage(s.tgToken, s.tgChatId,
-              `⬇️ <b>長線降格通知</b>\n\n` +
-              `💎➡️📡 <b>${trade.symbol}</b>  ${dirLabel}\n` +
-              `自動掃描偵測：五時框（15m/1H/4H/日/週）同向條件不再成立\n` +
-              `已從 <b>長線單</b> 降格為 <b>短線單</b>\n\n` +
-              `📍 進場位：$${fmt(trade.entry)}\n` +
-              `🔑 止損：$${fmt(trade.sl)}\n` +
-              `⚠️ 請重新評估持倉策略`
+              buildTelegramText(_monCoin, trade.direction, _monDgSetup, _macroCache,
+                window.location.origin + window.location.pathname,
+                { headerOverride: '⬇️ <b>加密掃描 Pro — 降級短線單信號</b>' }
+              )
             );
           }
         } catch(e) {}
@@ -9273,18 +9326,23 @@ async function backgroundMonitorLongTermStatus() {
         tlogEdit[idx].aiScaleReason = _bgScaleReason;
         saveTradeLog(tlogEdit);
 
-        const confIcon = ltConf >= 90 ? '🟢' : ltConf >= 85 ? '🟡' : '🟠';
         try {
           const s = loadSettings();
           if (s.notifTelegram && s.tgToken && s.tgChatId) {
+            const _monUpSetup = Object.assign({}, _tradeSetupCache?.[trade.symbol] || {}, {
+              entry: trade.entry, sl: trade.sl,
+              tp1: ltTP, tp2: ltTP,
+              conf: trade.conf || 60, canScaleIn: true,
+              ltConf, longTermBias: ltBias,
+              maxScaleIns: _bgScaleCount, aiScaleReason: _bgScaleReason,
+              sqGrade: trade.sqGrade, sqScore: trade.sqScore,
+              sqGradeLabel: trade.sqGradeLabel,
+            });
             sendTelegramMessage(s.tgToken, s.tgChatId,
-              `🏆 <b>長線單升級通知</b>\n\n` +
-              `📡➡️💎 <b>${trade.symbol}</b>  ${dirLabel}\n` +
-              `自動掃描偵測：日線與週線多時框架對齊\n` +
-              `${confIcon} 長線信心度：<b>${ltConf}%</b>\n` +
-              `🏁 長線目標：<b>$${fmt(ltTP)}</b>\n` +
-              `📍 進場位：$${fmt(trade.entry)}\n\n` +
-              `🤖 ${_bgScaleReason}`
+              buildTelegramText(_monCoin, trade.direction, _monUpSetup, _macroCache,
+                window.location.origin + window.location.pathname,
+                { headerOverride: '🔼 <b>加密掃描 Pro — 長線單升級信號</b>' }
+              )
             );
           }
         } catch(e) {}
