@@ -987,6 +987,73 @@ function buildOpenPositionSetup(t, currentPrice) {
   const reasons = (t.entryReasons?.length ? t.entryReasons : (t.entryReason || '').split('，')).filter(Boolean);
   const reasonsHtml = reasons.map(r => `<div class="level-desc" style="margin-bottom:3px">• ${r}</div>`).join('');
 
+  // ── 即時 ICT / SMC / SNR + 圖形偵測（從 _tradeSetupCache 讀取，每次開啟詳情頁已更新）──
+  let _liveAnalysisHtml = '';
+  try {
+    const _lc = (typeof _tradeSetupCache !== 'undefined' && t.symbol) ? (_tradeSetupCache[t.symbol] || {}) : {};
+    const _lkz  = _lc.killZone;
+    const _lob  = _lc.orderBlock;
+    const _lob4 = _lc.orderBlock4h;
+    const _lfvg = _lc.fvg;
+    const _lfv4 = _lc.fvg4h;
+    const _lpd  = _lc.premiumDiscount;
+    const _lcp  = _lc.chartPat;
+    const _lbon = _lc.ictBonus || 0;
+    const _lbk  = _lc.breakoutCheck;
+
+    const _lParts = [];
+
+    if (_lkz) {
+      const _kzLine = _lkz.quality === 'high'
+        ? `🟢 <strong>${_lkz.name}</strong>（${_lkz.desc}）— ICT 黃金進場窗口`
+        : _lkz.quality === 'medium'
+          ? `🟡 <strong>${_lkz.name}</strong>（${_lkz.desc}）— 波動適中`
+          : `⚪ <strong>${_lkz.name}</strong> — 非主力時段`;
+      _lParts.push(_kzLine);
+    }
+
+    const _obP = [];
+    if (_lob)  _obP.push(`1H ${_lob.label} $${fmtPrice(_lob.low)}–$${fmtPrice(_lob.high)}${_lob.priceInOB ? '（✅ 在 OB 內）' : ''}`);
+    if (_lob4) _obP.push(`4H ${_lob4.label} $${fmtPrice(_lob4.low)}–$${fmtPrice(_lob4.high)}${_lob4.priceInOB ? '（✅ 在 OB 內）' : ''}`);
+    if (_obP.length) _lParts.push(`📦 訂單塊：${_obP.join('；')}`);
+
+    const _fvgP = [];
+    if (_lfvg) _fvgP.push(`1H FVG $${fmtPrice(_lfvg.low)}–$${fmtPrice(_lfvg.high)}（${_lfvg.filled ? '已回補' : '⚡ 未回補'}）`);
+    if (_lfv4) _fvgP.push(`4H FVG $${fmtPrice(_lfv4.low)}–$${fmtPrice(_lfv4.high)}（${_lfv4.filled ? '已回補' : '⚡ 未回補'}）`);
+    if (_fvgP.length) _lParts.push(`📊 FVG 缺口：${_fvgP.join('；')}`);
+
+    if (_lpd) {
+      const _pdLine = (isLong && _lpd.idealForLong)
+        ? `⚖️ 折扣區（${_lpd.pctInRange.toFixed(0)}%），SMC 多頭最佳位`
+        : (!isLong && _lpd.idealForShort)
+          ? `⚖️ 溢價區（${_lpd.pctInRange.toFixed(0)}%），SMC 空頭最佳位`
+          : `⚖️ ${_lpd.zoneLabel}（${_lpd.pctInRange.toFixed(0)}%），均衡點 $${fmtPrice(_lpd.equilibrium)}`;
+      _lParts.push(_pdLine);
+    }
+
+    if (_lbon > 0) _lParts.push(`✨ ICT/SMC 結構加成 +${_lbon}%`);
+
+    const _cpP = [];
+    if (_lcp) {
+      if (_lcp.aligned?.length  > 0) _cpP.push(`✅ ${_lcp.aligned.slice(0,2).map(p => `${p.emoji}${p.name}（${p.status === 'forming' ? '形成中' : '已確認'}）`).join('、')}`);
+      if (_lcp.opposing?.length > 0) _cpP.push(`❌ 逆向：${_lcp.opposing.slice(0,2).map(p => `${p.emoji}${p.name}`).join('、')}`);
+      if (_lcp.neutral?.length  > 0 && !_lcp.aligned?.length) _cpP.push(`⚠️ 中性：${_lcp.neutral.slice(0,2).map(p => `${p.emoji}${p.name}`).join('、')}，等待突破`);
+      if (_lbk && !_lbk.confirmed && _lbk.warn) _cpP.push(`⚡ ${_lbk.warn}`);
+      if (!_lcp.patterns?.length) _cpP.push('目前 4H 無明顯圖形形態');
+    }
+
+    if (_lParts.length || _cpP.length) {
+      _liveAnalysisHtml = `<div style="margin-top:10px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.2);border-radius:8px;padding:10px 13px">
+        <div style="font-weight:700;color:#a78bfa;font-size:0.82rem;margin-bottom:6px">🧠 即時 ICT / SMC / SNR 分析</div>
+        ${_lParts.length ? `<div style="font-size:0.8rem;line-height:2;color:var(--text2)">${_lParts.map(p => `<div>${p}</div>`).join('')}</div>` : ''}
+        ${_cpP.length ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08)">
+          <div style="font-weight:600;color:#fbbf24;font-size:0.8rem;margin-bottom:3px">📐 技術圖形偵測（4H）</div>
+          <div style="font-size:0.8rem;line-height:2;color:var(--text2)">${_cpP.map(p => `<div>${p}</div>`).join('')}</div>
+        </div>` : ''}
+      </div>`;
+    }
+  } catch (_lae) {}
+
   const fmt = v => v ? fmtPrice(v) : '--';
   const pctStr = (a, b) => {
     if (!a || !b) return '';
@@ -1048,6 +1115,7 @@ function buildOpenPositionSetup(t, currentPrice) {
         <div class="level-price-val">${fmt(sl)}${pctStr(entry, sl)}</div>
       </div>
     </div>
+    ${_liveAnalysisHtml}
     ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，止損已自動移至成本價（保本）</div>' : ''}
     ${(() => {
       const sis = (t.scaleIns || []).filter(s => s.status === 'open' || s.status === 'pending');
@@ -1857,6 +1925,30 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           direction:           existingActive.direction,
         }
       );
+
+      // ── 即時 ICT / SMC / SNR + 圖形偵測（持倉幣種每次開啟詳情頁都重算）──
+      try {
+        const _r1hOT = mtfData['1h']?.raw;
+        const _r4hOT = mtfData['4h']?.raw;
+        const _kzOT  = typeof computeKillZone === 'function' ? computeKillZone() : null;
+        let _obOT = null, _fvgOT = null, _pdOT = null, _ob4hOT = null, _fvg4hOT = null;
+        let _cpOT = { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
+        if (_r1hOT?.length >= 5) {
+          if (typeof detectOrderBlocks     === 'function') _obOT   = detectOrderBlocks(_r1hOT, isLongNow);
+          if (typeof detectFairValueGaps   === 'function') _fvgOT  = detectFairValueGaps(_r1hOT, isLongNow);
+          if (typeof computePremiumDiscount === 'function') _pdOT  = computePremiumDiscount(_r1hOT);
+        }
+        if (_r4hOT?.length >= 5) {
+          if (typeof detectOrderBlocks   === 'function') _ob4hOT  = detectOrderBlocks(_r4hOT, isLongNow);
+          if (typeof detectFairValueGaps === 'function') _fvg4hOT = detectFairValueGaps(_r4hOT, isLongNow);
+        }
+        if (_r4hOT?.length >= 30 && typeof detectChartPatterns === 'function')
+          _cpOT = detectChartPatterns(_r4hOT, isLongNow);
+        Object.assign(_tradeSetupCache[coin.symbol], {
+          killZone: _kzOT, orderBlock: _obOT, fvg: _fvgOT, premiumDiscount: _pdOT,
+          orderBlock4h: _ob4hOT, fvg4h: _fvg4hOT, chartPat: _cpOT,
+        });
+      } catch (_ictOTE) {}
 
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
@@ -7661,20 +7753,9 @@ async function renderCoinDetail(symbol) {
   setSafe('setup-body',     () => buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed));
   setSafe('mtf-body',       () => buildMTFTable(mtfData));
 
-  // ICT / SMC / SNR + 圖形識別（置於多週期信號分析下方，僅 A/S 級信號顯示）
+  // ICT panel removed — analysis now lives inside generateAIAnalysis (ai-body)
   const _ictSection = document.getElementById('ict-section');
-  const _ictBody    = document.getElementById('ict-body');
-  if (_ictSection && _ictBody) {
-    try {
-      const _ictHtml = buildICTSMRPanel(symbol, coin, mtfData);
-      if (_ictHtml) {
-        _ictBody.innerHTML = _ictHtml;
-        _ictSection.style.display = '';
-      } else {
-        _ictSection.style.display = 'none';
-      }
-    } catch (_ie) { _ictSection.style.display = 'none'; }
-  }
+  if (_ictSection) _ictSection.style.display = 'none';
 
   setSafe('of-body',        () => buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
   setSafe('fp-body',        () => buildFootprintPanel(_footprintCache[symbol], coin));
