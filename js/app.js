@@ -2610,8 +2610,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   const isDayAligned = isLong ? dayBullSig : dayBearSig;
 
-  // 長線單條件：五週期全部同向
-  const _dayWkAligned = _5tfAligned;
+  // 長線單條件：五週期全部同向 + 長線信心 ≥ 85%
+  const _dayWkAligned = _5tfAligned && ltConf >= 85;
   let canScaleIn = _dayWkAligned;
   let ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
   // 根據類型更新 dirLabel
@@ -9034,12 +9034,17 @@ async function backgroundRefineNewTrades() {
       const isLong    = direction === 'long';
 
       // 長線偏向計算（與 buildTradeSetup/computeLongTermBias 邏輯一致）
-      // 用戶需求：日線 AND 週線都確認同方向才算長線單
       const ltBias = computeLongTermBias(mtfData);
-      const d1SigBg = mtfData['1d']?.signal;
-      const w1SigBg = mtfData['1w']?.signal;
-      const d1OkBg  = isLong ? d1SigBg?.signal?.includes('bull') : d1SigBg?.signal?.includes('bear');
-      const w1OkBg  = isLong ? w1SigBg?.signal?.includes('bull') : w1SigBg?.signal?.includes('bear');
+      const m15SigBg = mtfData['15m']?.signal;
+      const h1SigBg  = mtfData['1h']?.signal;
+      const h4SigBg  = mtfData['4h']?.signal;
+      const d1SigBg  = mtfData['1d']?.signal;
+      const w1SigBg  = mtfData['1w']?.signal;
+      const m15OkBg = isLong ? m15SigBg?.signal?.includes('bull') : m15SigBg?.signal?.includes('bear');
+      const h1OkBg  = isLong ? h1SigBg?.signal?.includes('bull')  : h1SigBg?.signal?.includes('bear');
+      const h4OkBg  = isLong ? h4SigBg?.signal?.includes('bull')  : h4SigBg?.signal?.includes('bear');
+      const d1OkBg  = isLong ? d1SigBg?.signal?.includes('bull')  : d1SigBg?.signal?.includes('bear');
+      const w1OkBg  = isLong ? w1SigBg?.signal?.includes('bull')  : w1SigBg?.signal?.includes('bear');
       let ltBull = 0, ltBear = 0;
       const ltW = { '1d': 1, '1w': 3, '1M': 4 };
       for (const [tf, w] of Object.entries(ltW)) {
@@ -9053,8 +9058,8 @@ async function backgroundRefineNewTrades() {
       }
       const ltRaw  = ltBias === 'long' ? ltBull : ltBias === 'short' ? ltBear : 0;
       const ltConf = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRaw * 8)) : 0;
-      // 長線單升級：日線 AND 週線同方向即認定（純 MTF 時間框架確認）
-      const canScaleIn = d1OkBg && w1OkBg;
+      // 長線單升級：五週期（15m+1H+4H+日+週）同向 + 長線信心 ≥ 85%
+      const canScaleIn = !!(m15OkBg && h1OkBg && h4OkBg && d1OkBg && w1OkBg && ltConf >= 85);
 
       const tlogEdit = loadTradeLog();
       const idx = tlogEdit.findIndex(t => t.id === trade.id);
@@ -9181,11 +9186,32 @@ async function backgroundMonitorLongTermStatus() {
     try {
       const mtfData = await fetchMTFKlines(trade.symbol);
       const isLong  = trade.direction === 'long';
+      const m15Sig  = mtfData['15m']?.signal;
+      const h1Sig   = mtfData['1h']?.signal;
+      const h4Sig   = mtfData['4h']?.signal;
       const d1Sig   = mtfData['1d']?.signal;
       const w1Sig   = mtfData['1w']?.signal;
-      const d1Ok    = isLong ? d1Sig?.signal?.includes('bull') : d1Sig?.signal?.includes('bear');
-      const w1Ok    = isLong ? w1Sig?.signal?.includes('bull') : w1Sig?.signal?.includes('bear');
-      const canScaleInNow = !!(d1Ok && w1Ok);
+      const m15Ok   = isLong ? m15Sig?.signal?.includes('bull') : m15Sig?.signal?.includes('bear');
+      const h1Ok    = isLong ? h1Sig?.signal?.includes('bull')  : h1Sig?.signal?.includes('bear');
+      const h4Ok    = isLong ? h4Sig?.signal?.includes('bull')  : h4Sig?.signal?.includes('bear');
+      const d1Ok    = isLong ? d1Sig?.signal?.includes('bull')  : d1Sig?.signal?.includes('bear');
+      const w1Ok    = isLong ? w1Sig?.signal?.includes('bull')  : w1Sig?.signal?.includes('bear');
+      // 長線信心分（與 buildTradeSetup 一致）
+      let _ltBull = 0, _ltBear = 0;
+      for (const [tf, w] of Object.entries({ '1d': 1, '1w': 3, '1M': 4 })) {
+        const sig = mtfData[tf]?.signal;
+        if (!sig) continue;
+        if (sig.signal?.includes('bull')) _ltBull += w;
+        if (sig.signal?.includes('bear')) _ltBear += w;
+        const rsi = sig.rsi || 50;
+        if (rsi < 42) _ltBull += w * 0.4;
+        if (rsi > 58) _ltBear += w * 0.4;
+      }
+      const _monLtBias = computeLongTermBias(mtfData);
+      const _monLtRaw  = _monLtBias === 'long' ? _ltBull : _monLtBias === 'short' ? _ltBear : 0;
+      const _monLtConf = _monLtBias !== 'neutral' ? Math.round(Math.min(95, 55 + _monLtRaw * 8)) : 0;
+      // 五週期同向（15m+1H+4H+日+週）+ 長線信心 ≥ 85%
+      const canScaleInNow = !!(m15Ok && h1Ok && h4Ok && d1Ok && w1Ok && _monLtConf >= 85);
 
       const tlogEdit = loadTradeLog();
       const idx = tlogEdit.findIndex(t => t.id === trade.id);
@@ -9208,7 +9234,7 @@ async function backgroundMonitorLongTermStatus() {
             sendTelegramMessage(s.tgToken, s.tgChatId,
               `⬇️ <b>長線降格通知</b>\n\n` +
               `💎➡️📡 <b>${trade.symbol}</b>  ${dirLabel}\n` +
-              `自動掃描偵測：日線/週線多時框架對齊條件不再成立\n` +
+              `自動掃描偵測：五時框（15m/1H/4H/日/週）同向條件不再成立\n` +
               `已從 <b>長線單</b> 降格為 <b>短線單</b>\n\n` +
               `📍 進場位：$${fmt(trade.entry)}\n` +
               `🔑 止損：$${fmt(trade.sl)}\n` +
@@ -9220,20 +9246,8 @@ async function backgroundMonitorLongTermStatus() {
 
       } else if (!wasLT && canScaleInNow) {
         // ── 短線 → 長線升格 ──
-        let ltBull = 0, ltBear = 0;
-        const ltW = { '1d': 1, '1w': 3, '1M': 4 };
-        for (const [tf, w] of Object.entries(ltW)) {
-          const sig = mtfData[tf]?.signal;
-          if (!sig) continue;
-          if (sig.signal?.includes('bull')) ltBull += w;
-          if (sig.signal?.includes('bear')) ltBear += w;
-          const rsi = sig.rsi || 50;
-          if (rsi < 42) ltBull += w * 0.4;
-          if (rsi > 58) ltBear += w * 0.4;
-        }
-        const ltBias  = computeLongTermBias(mtfData);
-        const ltRaw   = ltBias === 'long' ? ltBull : ltBias === 'short' ? ltBear : 0;
-        const ltConf  = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRaw * 8)) : 0;
+        const ltBias  = _monLtBias;
+        const ltConf  = _monLtConf;
 
         const price    = parseFloat(trade.entryPrice || trade.entry) || 0;
         const atr      = price * 0.013;
