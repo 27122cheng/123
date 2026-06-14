@@ -3399,6 +3399,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // ⑦ 無技術逆風（RSI/MACD 均正常）
   const _sqNoTechRisk = techPenalty === 0;
   if (_sqNoTechRisk) { _sqScore += 1; _sqFactors.push('✅ 技術面無逆風'); }
+  else {
+    _sqFactors.push(`❌ 技術面逆風（信心 -${techPenalty}%）`);
+    techPenReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  }
   // ⑧ R/R 品質（止損盈虧比）
   const _sqRR1 = parseFloat(rr1str) || 0;
   if (_sqRR1 >= 2.0) { _sqScore += 1; _sqFactors.push(`✅ R/R ${_sqRR1.toFixed(1)}:1 優良`); }
@@ -3409,6 +3413,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (_risk.score <= 40) { _sqScore += 1; _sqFactors.push(`✅ 風控良好（${_risk.score}分）`); }
   else if (_risk.score <= 54) { _sqFactors.push(`⚠️ 風控中等（${_risk.score}分）`); }
   else { _sqFactors.push(`❌ 風控偏高（${_risk.score}分）`); }
+  if (_risk.factors?.length) _risk.factors.slice(0, 3).forEach(f => _sqFactors.push(`　▸ ${f}`));
+  // ── 參考分析：宏觀 / AI 趨勢 / 歷史止損（不影響 SQ 評分，供決策參考）──
+  if (macroOpposePenalty > 0 && macroReasons.length) {
+    _sqFactors.push(`📉 宏觀逆風（信心 -${macroOpposePenalty}%）`);
+    macroReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  }
+  if (aiTrendPenalty > 0 && aiTrendReasons.length) {
+    _sqFactors.push(`📆 AI 趨勢預測逆向（信心 -${aiTrendPenalty}%）`);
+    aiTrendReasons.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  }
+  if (hardBlocked && blockReasons.length) {
+    _sqFactors.push(`🚫 歷史止損封鎖（${blockReasons.length} 條規則觸發）`);
+    blockReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  } else if (learnPenalty > 0 && learnWarnings.length) {
+    _sqFactors.push(`📚 止損記憶扣分（信心 -${learnPenalty}%）`);
+    learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  }
 
   const _sqGrade = _sqScore >= 10 ? 'S'
                  : _sqScore >= 7  ? 'A'
@@ -8694,9 +8715,9 @@ function updateOpenTrades(data) {
         continue;
       }
 
-      // 進場確認：訊號後等 1 分鐘，確保 Telegram 通知已送達後才確認入場
-      // 設計：T=0 訊號出現 → T<60s 觀察期（不入場）→ T≥60s 等回踩
-      const MIN_PENDING_SECS = 60; // 1 分鐘最低觀察期
+      // 進場確認：訊號後等 2 分鐘，確保 Telegram 通知已送達且有足夠時間觀察回踩
+      // 設計：T=0 訊號出現 → T<120s 觀察期（不入場）→ T≥120s 等回踩確認
+      const MIN_PENDING_SECS = 120; // 2 分鐘最低觀察期
       const tradeAge = (Date.now() - (trade.timestamp || 0)) / 1000;
       if (tradeAge < MIN_PENDING_SECS) continue; // 太新，跳過進場確認
 
