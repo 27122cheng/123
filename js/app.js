@@ -3454,7 +3454,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     _risk = computeFullRisk(coin, {
       conf, macroPenalty: macroOpposePenalty, aiTrendPenalty, learnPenalty,
       techPenalty, chipsPenalty, rr1: rr1str,
-      flipRisks, isRangeMode, bigTrendBlocked, sqGrade: _sqGrade,
+      flipRisks, isRangeMode, bigTrendBlocked,
     }, isLong);
   } catch(_re) { console.warn('[buildTradeSetup risk]', coin?.symbol, _re); }
 
@@ -3499,111 +3499,243 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     entryReasons.push(`🚫 ${bigTrendBlockReason}`);
   }
 
-  // ── 訊號品質 AI 評估（多因子評分 0-10，決定等級與是否過濾）──
-  // 必須在 _tradeSetupCache 賦值前計算，避免 TDZ ReferenceError
+  // ── 訊號品質 AI 評估（全數據多因子評分，最高約 20 分，可因逆風因子扣至 0）──
   const _sqFactors = [];
   let _sqScore = 0;
-  // ① 大時框架同向（4H + 日線）
-  const _sq4hOk = h4?.signal?.includes(isLong ? 'bull' : 'bear');
-  const _sqD1Ok = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
-  if (_sq4hOk && _sqD1Ok) { _sqScore += 2; _sqFactors.push('✅ 4H+日線同向'); }
-  else if (_sq4hOk || _sqD1Ok) { _sqScore += 1; _sqFactors.push('⚠️ 單一大框架確認'); }
-  else { _sqFactors.push('❌ 大框架無確認'); }
-  // ② AI 預測對齊
-  const _sqWkOk = weeklyBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
-  const _sqTdOk = todayBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
-  if (_sqWkOk) { _sqScore += 1; _sqFactors.push('✅ 本週 AI 同向'); }
-  if (_sqTdOk) { _sqScore += 1; _sqFactors.push('✅ 今日 AI 同向'); }
-  // ③ 足跡圖 Delta 確認
-  if (_fpBTS && !_fpBTS.deltaDiv) {
-    const _fpOk = isLong ? (_fpBTS.deltaDir === 'bull') : (_fpBTS.deltaDir === 'bear');
-    if (_fpOk) { _sqScore += 1; _sqFactors.push('✅ 足跡圖 Delta 確認'); }
-    else if (_fpBTS.deltaDir === 'neutral') { /* 中性不加分也不扣 */ }
-    else { _sqFactors.push('❌ 足跡圖 Delta 逆向'); }
-  } else if (_fpBTS?.deltaDiv) { _sqFactors.push('⚡ 足跡圖 Delta 背離'); }
-  // ④ ICT 結構確認（OB / FVG / Kill Zone）
+  // 提前取得止損記憶防線（供 ⑬ 和 ⑱ 共用）
+  const _sqDefChecks  = learnResult?.defenseChecks || [];
+  const _sqFailChecks = _sqDefChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
+
+  // ① 大時框架一致性（4H / 日線 / 週線）— max +3
+  const _sq4hOk  = h4?.signal?.includes(isLong ? 'bull' : 'bear');
+  const _sqD1Ok  = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
+  const _sqWk1Ok = wkS?.signal?.includes(isLong ? 'bull' : 'bear');
+  if (_sq4hOk)  _sqScore += 1;
+  if (_sqD1Ok)  _sqScore += 1;
+  if (_sqWk1Ok) _sqScore += 1;
+  if (_sq4hOk && _sqD1Ok && _sqWk1Ok) _sqFactors.push('✅ 4H+日線+週線三框架同向 +3');
+  else if (_sq4hOk && _sqD1Ok)         _sqFactors.push('✅ 4H+日線同向 +2');
+  else if (_sq4hOk || _sqD1Ok)         _sqFactors.push('⚠️ 單一大框架確認 +1');
+  else                                  _sqFactors.push('❌ 大框架無確認');
+
+  // ② AI 預測（本週+今日）— max +2，逆向各扣 1 分
+  const _sqWkAI    = weeklyBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
+  const _sqTdAI    = todayBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
+  const _sqWkAIOpp = weeklyBiasData?.bias && !_sqWkAI && weeklyBiasData.bias !== 'neutral';
+  const _sqTdAIOpp = todayBiasData?.bias  && !_sqTdAI && todayBiasData.bias  !== 'neutral';
+  if (_sqWkAI)         { _sqScore += 1; _sqFactors.push(`✅ 本週AI同向（${weeklyBiasData.biasLabel}）+1`); }
+  else if (_sqWkAIOpp) { _sqScore -= 1; _sqFactors.push(`❌ 本週AI逆向（${weeklyBiasData.biasLabel}）-1`); }
+  else                 { _sqFactors.push(`⚠️ 本週AI中性（${weeklyBiasData?.biasLabel || '—'}）`); }
+  if (_sqTdAI)         { _sqScore += 1; _sqFactors.push(`✅ 今日AI同向（${todayBiasData.biasLabel}）+1`); }
+  else if (_sqTdAIOpp) { _sqScore -= 1; _sqFactors.push(`❌ 今日AI逆向（${todayBiasData.biasLabel}）-1`); }
+  else                 { _sqFactors.push(`⚠️ 今日AI中性（${todayBiasData?.biasLabel || '—'}）`); }
+
+  // ③ 宏觀環境（獨立評分因子）— max +2，重度逆風時扣分
+  {
+    const _sqMacOk  = (isLong && _btsNetDir?.includes('bull'))  || (!isLong && _btsNetDir?.includes('bear'));
+    const _sqMacOpp = (isLong && _btsNetDir?.includes('bear'))  || (!isLong && _btsNetDir?.includes('bull'));
+    const _sqFgVal  = fearGreed ? parseInt(fearGreed.value || '50') : 50;
+    const _sqFgNtrl = _sqFgVal >= 40 && _sqFgVal <= 60;
+    let _sqMacPts   = 0;
+    if (_sqMacOk)  _sqMacPts += 1;
+    if (_sqFgNtrl && !_sqMacOpp) _sqMacPts += 1;
+    if (_sqMacOpp) _sqMacPts -= 2;
+    if (macroOpposePenalty >= 15) _sqMacPts = Math.min(_sqMacPts, _sqMacPts - 1);
+    _sqScore += _sqMacPts;
+    if (_sqMacPts >= 2)       { _sqFactors.push(`✅ 宏觀環境同向（${_btsNetDir}，F&G ${_sqFgVal}）+2`); }
+    else if (_sqMacPts === 1) { _sqFactors.push(`⚠️ 宏觀環境部分支持（F&G ${_sqFgVal}）+1`); }
+    else if (_sqMacPts < 0)   { _sqFactors.push(`❌ 宏觀環境逆風（${_sqMacPts}）`); macroReasons.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`)); }
+    else                      { _sqFactors.push(`⬜ 宏觀環境中性（F&G ${_sqFgVal}）`); }
+  }
+
+  // ④ 足跡圖 Delta — max +1，逆向/背離時扣分
+  if (_fpBTS) {
+    const _fpDirOk  = isLong ? (_fpBTS.deltaDir === 'bull') : (_fpBTS.deltaDir === 'bear');
+    const _fpDirOpp = isLong ? (_fpBTS.deltaDir === 'bear') : (_fpBTS.deltaDir === 'bull');
+    if (_fpBTS.deltaDiv)   { _sqScore -= 1; _sqFactors.push('⚡ 足跡圖 Delta 背離 -1'); }
+    else if (_fpDirOk)     { _sqScore += 1; _sqFactors.push('✅ 足跡圖 Delta 確認 +1'); }
+    else if (_fpDirOpp)    { _sqScore -= 1; _sqFactors.push('❌ 足跡圖 Delta 逆向 -1'); }
+    else                   { _sqFactors.push('⬜ 足跡圖 Delta 中性'); }
+  }
+
+  // ⑤ ICT 結構（OB / FVG / Kill Zone）— max +2
   let _sqIctCnt = 0;
   if (_ictOB?.priceInOB || _ictOB4h?.priceInOB) _sqIctCnt++;
   if ((_ictFVG && !_ictFVG.filled) || (_ictFVG4h && !_ictFVG4h.filled)) _sqIctCnt++;
   if (_kz?.quality === 'high') _sqIctCnt++;
   _sqScore += Math.min(2, _sqIctCnt);
-  if (_sqIctCnt >= 2) _sqFactors.push('✅ ICT 多重結構確認');
-  else if (_sqIctCnt === 1) _sqFactors.push('⚠️ ICT 單一結構');
-  // ⑤ ADX 趨勢強度
-  if (adxVal >= 28) { _sqScore += 1; _sqFactors.push(`✅ ADX ${adxVal} 趨勢確立`); }
-  else if (adxVal >= 22) { /* 合格但不加分 */ }
-  else { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
-  // ⑥ 訂單流確認（CVD + Taker）
-  const _sqOFOk = isLong ? (cvdTrend === 'bull' && buyPct > 55) : (cvdTrend === 'bear' && buyPct < 45);
-  if (_sqOFOk) { _sqScore += 1; _sqFactors.push('✅ 訂單流同向確認'); }
-  // ⑦ 無技術逆風（RSI/MACD 均正常）
+  if (_sqIctCnt >= 2)      _sqFactors.push(`✅ ICT 多重結構確認 +${Math.min(2, _sqIctCnt)}`);
+  else if (_sqIctCnt === 1) _sqFactors.push('⚠️ ICT 單一結構 +1');
+  else                      _sqFactors.push('⬜ ICT 結構：無明顯支撐');
+
+  // ⑥ ADX 趨勢強度 — max +1，過弱時扣分
+  if (adxVal >= 28)      { _sqScore += 1; _sqFactors.push(`✅ ADX ${adxVal} 趨勢確立 +1`); }
+  else if (adxVal >= 22) { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
+  else                   { _sqScore -= 1; _sqFactors.push(`❌ ADX ${adxVal} 趨勢過弱 -1`); }
+
+  // ⑦ 訂單流（CVD + Taker 主動買賣）— max +1
+  const _sqOFOk  = isLong ? (cvdTrend === 'bull' && buyPct > 55) : (cvdTrend === 'bear' && buyPct < 45);
+  const _sqOFOpp = isLong ? (cvdTrend === 'bear' && buyPct < 45) : (cvdTrend === 'bull' && buyPct > 55);
+  if (_sqOFOk)        { _sqScore += 1; _sqFactors.push('✅ 訂單流同向確認 +1'); }
+  else if (_sqOFOpp)  { _sqFactors.push('❌ 訂單流逆向'); }
+  else                { _sqFactors.push('⬜ 訂單流中性'); }
+
+  // ⑧ 籌碼面全面（Whale 巨鯨 + VP 成交量結構 + 期貨Taker比）— max +2，逆向時扣分
+  {
+    let _sqChipsPts = 0;
+    if (whale) {
+      const _sqWhaleOk  = isLong ? (whale.bias === 'bull' && (whale.bigBuyCount  || 0) >= 3) : (whale.bias === 'bear' && (whale.bigSellCount || 0) >= 3);
+      const _sqWhaleOpp = isLong ? (whale.bias === 'bear' && (whale.bigSellCount || 0) >= 3) : (whale.bias === 'bull' && (whale.bigBuyCount  || 0) >= 3);
+      if (_sqWhaleOk)  { _sqChipsPts += 1; _sqFactors.push(`✅ 巨鯨${isLong ? '買入' : '賣出'}同向（${isLong ? whale.bigBuyCount : whale.bigSellCount}筆）+1`); }
+      else if (_sqWhaleOpp) { _sqChipsPts -= 1; _sqFactors.push(`❌ 巨鯨${isLong ? '賣出' : '買入'}逆向（${isLong ? whale.bigSellCount : whale.bigBuyCount}筆）-1`); }
+    }
+    if (vp1h) {
+      const _sqVPOk  = isLong  ? (vp1h.priceAbovePOC  && Math.abs(vp1h.distToPOC) < 3)  : (!vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 3);
+      const _sqVPOpp = !isLong ? (vp1h.priceAbovePOC  && Math.abs(vp1h.distToPOC) < 1.5): (!vp1h.priceAbovePOC && Math.abs(vp1h.distToPOC) < 1.5);
+      if (_sqVPOk)  { _sqChipsPts += 1; _sqFactors.push(`✅ VP籌碼${isLong ? '多' : '空'}頭結構（POC $${fmtPrice(vp1h.poc)}）+1`); }
+      else if (_sqVPOpp) { _sqFactors.push(`❌ VP籌碼逆向（${isLong ? '低於' : '高於'}POC 磁吸阻力）`); }
+    }
+    if (deriv) {
+      const _tkr = deriv.takerBuySell ?? 1;
+      const _sqTkOk  = isLong  ? _tkr >= 1.10 : _tkr <= 0.90;
+      const _sqTkOpp = isLong  ? _tkr <= 0.85 : _tkr >= 1.15;
+      if (_sqTkOk)  { _sqChipsPts += 1; _sqFactors.push(`✅ 期貨Taker同向（${_tkr.toFixed(2)}）+1`); }
+      else if (_sqTkOpp) { _sqChipsPts -= 1; _sqFactors.push(`❌ 期貨Taker逆向（${_tkr.toFixed(2)}）-1`); }
+    }
+    _sqScore += Math.min(2, Math.max(-2, _sqChipsPts));
+  }
+
+  // ⑨ 成交量AI（放量突破 / 背離）— max +1，背離時扣分
+  {
+    const _sqVolAI = mtfData['1h']?.volAI;
+    if (_sqVolAI) {
+      const _sqVolOk  = isLong  ? ((_sqVolAI.isBreakout || _sqVolAI.isSpike) && _sqVolAI.bias === 'bull') : ((_sqVolAI.isBreakout || _sqVolAI.isSpike) && _sqVolAI.bias === 'bear');
+      const _sqVolDiv = isLong  ? (_sqVolAI.divergence === 'bearish_div') : (_sqVolAI.divergence === 'bullish_div');
+      if (_sqVolOk && !_sqVolDiv) { _sqScore += 1; _sqFactors.push(`✅ 放量突破同向（${_sqVolAI.volRatio}x均量）+1`); }
+      else if (_sqVolDiv)         { _sqScore -= 1; _sqFactors.push(`❌ 成交量背離警告 -1`); }
+      else                        { _sqFactors.push(`⬜ 成交量 ${_sqVolAI.bias || '中性'}（${_sqVolAI.volRatio}x）`); }
+    }
+  }
+
+  // ⑩ 布林通道型態（走軌 / 收窄 / 背離）— max +1，逆向走軌/背離時扣分
+  if (bb1h_) {
+    const _sqBBOk  = isLong ? bb1h_.walkingBull : bb1h_.walkingBear;
+    const _sqBBOpp = isLong ? bb1h_.walkingBear : bb1h_.walkingBull;
+    const _sqBBDiv = isLong ? bb1h_.bbDivBear   : bb1h_.bbDivBull;
+    if (_sqBBOk && !_sqBBDiv)  { _sqScore += 1; _sqFactors.push(`✅ BB${isLong ? '多' : '空'}頭走軌確認 +1`); }
+    else if (_sqBBDiv)         { _sqScore -= 1; _sqFactors.push(`❌ BB${isLong ? '頂' : '底'}背離警告 -1`); }
+    else if (_sqBBOpp)         { _sqScore -= 1; _sqFactors.push(`❌ BB逆向走軌 -1`); }
+    else if (bb1h_.isSqueezing){ _sqFactors.push('⚠️ BB收窄蓄力（待突破方向確認）'); }
+  }
+
+  // ⑪ 技術面無逆風（RSI/MACD/成交量/大框架衝突）— max +1
   const _sqNoTechRisk = techPenalty === 0;
-  if (_sqNoTechRisk) { _sqScore += 1; _sqFactors.push('✅ 技術面無逆風'); }
+  if (_sqNoTechRisk) { _sqScore += 1; _sqFactors.push('✅ 技術面無逆風 +1'); }
   else {
     _sqFactors.push(`❌ 技術面逆風（信心 -${techPenalty}%）`);
     techPenReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
   }
-  // ⑧ R/R 品質（止損盈虧比）
+
+  // ⑫ R/R 品質（盈虧比）— max +1，不足時扣分
   const _sqRR1 = parseFloat(rr1str) || 0;
-  if (_sqRR1 >= 2.0) { _sqScore += 1; _sqFactors.push(`✅ R/R ${_sqRR1.toFixed(1)}:1 優良`); }
-  else if (_sqRR1 >= 1.3) { /* 合格但不加分 */ }
-  else { _sqFactors.push(`❌ R/R ${_sqRR1.toFixed(1)}:1 盈虧比不足`); }
-  // ⑨ 風控分數（整合入訊號品質，hardBlocked 為最後防線）
-  if (_risk.score <= 20) { _sqScore += 2; _sqFactors.push(`✅ 風控優良（${_risk.score}分）`); }
-  else if (_risk.score <= 40) { _sqScore += 1; _sqFactors.push(`✅ 風控良好（${_risk.score}分）`); }
+  if (_sqRR1 >= 2.0)      { _sqScore += 1; _sqFactors.push(`✅ R/R ${_sqRR1.toFixed(1)}:1 優良 +1`); }
+  else if (_sqRR1 >= 1.3) { _sqFactors.push(`⚠️ R/R ${_sqRR1.toFixed(1)}:1（可接受）`); }
+  else                    { _sqScore -= 1; _sqFactors.push(`❌ R/R ${_sqRR1.toFixed(1)}:1 盈虧比不足 -1`); }
+
+  // ⑬ 風控評估 + 止損AI建議 — max +2，高風險/警告時扣分
+  if (_risk.score <= 20)      { _sqScore += 2; _sqFactors.push(`✅ 風控優良（${_risk.score}分）+2`); }
+  else if (_risk.score <= 40) { _sqScore += 1; _sqFactors.push(`✅ 風控良好（${_risk.score}分）+1`); }
   else if (_risk.score <= 54) { _sqFactors.push(`⚠️ 風控中等（${_risk.score}分）`); }
-  else { _sqFactors.push(`❌ 風控偏高（${_risk.score}分）`); }
-  if (_risk.factors?.length) _risk.factors.slice(0, 3).forEach(f => _sqFactors.push(`　▸ ${f}`));
-  // ⑩ 技術圖形識別（傳統形態 + ICT）
-  _sqScore += Math.min(2, _chartPat.score);
-  if (_chartPat.aligned.length > 0) {
-    _sqFactors.push(`✅ 圖形確認（${_chartPat.aligned.length} 種形態同向）`);
-    _chartPat.aligned.slice(0, 3).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
-  } else if (_chartPat.neutral.length > 0) {
-    _sqFactors.push(`⚠️ 中性圖形（等待突破確認）`);
-    _chartPat.neutral.slice(0, 2).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
-  } else if (_chartPat.patterns.length === 0) {
-    _sqFactors.push(`⬜ 圖形識別：無明顯形態`);
-  }
-  if (_chartPat.opposing.length > 0) {
-    _sqFactors.push(`❌ 逆向圖形警告（${_chartPat.opposing.length} 種）`);
-    _chartPat.opposing.slice(0, 2).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
-  }
-  // ── 參考分析：宏觀 / AI 趨勢 / 歷史止損（不影響 SQ 評分，供決策參考）──
-  if (macroOpposePenalty > 0 && macroReasons.length) {
-    _sqFactors.push(`📉 宏觀逆風（信心 -${macroOpposePenalty}%）`);
-    macroReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
-  }
-  if (aiTrendPenalty > 0 && aiTrendReasons.length) {
-    _sqFactors.push(`📆 AI 趨勢預測逆向（信心 -${aiTrendPenalty}%）`);
-    aiTrendReasons.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
-  }
-  if (hardBlocked && blockReasons.length) {
-    _sqFactors.push(`🚫 歷史止損封鎖（${blockReasons.length} 條規則觸發）`);
-    blockReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
-  } else if (learnPenalty > 0 && learnWarnings.length) {
-    _sqFactors.push(`📚 止損記憶扣分（信心 -${learnPenalty}%）`);
-    learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
+  else                        { _sqScore -= 1; _sqFactors.push(`❌ 風控偏高（${_risk.score}分）-1`); }
+  if (_risk.factors?.length) _risk.factors.slice(0, 2).forEach(f => _sqFactors.push(`　▸ ${f}`));
+  if (_sqFailChecks.length) {
+    const _sqFlPen = Math.min(2, _sqFailChecks.length);
+    _sqScore -= _sqFlPen;
+    _sqFactors.push(`❌ 止損AI警告（${_sqFailChecks.length}項觸發）-${_sqFlPen}`);
+    _sqFailChecks.slice(0, 2).forEach(c => _sqFactors.push(`　▸ ${c.label}（${c.count}次止損記錄）`));
+  } else if (_risk.recs?.length) {
+    _sqFactors.push(`💡 止損AI建議：${_risk.recs[0]}`);
   }
 
-  // 歷史止損記憶分析（failChecks 即使無扣分也顯示，供 AI 參考）
-  const _defChecks  = learnResult?.defenseChecks || [];
-  const _failChecks = _defChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
+  // ⑭ 技術圖形識別（傳統形態 + ICT）— max +2，逆向圖形時扣 1 分
+  _sqScore += Math.min(2, _chartPat.score);
+  if (_chartPat.aligned.length > 0) {
+    _sqFactors.push(`✅ 圖形確認（${_chartPat.aligned.length}種同向）+${Math.min(2, _chartPat.score)}`);
+    _chartPat.aligned.slice(0, 3).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
+  } else if (_chartPat.neutral.length > 0) {
+    _sqFactors.push('⚠️ 中性圖形（等待突破確認）');
+    _chartPat.neutral.slice(0, 2).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
+  } else {
+    _sqFactors.push('⬜ 圖形識別：無明顯形態');
+  }
+  if (_chartPat.opposing.length > 0) {
+    const _sqOppPen = Math.min(1, _chartPat.opposing.length);
+    _sqScore -= _sqOppPen;
+    _sqFactors.push(`❌ 逆向圖形警告（${_chartPat.opposing.length}種）-${_sqOppPen}`);
+    _chartPat.opposing.slice(0, 2).forEach(p => _sqFactors.push(`　▸ ${p.emoji} ${p.name}：${p.desc}`));
+  }
+
+  // ⑮ AI新聞/市場洞察（基本面情緒）— max +1，逆向時扣分
+  try {
+    const _sqIns     = aiGenerateMarketInsights();
+    const _sqBearCnt = _sqIns.filter(i => i.sentiment === 'bearish' || i.sentiment === 'bear').length;
+    const _sqBullCnt = _sqIns.filter(i => i.sentiment === 'bullish' || i.sentiment === 'bull').length;
+    const _sqInsTotal = _sqBearCnt + _sqBullCnt;
+    if (_sqInsTotal > 0) {
+      if (isLong  && _sqBullCnt > _sqBearCnt)  { _sqScore += 1; _sqFactors.push(`✅ AI新聞利多（${_sqBullCnt}/${_sqInsTotal}條）+1`); }
+      else if (!isLong && _sqBearCnt > _sqBullCnt) { _sqScore += 1; _sqFactors.push(`✅ AI新聞利空（${_sqBearCnt}/${_sqInsTotal}條）+1`); }
+      else if (isLong  && _sqBearCnt > _sqBullCnt) { _sqScore -= 1; _sqFactors.push(`❌ AI新聞偏空，多頭逆風（${_sqBearCnt}/${_sqInsTotal}條）-1`); }
+      else if (!isLong && _sqBullCnt > _sqBearCnt) { _sqScore -= 1; _sqFactors.push(`❌ AI新聞偏多，空頭逆風（${_sqBullCnt}/${_sqInsTotal}條）-1`); }
+      else { _sqFactors.push(`⚠️ AI新聞多空均衡（${_sqInsTotal}條）`); }
+    }
+  } catch(_sqNE) {}
+
+  // ⑯ 爆倉地圖（近側爆倉牆 = 擠壓行情加分）— max +1
+  try {
+    const _sqLiq = _liquidationCache[coin.symbol];
+    if (_sqLiq && price > 0) {
+      const _sqSqWall = isLong
+        ? (_sqLiq.shortLiqs || []).find(l => l.price > price && l.price <= price * 1.12)
+        : (_sqLiq.longLiqs  || []).find(l => l.price < price && l.price >= price * 0.88);
+      if (_sqSqWall) { _sqScore += 1; _sqFactors.push(`✅ 爆倉擠壓牆 $${fmtPrice(_sqSqWall.price)}（${isLong ? '空單' : '多單'}爆倉區）+1`); }
+    }
+  } catch(_sqLE) {}
+
+  // ⑰ 重要數據/資金流動事件（扣分因子）
+  try {
+    const _sqNearEvs = getTodayEconEvents().filter(ev => {
+      const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+      return ev.impact === 'high' && mins >= -30 && mins <= 90;
+    });
+    if (_sqNearEvs.length >= 2)      { _sqScore -= 2; _sqFactors.push(`❌ 多個重要數據事件即將公布 -2`); _sqNearEvs.slice(0, 2).forEach(e => _sqFactors.push(`　▸ ${e.name}`)); }
+    else if (_sqNearEvs.length === 1) { _sqScore -= 1; _sqFactors.push(`❌ 重要數據即將公布（${_sqNearEvs[0].name}）-1`); }
+  } catch(_sqEE) {}
+  try {
+    const _sqCF     = getCapitalFlowBias();
+    const _sqCFOpp  = (_sqCF.events || []).filter(ev => (isLong ? ev.bear : ev.bull) > 0);
+    if (_sqCFOpp.length >= 2) {
+      _sqScore -= 1; _sqFactors.push(`❌ 資金流動逆風（${_sqCFOpp.length}個事件）-1`);
+      _sqCFOpp.slice(0, 2).forEach(ev => _sqFactors.push(`　▸ ${ev.name}（${ev.isActive ? '進行中' : (ev.daysUntil || 0) + '天後'}）`));
+    } else if (_sqCFOpp.length === 1) {
+      _sqFactors.push(`⚠️ 資金流動警告：${_sqCFOpp[0].name}（${_sqCFOpp[0].isActive ? '進行中' : (_sqCFOpp[0].daysUntil || 0) + '天後'}）`);
+    }
+  } catch(_sqCFE) {}
+
+  // ⑱ 歷史止損記憶（硬封鎖扣 3 分 / 有警告時顯示）
   if (hardBlocked && blockReasons.length) {
-    _sqFactors.push(`🚫 歷史止損封鎖（${blockReasons.length} 條規則觸發）`);
+    _sqScore -= 3; _sqFactors.push(`🚫 歷史止損封鎖（${blockReasons.length}條規則觸發）-3`);
     blockReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
-  } else if (_failChecks.length) {
-    _sqFactors.push(`⚠️ 止損記憶警告（${_failChecks.length} 項觸發）`);
-    _failChecks.slice(0, 3).forEach(c => _sqFactors.push(`　▸ ${c.label}（${c.count}次止損記錄）`));
-  } else if (learnPenalty > 0 && learnWarnings.length) {
+  } else if (!_sqFailChecks.length && learnPenalty > 0 && learnWarnings.length) {
     _sqFactors.push(`📚 止損記憶扣分（-${learnPenalty}%）`);
     learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
   }
 
-  const _sqGrade = _sqScore >= 10 ? 'S'
-                 : _sqScore >= 7  ? 'A'
-                 : _sqScore >= 4  ? 'B'
-                 : _sqScore >= 2  ? 'C' : 'D';
+  // 分數 floor 為 0，等級重新校準（全數據模式最高約 20 分）
+  _sqScore = Math.max(0, _sqScore);
+  const _sqGrade = _sqScore >= 14 ? 'S'
+                 : _sqScore >= 10 ? 'A'
+                 : _sqScore >= 6  ? 'B'
+                 : _sqScore >= 3  ? 'C' : 'D';
   const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
@@ -3699,7 +3831,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 A 級（評分 ≥ 7）才進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">全數據多因子評分 ${_sqScore} 分，需達 A 級（≥ 10 分）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
