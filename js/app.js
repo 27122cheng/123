@@ -4100,7 +4100,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (existIdx >= 0) {
     const ex = tlog[existIdx];
     // 若 entry 缺失（舊版資料）或尚未精煉，或 tp1 為空（舊版 bug），強制更新完整欄位
-    if (!ex.refined || !ex.entry || !ex.tp1) {
+    // 但已進場（entryTime 已設定）的持倉絕對不覆蓋進場/止損/止盈
+    if ((!ex.refined || !ex.entry || !ex.tp1) && !ex.entryTime) {
       ex.entry = entry; ex.sl = sl; ex.tp1 = tp1; ex.tp2 = tp2;
       ex.entryReason = entryReasons.join('，'); ex.entryReasons = [...entryReasons];
       ex.slReason = slReason; ex.tp1Reason = tp1Reason; ex.tp2Reason = tp2Reason;
@@ -13286,6 +13287,11 @@ async function checkAndSendAlerts(data) {
       const _existTrade = _tlog.find(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
       if (_existTrade) {
+        // pendingNotify === true 的掛單由 updateOpenTrades 統一發送，此處跳過避免重複通知
+        if (_existTrade.pendingNotify === true) {
+          next[coin.symbol] = { dir, sentAt: now };
+          continue;
+        }
         if (!_existTrade.telegramSent && s.notifTelegram && s.tgToken && s.tgChatId) {
           // 補發漏掉的進場通知：使用掛單建立時的原始信心度作為門檻，避免舊掛單或信心度跌落後補發
           const _retryConf = _existTrade.conf ?? 0;
