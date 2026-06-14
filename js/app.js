@@ -7325,17 +7325,29 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   // ── ICT / SMC / SNR + 圖形偵測 AI 分析段落 ──
   let pICT = '';
   try {
-    const _ictC  = cached || {};
-    const _kzAI  = _ictC.killZone;
-    const _obAI  = _ictC.orderBlock;
-    const _ob4AI = _ictC.orderBlock4h;
-    const _fvgAI = _ictC.fvg;
-    const _fv4AI = _ictC.fvg4h;
-    const _pdAI  = _ictC.premiumDiscount;
-    const _bonAI = _ictC.ictBonus || 0;
-    const _cpAI  = _ictC.chartPat || { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
-    const _bkAI  = _ictC.breakoutCheck;
+    const _ictC     = cached || {};
+    const _raw1hAI  = mtfData['1h']?.raw;
+    const _raw4hAI  = mtfData['4h']?.raw;
     const _isLongAI = (cached?.direction || '') !== 'short';
+
+    // Read from cache; fall back to direct computation when cache is empty
+    const _kzAI  = _ictC.killZone  || (typeof computeKillZone === 'function' ? computeKillZone() : null);
+    let _obAI    = _ictC.orderBlock  || null;
+    let _ob4AI   = _ictC.orderBlock4h || null;
+    let _fvgAI   = _ictC.fvg  || null;
+    let _fv4AI   = _ictC.fvg4h || null;
+    let _pdAI    = _ictC.premiumDiscount || null;
+    const _bonAI = _ictC.ictBonus || 0;
+    let _cpAI    = _ictC.chartPat  || null;
+    const _bkAI  = _ictC.breakoutCheck || null;
+
+    if (!_obAI  && _raw1hAI?.length >= 5  && typeof detectOrderBlocks   === 'function') _obAI   = detectOrderBlocks(_raw1hAI, _isLongAI);
+    if (!_fvgAI && _raw1hAI?.length >= 5  && typeof detectFairValueGaps === 'function') _fvgAI  = detectFairValueGaps(_raw1hAI, _isLongAI);
+    if (!_pdAI  && _raw1hAI?.length >= 5  && typeof computePremiumDiscount === 'function') _pdAI = computePremiumDiscount(_raw1hAI);
+    if (!_ob4AI && _raw4hAI?.length >= 5  && typeof detectOrderBlocks   === 'function') _ob4AI  = detectOrderBlocks(_raw4hAI, _isLongAI);
+    if (!_fv4AI && _raw4hAI?.length >= 5  && typeof detectFairValueGaps === 'function') _fv4AI  = detectFairValueGaps(_raw4hAI, _isLongAI);
+    if (!_cpAI  && _raw4hAI?.length >= 30 && typeof detectChartPatterns === 'function') _cpAI   = detectChartPatterns(_raw4hAI, _isLongAI);
+    if (!_cpAI) _cpAI = { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
 
     const _ictParts = [];
 
