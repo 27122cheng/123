@@ -3732,12 +3732,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 分數 floor 為 0，等級重新校準（全數據模式最高約 20 分）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 14 ? 'S'
+  const _sqGrade = _sqScore >= 17 ? 'SS'
+                 : _sqScore >= 14 ? 'S'
                  : _sqScore >= 10 ? 'A'
                  : _sqScore >= 6  ? 'B'
                  : _sqScore >= 3  ? 'C' : 'D';
-  const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
-  const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
+  const _sqGradeColor = { SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
+  const _sqGradeLabel = { SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
   // ── ICT / SMC / SNR + 圖形識別（所有情況均顯示於交易建議區）──
   const _ictAnalysisHtml = (() => { try {
@@ -3826,7 +3827,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // Grade B/C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
-  if (!['S','A'].includes(_sqGrade)) {
+  if (!['SS','S','A'].includes(_sqGrade)) {
     _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore, chartPat: _chartPat, ..._ictCacheData };
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
@@ -3902,7 +3903,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 低勝率評估（函數域宣告，供 else 建倉判斷 & _hwrBannerHtml 共用）
   const _isLowWinRate =
-    !['S','A'].includes(_sqGrade)                                            // 訊號品質 B/C/D
+    !['SS','S','A'].includes(_sqGrade)                                            // 訊號品質 B/C/D
     || hardBlocked                                                            // AI 學習硬性攔截
     || bigTrendBlocked                                                        // 大時框逆勢
     || (weeklyOpposed && todayOpposed)                                        // 本週+今日 AI 均逆向
