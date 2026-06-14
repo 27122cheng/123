@@ -1115,7 +1115,6 @@ function buildOpenPositionSetup(t, currentPrice) {
         <div class="level-price-val">${fmt(sl)}${pctStr(entry, sl)}</div>
       </div>
     </div>
-    ${_liveAnalysisHtml}
     ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，止損已自動移至成本價（保本）</div>' : ''}
     ${(() => {
       const sis = (t.scaleIns || []).filter(s => s.status === 'open' || s.status === 'pending');
