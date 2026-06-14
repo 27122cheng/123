@@ -3536,7 +3536,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="setup-wait-title">盈虧比不足（R/R <strong style="color:#ef4444">${parseFloat(rr1str).toFixed(1)}:1</strong>），硬性封鎖進場</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 R/R ≥ 1.3:1，當前 ${parseFloat(rr1str).toFixed(1)}:1 不達標，無論訊號品質如何均不進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
-      ${_compactAnalysisHtml}
     </div>`;
   }
 
@@ -3548,7 +3547,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 A 級（評分 ≥ 7）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
-      ${_compactAnalysisHtml}
     </div>`;
   }
 
@@ -4158,25 +4156,28 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   </div>`; } catch(_icpe) { console.warn('[ICT panel]', _icpe); return ''; } })()}
 
   ${(() => { try {
-    if (!_chartPat.patterns.length) return '';
-    const _cpClr = { aligned: '#22c55e', opposing: '#ef4444', neutral: '#f59e0b' };
-    const _cpRows = _chartPat.patterns.map(p => {
-      const clr = p.aligned === true ? '#22c55e' : p.aligned === false ? '#ef4444' : '#f59e0b';
-      const tag = p.aligned === true ? '✅ 同向' : p.aligned === false ? '❌ 逆向' : '⚠️ 中性';
-      return `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:4px">
+    const _cpRows = _chartPat.patterns.length
+      ? _chartPat.patterns.map(p => {
+          const clr = p.aligned === true ? '#22c55e' : p.aligned === false ? '#ef4444' : '#f59e0b';
+          const tag = p.aligned === true ? '✅ 同向' : p.aligned === false ? '❌ 逆向' : '⚠️ 中性';
+          const stateTag = p.status === 'forming'
+            ? `<span style="font-size:0.66rem;color:#f59e0b;margin-left:3px">🔄 形成中</span>`
+            : `<span style="font-size:0.66rem;color:#22c55e;margin-left:3px">✅ 已確認</span>`;
+          return `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:4px">
         <span style="color:${clr};font-size:0.7rem;white-space:nowrap;min-width:44px">${tag}</span>
         <div style="font-size:0.72rem;line-height:1.5">
-          <span style="color:var(--text1)">${p.emoji} ${p.name}</span>
+          <span style="color:var(--text1)">${p.emoji} ${p.name}</span>${stateTag}
           <span style="color:var(--text3);font-size:0.68rem">　${p.desc}</span>
         </div>
       </div>`;
-    }).join('');
+        }).join('')
+      : `<div style="font-size:0.72rem;color:var(--text3)">目前 4H 圖表無明顯技術形態，待形成中訊號</div>`;
     const _bwarn = (!_breakoutCheck.confirmed && _breakoutCheck.warn)
       ? `<div style="margin-top:6px;padding:5px 8px;background:rgba(239,68,68,.08);border-left:2px solid #ef4444;border-radius:4px;font-size:0.7rem;color:#ef4444">⚡ 突破確認不足：${_breakoutCheck.warn}</div>`
       : '';
     return `<!-- ═══ 圖形偵測面板 ═══ -->
   <div style="background:rgba(16,24,39,.7);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
-    <div style="font-weight:700;color:#fbbf24;margin-bottom:7px;font-size:0.8rem">📐 技術圖形識別</div>
+    <div style="font-weight:700;color:#fbbf24;margin-bottom:7px;font-size:0.8rem">📐 技術圖形識別（4H）</div>
     ${_cpRows}
     ${_bwarn}
     ${_chartPat.score > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ 圖形評分加成 <strong>+${Math.min(2,_chartPat.score)} 分</strong></div>` : ''}
