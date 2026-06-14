@@ -3996,11 +3996,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 長線單門檻：必須達 S 級（≥ 14 分），否則降格為短線單
   if (canScaleIn && !['SSS','SS','S'].includes(_sqGrade)) {
+    const _wasLT = _tradeSetupCache[coin.symbol]?.canScaleIn === true;
     canScaleIn = false; ltTP = null; ltTag = '';
     tp1 = _stTp1; tp2 = _stTp2; tp1Reason = _stTp1R; tp2Reason = _stTp2R;
     if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
     else dirLabel = isLong ? '做多' : '做空';
     _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（14分），已降格為短線單`);
+    // 若之前是長線單 → 更新 tlog + 發送降格通知
+    if (_wasLT) try {
+      const _tlogDG = loadTradeLog();
+      const _tDGIdx = _tlogDG.findIndex(t => t.symbol === coin.symbol && t.status === 'pending' && t.canScaleIn === true);
+      if (_tDGIdx >= 0) { _tlogDG[_tDGIdx].canScaleIn = false; _tlogDG[_tDGIdx].ltTP = null; saveTradeLog(_tlogDG); }
+      const _sDG = loadSettings();
+      if (_sDG.notifTelegram && _sDG.tgToken && _sDG.tgChatId) {
+        sendTelegramMessage(_sDG.tgToken, _sDG.tgChatId,
+          `⬇️ <b>長線降格通知</b>\n\n` +
+          `💎➡️📡 <b>${coin.symbol}</b>  ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
+          `訊號品質 <b>${_sqGrade} 級（${_sqScore}分）</b> 低於 S 級（14分）\n` +
+          `已從 <b>長線單</b> 降格為 <b>短線單</b>\n\n` +
+          `🔑 止盈目標已還原為短線：TP1 $${fmtPrice(tp1)}、TP2 $${fmtPrice(tp2)}\n` +
+          `⚠️ 請重新評估持倉策略`
+        );
+      }
+    } catch(_ltDgE) {}
   }
 
   // 緩存完整設置供 Telegram 通知 + AI 分析使用
@@ -9105,6 +9123,25 @@ async function backgroundRefineNewTrades() {
             }
           } catch(e) {}
         }
+      } else if (_wasLongTermAlready) {
+        // 長線 → 短線降格：MTF 多時框架對齊條件不再成立
+        tlogEdit[idx].ltTP = null;
+        try {
+          const s = loadSettings();
+          if (s.notifTelegram && s.tgToken && s.tgChatId) {
+            const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+            const dirLabel = isLong ? '▲ 做多' : '▼ 做空';
+            sendTelegramMessage(s.tgToken, s.tgChatId,
+              `⬇️ <b>長線降格通知</b>\n\n` +
+              `💎➡️📡 <b>${tlogEdit[idx].symbol}</b>  ${dirLabel}\n` +
+              `多時框架對齊條件不再成立（日線/週線方向變化）\n` +
+              `已從 <b>長線單</b> 降格為 <b>短線單</b>\n\n` +
+              `📍 進場位：$${fmt(tlogEdit[idx].entry)}\n` +
+              `🔑 止損：$${fmt(tlogEdit[idx].sl)}\n` +
+              `⚠️ 請重新評估持倉策略`
+            );
+          }
+        } catch(e) {}
       }
 
       saveTradeLog(tlogEdit);
