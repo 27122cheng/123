@@ -8933,6 +8933,8 @@ function recordSignalsFromScan(data) {
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 等級 B/C/D：訊號品質不足，不建立倉位，不推送 Telegram
     if (!['S','A'].includes(_scanSqGrade)) continue;
+    // 短線單需 4 時框同向（日+4H+1H+15m），長線單需 5 時框同向（週+日+4H+1H+15m）
+    if (!setup.isShortTerm && !setup.isLongTerm) continue;
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
@@ -13635,7 +13637,7 @@ function computeSimpleSetup(coin, isLong) {
     ? (isLong ? coin.signal15m.includes('bull') : coin.signal15m.includes('bear'))
     : (isLong ? (coin.score || 50) >= 55 : (coin.score || 50) <= 45);
   // 組合判斷
-  const _isLongTerm  = _wkAligned && _dayAligned && _h4Aligned && _15mAligned;
+  const _isLongTerm  = _wkAligned && _dayAligned && _h4Aligned && _h1Aligned && _15mAligned;
   const _isShortTerm = !_isLongTerm && _dayAligned && _h4Aligned && _h1Aligned && _15mAligned;
   const _mtfBothAlign = _isLongTerm || _isShortTerm;
   const _mtfContraWk  = isLong ? (coin.weeklySignal || '').includes('bear') : (coin.weeklySignal || '').includes('bull');
@@ -14111,8 +14113,8 @@ function computeSimpleSetup(coin, isLong) {
   // ── MTF 多週期確認 / 警告 ──
   if (_isLongTerm) {
     reasons.unshift(isLong
-      ? `✅ 週線+日線+4H+15m 四週期同向確認，長線多頭趨勢成立`
-      : `✅ 週線+日線+4H+15m 四週期同向確認，長線空頭趨勢成立`);
+      ? `✅ 週線+日線+4H+1H+15m 五週期同向確認，長線多頭趨勢成立`
+      : `✅ 週線+日線+4H+1H+15m 五週期同向確認，長線空頭趨勢成立`);
   } else if (_isShortTerm) {
     reasons.unshift(isLong
       ? `✅ 日線+4H+1H+15m 四週期同向確認，短線多頭趨勢成立`
@@ -14159,7 +14161,7 @@ function computeSimpleSetup(coin, isLong) {
     bbup: 'BB 上軌結構目標', bblo: 'BB 下軌結構目標', rr: `固定 R/R ${_rr1}:1`,
   };
   const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1`, prevhigh: `${_phSrc}波段目標`, prevlow: `${_plSrc}波段目標` };
-  const _mtfLabel = _isLongTerm ? '（週/日/4H/15m 四週期確認）'
+  const _mtfLabel = _isLongTerm ? '（週/日/4H/1H/15m 五週期確認）'
                   : _isShortTerm ? '（日/4H/1H/15m 四週期確認）'
                   : _mtfContraWk ? '（週線逆向，注意風險）'
                   : _mtfContraH4 ? '（4H逆向）'
