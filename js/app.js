@@ -13653,7 +13653,7 @@ function computeSimpleSetup(coin, isLong) {
     : (isLong ? (coin.score || 50) >= 55 : (coin.score || 50) <= 45);
   // 組合判斷
   const _isLongTerm  = _wkAligned && _dayAligned && _h4Aligned && _h1Aligned && _15mAligned;
-  const _isShortTerm = !_isLongTerm && _dayAligned && _h4Aligned && _h1Aligned && _15mAligned;
+  const _isShortTerm = _dayAligned && _h4Aligned && _h1Aligned && _15mAligned; // 4 框即可，不依賴長線條件
   const _mtfBothAlign = _isLongTerm || _isShortTerm;
   const _mtfContraWk  = isLong ? (coin.weeklySignal || '').includes('bear') : (coin.weeklySignal || '').includes('bull');
   const _mtfContraDay = isLong ? (coin.dailySignal  || '').includes('bear') : (coin.dailySignal  || '').includes('bull');
