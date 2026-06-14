@@ -3438,13 +3438,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGradeColor = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
-  // Grade C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
-  if (!['S','A','B'].includes(_sqGrade)) {
+  // Grade B/C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
+  if (!['S','A'].includes(_sqGrade)) {
     _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore };
     return `<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 B 級（評分 ≥ 4）才進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">多因子評分 ${_sqScore}/12，需達 A 級（評分 ≥ 7）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
@@ -3513,7 +3513,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 低勝率評估（函數域宣告，供 else 建倉判斷 & _hwrBannerHtml 共用）
   const _isLowWinRate =
-    !['S','A','B'].includes(_sqGrade)                                        // 訊號品質 C/D
+    !['S','A'].includes(_sqGrade)                                            // 訊號品質 B/C/D
     || hardBlocked                                                            // AI 學習硬性攔截
     || bigTrendBlocked                                                        // 大時框逆勢
     || (weeklyOpposed && todayOpposed)                                        // 本週+今日 AI 均逆向
@@ -8197,11 +8197,11 @@ function recordSignalsFromScan(data) {
     else if (_scanRisk.score <= 40) { _scanSqScore += 1; _scanSqFactors.push(`✅ 風控良好（${_scanRisk.score}分）`); }
     else if (_scanRisk.score <= 54) { _scanSqFactors.push(`⚠️ 風控中等（${_scanRisk.score}分）`); }
     else { _scanSqFactors.push(`❌ 風控偏高（${_scanRisk.score}分）`); }
-    // 最高 13 分；B 級門檻 ≥4（R/R+風控整合）
+    // 最高 13 分；A 級門檻 ≥7（僅 S/A 級才進場）
     const _scanSqGrade = _scanSqScore >= 10 ? 'S' : _scanSqScore >= 7 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 等級 C/D：訊號品質不足，不建立倉位，不推送 Telegram
-    if (!['S','A','B'].includes(_scanSqGrade)) continue;
+    // 等級 B/C/D：訊號品質不足，不建立倉位，不推送 Telegram
+    if (!['S','A'].includes(_scanSqGrade)) continue;
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
