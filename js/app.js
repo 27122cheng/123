@@ -991,7 +991,7 @@ function buildOpenPositionSetup(t, currentPrice) {
   let _liveAnalysisHtml = '';
   try {
     const _lc = (typeof _tradeSetupCache !== 'undefined' && t.symbol) ? (_tradeSetupCache[t.symbol] || {}) : {};
-    const _lkz  = _lc.killZone;
+    const _lkz  = _lc.killZone || (typeof computeKillZone === 'function' ? computeKillZone() : null);
     const _lob  = _lc.orderBlock;
     const _lob4 = _lc.orderBlock4h;
     const _lfvg = _lc.fvg;
@@ -1927,10 +1927,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       );
 
       // ── 即時 ICT / SMC / SNR + 圖形偵測（持倉幣種每次開啟詳情頁都重算）──
+      // Kill Zone is set first and immediately so it's never lost to a later exception
+      if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
+      _tradeSetupCache[coin.symbol].killZone = typeof computeKillZone === 'function' ? computeKillZone() : null;
       try {
         const _r1hOT = mtfData['1h']?.raw;
         const _r4hOT = mtfData['4h']?.raw;
-        const _kzOT  = typeof computeKillZone === 'function' ? computeKillZone() : null;
         let _obOT = null, _fvgOT = null, _pdOT = null, _ob4hOT = null, _fvg4hOT = null;
         let _cpOT = { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
         if (_r1hOT?.length >= 5) {
@@ -1945,7 +1947,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         if (_r4hOT?.length >= 30 && typeof detectChartPatterns === 'function')
           _cpOT = detectChartPatterns(_r4hOT, isLongNow);
         Object.assign(_tradeSetupCache[coin.symbol], {
-          killZone: _kzOT, orderBlock: _obOT, fvg: _fvgOT, premiumDiscount: _pdOT,
+          orderBlock: _obOT, fvg: _fvgOT, premiumDiscount: _pdOT,
           orderBlock4h: _ob4hOT, fvg4h: _fvg4hOT, chartPat: _cpOT,
         });
       } catch (_ictOTE) {}
