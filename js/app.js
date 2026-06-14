@@ -3546,7 +3546,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       return `<div style="display:flex;align-items:flex-start;gap:8px"><span style="color:var(--text3);min-width:70px">📈 足跡圖</span><div style="font-size:0.72rem;line-height:1.8"><span style="color:${_dc}">${_dt}</span>${_dw}&nbsp;&nbsp;POC $${_fmtFP(_fp.poc)}${_fp.absorption ? '　<span style="color:#22c55e;font-size:0.68rem">🔵 吸籌</span>' : ''}</div></div>`;
     } catch(_fpe) { return ''; } })()}
     ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
-    ${(() => { try {
+  </div>`;
+    } catch(_ie) { return ''; } })();
+    const _cpH = (() => { try {
       const _rows = _chartPat.patterns.length
         ? _chartPat.patterns.map(p => {
             const clr = p.aligned === true ? '#22c55e' : p.aligned === false ? '#ef4444' : '#f59e0b';
@@ -3559,15 +3561,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         : `<div style="font-size:0.72rem;color:var(--text3)">目前 4H 圖表無明顯技術形態，待形成中訊號</div>`;
       const _bw = (!_breakoutCheck?.confirmed && _breakoutCheck?.warn)
         ? `<div style="margin-top:6px;padding:5px 8px;background:rgba(239,68,68,.08);border-left:2px solid #ef4444;border-radius:4px;font-size:0.7rem;color:#ef4444">⚡ 突破確認不足：${_breakoutCheck.warn}</div>` : '';
-      return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.1)">
+      return `<div style="background:rgba(16,24,39,.7);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:10px 14px;margin-bottom:8px;font-size:0.77rem">
     <div style="font-weight:700;color:#fbbf24;margin-bottom:7px;font-size:0.8rem">📐 技術圖形識別（4H）</div>
     ${_rows}${_bw}
     ${_chartPat.score > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ 圖形評分加成 <strong>+${Math.min(2,_chartPat.score)} 分</strong></div>` : ''}
   </div>`;
-    } catch(_ce) { return ''; } })()}
-  </div>`;
-    } catch(_ie) { return ''; } })();
-    return _ictH;
+    } catch(_ce) { return ''; } })();
+    return _ictH + _cpH;
   } catch(_ae) { return ''; } })();
 
   const _ictCacheData = { killZone: _kz, orderBlock: _ictOB, fvg: _ictFVG, premiumDiscount: _ictPD,
