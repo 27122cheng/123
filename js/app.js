@@ -7344,8 +7344,8 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
 function buildICTSMRPanel(symbol, coin, mtfData) {
   try {
     const setup = _tradeSetupCache[symbol];
-    if (!setup || setup.direction === 'wait') return '';
-    const isLong       = setup.direction === 'long';
+    if (!setup) return '';
+    const isLong       = setup.direction !== 'short';
     const _kz          = setup.killZone;
     const _ictOB       = setup.orderBlock;
     const _ictOB4h     = setup.orderBlock4h;
@@ -7359,15 +7359,15 @@ function buildICTSMRPanel(symbol, coin, mtfData) {
     const bb1h_        = mtfData['1h']?.bb;
 
     const ictHtml = (() => { try {
-      if (!_kz) return '';
-      return `<div style="background:rgba(16,24,39,.7);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
-    <div style="font-weight:700;color:#a78bfa;margin-bottom:7px;font-size:0.8rem">🧠 ICT / SMC / SNR 智能分析</div>
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      const _kzSection = _kz ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
       <span style="color:var(--text3);min-width:70px">⏰ 獵殺時段</span>
       <span style="color:${_kz.quality === 'high' ? '#22c55e' : _kz.quality === 'medium' ? '#f59e0b' : 'var(--text3)'};font-weight:600">${_kz.emoji} ${_kz.name}</span>
       <span style="color:var(--text3);font-size:0.72rem">${_kz.desc}</span>
       ${_kz.quality === 'high' ? `<span style="background:rgba(34,197,94,.15);color:#22c55e;border-radius:4px;padding:1px 6px;font-size:0.7rem">黃金窗口</span>` : ''}
-    </div>
+    </div>` : '';
+      return `<div style="background:rgba(16,24,39,.7);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:10px 14px;margin-bottom:10px;font-size:0.77rem">
+    <div style="font-weight:700;color:#a78bfa;margin-bottom:7px;font-size:0.8rem">🧠 ICT / SMC / SNR 智能分析</div>
+    ${_kzSection}
     ${(_ictOB || _ictOB4h) ? `<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:6px">
       <span style="color:var(--text3);min-width:70px">📦 訂單塊</span>
       <div>
