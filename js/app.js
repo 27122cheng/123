@@ -2880,6 +2880,26 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_liqBTSe) {}
 
+  // ── 進場精修：足跡POC吸附 / ICT區位評估 / 進場位最終優化 ──
+  try {
+    // 足跡 POC 吸附（在 ±1% 範圍內貼合高量節點，獲得更精確進場）
+    if (_fpBTS?.poc && price > 0) {
+      const _pocDelta = (_fpBTS.poc - price) / price;
+      if (isLong  && _pocDelta > -0.010 && _pocDelta < 0) entry = Math.min(entry, _fpBTS.poc * 1.0025);
+      if (!isLong && _pocDelta < 0.010  && _pocDelta > 0) entry = Math.max(entry, _fpBTS.poc * 0.9975);
+    }
+    // ICT 區位逆勢警告（溢價做多 / 折扣做空）
+    if (_ictPD) {
+      if (isLong  && _ictPD.pctInRange > 68 && !_ictPD.idealForLong)
+        entryReasons.push(`⚠️ 溢價偏高區（${_ictPD.pctInRange.toFixed(0)}%），SMC建議等均衡點 $${fmtPrice(_ictPD.equilibrium)} 回撤再進`);
+      if (!isLong && _ictPD.pctInRange < 32 && !_ictPD.idealForShort)
+        entryReasons.push(`⚠️ 折扣偏低區（${_ictPD.pctInRange.toFixed(0)}%），SMC建議等均衡點 $${fmtPrice(_ictPD.equilibrium)} 反彈再進`);
+    }
+    // Kill Zone 最優時段強調（若尚未加入）
+    if (_kz?.quality === 'high' && !entryReasons.some(r => r.includes(_kz.name)))
+      entryReasons.unshift(`⏰ ${_kz.emoji} ${_kz.name} 黃金獵殺時段（${_kz.desc}）`);
+  } catch(_epE) {}
+
   // ── 止損：HTF 結構位 + 緩衝（4H/日線優先，1H fallback）──
   let sl, slReason;
   if (isLong) {
@@ -2927,53 +2947,98 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           : `現價上方 ${slDistPct}%（ATR 止損），動能失效離場`;
     }
   }
+  // ── 止損精修：噪音底線 / 最大風險上限 / VP VAL|VAH 錨點 ──
+  try {
+    const _slMinDist = atr * 0.5;
+    const _slMaxPct  = price > 10000 ? 0.025 : price > 500 ? 0.035 : 0.045;
+    const _slMaxDist = price * _slMaxPct;
+    if (isLong) {
+      if ((entry - sl) < _slMinDist) { sl = entry - _slMinDist; slReason += `（已擴展至ATR噪音底線）`; }
+      if ((entry - sl) > _slMaxDist) { sl = entry - _slMaxDist; slReason = `風控上限止損 ${(_slMaxPct*100).toFixed(1)}% — ${fmtPrice(sl)}`; }
+      if (vp1h?.val && vp1h.val < entry && vp1h.val > sl && (entry - vp1h.val) < atr * 2.5)
+        { sl = vp1h.val - atr * 0.15; slReason = `VP 價值區低點(VAL) ${fmtPrice(vp1h.val)} 下方止損，-${((entry-sl)/price*100).toFixed(2)}%`; }
+    } else {
+      if ((sl - entry) < _slMinDist) { sl = entry + _slMinDist; slReason += `（已擴展至ATR噪音底線）`; }
+      if ((sl - entry) > _slMaxDist) { sl = entry + _slMaxDist; slReason = `風控上限止損 ${(_slMaxPct*100).toFixed(1)}% — ${fmtPrice(sl)}`; }
+      if (vp1h?.vah && vp1h.vah > entry && vp1h.vah < sl && (vp1h.vah - entry) < atr * 2.5)
+        { sl = vp1h.vah + atr * 0.15; slReason = `VP 價值區高點(VAH) ${fmtPrice(vp1h.vah)} 上方止損，+${((sl-entry)/price*100).toFixed(2)}%`; }
+    }
+  } catch(_slE) {}
   const risk = Math.abs(entry - sl) || atr;
 
-  // ── 止盈一：優先 4H/日線 S/R，最低 2:1 R/R ──
+  // ── 止盈一：ADX 加速縮放 + VP VAH/VAL + 爆倉牆候選 ──
   let tp1, tp1Reason;
-  const minTP1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
+  const _adxForTP = parseFloat(coin.adx) || 20;
+  const _adxBoost = _adxForTP >= 35 ? 1.0 : _adxForTP >= 28 ? 0.5 : 0;
+  const minTP1 = isLong ? entry + risk * (1.5 + _adxBoost) : entry - risk * (1.5 + _adxBoost);
   if (isLong) {
-    // 先嘗試 4H/日線壓力，再 fallback 到 1H
+    const _liqDataTP1 = _liquidationCache[coin.symbol];
+    const _liqWall1   = _liqDataTP1 ? (_liqDataTP1.shortLiqs || []).filter(l => l.price >= minTP1).sort((a,b)=>a.price-b.price)[0] : null;
+    const vpVAH1      = (vp1h?.vah && vp1h.vah >= minTP1) ? vp1h.vah : null;
     const htfR1 = _htfResists.find(r => r >= minTP1 * 0.99);
     const r1    = htfR1 || resists.find(r => r >= minTP1 * 0.99);
-    tp1 = r1 || minTP1;
+    const _tp1Cands = [r1, vpVAH1, _liqWall1?.price].filter(Boolean).sort((a,b)=>a-b);
+    tp1 = _tp1Cands[0] || minTP1;
     const rr1v = ((tp1 - entry) / risk).toFixed(1);
-    tp1Reason = r1
-      ? `${_htfTfLabel(r1)}壓力 ${fmtPrice(r1)}，R/R ${rr1v}:1，到達後減倉 60%`
+    const _tp1Src = (vpVAH1 && tp1 === vpVAH1) ? `VP VAH ${fmtPrice(vpVAH1)}`
+                  : (_liqWall1?.price && tp1 === _liqWall1.price) ? `空單爆倉牆 ${fmtPrice(_liqWall1.price)}`
+                  : r1 ? `${_htfTfLabel(r1)}壓力 ${fmtPrice(r1)}` : null;
+    tp1Reason = _tp1Src
+      ? `${_tp1Src}，R/R ${rr1v}:1，到達後減倉 60%`
       : `短線目標 R/R ${rr1v}:1，到達後減倉 60%`;
   } else {
+    const _liqDataTP1 = _liquidationCache[coin.symbol];
+    const _liqWall1   = _liqDataTP1 ? (_liqDataTP1.longLiqs || []).filter(l => l.price <= minTP1).sort((a,b)=>b.price-a.price)[0] : null;
+    const vpVAL1      = (vp1h?.val && vp1h.val <= minTP1) ? vp1h.val : null;
     const htfS1 = _htfSupps.find(s => s <= minTP1 * 1.01);
     const s1    = htfS1 || supps.find(s => s <= minTP1 * 1.01);
-    tp1 = s1 || minTP1;
+    const _tp1Cands = [s1, vpVAL1, _liqWall1?.price].filter(Boolean).sort((a,b)=>b-a);
+    tp1 = _tp1Cands[0] || minTP1;
     const rr1v = ((entry - tp1) / risk).toFixed(1);
-    tp1Reason = s1
-      ? `${_htfTfLabel(s1)}支撐 ${fmtPrice(s1)}，R/R ${rr1v}:1，到達後減倉 60%`
+    const _tp1Src = (vpVAL1 && tp1 === vpVAL1) ? `VP VAL ${fmtPrice(vpVAL1)}`
+                  : (_liqWall1?.price && tp1 === _liqWall1.price) ? `多單爆倉牆 ${fmtPrice(_liqWall1.price)}`
+                  : s1 ? `${_htfTfLabel(s1)}支撐 ${fmtPrice(s1)}` : null;
+    tp1Reason = _tp1Src
+      ? `${_tp1Src}，R/R ${rr1v}:1，到達後減倉 60%`
       : `短線目標 R/R ${rr1v}:1，到達後減倉 60%`;
   }
 
-  // ── 止盈二：優先日線/週線 S/R，最低 3:1 R/R ──
+  // ── 止盈二：ADX 加速縮放 + VP VAH/VAL + 爆倉牆候選 ──
   let tp2, tp2Reason;
-  const minTP2 = isLong ? entry + risk * 2.5 : entry - risk * 2.5;
+  const minTP2 = isLong ? entry + risk * (2.5 + _adxBoost * 1.5) : entry - risk * (2.5 + _adxBoost * 1.5);
   if (isLong) {
-    // 優先週線，再日線/4H，再 1H swing high
+    const _liqDataTP2 = _liquidationCache[coin.symbol];
+    const _liqWall2   = _liqDataTP2 ? (_liqDataTP2.shortLiqs || []).filter(l => l.price >= minTP2 && l.price > tp1 + price*0.003).sort((a,b)=>a.price-b.price)[0] : null;
+    const vpVAH2      = (vp1h?.vah && vp1h.vah >= minTP2 && vp1h.vah > tp1 + price*0.003) ? vp1h.vah : null;
     const w1R2  = _w1Resists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
     const htfR2 = w1R2 || _htfResists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
     const r2    = htfR2 || resists.find(r => r > tp1 + price * 0.004 && r >= minTP2 * 0.99);
-    tp2 = r2 || Math.max(swHigh, minTP2);
+    const _tp2Cands = [r2, vpVAH2, _liqWall2?.price].filter(Boolean).sort((a,b)=>a-b);
+    tp2 = _tp2Cands[0] || Math.max(swHigh, minTP2);
     if (tp2 <= tp1) tp2 = Math.max(tp1 + price * 0.004, minTP2);
     const rr2v = ((tp2 - entry) / risk).toFixed(1);
-    tp2Reason = r2
-      ? `${_htfTfLabel(r2)}壓力 ${fmtPrice(r2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
+    const _tp2Src = (vpVAH2 && tp2 === vpVAH2) ? `VP VAH ${fmtPrice(vpVAH2)}`
+                  : (_liqWall2?.price && tp2 === _liqWall2.price) ? `空單爆倉牆 ${fmtPrice(_liqWall2.price)}`
+                  : r2 ? `${_htfTfLabel(r2)}壓力 ${fmtPrice(r2)}` : null;
+    tp2Reason = _tp2Src
+      ? `${_tp2Src}，R/R ${rr2v}:1，剩餘倉位移至成本`
       : `擺動高點 ${fmtPrice(swHigh)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
   } else {
+    const _liqDataTP2 = _liquidationCache[coin.symbol];
+    const _liqWall2   = _liqDataTP2 ? (_liqDataTP2.longLiqs || []).filter(l => l.price <= minTP2 && l.price < tp1 - price*0.003).sort((a,b)=>b.price-a.price)[0] : null;
+    const vpVAL2      = (vp1h?.val && vp1h.val <= minTP2 && vp1h.val < tp1 - price*0.003) ? vp1h.val : null;
     const w1S2  = _w1Supps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
     const htfS2 = w1S2 || _htfSupps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
     const s2    = htfS2 || supps.find(s => s < tp1 - price * 0.004 && s <= minTP2 * 1.01);
-    tp2 = s2 || Math.min(swLow, minTP2);
+    const _tp2Cands = [s2, vpVAL2, _liqWall2?.price].filter(Boolean).sort((a,b)=>b-a);
+    tp2 = _tp2Cands[0] || Math.min(swLow, minTP2);
     if (tp2 >= tp1) tp2 = Math.min(tp1 - price * 0.004, minTP2);
     const rr2v = ((entry - tp2) / risk).toFixed(1);
-    tp2Reason = s2
-      ? `${_htfTfLabel(s2)}支撐 ${fmtPrice(s2)}，R/R ${rr2v}:1，剩餘倉位移至成本`
+    const _tp2Src = (vpVAL2 && tp2 === vpVAL2) ? `VP VAL ${fmtPrice(vpVAL2)}`
+                  : (_liqWall2?.price && tp2 === _liqWall2.price) ? `多單爆倉牆 ${fmtPrice(_liqWall2.price)}`
+                  : s2 ? `${_htfTfLabel(s2)}支撐 ${fmtPrice(s2)}` : null;
+    tp2Reason = _tp2Src
+      ? `${_tp2Src}，R/R ${rr2v}:1，剩餘倉位移至成本`
       : `擺動低點 ${fmtPrice(swLow)}，R/R ${rr2v}:1，剩餘倉位移至成本`;
   }
 
