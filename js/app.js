@@ -7322,6 +7322,74 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     p5 = `<div style="font-size:0.8em;color:#22c55e;margin-top:4px">✅ 風控通過：無扣分，信心度 ${finalConf ?? '--'}%（原始 ${rawConf ?? '--'}%）</div>`;
   }
 
+  // ── ICT / SMC / SNR + 圖形偵測 AI 分析段落 ──
+  let pICT = '';
+  try {
+    const _ictC  = cached || {};
+    const _kzAI  = _ictC.killZone;
+    const _obAI  = _ictC.orderBlock;
+    const _ob4AI = _ictC.orderBlock4h;
+    const _fvgAI = _ictC.fvg;
+    const _fv4AI = _ictC.fvg4h;
+    const _pdAI  = _ictC.premiumDiscount;
+    const _bonAI = _ictC.ictBonus || 0;
+    const _cpAI  = _ictC.chartPat || { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
+    const _bkAI  = _ictC.breakoutCheck;
+    const _isLongAI = (cached?.direction || '') !== 'short';
+
+    const _ictParts = [];
+
+    // Kill Zone
+    if (_kzAI) {
+      const _kzClue = _kzAI.quality === 'high' ? `🟢 現處 <strong>${_kzAI.name}</strong>（${_kzAI.desc}），是 ICT 黃金進場窗口`
+                    : _kzAI.quality === 'medium' ? `🟡 現處 <strong>${_kzAI.name}</strong>（${_kzAI.desc}），波動適中可留意`
+                    : `⚪ 現處 <strong>${_kzAI.name}</strong>，非主力時段，信號參考性降低`;
+      _ictParts.push(_kzClue);
+    }
+
+    // Order Blocks
+    const _obParts = [];
+    if (_obAI)  _obParts.push(`1H ${_obAI.label} $${fmtPrice(_obAI.low)}–$${fmtPrice(_obAI.high)}${_obAI.priceInOB ? '（✅ 價格在 OB 內，機構支撐/壓力明顯）' : ''}`);
+    if (_ob4AI) _obParts.push(`4H ${_ob4AI.label} $${fmtPrice(_ob4AI.low)}–$${fmtPrice(_ob4AI.high)}${_ob4AI.priceInOB ? '（✅ 4H OB 支撐確認）' : ''}`);
+    if (_obParts.length) _ictParts.push(`📦 訂單塊：${_obParts.join('；')}`);
+
+    // FVG
+    const _fvgParts = [];
+    if (_fvgAI)  _fvgParts.push(`1H FVG $${fmtPrice(_fvgAI.low)}–$${fmtPrice(_fvgAI.high)}（${_fvgAI.filled ? '已回補' : '⚡ 未回補，為潛在回撤目標'}）`);
+    if (_fv4AI)  _fvgParts.push(`4H FVG $${fmtPrice(_fv4AI.low)}–$${fmtPrice(_fv4AI.high)}（${_fv4AI.filled ? '已回補' : '⚡ 未回補'}）`);
+    if (_fvgParts.length) _ictParts.push(`📊 FVG 缺口：${_fvgParts.join('；')}`);
+
+    // Premium / Discount
+    if (_pdAI) {
+      const _pdClue = (_isLongAI && _pdAI.idealForLong) ? `⚖️ 價格位於折扣區（${_pdAI.pctInRange.toFixed(0)}% 位置），SMC 最佳多頭進場位`
+                    : (!_isLongAI && _pdAI.idealForShort) ? `⚖️ 價格位於溢價區（${_pdAI.pctInRange.toFixed(0)}% 位置），SMC 最佳空頭進場位`
+                    : `⚖️ 當前位置 ${_pdAI.zoneLabel}（${_pdAI.pctInRange.toFixed(0)}%），均衡點 $${fmtPrice(_pdAI.equilibrium)}`;
+      _ictParts.push(_pdClue);
+    }
+
+    // ICT Bonus
+    if (_bonAI > 0) _ictParts.push(`✨ ICT/SMC 結構加成 +${_bonAI}%，機構結構對齊`);
+
+    // Chart Patterns
+    const _cpParts = [];
+    if (_cpAI.aligned.length > 0)   _cpParts.push(`✅ 同向形態：${_cpAI.aligned.slice(0,2).map(p => `${p.emoji}${p.name}（${p.status === 'forming' ? '形成中' : '已確認'}）`).join('、')}`);
+    if (_cpAI.opposing.length > 0)  _cpParts.push(`❌ 逆向警告：${_cpAI.opposing.slice(0,2).map(p => `${p.emoji}${p.name}`).join('、')}`);
+    if (_cpAI.neutral.length > 0 && _cpAI.aligned.length === 0) _cpParts.push(`⚠️ 中性形態：${_cpAI.neutral.slice(0,2).map(p => `${p.emoji}${p.name}`).join('、')}，等待突破`);
+    if (_bkAI && !_bkAI.confirmed && _bkAI.warn) _cpParts.push(`⚡ 突破確認不足：${_bkAI.warn}`);
+    if (_cpAI.patterns.length === 0) _cpParts.push('目前 4H 無明顯技術形態，等待訊號成形');
+
+    if (_ictParts.length || _cpParts.length) {
+      pICT = `<div style="background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.2);border-radius:8px;padding:10px 13px;margin-top:6px">
+        <div style="font-weight:700;color:#a78bfa;margin-bottom:6px;font-size:0.88rem">🧠 ICT / SMC / SNR 智能分析</div>
+        ${_ictParts.length ? `<div style="font-size:0.84rem;line-height:2;color:var(--text2)">${_ictParts.map(p => `<div>${p}</div>`).join('')}</div>` : ''}
+        ${_cpParts.length ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.08)">
+          <div style="font-weight:600;color:#fbbf24;margin-bottom:4px;font-size:0.84rem">📐 技術圖形偵測（4H）</div>
+          <div style="font-size:0.84rem;line-height:2;color:var(--text2)">${_cpParts.map(p => `<div>${p}</div>`).join('')}</div>
+        </div>` : ''}
+      </div>`;
+    }
+  } catch(_icte) {}
+
   return `<div class="ai-analysis-body">
     <div class="ai-para">${p1}</div>
     ${p2 ? `<div class="ai-para">${p2}</div>` : ''}
@@ -7330,6 +7398,7 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     ${pFP  ? `<div class="ai-para">${pFP}</div>`  : ''}
     ${pLiq ? `<div class="ai-para">${pLiq}</div>` : ''}
     ${pTopTrader ? `<div class="ai-para">${pTopTrader}</div>` : ''}
+    ${pICT ? `<div class="ai-para">${pICT}</div>` : ''}
     ${p6 ? `<div class="ai-para">${p6}</div>` : ''}
     ${p5 ? `<div class="ai-para">${p5}</div>` : ''}
   </div>`;
