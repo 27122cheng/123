@@ -2964,6 +2964,47 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         { sl = vp1h.vah + atr * 0.15; slReason = `VP 價值區高點(VAH) ${fmtPrice(vp1h.vah)} 上方止損，+${((sl-entry)/price*100).toFixed(2)}%`; }
     }
   } catch(_slE) {}
+
+  // ── 長線單止損升級：週線結構 / EMA200 最終防線（比短線更寬）──
+  if (canScaleIn) try {
+    const _ltEma200 = parseFloat(coin.ema200) || 0;
+    const _ltSlMin  = 0.030; // 長線最小止損距離 3%
+    const _ltSlMax  = 0.080; // 長線最大止損距離 8%
+    if (isLong) {
+      const _wkSwLow = _plw1?.swingLow;
+      const _wkSup   = _w1Supps.find(s => s < entry && (entry-s)/price >= _ltSlMin && (entry-s)/price <= _ltSlMax);
+      const _ema200C = _ltEma200 > 0 && _ltEma200 < entry * 0.998 && (entry-_ltEma200)/price >= _ltSlMin && (entry-_ltEma200)/price <= _ltSlMax ? _ltEma200 : null;
+      const _wkSwC   = _wkSwLow && _wkSwLow < entry && (entry-_wkSwLow)/price >= _ltSlMin && (entry-_wkSwLow)/price <= _ltSlMax ? _wkSwLow : null;
+      const _ltSlCands = [_wkSwC, _wkSup, _ema200C].filter(Boolean).sort((a,b) => b - a);
+      if (_ltSlCands[0]) {
+        sl = _ltSlCands[0] - atr * 0.25;
+        const _ltSlPct = ((entry-sl)/price*100).toFixed(2);
+        const _ltSrc = (_wkSwC && _ltSlCands[0] === _wkSwC) ? '週線擺動低點'
+                     : (_wkSup && _ltSlCands[0] === _wkSup) ? '週線支撐' : 'EMA200';
+        slReason = `🔒 長線止損 ${_ltSrc} ${fmtPrice(_ltSlCands[0])} 下方 -${_ltSlPct}%（跌破週級結構清倉）`;
+      } else {
+        sl = Math.min(sl, entry * (1 - 0.040));
+        slReason = `🔒 長線止損：進場下方 ${((entry-sl)/price*100).toFixed(2)}%（週線結構不足，ATR擴展）`;
+      }
+    } else {
+      const _wkSwHigh = _plw1?.swingHigh;
+      const _wkRes    = _w1Resists.find(r => r > entry && (r-entry)/price >= _ltSlMin && (r-entry)/price <= _ltSlMax);
+      const _ema200C  = _ltEma200 > 0 && _ltEma200 > entry * 1.002 && (_ltEma200-entry)/price >= _ltSlMin && (_ltEma200-entry)/price <= _ltSlMax ? _ltEma200 : null;
+      const _wkSwC    = _wkSwHigh && _wkSwHigh > entry && (_wkSwHigh-entry)/price >= _ltSlMin && (_wkSwHigh-entry)/price <= _ltSlMax ? _wkSwHigh : null;
+      const _ltSlCands = [_wkSwC, _wkRes, _ema200C].filter(Boolean).sort((a,b) => a - b);
+      if (_ltSlCands[0]) {
+        sl = _ltSlCands[0] + atr * 0.25;
+        const _ltSlPct = ((sl-entry)/price*100).toFixed(2);
+        const _ltSrc = (_wkSwC && _ltSlCands[0] === _wkSwC) ? '週線擺動高點'
+                     : (_wkRes && _ltSlCands[0] === _wkRes) ? '週線壓力' : 'EMA200';
+        slReason = `🔒 長線止損 ${_ltSrc} ${fmtPrice(_ltSlCands[0])} 上方 +${_ltSlPct}%（突破週級結構清倉）`;
+      } else {
+        sl = Math.max(sl, entry * (1 + 0.040));
+        slReason = `🔒 長線止損：進場上方 ${((sl-entry)/price*100).toFixed(2)}%（週線結構不足，ATR擴展）`;
+      }
+    }
+  } catch(_ltSlE) {}
+
   const risk = Math.abs(entry - sl) || atr;
 
   // ── 止盈一：ADX 加速縮放 + VP VAH/VAL + 爆倉牆候選 ──
@@ -3068,7 +3109,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         if (parseFloat(ltRRv) < minLtRR) { canScaleIn = false; ltTP = null; } // R/R 不足 → 觀望
         else {
           const _isWkSw = wkSwCand && Math.abs(ltTP - wkSwCand) < price * 0.005;
-          ltTPReason = `${_isWkSw ? '週線擺動高點' : _htfTfLabel(ltTP)} ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
+          const _lt3R = fmtPrice(entry + risk * 3);
+          const _lt5R = fmtPrice(entry + risk * 5);
+          ltTPReason = `${_isWkSw ? '週線擺動高點' : _htfTfLabel(ltTP)} $${fmtPrice(ltTP)}，R/R ${ltRRv}:1 | 里程碑 3R $${_lt3R} 減30%，5R $${_lt5R} 減30%，最終目標全出`;
         }
       }
     } else {
@@ -3089,21 +3132,25 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         if (parseFloat(ltRRv) < minLtRR) { canScaleIn = false; ltTP = null; }
         else {
           const _isWkSw = wkSwCand && Math.abs(ltTP - wkSwCand) < price * 0.005;
-          ltTPReason = `${_isWkSw ? '週線擺動低點' : _htfTfLabel(ltTP)} ${fmtPrice(ltTP)}，R/R ${ltRRv}:1，全倉長線目標`;
+          const _lt3R = fmtPrice(entry - risk * 3);
+          const _lt5R = fmtPrice(entry - risk * 5);
+          ltTPReason = `${_isWkSw ? '週線擺動低點' : _htfTfLabel(ltTP)} $${fmtPrice(ltTP)}，R/R ${ltRRv}:1 | 里程碑 3R $${_lt3R} 減30%，5R $${_lt5R} 減30%，最終目標全出`;
         }
       }
     }
-    // AI 自行判斷加倉次數（最多 3 次）：依長線信心度和 R/R 決定
+    // 加倉次數：ADX 趨勢強度 + 長線信心度 + R/R 三維評分
     const ltRRraw = (canScaleIn && ltTP && risk > 0) ? Math.abs(ltTP - entry) / risk : 0;
-    _aiScaleCount = (ltConf >= 90 && ltRRraw >= 5.0) ? 3
-                  : (ltConf >= 87 && ltRRraw >= 4.0) ? 2
+    const _adxLT  = parseFloat(coin.adx) || 20;
+    _aiScaleCount = (_adxLT >= 35 && ltConf >= 88 && ltRRraw >= 8.0) ? 3
+                  : (_adxLT >= 28 && ltConf >= 85 && ltRRraw >= 5.0) ? 2
                   : 1;
-    _aiScaleReason = _aiScaleCount === 3 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 3 次加倉`
-                   : _aiScaleCount === 2 ? `長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 2 次加倉`
-                   : `長線信心 ${ltConf}%，建議 1 次加倉（保守佈局）`;
-    // 加倉位：均勻分佈在路程中，並嘗試吸附至附近 ±1.5% S/R 或足跡高量區
-    const totalMove = Math.abs(ltTP - entry);
+    _aiScaleReason = _aiScaleCount === 3
+      ? `ADX ${_adxLT.toFixed(0)} 強勢趨勢、長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 3 次加倉`
+      : _aiScaleCount === 2
+      ? `ADX ${_adxLT.toFixed(0)}、長線信心 ${ltConf}%、R/R ${ltRRraw.toFixed(1)}:1，建議 2 次加倉`
+      : `長線信心 ${ltConf}%、ADX ${_adxLT.toFixed(0)}，建議 1 次加倉（趨勢確認後再佈局）`;
     // 足跡圖高量區（加倉優先吸附 POC + 強買/賣壓區）
+    const totalMove = Math.abs(ltTP - entry);
     const _fpSI = _footprintCache[coin.symbol];
     const _fpSnaps = [];
     if (_fpSI) {
@@ -3118,20 +3165,44 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       _aiScaleCount = 1;
       _aiScaleReason += '　⚠️ 足跡 Delta 背離，保守降至 1 次加倉';
     }
-    scaleInLevels = Array.from({ length: _aiScaleCount }, (_, i) => i + 1).map(n => {
-      const raw = isLong ? entry + totalMove * (n / (_aiScaleCount + 1))
-                         : entry - totalMove * (n / (_aiScaleCount + 1));
-      // 優先吸附足跡高量區，其次 S/R
+    // 智慧加倉位候選：EMA + VP + HTF 週線結構（在 entry 到 ltTP 10%-70% 段）
+    const _ema200LT = parseFloat(coin.ema200) || 0;
+    const _ema50LT  = parseFloat(coin.ema50)  || 0;
+    const _siStructCands = [];
+    if (isLong) {
+      const _siLo = entry + totalMove * 0.08, _siHi = entry + totalMove * 0.70;
+      if (_ema50LT  > _siLo && _ema50LT  < _siHi) _siStructCands.push(_ema50LT);
+      if (_ema200LT > _siLo && _ema200LT < _siHi) _siStructCands.push(_ema200LT);
+      if (vp1h?.poc && vp1h.poc > _siLo && vp1h.poc < _siHi) _siStructCands.push(vp1h.poc);
+      _htfSupps.filter(s => s > _siLo && s < _siHi).forEach(s => _siStructCands.push(s));
+      _w1Supps.filter(s  => s > _siLo && s < _siHi).forEach(s => _siStructCands.push(s));
+    } else {
+      const _siLo = entry - totalMove * 0.70, _siHi = entry - totalMove * 0.08;
+      if (_ema50LT  > _siLo && _ema50LT  < _siHi) _siStructCands.push(_ema50LT);
+      if (_ema200LT > _siLo && _ema200LT < _siHi) _siStructCands.push(_ema200LT);
+      if (vp1h?.poc && vp1h.poc > _siLo && vp1h.poc < _siHi) _siStructCands.push(vp1h.poc);
+      _htfResists.filter(r => r > _siLo && r < _siHi).forEach(r => _siStructCands.push(r));
+      _w1Resists.filter(r  => r > _siLo && r < _siHi).forEach(r => _siStructCands.push(r));
+    }
+    const _siUniq = [...new Set(_siStructCands)].sort((a,b) => isLong ? a - b : b - a);
+    // 預計算等分底座（fallback 用）
+    const _rawLevels = Array.from({ length: _aiScaleCount }, (_, i) => {
+      const n = i + 1;
+      return isLong ? entry + totalMove * (n / (_aiScaleCount + 1))
+                    : entry - totalMove * (n / (_aiScaleCount + 1));
+    });
+    scaleInLevels = _rawLevels.map((raw, i) => {
+      // 優先：結構候選 → 足跡高量區 → 1H S/R → 等分
+      const structLevel = _siUniq[i];
       const fpNear = _fpSnaps.find(lv => Math.abs(lv - raw) / raw < 0.015);
       const nearby = fpNear || (isLong
         ? resists.find(r => r >= raw * 0.985 && r <= raw * 1.015)
         : supps.find(s  => s <= raw * 1.015  && s >= raw * 0.985));
-      const level = nearby || raw;
-      const prevLevel = n === 1 ? entry : (isLong ? entry + totalMove * ((n - 1) / (_aiScaleCount + 1)) : entry - totalMove * ((n - 1) / (_aiScaleCount + 1)));
-      // 止損往前調：鎖住加倉位到前一進場位增量的 30%，避免大幅回吐利潤
-      const incGain = Math.abs(level - prevLevel);
-      const newSL   = isLong ? prevLevel + incGain * 0.30 : prevLevel - incGain * 0.30;
-      return { level, snapped: !!nearby, fpSnapped: !!fpNear, newSL };
+      const level = structLevel || nearby || raw;
+      // 止損移動：加倉 #1 → SL 鎖進場位，加倉 #n → SL 鎖前次加倉位
+      const prevEntry = i === 0 ? entry : _rawLevels[i - 1];
+      const newSL = isLong ? prevEntry + risk * 0.15 : prevEntry - risk * 0.15;
+      return { level, snapped: !!(structLevel || nearby), fpSnapped: !!fpNear, newSL };
     });
     // 覆蓋 tp1/tp2 → updateOpenTrades TP1 觸發 & 持倉記錄均使用長線最終止盈
     // 只有在 canScaleIn 仍為 true（ltTP 有效）時才覆蓋，否則保留短線 tp1/tp2
