@@ -2605,7 +2605,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ? (m15BullSig && h1BullSig && h4BullSig && dayBullSig)
     : (m15BearSig && h1BearSig && h4BearSig && dayBearSig);
 
-  // 長線單：15m + 1H + 4H + 日線 + 週線全部同向
+  // 長線單：短線 4 框基礎上再加週線（長線包含短線邏輯）
   const _5tfAligned = _4tfAligned && (isLong ? wkBullSig : wkBearSig);
 
   const isDayAligned = isLong ? dayBullSig : dayBearSig;
@@ -13652,8 +13652,8 @@ function computeSimpleSetup(coin, isLong) {
     ? (isLong ? coin.signal15m.includes('bull') : coin.signal15m.includes('bear'))
     : (isLong ? (coin.score || 50) >= 55 : (coin.score || 50) <= 45);
   // 組合判斷
-  const _isLongTerm  = _wkAligned && _dayAligned && _h4Aligned && _h1Aligned && _15mAligned;
-  const _isShortTerm = _dayAligned && _h4Aligned && _h1Aligned && _15mAligned; // 4 框即可，不依賴長線條件
+  const _isShortTerm = _dayAligned && _h4Aligned && _h1Aligned && _15mAligned; // 短線：4 框同向
+  const _isLongTerm  = _isShortTerm && _wkAligned;                              // 長線：短線基礎 + 週線
   const _mtfBothAlign = _isLongTerm || _isShortTerm;
   const _mtfContraWk  = isLong ? (coin.weeklySignal || '').includes('bear') : (coin.weeklySignal || '').includes('bull');
   const _mtfContraDay = isLong ? (coin.dailySignal  || '').includes('bear') : (coin.dailySignal  || '').includes('bull');
