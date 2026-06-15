@@ -1863,11 +1863,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           }
           const wb = computeWeeklyAIBias(fg, gm);
           const tb = computeTodayAIBias(fg, gm);
+          const _wkConfLowNow = (wb?.conf || 50) < 70;
           const wkAligned = (isLongNow && wb.bias.includes('bull')) || (!isLongNow && wb.bias.includes('bear'));
-          const wkOpposed = !wkAligned && wb.bias !== 'neutral';
+          const wkOpposed = !_wkConfLowNow && !wkAligned && wb.bias !== 'neutral';
           const tdAligned = (isLongNow && tb.bias.includes('bull')) || (!isLongNow && tb.bias.includes('bear'));
           const tdOpposed = !tdAligned && tb.bias !== 'neutral';
-          if (wkOpposed) { const p = wb.bias.includes('strong') ? 10 : 6; aiTrendPenNow += p; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，逆向 -${p}%`); }
+          if (_wkConfLowNow) { aiTrendReasonsNow.push(`本週AI預測信心值 ${wb.conf||50}% 未達 70%，略過週預測`); }
+          else if (wkOpposed) { const p = wb.bias.includes('strong') ? 10 : 6; aiTrendPenNow += p; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，逆向 -${p}%`); }
           else if (wb.bias === 'neutral') { aiTrendPenNow += 3; aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel}，中性不確定 -3%`); }
           else aiTrendReasonsNow.push(`本週 AI ${wb.biasLabel} ✓ 同向`);
           if (tdOpposed) { aiTrendPenNow += 7; aiTrendReasonsNow.push(`今日 AI ${tb.biasLabel}，逆風 -7%`); }
@@ -13751,15 +13753,18 @@ async function checkAndSendAlerts(data) {
             return { name: ev.name, timeLabel: tl, riskDesc, aiPred: ev.aiPred, aiConf: ev.aiConf };
           });
           // AI 趨勢扣分
+          const _wkCL = (wb?.conf || 50) < 70;
           const weeklyAligned = (isLong && wb.bias.includes('bull')) || (!isLong && wb.bias.includes('bear'));
-          const weeklyOpposed = !weeklyAligned && wb.bias !== 'neutral';
+          const weeklyOpposed = !_wkCL && !weeklyAligned && wb.bias !== 'neutral';
           const weeklyNeutral = wb.bias === 'neutral';
           const todayAligned  = (isLong && tb.bias.includes('bull')) || (!isLong && tb.bias.includes('bear'));
           const todayOpposed  = !todayAligned && tb.bias !== 'neutral';
           const todayNeutral  = tb.bias === 'neutral';
           let aiTrendPen = 0;
           const aiTrendReasons = [];
-          if (weeklyOpposed) {
+          if (_wkCL) {
+            aiTrendReasons.push(`本週AI預測信心值 ${wb.conf||50}% 未達 70%，略過週預測`);
+          } else if (weeklyOpposed) {
             const pen = wb.bias.includes('strong') ? 8 : 5;
             aiTrendPen += pen;
             aiTrendReasons.push(`本週AI預測 ${wb.biasLabel}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
