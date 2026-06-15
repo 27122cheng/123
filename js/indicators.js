@@ -1289,6 +1289,95 @@ function detectChartPatterns(klines, isLong) {
           desc: `掃除前高 $${fp(prevH)} 後回落，ICT 流動性獵取做空` });
     }
 
+    // ⑫ 看漲/看跌通道（平行通道）
+    if (pk.length >= 2 && vl.length >= 2) {
+      const rPk = pk.slice(-2), rVl = vl.slice(-2);
+      const hSlope = (rPk[1].price - rPk[0].price) / Math.max(1, rPk[1].i - rPk[0].i);
+      const lSlope = (rVl[1].price - rVl[0].price) / Math.max(1, rVl[1].i - rVl[0].i);
+      const avgP = (rPk[0].price + rVl[0].price) / 2 || 1;
+      const hN = hSlope / avgP, lN = lSlope / avgP;
+      const isParallel = Math.abs(hN - lN) < Math.abs(hN) * 0.5;
+      const chWidth = ((rPk[0].price + rPk[1].price) / 2 - (rVl[0].price + rVl[1].price) / 2) / avgP;
+      if (isParallel && chWidth > 0.02) {
+        if (hN > 0.0003 && lN > 0.0003)
+          patterns.push({ name: '看漲通道', emoji: '📈🟢', aligned: isLong, strength: 'moderate', status: 'confirmed',
+            desc: `上升平行通道（高點 +${(hN*1e4).toFixed(1)} 低點 +${(lN*1e4).toFixed(1)} per bar）` });
+        else if (hN < -0.0003 && lN < -0.0003)
+          patterns.push({ name: '看跌通道', emoji: '📉🔴', aligned: !isLong, strength: 'moderate', status: 'confirmed',
+            desc: `下降平行通道（高點 ${(hN*1e4).toFixed(1)} 低點 ${(lN*1e4).toFixed(1)} per bar）` });
+      }
+    }
+
+    // ⑬ 看漲/看跌矩形（水平整理箱型）
+    if (n >= 20) {
+      const boxH = Math.max(...highs.slice(n - 20, n - 3));
+      const boxL = Math.min(...lows.slice(n - 20, n - 3));
+      const boxRange = (boxH - boxL) / (boxL || 1) * 100;
+      if (boxRange > 1.5 && boxRange < 12) {
+        const recentH = Math.max(...highs.slice(n - 20));
+        const recentL = Math.min(...lows.slice(n - 20));
+        const boxDev  = (recentH - recentL) / (recentL || 1) * 100;
+        // 矩形：近期高低點未大幅突破整理區間
+        if (boxDev < boxRange * 1.15) {
+          const nearTop = cur > boxH * 0.985;
+          const nearBot = cur < boxL * 1.015;
+          const fp2 = v => parseFloat(v).toPrecision(5).replace(/\.?0+$/, '');
+          if (nearBot)
+            patterns.push({ name: '看漲矩形', emoji: '⬜🔺', aligned: isLong, strength: 'moderate', status: 'confirmed',
+              desc: `水平整理 $${fp2(boxL)}–$${fp2(boxH)}（${boxRange.toFixed(1)}%），現價近箱底` });
+          else if (nearTop)
+            patterns.push({ name: '看跌矩形', emoji: '⬜🔻', aligned: !isLong, strength: 'moderate', status: 'confirmed',
+              desc: `水平整理 $${fp2(boxL)}–$${fp2(boxH)}（${boxRange.toFixed(1)}%），現價近箱頂` });
+        }
+      }
+    }
+
+    // ⑭ 三角旗（Pennant）：急漲/急跌後的收斂三角盤整
+    if (n >= 25) {
+      const poleH = Math.max(...highs.slice(n - 22, n - 14));
+      const poleL = Math.min(...lows.slice(n - 22, n - 14));
+      const polePct = (poleH - poleL) / (poleL || 1) * 100;
+      if (polePct > 4) {
+        const bullPole = closes[n - 14] > closes[n - 22];
+        const pennH = Math.max(...highs.slice(n - 14, n - 2));
+        const pennL = Math.min(...lows.slice(n - 14, n - 2));
+        const pennR = (pennH - pennL) / (pennL || 1) * 100;
+        // 三角旗：盤整幅度小於旗桿的 1/3，且近期高低點收斂
+        if (pennR < polePct * 0.35 && pk.length >= 2 && vl.length >= 2) {
+          const rPk2 = pk.slice(-2), rVl2 = vl.slice(-2);
+          const hS2  = rPk2.length >= 2 ? rPk2[1].price - rPk2[0].price : 0;
+          const lS2  = rVl2.length >= 2 ? rVl2[1].price - rVl2[0].price : 0;
+          const converging = bullPole ? (hS2 < 0 && lS2 > 0) : (hS2 < 0 && lS2 > 0);
+          if (converging || Math.abs(hS2 + lS2) < pennH * 0.005) {
+            patterns.push({ name: bullPole ? '看漲三角旗（Pennant）' : '看跌三角旗（Pennant）',
+              emoji: bullPole ? '🚩📐🔺' : '🚩📐🔻',
+              aligned: bullPole ? isLong : !isLong, strength: 'strong', status: 'confirmed',
+              desc: `旗桿 ${polePct.toFixed(1)}% 後收斂盤整 ${pennR.toFixed(1)}%，等待${bullPole ? '多頭' : '空頭'}突破` });
+          }
+        }
+      }
+    }
+
+    // ⑮ 楔型（Wedge）：收斂但同向斜率 → 看漲楔型=下降楔，看跌楔型=上升楔
+    if (pk.length >= 3 && vl.length >= 3) {
+      const rPk3 = pk.slice(-3), rVl3 = vl.slice(-3);
+      const hS3 = (rPk3[2].price - rPk3[0].price) / Math.max(1, rPk3[2].i - rPk3[0].i);
+      const lS3 = (rVl3[2].price - rVl3[0].price) / Math.max(1, rVl3[2].i - rVl3[0].i);
+      const avgP3 = (rPk3[0].price + rVl3[0].price) / 2 || 1;
+      const hN3 = hS3 / avgP3, lN3 = lS3 / avgP3;
+      // 確認是收斂（高低線同向但高線斜率絕對值大於低線，或相反）
+      const bothDown = hN3 < -0.0002 && lN3 < -0.0002;   // 下降楔→看漲
+      const bothUp   = hN3 >  0.0002 && lN3 >  0.0002;   // 上升楔→看跌
+      // 確認收斂：兩條線斜率不一樣（間距縮小）
+      if (bothDown && Math.abs(hN3) < Math.abs(lN3) * 0.9) {
+        patterns.push({ name: '看漲楔型（下降楔）', emoji: '🔽🔺', aligned: isLong, strength: 'strong', status: 'confirmed',
+          desc: `高低點同步下移但幅度收斂，空頭力竭，多頭楔型蓄力` });
+      } else if (bothUp && hN3 > lN3 * 1.1) {
+        patterns.push({ name: '看跌楔型（上升楔）', emoji: '🔼🔻', aligned: !isLong, strength: 'strong', status: 'confirmed',
+          desc: `高低點同步上移但幅度收斂，多頭力竭，空頭楔型蓄力` });
+      }
+    }
+
     // ── 形成中（Forming）形態偵測 ──
     // M頂形成中：一個峰頂已出現，現價接近峰頂水平
     if (pk.length >= 1 && patterns.every(p => p.name !== 'M頂（雙頂）')) {
