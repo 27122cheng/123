@@ -3386,9 +3386,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── 本週 / 今日 AI 預測方向對照（_wBias / _tBias 已在函式前段提前定義）──
+  // 本週預測信心值 < 70% 時忽略週預測，僅遵守日預測
+  const _wkConfLow = (weeklyBiasData?.conf || 50) < 70;
   const weeklyAligned = (isLong && _wBias.includes('bull')) || (!isLong && _wBias.includes('bear'));
   const weeklyNeutral = _wBias === 'neutral' || _wBias === '';
-  const weeklyOpposed = !weeklyAligned && !weeklyNeutral;
+  const weeklyOpposed = !_wkConfLow && !weeklyAligned && !weeklyNeutral;
   const todayAligned  = (isLong && _tBias.includes('bull')) || (!isLong && _tBias.includes('bear'));
   const todayNeutral  = _tBias === 'neutral' || _tBias === '';
   const todayOpposed  = !todayAligned && !todayNeutral;
@@ -3400,7 +3402,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const aiTrendReasons = [];
   if (_btsMacroAligned) {
     // 宏觀大方向已與交易同向，不因 AI 事件預測而扣分
-    if (weeklyOpposed) {
+    if (_wkConfLow) {
+      aiTrendReasons.push(`本週AI預測信心值 ${weeklyBiasData.conf || 50}% 未達 70%，略過週預測，僅遵守日預測`);
+    } else if (weeklyOpposed) {
       aiTrendReasons.push(`本週AI事件預測 ${weeklyBiasData.biasLabel || _wBias}（逆向），但宏觀大方向已${_btsNetDir.includes('bear') ? '偏空' : '偏多'}，不扣分`);
     } else {
       aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}（信心 ${weeklyBiasData.conf || 50}%），與${isLong ? '多' : '空'}方向一致`);
@@ -3411,7 +3415,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       aiTrendReasons.push(`今日AI預測 ${todayBiasData.biasLabel || _tBias}（信心 ${todayBiasData.conf || 50}%），今日方向一致`);
     }
   } else {
-    if (weeklyOpposed) {
+    if (_wkConfLow) {
+      aiTrendReasons.push(`本週AI預測信心值 ${weeklyBiasData.conf || 50}% 未達 70%，略過週預測，僅遵守日預測`);
+    } else if (weeklyOpposed) {
       const pen = _wBias.includes('strong') ? 8 : 5;
       aiTrendPenalty += pen;
       aiTrendReasons.push(`本週AI預測 ${weeklyBiasData.biasLabel || _wBias}，與${isLong ? '做多' : '做空'}逆向，扣 ${pen}%`);
@@ -4171,7 +4177,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const minConfForTrade = 60;
     const minRRForTrade = 1.3;
     const _btRROk2 = parseFloat(rr1str) >= minRRForTrade;
-    const wkStrongBias = weeklyBiasData.bias?.includes('strong');
+    const wkStrongBias = !_wkConfLow && weeklyBiasData.bias?.includes('strong');
     const todayStrongBias = todayBiasData.bias?.includes('strong');
     const conflictPred = todayStrongBias && wkStrongBias && ((isLong && todayBiasData.bias === 'strong_bear') || (!isLong && todayBiasData.bias === 'strong_bull'));
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk2 && _4tfAligned && !weeklyOpposed && conf >= minConfForTrade && !conflictPred) {
