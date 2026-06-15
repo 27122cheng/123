@@ -4163,8 +4163,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
     // R/R < 1.3 硬性封鎖；風控與 R/R 品質已整合入 SQ 評分；hardBlocked 為最後防線
     const _btRROk = parseFloat(rr1str) >= 1.3;
-    // 短線需 4 時框同向（日+4H+1H+15m），長線需 5 時框（含週線）
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk && _4tfAligned) {
+    // 短線需 4 時框同向（日+4H+1H+15m），長線需 5 時框（含週線）；週線 AI 反向不進場
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk && _4tfAligned && !weeklyOpposed) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -5458,8 +5458,8 @@ function computeWeeklyAIBias(fg, globalMkt) {
 
   const totalScore = macroBull - macroBear;
   const absScore   = Math.abs(totalScore);
-  const bias = totalScore >= 3 ? 'strong_bull' : totalScore >= 1 ? 'bull'
-             : totalScore <= -3 ? 'strong_bear' : totalScore <= -1 ? 'bear' : 'neutral';
+  const bias = totalScore >= 4 ? 'strong_bull' : totalScore >= 2 ? 'bull'
+             : totalScore <= -4 ? 'strong_bear' : totalScore <= -2 ? 'bear' : 'neutral';
   const biasLabel = { strong_bull:'▲▲ 強勢偏多', bull:'▲ 偏多', strong_bear:'▼▼ 強勢偏空', bear:'▼ 偏空', neutral:'◆ 震盪中性' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
   const conf = Math.min(88, 50 + absScore * 8 + (fgValNow != null ? 5 : 0));
@@ -8852,11 +8852,9 @@ function recordSignalsFromScan(data) {
     } catch(e) { /* 宏觀計算失敗 → 維持 neutral，允許記錄 */ }
   }
 
-  // ── 方向封鎖（與 buildTradeSetup macroBlockedForRecord 對齊）──
-  // 只有極端大方向（strong_bear/strong_bull）才硬封鎖；
-  // mild bear/bull 由 computeSimpleSetup conf 扣分過濾（與幣種詳情頁邏輯一致）
-  const blockLong  = macroNetDir === 'strong_bear';
-  const blockShort = macroNetDir === 'strong_bull';
+  // ── 方向封鎖：強宏觀反向 + 週線 AI 明確反向 → 硬封鎖；避免在市場轉折後繼續進場 ──
+  const blockLong  = macroNetDir === 'strong_bear' || wBias.includes('bear');
+  const blockShort = macroNetDir === 'strong_bull' || wBias.includes('bull');
 
   // ── 全中性輔助判定（用於迴圈內按幣種條件判斷）──
   const _wNeutral = !wBias.includes('bull') && !wBias.includes('bear') || wbRangeMode;
@@ -8881,10 +8879,16 @@ function recordSignalsFromScan(data) {
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
 
+    // 今日 AI 明確反向 → 當日不建立該方向倉位（slight 不封鎖）
+    if (isLong  && tBias === 'bear') continue;
+    if (!isLong && tBias === 'bull') continue;
+
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
+    // 信心度 < 65% → 不確定訊號，跳過
+    if ((setup.conf || 0) < 65) continue;
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
