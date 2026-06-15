@@ -4167,9 +4167,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
     // R/R < 1.3 硬性封鎖；風控與 R/R 品質已整合入 SQ 評分；hardBlocked 為最後防線
     const _btRROk = parseFloat(rr1str) >= 1.3;
-    // 進場條件：4 時框同向 + R/R >= 1.5 + 信心度 >= 70% + 週線 AI 不反向 + 週日預測無強烈衝突
-    const minConfForTrade = 70;
-    const minRRForTrade = 1.5;
+    // 進場條件：4 時框同向 + R/R >= 1.3 + 信心度 >= 65% + 週線 AI 不反向 + 週日預測無強烈衝突
+    const minConfForTrade = 65;
+    const minRRForTrade = 1.3;
     const _btRROk2 = parseFloat(rr1str) >= minRRForTrade;
     const wkStrongBias = weeklyBiasData.bias?.includes('strong');
     const todayStrongBias = todayBiasData.bias?.includes('strong');
