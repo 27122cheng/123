@@ -5588,18 +5588,19 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const fgValNow  = fg ? parseInt(fg.value) : null;
   const mktChgNow = globalMkt?.marketCapChange || 0;
 
-  // ── 快取命中：快取時間在本週日 08:00 之後 → 整週有效 ──
+  // ── 週方向快取（週日08:00起有效）：方向鎖定一週，信心度每次重新計算 ──
+  let _lockedWeeklyCache = null; // 只鎖方向 (bias)，不鎖信心度
   try {
     const cached = JSON.parse(localStorage.getItem(_WEEKLY_BIAS_CACHE_KEY) || 'null');
     if (cached && cached.result && cached.timestamp) {
       const weekStart = _getThisWeekSunday8am();
       if (cached.timestamp >= weekStart) {
-        return cached.result;
+        _lockedWeeklyCache = cached; // 有效：方向本週固定，但信心度需每天重算
       }
     }
   } catch(e) {}
 
-  // ── 快取過期或宏觀條件有重大變動 → 重新計算 ──
+  // ── 每次重新計算信心度（conf 隨當天市場數據更新）──
   const learn = _loadBiasLearning();
   let weights = learn.weights || {};
   try {
@@ -5783,13 +5784,15 @@ function computeWeeklyAIBias(fg, globalMkt) {
 
   const totalScore = macroBull - macroBear;
   const absScore   = Math.abs(totalScore);
-  const bias = totalScore >= 4 ? 'strong_bull' : totalScore >= 2 ? 'bull'
-             : totalScore <= -4 ? 'strong_bear' : totalScore <= -2 ? 'bear' : 'neutral';
-  const biasLabel = { strong_bull:'▲▲ 強勢偏多', bull:'▲ 偏多', strong_bear:'▼▼ 強勢偏空', bear:'▼ 偏空', neutral:'◆ 震盪中性' }[bias];
-  const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
-  // 提升信心度區分度：强势信号更高（+12 per score），弱信号保留
-  const conf = Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0) + (fgValNow != null ? 5 : 0));
-  const confColor = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
+  // 若本週已有快取方向 → 鎖定方向不變；信心度始終用當天最新數據計算
+  const freshBias  = totalScore >= 4 ? 'strong_bull' : totalScore >= 2 ? 'bull'
+                   : totalScore <= -4 ? 'strong_bear' : totalScore <= -2 ? 'bear' : 'neutral';
+  const bias       = _lockedWeeklyCache ? _lockedWeeklyCache.result.bias : freshBias;
+  const biasLabel  = { strong_bull:'▲▲ 強勢偏多', bull:'▲ 偏多', strong_bear:'▼▼ 強勢偏空', bear:'▼ 偏空', neutral:'◆ 震盪中性' }[bias];
+  const biasColor  = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
+  // 信心度根據當天最新市場數據計算（每天更新）
+  const conf       = Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0) + (fgValNow != null ? 5 : 0));
+  const confColor  = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
 
   const _wTopFacts = factors.slice(0, 2).map(f => f.split('，')[0]).join('；');
   const aiOpinion = bias === 'strong_bull'
@@ -5804,14 +5807,16 @@ function computeWeeklyAIBias(fg, globalMkt) {
 
   const result = { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents, rangeMode: bias === 'neutral', aiOpinion };
 
-  // ── 學習記錄 + 寫入快取 ──
+  // ── 學習記錄 + 寫入快取（方向戳記保留週日時間戳；信心度每次刷新）──
   try {
     learn.weeklyPred = { bias, factorVotes, mktChgAtTime: mktChgNow, timestamp: Date.now() };
     learn.weights = weights;
     _saveBiasLearning(learn);
+    // 保留原本週日時間戳（使方向判定週期不重置），信心度已更新於 result.conf
+    const _cacheTs = _lockedWeeklyCache ? _lockedWeeklyCache.timestamp : Date.now();
     localStorage.setItem(_WEEKLY_BIAS_CACHE_KEY, JSON.stringify({
       result,
-      timestamp: Date.now(),
+      timestamp: _cacheTs,
       fgVal: fgValNow,
       mktChg: mktChgNow,
     }));
