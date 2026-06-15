@@ -3267,6 +3267,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_fpBTS.absorption && isLong)     rawConf = Math.min(92, rawConf + 1);
   }
 
+  // MTF 對齐強度獎勵：5 框對齐 +10%，4 框對齐 +5%（多時框共識強信心度顯著提升）
+  if (_5tfAligned) rawConf = Math.min(95, rawConf + 10);
+  else if (_4tfAligned) rawConf = Math.min(95, rawConf + 5);
+
   // 宏觀環境同步確認：六大因子各自獨立扣分（反向扣較多，中性扣少一點）
   let macroOpposePenalty = 0, macroReasons = [];
   try {
@@ -4163,8 +4167,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
     // R/R < 1.3 硬性封鎖；風控與 R/R 品質已整合入 SQ 評分；hardBlocked 為最後防線
     const _btRROk = parseFloat(rr1str) >= 1.3;
-    // 短線需 4 時框同向（日+4H+1H+15m），長線需 5 時框（含週線）；週線 AI 反向不進場
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk && _4tfAligned && !weeklyOpposed) {
+    // 進場條件：4 時框同向 + R/R >= 1.5 + 信心度 >= 70% + 週線 AI 不反向 + 週日預測無強烈衝突
+    const minConfForTrade = 70;
+    const minRRForTrade = 1.5;
+    const _btRROk2 = parseFloat(rr1str) >= minRRForTrade;
+    const wkStrongBias = weeklyBiasData.bias?.includes('strong');
+    const todayStrongBias = todayBiasData.bias?.includes('strong');
+    const conflictPred = todayStrongBias && wkStrongBias && ((isLong && todayBiasData.bias === 'strong_bear') || (!isLong && todayBiasData.bias === 'strong_bull'));
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk2 && _4tfAligned && !weeklyOpposed && conf >= minConfForTrade && !conflictPred) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -5462,7 +5472,8 @@ function computeWeeklyAIBias(fg, globalMkt) {
              : totalScore <= -4 ? 'strong_bear' : totalScore <= -2 ? 'bear' : 'neutral';
   const biasLabel = { strong_bull:'▲▲ 強勢偏多', bull:'▲ 偏多', strong_bear:'▼▼ 強勢偏空', bear:'▼ 偏空', neutral:'◆ 震盪中性' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
-  const conf = Math.min(88, 50 + absScore * 8 + (fgValNow != null ? 5 : 0));
+  // 提升信心度區分度：强势信号更高（+12 per score），弱信号保留
+  const conf = Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0) + (fgValNow != null ? 5 : 0));
   const confColor = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
 
   const _wTopFacts = factors.slice(0, 2).map(f => f.split('，')[0]).join('；');
@@ -5770,8 +5781,8 @@ function computeTodayAIBias(fg, globalMkt) {
              : score > 0 ? 'slight_bull' : score < 0 ? 'slight_bear' : 'neutral';
   const biasLabel = { bull:'▲ 偏多', bear:'▼ 偏空', slight_bull:'▲ 小幅偏多', slight_bear:'▼ 小幅偏空', neutral:'◆ 中性觀望' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text3)';
-  // conf 扣分也只計有效時間窗口內的高影響事件（與 riskNote 保持一致）
-  const conf = Math.max(30, Math.min(80, 45 + absScore * 8 + (fgVal != null ? 4 : 0) - relevantHighEvs.length * 4));
+  // 提升日預測區分度：強信號提升 +6，加上高影響事件扣分
+  const conf = Math.max(30, Math.min(88, 45 + absScore * 10 + (bias !== 'neutral' && bias.includes !== 'slight' ? 6 : 0) + (fgVal != null ? 4 : 0) - relevantHighEvs.length * 5));
   const confColor = conf >= 65 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
   const riskNote = relevantHighEvs.length > 0
     ? `今日 ${relevantHighEvs.length} 項高影響數據（${relevantHighEvs.map(ev => { const m = (ev.eventTime.getTime()-nowMs)/60000; return ev.name + (m < 0 ? '已公布' : m < 60 ? `${Math.round(m)}分後` : `${(m/60).toFixed(1)}h後`); }).join('、')}），建議等公布後確認方向再操作`
@@ -8887,8 +8898,11 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
-    // 信心度 < 65% → 不確定訊號，跳過
-    if ((setup.conf || 0) < 65) continue;
+    // 信心度 < 70% → 不確定訊號，跳過（提升門檻確保高勝率）
+    if ((setup.conf || 0) < 70) continue;
+    // 週日預測強度協同：不能週強多+日強空 或 週強空+日強多（衝突訊號跳過）
+    const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
+    if (wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -8902,6 +8916,9 @@ function recordSignalsFromScan(data) {
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
     // 高風險/極高風險（score >= 60）→ 強制觀望，不建立倉位
     if (_scanRisk.score >= 60) continue;
+    // R/R < 1.5 → 掃描不進場（高勝率篩選，提升風險回報）
+    const _scanRR = setup.rr1 || 0;
+    if (parseFloat(_scanRR) < 1.5) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
