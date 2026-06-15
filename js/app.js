@@ -4910,32 +4910,43 @@ function getCapitalFlowBias() {
 }
 
 function computeMacroNetDir(fg, gm) {
-  const fgVal = fg ? parseInt(fg.value) : null;
-  const chg   = gm?.marketCapChange || 0;
-  const dom   = gm?.btcDominance   || 50;
-  const vol24 = gm?.totalVolume24h || 0;      // 24h 成交量
-  const volChg = gm?.volumeChange || 0;       // 成交量變化%
-  let bull = 0, bear = 0, confidence = 0;     // confidence 用於多維度同向強度
+  const fgVal   = fg ? parseInt(fg.value) : null;
+  const chg     = gm?.marketCapChange || 0;
+  const dom     = gm?.btcDominance   || 50;
+  const ethDom  = gm?.ethDominance   || 0;
+  const totalVol    = gm?.totalVolume    || 0;
+  const totalMktCap = gm?.totalMarketCap || 0;
+  let bull = 0, bear = 0, confidence = 0;
 
   // 恐慌貪婪（加強權重）
   if (fgVal !== null) {
-    if (fgVal >= 70) { bull += 2; confidence += 1; }     // 極度貪婪
+    if (fgVal >= 70) { bull += 2; confidence += 1; }
     else if (fgVal >= 60) { bull++; confidence += 0.5; }
-    else if (fgVal <= 30) { bear += 2; confidence += 1; } // 極度恐慌
+    else if (fgVal <= 30) { bear += 2; confidence += 1; }
     else if (fgVal <= 40) { bear++; confidence += 0.5; }
   }
 
-  // 市值變化（加成交量確認）
-  if (chg > 3) { bull += 2; if (volChg > 5) confidence += 0.5; }
-  else if (chg > 1) { bull++; if (volChg > 3) confidence += 0.3; }
-  else if (chg < -3) { bear += 2; if (volChg > 5) confidence += 0.5; }
-  else if (chg < -1) { bear++; if (volChg > 3) confidence += 0.3; }
+  // 市值變化（加成交量換手確認）
+  if (chg > 3) { bull += 2; confidence += 0.4; }
+  else if (chg > 1) { bull++; }
+  else if (chg < -3) { bear += 2; confidence += 0.4; }
+  else if (chg < -1) { bear++; }
 
-  // BTC 主導（高度決定了山寨幣季節）
+  // 成交量/市值換手率（市場活躍度）
+  if (totalVol > 0 && totalMktCap > 0) {
+    const _vt = totalVol / totalMktCap;
+    if (_vt > 0.12) { bull += 0.5; confidence += 0.3; }
+    else if (_vt < 0.04) { bear += 0.5; }
+  }
+
+  // BTC 主導（山寨季判斷）
   if (dom > 58) { bear++; }
-  else if (dom < 42) { bull++; confidence += 0.5; } // 低主導 = 山寨季
+  else if (dom < 42) { bull++; confidence += 0.5; }
 
-  // 本週 / 今日 AI 走勢（加強強勢信號的權重）
+  // ETH 主導（山寨輪動訊號）
+  if (ethDom > 0 && dom < 52 && ethDom < 14) { bull += 0.5; confidence += 0.3; }
+
+  // 本週 / 今日 AI 走勢
   const wb = computeWeeklyAIBias(fg, gm);
   const tb = computeTodayAIBias(fg, gm);
   const addBias = (bias, bullW, bearW, conf_boost) => {
@@ -4946,50 +4957,85 @@ function computeMacroNetDir(fg, gm) {
     else if (bias === 'bear')        { bear += (bearW * 0.6); confidence += (conf_boost * 0.4); }
     else if (bias === 'slight_bear') { bear += (bearW * 0.3); }
   };
-  addBias(wb.bias, 2, 2, 1);   // 週預測權重 +1 信心
-  addBias(tb.bias, 2, 2, 0.8); // 日預測權重 +0.8 信心
+  addBias(wb.bias, 2, 2, 1);
+  addBias(tb.bias, 2, 2, 0.8);
 
-  // 資金流動事件（進行中或 5 天內開始）
+  // 資金流動事件
   try {
     const _cf = getCapitalFlowBias();
     bull += _cf.bull;
     bear += _cf.bear;
   } catch(_e) {}
 
-  // 籌碼/鯨魚動向（未公開數據）- 從掃描結果推斷
+  // 大盤走勢：幣種掃描聚合指標
   try {
     const coinData = (typeof state !== 'undefined' && state.data) ? state.data : [];
     if (coinData.length > 0) {
-      const whaleMultiBull = coinData.filter(c => c.whaleData?.bias === 'bull').length;
-      const whaleMultiBear = coinData.filter(c => c.whaleData?.bias === 'bear').length;
-      const whaleTotal = whaleMultiBull + whaleMultiBear;
-      if (whaleTotal > 0) {
-        const whaleBullPct = whaleMultiBull / whaleTotal;
-        if (whaleBullPct > 0.65) { bull += 1; confidence += 0.5; }
-        else if (whaleBullPct < 0.35) { bear += 1; confidence += 0.5; }
+      // 巨鯨動向
+      const whaleB = coinData.filter(c => c.whaleData?.bias === 'bull').length;
+      const whaleR = coinData.filter(c => c.whaleData?.bias === 'bear').length;
+      const whaleT = whaleB + whaleR;
+      if (whaleT > 0) {
+        const wp = whaleB / whaleT;
+        if (wp > 0.65) { bull += 1; confidence += 0.5; }
+        else if (wp < 0.35) { bear += 1; confidence += 0.5; }
+      }
+      // EMA200 上方比例（長線牛熊結構）
+      const e200B = coinData.filter(c => { const p = parseFloat(c.price); const e = parseFloat(c.ema200); return p > 0 && e > 0 && p > e; }).length;
+      const e200P = e200B / coinData.length;
+      if (e200P >= 0.65) { bull += 1; confidence += 0.5; }
+      else if (e200P <= 0.30) { bear += 1; confidence += 0.5; }
+      else if (e200P >= 0.55) { bull += 0.3; }
+      else if (e200P <= 0.40) { bear += 0.3; }
+      // 聚合資金費率（正費率偏高 = 多頭過熱）
+      const frList = coinData.filter(c => c.derivData?.fundingRate != null).map(c => c.derivData.fundingRate);
+      if (frList.length >= 3) {
+        const avgFr = frList.reduce((a, b) => a + b, 0) / frList.length;
+        if (avgFr > 0.003) { bear += 0.8; }
+        else if (avgFr > 0.001) { bull += 0.3; }
+        else if (avgFr < -0.002) { bull += 1; confidence += 0.4; }
+        else if (avgFr < 0) { bear += 0.2; }
+      }
+      // 聚合多空比
+      const lsList = coinData.filter(c => c.derivData?.lsRatio != null).map(c => c.derivData.lsRatio);
+      if (lsList.length >= 3) {
+        const avgLs = lsList.reduce((a, b) => a + b, 0) / lsList.length;
+        if (avgLs > 1.3) { bull += 0.5; confidence += 0.3; }
+        else if (avgLs < 0.8) { bear += 0.5; confidence += 0.3; }
+      }
+      // BTC 龍頭 EMA200 位置
+      const btcCoin = coinData.find(c => c.symbol === 'BTC/USDT');
+      if (btcCoin) {
+        const bp = parseFloat(btcCoin.price) || 0;
+        const be200 = parseFloat(btcCoin.ema200) || 0;
+        if (be200 > 0 && bp > be200 * 1.03) { bull += 0.5; confidence += 0.3; }
+        else if (be200 > 0 && bp < be200 * 0.97) { bear += 0.5; }
       }
     }
   } catch(_we) {}
 
-  // 門檻調整：多維度強度協同提升敏感度（confidence >= 3 時更容易判 strong）
+  // 多維度同向協同提升
   const syncBoost = confidence >= 3 ? 1 : (confidence >= 2 ? 0.5 : 0);
   const bullAdj = bull + syncBoost;
   const bearAdj = bear + syncBoost;
 
-  if      (bullAdj > bearAdj + 3.5) return 'strong_bull';
-  else if (bullAdj > bearAdj + 1.5) return 'bull';
-  else if (bearAdj > bullAdj + 3.5) return 'strong_bear';
-  else if (bearAdj > bullAdj + 1.5) return 'bear';
-  else if (bullAdj > bearAdj)       return 'slight_bull';
-  else if (bearAdj > bullAdj)       return 'slight_bear';
+  if      (bullAdj > bearAdj + 4) return 'strong_bull';
+  else if (bullAdj > bearAdj + 2) return 'bull';
+  else if (bearAdj > bullAdj + 4) return 'strong_bear';
+  else if (bearAdj > bullAdj + 2) return 'bear';
+  else if (bullAdj > bearAdj + 0.5) return 'slight_bull';
+  else if (bearAdj > bullAdj + 0.5) return 'slight_bear';
   return 'neutral';
 }
 
 function buildMarketOutlook(fg, global) {
-  const fgVal = fg ? parseInt(fg.value) : null;
-  const fgZh  = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg?.value_classification] || '';
-  const chg   = global?.marketCapChange || 0;
-  const dom   = global?.btcDominance   || 50;
+  const fgVal   = fg ? parseInt(fg.value) : null;
+  const fgZh    = { 'Extreme Fear':'極度恐慌','Fear':'恐慌','Neutral':'中性','Greed':'貪婪','Extreme Greed':'極度貪婪' }[fg?.value_classification] || '';
+  const chg     = global?.marketCapChange || 0;
+  const dom     = global?.btcDominance   || 50;
+  const ethDom  = global?.ethDominance   || 0;
+  const totalVol    = global?.totalVolume    || 0;
+  const totalMktCap = global?.totalMarketCap || 0;
 
   let bullPts = 0, bearPts = 0;
   const bullArgs = [], bearArgs = [];
@@ -5005,10 +5051,86 @@ function buildMarketOutlook(fg, global) {
   else if (chg > 0)  { bullPts++;    bullArgs.push(`加密總市值 24h +${chg.toFixed(2)}%，小幅成長`); }
   else if (chg < -2) { bearPts += 2; bearArgs.push(`加密總市值 24h ${chg.toFixed(2)}%，資金明顯流出`); }
   else if (chg < 0)  { bearPts++;    bearArgs.push(`加密總市值 24h ${chg.toFixed(2)}%，輕微回調`); }
+  // 成交量/市值換手率
+  if (totalVol > 0 && totalMktCap > 0) {
+    const _bmoVT = totalVol / totalMktCap;
+    if (_bmoVT > 0.12)      { bullPts++; bullArgs.push(`成交量換手率 ${(_bmoVT*100).toFixed(1)}%（活躍），市場交投熱絡，動能充足`); }
+    else if (_bmoVT > 0.07) { bullPts += 0.5; bullArgs.push(`成交量換手率 ${(_bmoVT*100).toFixed(1)}%（正常），市場活躍度健康`); }
+    else if (_bmoVT < 0.04) { bearPts++; bearArgs.push(`成交量換手率 ${(_bmoVT*100).toFixed(1)}%（低迷），市場交投冷清，動能不足`); }
+  }
   // BTC 主導
   if (dom > 56)      { bearPts++; bearArgs.push(`BTC 主導 ${dom.toFixed(1)}%（偏高），山寨資金分散難度大`); }
   else if (dom < 44) { bullPts++; bullArgs.push(`BTC 主導 ${dom.toFixed(1)}%（偏低），山寨季資金活躍`); }
   else               { bullArgs.push(`BTC 主導 ${dom.toFixed(1)}%（均衡），多空資金分布合理`); }
+  // ETH 主導率（山寨輪動訊號）
+  if (ethDom > 0) {
+    if (dom < 52 && ethDom < 14) { bullPts++; bullArgs.push(`ETH 主導 ${ethDom.toFixed(1)}%（偏低），BTC+ETH 聚集度低，資金廣泛輪動至山寨幣`); }
+    else if (ethDom > 20) { bearPts += 0.5; bearArgs.push(`ETH 主導 ${ethDom.toFixed(1)}%（偏高），資金集中頭部，山寨輪動有限`); }
+    else { bullArgs.push(`ETH 主導 ${ethDom.toFixed(1)}%（均衡）`); }
+  }
+  // 大盤走勢：幣種掃描聚合指標
+  const _bmoCoins = (typeof state !== 'undefined' && state.data) ? state.data : [];
+  if (_bmoCoins.length > 0) {
+    // BTC 龍頭 EMA200 位置（大盤方向最重要信號）
+    const _btcCoin = _bmoCoins.find(c => c.symbol === 'BTC/USDT');
+    if (_btcCoin) {
+      const _bp = parseFloat(_btcCoin.price) || 0;
+      const _be200 = parseFloat(_btcCoin.ema200) || 0;
+      const _be50  = parseFloat(_btcCoin.ema50)  || 0;
+      if (_be200 > 0 && _bp > _be200 * 1.05) {
+        bullPts += 1.5; bullArgs.push(`BTC 在 EMA200 上方 ${((_bp/_be200-1)*100).toFixed(1)}%，龍頭長線多頭結構`);
+      } else if (_be200 > 0 && _bp > _be200 * 1.00) {
+        bullPts++;      bullArgs.push(`BTC 在 EMA200 上方，長線多頭趨勢維持`);
+      } else if (_be200 > 0 && _bp < _be200 * 0.95) {
+        bearPts += 1.5; bearArgs.push(`BTC 跌破 EMA200 ${((_be200/_bp-1)*100).toFixed(1)}%，龍頭長線熊市信號`);
+      } else if (_be200 > 0 && _bp < _be200) {
+        bearPts++;      bearArgs.push(`BTC 跌破 EMA200 長線壓力，結構偏弱`);
+      }
+      if (_be50 > 0 && _bp > _be50 * 1.02) { bullPts += 0.5; bullArgs.push(`BTC 在 EMA50 上方，中期動能向上`); }
+      else if (_be50 > 0 && _bp < _be50 * 0.98) { bearPts += 0.5; bearArgs.push(`BTC 跌破 EMA50，中期動能轉弱`); }
+    }
+    // EMA200 上方比例（市場寬度，長線牛熊）
+    const _e200Bull = _bmoCoins.filter(c => { const p = parseFloat(c.price); const e = parseFloat(c.ema200); return p > 0 && e > 0 && p > e; }).length;
+    const _e200Pct  = Math.round(_e200Bull / _bmoCoins.length * 100);
+    if (_e200Pct >= 65) { bullPts++; bullArgs.push(`${_e200Pct}% 幣種在 EMA200 上方，長線牛市結構廣泛確立`); }
+    else if (_e200Pct >= 50) { bullPts += 0.5; bullArgs.push(`${_e200Pct}% 幣種在 EMA200 上方，長線結構偏多`); }
+    else if (_e200Pct <= 30) { bearPts++; bearArgs.push(`${_e200Pct}% 幣種在 EMA200 上方，長線熊市結構主導`); }
+    else if (_e200Pct <= 45) { bearPts += 0.5; bearArgs.push(`${_e200Pct}% 幣種在 EMA200 上方，長線結構偏弱`); }
+    // EMA50 上方比例（市場寬度，中期趨勢）
+    const _e50Bull = _bmoCoins.filter(c => { const p = parseFloat(c.price); const e = parseFloat(c.ema50); return p > 0 && e > 0 && p > e; }).length;
+    const _e50Pct  = Math.round(_e50Bull / _bmoCoins.length * 100);
+    if (_e50Pct >= 65) { bullPts += 0.5; bullArgs.push(`${_e50Pct}% 幣種在 EMA50 上方，中期趨勢整體偏多`); }
+    else if (_e50Pct <= 35) { bearPts += 0.5; bearArgs.push(`${_e50Pct}% 幣種在 EMA50 上方，中期趨勢整體偏弱`); }
+    // 聚合資金費率（衍生品市場情緒）
+    const _frCoins = _bmoCoins.filter(c => c.derivData?.fundingRate != null);
+    if (_frCoins.length >= 3) {
+      const _avgFr = _frCoins.reduce((s, c) => s + c.derivData.fundingRate, 0) / _frCoins.length;
+      if (_avgFr > 0.005) { bearPts += 1.5; bearArgs.push(`資金費率均值 ${(_avgFr*100).toFixed(4)}%（極度偏高），多頭嚴重過熱，強烈看空警告`); }
+      else if (_avgFr > 0.003) { bearPts++; bearArgs.push(`資金費率均值 ${(_avgFr*100).toFixed(4)}%（偏高），多頭槓桿積累，回調風險升高`); }
+      else if (_avgFr > 0.001) { bullPts += 0.5; bullArgs.push(`資金費率均值 ${(_avgFr*100).toFixed(4)}%（健康偏多），多頭持倉主導`); }
+      else if (_avgFr < -0.003) { bullPts += 1.5; bullArgs.push(`資金費率均值 ${(_avgFr*100).toFixed(4)}%（極端負費率），空頭大量積累，向上軋空風險極高`); }
+      else if (_avgFr < -0.001) { bullPts++; bullArgs.push(`資金費率均值 ${(_avgFr*100).toFixed(4)}%（負費率），空頭過熱，多頭反彈機會`); }
+      else { bullArgs.push(`資金費率均值 ${(_avgFr*100).toFixed(4)}%（中性），衍生品市場無明顯偏向`); }
+    }
+    // 聚合多空比（lsRatio）
+    const _lsCoins = _bmoCoins.filter(c => c.derivData?.lsRatio != null);
+    if (_lsCoins.length >= 3) {
+      const _avgLs = _lsCoins.reduce((s, c) => s + c.derivData.lsRatio, 0) / _lsCoins.length;
+      if (_avgLs > 1.4) { bullPts++; bullArgs.push(`多空比均值 ${_avgLs.toFixed(2)}（多頭主導），持倉結構整體偏多`); }
+      else if (_avgLs > 1.1) { bullPts += 0.5; bullArgs.push(`多空比均值 ${_avgLs.toFixed(2)}，多方小幅佔優`); }
+      else if (_avgLs < 0.75) { bearPts++; bearArgs.push(`多空比均值 ${_avgLs.toFixed(2)}（空頭主導），持倉結構整體偏空`); }
+      else if (_avgLs < 0.9) { bearPts += 0.5; bearArgs.push(`多空比均值 ${_avgLs.toFixed(2)}，空方小幅佔優`); }
+    }
+    // 巨鯨動向
+    const _whlB = _bmoCoins.filter(c => c.whaleData?.bias === 'bull').length;
+    const _whlR = _bmoCoins.filter(c => c.whaleData?.bias === 'bear').length;
+    const _whlT = _whlB + _whlR;
+    if (_whlT > 0) {
+      const _wPct = Math.round(_whlB / _whlT * 100);
+      if (_wPct >= 65) { bullPts++; bullArgs.push(`巨鯨持倉 ${_wPct}% 偏多，主力資金整體看漲`); }
+      else if (_wPct <= 35) { bearPts++; bearArgs.push(`巨鯨持倉 ${100-_wPct}% 偏空，主力資金整體撤退`); }
+    }
+  }
 
   // ── 本週 / 今日 AI 走勢（納入大方向計分）──
   const wbData = computeWeeklyAIBias(fg, global);
@@ -5126,6 +5248,30 @@ function buildMarketOutlook(fg, global) {
   else if (chg < -2)
     _predItems.push({ event: `市值資金外流（${chg.toFixed(2)}%）`, conf: 74, dir: 'bear',
       text: `偏空 — 24h 市值明顯下跌，資金淨流出加速，應減少多頭曝險` });
+  // 大盤走勢衍生品數據AI預測
+  try {
+    const _piCoins = (typeof state !== 'undefined' && state.data) ? state.data : [];
+    // EMA200 市場寬度
+    const _piE200 = _piCoins.filter(c => { const p=parseFloat(c.price); const e=parseFloat(c.ema200); return p>0&&e>0&&p>e; }).length;
+    const _piE200P = _piCoins.length ? Math.round(_piE200/_piCoins.length*100) : 0;
+    if (_piE200P >= 65)
+      _predItems.push({ event: `市場寬度（EMA200上方 ${_piE200P}%）`, conf: 73, dir: 'bull',
+        text: `偏多 — ${_piE200P}% 幣種在長線均線上方，牛市結構廣泛確立，非個別強勢幣，整體市場健康` });
+    else if (_piE200P <= 30)
+      _predItems.push({ event: `市場寬度惡化（EMA200上方僅 ${_piE200P}%）`, conf: 75, dir: 'bear',
+        text: `偏空 — ${_piE200P}% 幣種跌破長線均線，熊市結構廣泛確立，系統性風險上升` });
+    // 聚合資金費率預測
+    const _piFrCoins = _piCoins.filter(c => c.derivData?.fundingRate != null);
+    if (_piFrCoins.length >= 3) {
+      const _piAvgFr = _piFrCoins.reduce((s,c)=>s+c.derivData.fundingRate,0)/_piFrCoins.length;
+      if (_piAvgFr > 0.004)
+        _predItems.push({ event: `衍生品過熱警告（費率 ${(_piAvgFr*100).toFixed(4)}%）`, conf: 78, dir: 'bear',
+          text: `偏空 — 聚合資金費率過高（>0.04%），歷史上此水準後常出現清算瀑布，多頭應大幅降倉或等待費率回落` });
+      else if (_piAvgFr < -0.002)
+        _predItems.push({ event: `空頭過熱（費率 ${(_piAvgFr*100).toFixed(4)}%）`, conf: 72, dir: 'bull',
+          text: `偏多 — 負資金費率代表空頭大量積累，軋空行情風險高，可尋找做多機會` });
+    }
+  } catch(_piE) {}
   const _nextHigh = _upcomingEvs.find(ev => ev.impact === 'high' && ev.eventTime.getTime() > Date.now());
   if (_nextHigh) {
     const _dLeft  = Math.ceil((_nextHigh.eventTime.getTime() - Date.now()) / 86400000);
@@ -5138,7 +5284,7 @@ function buildMarketOutlook(fg, global) {
       text: '偏多 — M2 貨幣供給成長歷史上與加密牛市高度正相關（滯後 ~3 個月），流動性擴張期加密整體偏多' });
   }
   const _pcc = { bull: '#22c55e', bear: '#ef4444', neutral: '#f59e0b' };
-  const _predHtml = _predItems.slice(0, 5).map(p => {
+  const _predHtml = _predItems.slice(0, 7).map(p => {
     const _pc = _pcc[p.dir] || '#f59e0b';
     return `<div class="macro-pred-item">
           <div class="macro-pred-header">
@@ -5183,6 +5329,82 @@ function buildMarketOutlook(fg, global) {
         ${bearArgs.map(a => `<div class="outlook-arg">• ${a}</div>`).join('')}
       </div>
     </div>
+    ${(() => { try {
+      // ── 大盤走勢儀表板（市場寬度 + 衍生品聚合）──
+      const _dCoins = (typeof state !== 'undefined' && state.data) ? state.data : [];
+      if (!_dCoins.length) return '';
+      const _dFmt = v => (v >= 1e9 ? (v/1e9).toFixed(2)+'B' : v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v.toFixed(0));
+      const _btcC = _dCoins.find(c => c.symbol === 'BTC/USDT');
+      const _btcP = _btcC ? parseFloat(_btcC.price) || 0 : 0;
+      const _btcE200 = _btcC ? parseFloat(_btcC.ema200) || 0 : 0;
+      const _btcScore = _btcC ? (_btcC.score || 50) : 50;
+      const _btcClr = _btcC && _btcP > _btcE200 * 1.01 ? 'var(--bull)' : _btcC && _btcP < _btcE200 * 0.99 ? 'var(--bear)' : 'var(--text2)';
+      const _e200B = _dCoins.filter(c => { const p = parseFloat(c.price); const e = parseFloat(c.ema200); return p>0&&e>0&&p>e; }).length;
+      const _e50B  = _dCoins.filter(c => { const p = parseFloat(c.price); const e = parseFloat(c.ema50);  return p>0&&e>0&&p>e; }).length;
+      const _e200P = Math.round(_e200B/_dCoins.length*100);
+      const _e50P  = Math.round(_e50B/_dCoins.length*100);
+      const _e200C = _e200P>=55?'var(--bull)':_e200P<=40?'var(--bear)':'#f59e0b';
+      const _e50C  = _e50P>=55?'var(--bull)':_e50P<=40?'var(--bear)':'#f59e0b';
+      const _frCoinsD = _dCoins.filter(c => c.derivData?.fundingRate != null);
+      const _avgFrD = _frCoinsD.length>=3 ? _frCoinsD.reduce((s,c)=>s+c.derivData.fundingRate,0)/_frCoinsD.length : null;
+      const _frClr = _avgFrD != null ? (_avgFrD > 0.003?'var(--bear)':_avgFrD<-0.001?'var(--bull)':'var(--text2)') : 'var(--text3)';
+      const _lsCoinsD = _dCoins.filter(c => c.derivData?.lsRatio != null);
+      const _avgLsD = _lsCoinsD.length>=3 ? _lsCoinsD.reduce((s,c)=>s+c.derivData.lsRatio,0)/_lsCoinsD.length : null;
+      const _lsClr = _avgLsD != null ? (_avgLsD>1.2?'var(--bull)':_avgLsD<0.85?'var(--bear)':'var(--text2)') : 'var(--text3)';
+      const _vtD = totalVol>0&&totalMktCap>0 ? totalVol/totalMktCap : 0;
+      const _vtC = _vtD>0.1?'var(--bull)':_vtD<0.04?'var(--bear)':'var(--text2)';
+      const _ethDomTxt = ethDom>0 ? `ETH ${ethDom.toFixed(1)}%` : '';
+      return `<div style="background:rgba(16,24,39,.7);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
+        <div style="font-size:0.78rem;font-weight:700;color:var(--text2);margin-bottom:10px">📊 大盤走勢儀表板</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:0.73rem">
+          ${_btcC ? `<div style="background:rgba(255,255,255,.03);border-radius:7px;padding:7px 10px">
+            <div style="color:var(--text3);font-size:0.67rem;margin-bottom:3px">₿ BTC 龍頭位置</div>
+            <div style="color:${_btcClr};font-weight:600">${_btcE200>0?(_btcP>_btcE200?'▲ EMA200上方':'▼ EMA200下方'):'—'}
+              ${_btcE200>0?`<span style="color:var(--text3);font-size:0.67rem;margin-left:4px">${(Math.abs(_btcP/_btcE200-1)*100).toFixed(1)}%</span>`:''}
+            </div>
+            <div style="color:var(--text3);font-size:0.67rem;margin-top:2px">技術評分 ${_btcScore}</div>
+          </div>` : ''}
+          <div style="background:rgba(255,255,255,.03);border-radius:7px;padding:7px 10px">
+            <div style="color:var(--text3);font-size:0.67rem;margin-bottom:3px">📈 EMA200 上方（長線）</div>
+            <div style="color:${_e200C};font-weight:600">${_e200P}%<span style="color:var(--text3);font-size:0.67rem;margin-left:4px">${_e200B}/${_dCoins.length} 幣種</span></div>
+            <div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:4px;overflow:hidden">
+              <div style="width:${_e200P}%;height:100%;background:${_e200C};border-radius:2px"></div>
+            </div>
+          </div>
+          <div style="background:rgba(255,255,255,.03);border-radius:7px;padding:7px 10px">
+            <div style="color:var(--text3);font-size:0.67rem;margin-bottom:3px">📈 EMA50 上方（中線）</div>
+            <div style="color:${_e50C};font-weight:600">${_e50P}%<span style="color:var(--text3);font-size:0.67rem;margin-left:4px">${_e50B}/${_dCoins.length} 幣種</span></div>
+            <div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:4px;overflow:hidden">
+              <div style="width:${_e50P}%;height:100%;background:${_e50C};border-radius:2px"></div>
+            </div>
+          </div>
+          ${_avgFrD != null ? `<div style="background:rgba(255,255,255,.03);border-radius:7px;padding:7px 10px">
+            <div style="color:var(--text3);font-size:0.67rem;margin-bottom:3px">💰 聚合資金費率</div>
+            <div style="color:${_frClr};font-weight:600">${(_avgFrD*100).toFixed(4)}%
+              <span style="font-size:0.66rem;color:var(--text3);margin-left:4px">${_avgFrD>0.003?'過熱警告':_avgFrD>0.001?'健康偏多':_avgFrD<-0.001?'空頭積累':'中性'}</span>
+            </div>
+          </div>` : ''}
+          ${_avgLsD != null ? `<div style="background:rgba(255,255,255,.03);border-radius:7px;padding:7px 10px">
+            <div style="color:var(--text3);font-size:0.67rem;margin-bottom:3px">⚖️ 聚合多空比</div>
+            <div style="color:${_lsClr};font-weight:600">${_avgLsD.toFixed(2)}:1
+              <span style="font-size:0.66rem;color:var(--text3);margin-left:4px">${_avgLsD>1.2?'多頭主導':_avgLsD<0.85?'空頭主導':'均衡'}</span>
+            </div>
+          </div>` : ''}
+          ${_vtD > 0 ? `<div style="background:rgba(255,255,255,.03);border-radius:7px;padding:7px 10px">
+            <div style="color:var(--text3);font-size:0.67rem;margin-bottom:3px">🔄 成交量換手率</div>
+            <div style="color:${_vtC};font-weight:600">${(_vtD*100).toFixed(2)}%
+              <span style="font-size:0.66rem;color:var(--text3);margin-left:4px">${_vtD>0.1?'活躍':_vtD>0.06?'正常':'低迷'}</span>
+            </div>
+          </div>` : ''}
+          ${_ethDomTxt ? `<div style="background:rgba(255,255,255,.03);border-radius:7px;padding:7px 10px">
+            <div style="color:var(--text3);font-size:0.67rem;margin-bottom:3px">Ξ BTC/ETH 主導</div>
+            <div style="color:var(--text2);font-weight:600">BTC ${dom.toFixed(1)}% / ${_ethDomTxt}
+              <span style="font-size:0.66rem;color:var(--text3);margin-left:4px">${dom<44&&ethDom<14?'山寨季信號':dom>56?'BTC主導':'均衡'}</span>
+            </div>
+          </div>` : ''}
+        </div>
+      </div>`;
+    } catch(_e) { return ''; } })()}
     ${buildWeeklyAIOutlook(fg, global)}
     ${buildTodayAIBiasHtml(fg, global)}
     <div class="outlook-events">
