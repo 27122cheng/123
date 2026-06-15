@@ -4911,35 +4911,41 @@ function computeMacroNetDir(fg, gm) {
   const fgVal = fg ? parseInt(fg.value) : null;
   const chg   = gm?.marketCapChange || 0;
   const dom   = gm?.btcDominance   || 50;
-  let bull = 0, bear = 0;
+  const vol24 = gm?.totalVolume24h || 0;      // 24h 成交量
+  const volChg = gm?.volumeChange || 0;       // 成交量變化%
+  let bull = 0, bear = 0, confidence = 0;     // confidence 用於多維度同向強度
 
-  // 恐慌貪婪
+  // 恐慌貪婪（加強權重）
   if (fgVal !== null) {
-    if (fgVal >= 60) bull++;
-    else if (fgVal <= 40) bear++;
+    if (fgVal >= 70) { bull += 2; confidence += 1; }     // 極度貪婪
+    else if (fgVal >= 60) { bull++; confidence += 0.5; }
+    else if (fgVal <= 30) { bear += 2; confidence += 1; } // 極度恐慌
+    else if (fgVal <= 40) { bear++; confidence += 0.5; }
   }
-  // 市值變化
-  if      (chg > 2)  bull += 2;
-  else if (chg > 0)  bull++;
-  else if (chg < -2) bear += 2;
-  else if (chg < 0)  bear++;
-  // BTC 主導
-  if      (dom > 56) bear++;
-  else if (dom < 44) bull++;
 
-  // 本週 / 今日 AI 走勢
+  // 市值變化（加成交量確認）
+  if (chg > 3) { bull += 2; if (volChg > 5) confidence += 0.5; }
+  else if (chg > 1) { bull++; if (volChg > 3) confidence += 0.3; }
+  else if (chg < -3) { bear += 2; if (volChg > 5) confidence += 0.5; }
+  else if (chg < -1) { bear++; if (volChg > 3) confidence += 0.3; }
+
+  // BTC 主導（高度決定了山寨幣季節）
+  if (dom > 58) { bear++; }
+  else if (dom < 42) { bull++; confidence += 0.5; } // 低主導 = 山寨季
+
+  // 本週 / 今日 AI 走勢（加強強勢信號的權重）
   const wb = computeWeeklyAIBias(fg, gm);
   const tb = computeTodayAIBias(fg, gm);
-  const addBias = (bias, bullW, bearW) => {
-    if      (bias === 'strong_bull') bull += bullW;
-    else if (bias === 'bull')        bull += (bullW * 0.5);
-    else if (bias === 'slight_bull') bull += (bullW * 0.25);
-    else if (bias === 'strong_bear') bear += bearW;
-    else if (bias === 'bear')        bear += (bearW * 0.5);
-    else if (bias === 'slight_bear') bear += (bearW * 0.25);
+  const addBias = (bias, bullW, bearW, conf_boost) => {
+    if      (bias === 'strong_bull') { bull += bullW; confidence += conf_boost; }
+    else if (bias === 'bull')        { bull += (bullW * 0.6); confidence += (conf_boost * 0.4); }
+    else if (bias === 'slight_bull') { bull += (bullW * 0.3); }
+    else if (bias === 'strong_bear') { bear += bearW; confidence += conf_boost; }
+    else if (bias === 'bear')        { bear += (bearW * 0.6); confidence += (conf_boost * 0.4); }
+    else if (bias === 'slight_bear') { bear += (bearW * 0.3); }
   };
-  addBias(wb.bias, 2, 2);
-  addBias(tb.bias, 2, 2);
+  addBias(wb.bias, 2, 2, 1);   // 週預測權重 +1 信心
+  addBias(tb.bias, 2, 2, 0.8); // 日預測權重 +0.8 信心
 
   // 資金流動事件（進行中或 5 天內開始）
   try {
@@ -4948,13 +4954,32 @@ function computeMacroNetDir(fg, gm) {
     bear += _cf.bear;
   } catch(_e) {}
 
-  // 與 buildMarketOutlook 相同的閾值（含強烈層級）
-  if      (bull > bear + 3)  return 'strong_bull';
-  else if (bull > bear + 1)  return 'bull';
-  else if (bear > bull + 3)  return 'strong_bear';
-  else if (bear > bull + 1)  return 'bear';
-  else if (bull > bear)      return 'slight_bull';
-  else if (bear > bull)      return 'slight_bear';
+  // 籌碼/鯨魚動向（未公開數據）- 從掃描結果推斷
+  try {
+    const coinData = (typeof state !== 'undefined' && state.data) ? state.data : [];
+    if (coinData.length > 0) {
+      const whaleMultiBull = coinData.filter(c => c.whaleData?.bias === 'bull').length;
+      const whaleMultiBear = coinData.filter(c => c.whaleData?.bias === 'bear').length;
+      const whaleTotal = whaleMultiBull + whaleMultiBear;
+      if (whaleTotal > 0) {
+        const whaleBullPct = whaleMultiBull / whaleTotal;
+        if (whaleBullPct > 0.65) { bull += 1; confidence += 0.5; }
+        else if (whaleBullPct < 0.35) { bear += 1; confidence += 0.5; }
+      }
+    }
+  } catch(_we) {}
+
+  // 門檻調整：多維度強度協同提升敏感度（confidence >= 3 時更容易判 strong）
+  const syncBoost = confidence >= 3 ? 1 : (confidence >= 2 ? 0.5 : 0);
+  const bullAdj = bull + syncBoost;
+  const bearAdj = bear + syncBoost;
+
+  if      (bullAdj > bearAdj + 3.5) return 'strong_bull';
+  else if (bullAdj > bearAdj + 1.5) return 'bull';
+  else if (bearAdj > bullAdj + 3.5) return 'strong_bear';
+  else if (bearAdj > bullAdj + 1.5) return 'bear';
+  else if (bullAdj > bearAdj)       return 'slight_bull';
+  else if (bearAdj > bullAdj)       return 'slight_bear';
   return 'neutral';
 }
 
@@ -5414,20 +5439,23 @@ function computeWeeklyAIBias(fg, globalMkt) {
       factors.push(`${100-_wMacdBullPct}% 幣種 MACD 動能向下，本週空頭動能佔優`);
     } else { factorVotes.macdDistW = 0; }
   }
-  // ⑩ ADX 趨勢確立率（≥25 = 趨勢市場，低 = 震盪）
+  // ⑩ ADX 趨勢確立率（≥25 = 趨勢市場，低 = 震盪）— 提升權重
   const wAdxDistW = _getBiasWeight(weights, 'weekly_adxDist');
   if (coins.length) {
     const _wAdxTrend = coins.filter(c => (parseFloat(c.adx)||0) >= 25).length;
     const _wAdxPct   = Math.round(_wAdxTrend / coins.length * 100);
-    if (_wAdxPct > 55) {
-      factorVotes.adxDistW = 1; macroBull += 0.5 * wAdxDistW;
-      factors.push(`${_wAdxPct}% 幣種趨勢確立（ADX ≥25），本週市場方向性強`);
+    if (_wAdxPct > 65) {
+      factorVotes.adxDistW = 2; macroBull += 1.5 * wAdxDistW;  // 趨勢確立度高 → 加強信號
+      factors.push(`${_wAdxPct}% 幣種趨勢確立（ADX ≥25），本週市場方向性極強，利好趨勢交易`);
+    } else if (_wAdxPct > 50) {
+      factorVotes.adxDistW = 1; macroBull += 0.8 * wAdxDistW;
+      factors.push(`${_wAdxPct}% 幣種趨勢確立，本週市場方向性明確`);
     } else if (_wAdxPct < 28) {
-      factorVotes.adxDistW = -1; macroBear += 0.5 * wAdxDistW;
-      factors.push(`僅 ${_wAdxPct}% 幣種趨勢確立，本週市場普遍震盪，訊號可靠性低`);
+      factorVotes.adxDistW = -1; macroBear += 0.8 * wAdxDistW;
+      factors.push(`僅 ${_wAdxPct}% 幣種趨勢確立，本週市場普遍震盪，方向不明確`);
     } else { factorVotes.adxDistW = 0; }
   }
-  // ⑪ 足跡圖 Delta 聚合（已緩存幣種的主動買賣流向）
+  // ⑪ 足跡圖 Delta 聚合 + 背離檢查（市場微觀結構，未公開訊息指標）
   const _wFpEntries = Object.values(_footprintCache).filter(fp => fp && fp.deltaDir !== 'neutral');
   if (_wFpEntries.length >= 1) {
     const wFpW = _getBiasWeight(weights, 'weekly_fpDelta');
@@ -5437,12 +5465,21 @@ function computeWeeklyAIBias(fg, globalMkt) {
     const fpBPct = Math.round(fpBN / fpT * 100);
     const fpSPct = Math.round(fpSN / fpT * 100);
     const fpDivN = _wFpEntries.filter(fp => fp.deltaDiv).length;
-    if (fpBPct >= 70) {
+    const fpDivRatio = fpDivN / fpT;
+
+    // 強勢單向 + 低背離 = 高信心
+    if (fpBPct >= 75 && fpDivRatio < 0.2) {
+      factorVotes.fpW =  3; macroBull += 2.5 * wFpW;
+      factors.push(`足跡圖強勢買盤 ${fpBPct}% + 低背離，本週資金高度積極流入（${fpBN}/${fpT}），市場結構強勢`);
+    } else if (fpBPct >= 70) {
       factorVotes.fpW =  2; macroBull += 2 * wFpW;
       factors.push(`足跡圖 ${fpBPct}% 幣種主動買盤主導，本週資金積極流入（${fpBN}/${fpT}）`);
     } else if (fpBPct >= 55) {
       factorVotes.fpW =  1; macroBull += 1 * wFpW;
       factors.push(`足跡圖多數 Delta 偏多（${fpBPct}%），買方小幅佔優`);
+    } else if (fpSPct >= 75 && fpDivRatio < 0.2) {
+      factorVotes.fpW = -3; macroBear += 2.5 * wFpW;
+      factors.push(`足跡圖強勢賣盤 ${fpSPct}% + 低背離，本週資金高度撤離（${fpSN}/${fpT}），市場結構弱勢`);
     } else if (fpSPct >= 70) {
       factorVotes.fpW = -2; macroBear += 2 * wFpW;
       factors.push(`足跡圖 ${fpSPct}% 幣種主動賣盤主導，本週資金撤離（${fpSN}/${fpT}）`);
@@ -5452,9 +5489,10 @@ function computeWeeklyAIBias(fg, globalMkt) {
     } else {
       factorVotes.fpW = 0;
     }
-    if (fpDivN >= Math.ceil(fpT * 0.5)) {
-      macroBear += 0.5;
-      factors.push(`足跡圖 ${fpDivN} 幣種出現 Delta 背離，本週趨勢動能可疑`);
+    // 背離警告：高背離 = 市場轉折訊號
+    if (fpDivRatio >= 0.35) {
+      macroBear += 0.8;
+      factors.push(`⚠️ 足跡圖 ${(fpDivRatio*100).toFixed(0)}% 背離，本週出現拉鋸局面，後續轉向風險高`);
     }
   }
 
@@ -5752,28 +5790,37 @@ function computeTodayAIBias(fg, globalMkt) {
     }
   }
 
-  // ⑤ 今日高影響數據事件（最關鍵因素）
+  // ⑤ 今日高影響數據事件 + 政策訊息（最關鍵因素，加強預測精度）
   const todayEvs = getTodayEconEvents();
   const highEvs  = todayEvs.filter(ev => ev.impact === 'high');
   const nowMs    = Date.now();
-  // 只計算「有效時間窗口」內（2小時前～12小時後）的高影響事件，
-  // 避免把數小時前已公布的舊事件也算進 riskNote／conf 扣分
-  const relevantHighEvs = highEvs.filter(ev => {
-    const mins = (ev.eventTime.getTime() - nowMs) / 60000;
-    return mins > -120 && mins < 720;
-  });
+  // 分為「即將（<1小時）」「臨近（1-6小時）」「較遠（>6小時）」
+  const imminent = [], near = [], far = [];
   highEvs.forEach(ev => {
     const mins = (ev.eventTime.getTime() - nowMs) / 60000;
     if (mins > -120 && mins < 720) {
-      bear += 0.5; // 高影響數據帶來不確定性
-      const timeLabel = mins < 0 ? '已公布' : mins < 60 ? `${Math.round(mins)}分鐘後` : `${(mins / 60).toFixed(1)}小時後`;
-      if (ev.aiPred) {
-        reasons.push(`${ev.name}（${timeLabel}）：AI預測 ${ev.aiPred}（信心 ${ev.aiConf}%）`);
-      } else {
-        reasons.push(`${ev.name}（${timeLabel}）：高影響數據，建議等公布後觀察方向`);
-      }
+      if (mins > -30 && mins < 60) imminent.push({ ...ev, mins });      // <1小時：高風險
+      else if (mins >= 60 && mins < 360) near.push({ ...ev, mins });    // 1-6小時：中風險
+      else far.push({ ...ev, mins });
     }
   });
+
+  // 即將公布 = 不確定性極高，大幅減少今日信心
+  imminent.forEach(ev => {
+    bear += 1.0;  // 加強扣分
+    const timeLabel = ev.mins < 0 ? '已公布' : `${Math.round(ev.mins)}分鐘後`;
+    reasons.push(`🚨 <b>${ev.name}（${timeLabel}）</b>：${ev.aiPred ? `預測 ${ev.aiPred}（信心 ${ev.aiConf}%）` : '極高風險，建議觀望'}`);
+  });
+
+  // 臨近公布 = 中等不確定
+  near.forEach(ev => {
+    bear += 0.5;
+    const timeLabel = `${(ev.mins / 60).toFixed(0)}小時後`;
+    reasons.push(`⚠️ ${ev.name}（${timeLabel}）：${ev.aiPred || '高影響數據待公布'}`);
+  });
+
+  // 較遠或已公布 = 監測作用，不扣分
+  const relevantHighEvs = imminent.concat(near);
 
   const score    = bull - bear;
   const absScore = Math.abs(score);
