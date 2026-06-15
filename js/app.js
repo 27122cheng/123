@@ -4508,6 +4508,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   } catch(e) { return ''; } })()}
 
+  ${_ictAnalysisHtml}
+
   <div class="setup-macro-row">
     <div class="setup-macro-title">🌐 宏觀信號同步分析</div>
     ${(fearGreed || globalMkt) ? `<div class="setup-macro-chips">
