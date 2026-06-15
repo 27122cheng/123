@@ -2633,6 +2633,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_raw4h?.length >= 5 && typeof detectFairValueGaps === 'function') _ictFVG4h = detectFairValueGaps(_raw4h, isLong);
   } catch(_icte) { console.warn('[ICT analysis]', _icte); }
 
+  // ── ICT 五大模型偵測（Turtle Soup / 2022 Core / Unicorn / Silver Bullet）──
+  let _turtleSoup = null, _coreModel = null, _unicornModel = null, _silverBullet = null;
+  try {
+    if (_raw1h?.length >= 30) {
+      if (typeof detectTurtleSoup    === 'function') _turtleSoup   = detectTurtleSoup(_raw1h);
+      if (typeof detectCoreModel2022 === 'function') _coreModel    = detectCoreModel2022(_raw1h, isLong);
+      if (typeof detectUnicornModel  === 'function') _unicornModel = detectUnicornModel(_raw1h, isLong);
+      if (typeof detectSilverBullet  === 'function') _silverBullet = detectSilverBullet(_raw1h, isLong);
+    }
+  } catch(_ict2e) { console.warn('[ICT models]', _ict2e); }
+
   // ── 圖形識別（傳統技術形態 + ICT）── 以 4H K線為主
   let _chartPat = { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
   try {
@@ -2852,6 +2863,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (isLong && _ictPD.idealForLong)   entryReasons.push(`📉 折扣區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質多頭進場位`);
       if (!isLong && _ictPD.idealForShort) entryReasons.push(`📈 溢價區（${_ictPD.zoneLabel} ${_ictPD.pctInRange.toFixed(0)}%）SMC 優質空頭進場位`);
     }
+    // ICT 五大模型進場理由
+    if (isLong  && _turtleSoup?.bull)            entryReasons.push(_turtleSoup.bull.label);
+    if (!isLong && _turtleSoup?.bear)            entryReasons.push(_turtleSoup.bear.label);
+    if (_coreModel?.detected)                    entryReasons.push(_coreModel.label);
+    if (_unicornModel?.priceInGoldenZone)        entryReasons.push(_unicornModel.label);
+    if (_silverBullet?.priceAtFVG)               entryReasons.push(_silverBullet.label);
   } catch(_ictre) { console.warn('[ICT entry reasons]', _ictre); }
 
   // ── 爆倉地圖：進場理由補充 + 信心加成 ──
@@ -3258,6 +3275,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (!isLong && _ictPD?.idealForShort)               _ictBonus += 2;
   if (_ictFVG && !_ictFVG.filled)                     _ictBonus += 1;
   if (_ictFVG4h && !_ictFVG4h.filled)                 _ictBonus += 1;
+  // ICT 五大模型信心加成
+  if (isLong  && _turtleSoup?.bull)           _ictBonus += 3;
+  if (!isLong && _turtleSoup?.bear)           _ictBonus += 3;
+  if (_coreModel?.detected) {
+    const _cmB = { sweep: 1, mss: 2, fvg_formed: 3, fvg_entry: 5 };
+    _ictBonus += (_cmB[_coreModel.stage] || 1);
+  }
+  if (_unicornModel?.detected && _unicornModel.priceInGoldenZone) _ictBonus += 4;
+  if (_silverBullet?.detected && _silverBullet.priceAtFVG)        _ictBonus += 3;
   if (_ictBonus > 0) rawConf = Math.min(92, rawConf + _ictBonus);
 
   // 足跡圖信心加成（Delta 同向確認 +2%，買方吸收 +1%）
@@ -3956,6 +3982,25 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const _dw = _fp.deltaDiv ? ` <span style="background:rgba(239,68,68,.15);color:#ef4444;padding:1px 5px;border-radius:3px;font-size:0.68rem">⚡ Delta 背離</span>` : '';
       return `<div style="display:flex;align-items:flex-start;gap:8px"><span style="color:var(--text3);min-width:70px">📈 足跡圖</span><div style="font-size:0.72rem;line-height:1.8"><span style="color:${_dc}">${_dt}</span>${_dw}&nbsp;&nbsp;POC $${_fmtFP(_fp.poc)}${_fp.absorption ? '　<span style="color:#22c55e;font-size:0.68rem">🔵 吸籌</span>' : ''}</div></div>`;
     } catch(_fpe) { return ''; } })()}
+    ${(() => { try {
+      const _mRows = [];
+      const _ts = isLong ? _turtleSoup?.bull : _turtleSoup?.bear;
+      if (_ts) _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:#22c55e;font-size:0.69rem;min-width:52px">✅ 觸發</span><span style="font-size:0.71rem;color:var(--text1)">🐢 烏龜湯　${_ts.label.replace(/🐢 /,'')}</span></div>`);
+      else _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:var(--text3);font-size:0.69rem;min-width:52px">── 未觸</span><span style="font-size:0.71rem;color:var(--text3)">🐢 烏龜湯</span></div>`);
+      if (_coreModel?.detected) {
+        const _cc = _coreModel.isComplete ? '#22c55e' : '#f59e0b';
+        _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:${_cc};font-size:0.69rem;min-width:52px">${_coreModel.isComplete ? '✅ 完成' : '⚡ 進行'}</span><span style="font-size:0.71rem;color:var(--text1)">📐 2022核心　<span style="color:${_cc}">${_coreModel.stageLabel}</span></span></div>`);
+      } else _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:var(--text3);font-size:0.69rem;min-width:52px">── 未觸</span><span style="font-size:0.71rem;color:var(--text3)">📐 2022核心模型</span></div>`);
+      if (_unicornModel?.detected) {
+        const _uc = _unicornModel.priceInGoldenZone ? '#22c55e' : '#a78bfa';
+        _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:${_uc};font-size:0.69rem;min-width:52px">${_unicornModel.priceInGoldenZone ? '✅ 黃金區' : '⚡ 偵測'}</span><span style="font-size:0.71rem;color:var(--text1)">🦄 獨角獸　<span style="color:${_uc}">$${fmtPrice(_unicornModel.overlapLow)}–$${fmtPrice(_unicornModel.overlapHigh)}</span></span></div>`);
+      } else _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:var(--text3);font-size:0.69rem;min-width:52px">── 未觸</span><span style="font-size:0.71rem;color:var(--text3)">🦄 獨角獸模型</span></div>`);
+      if (_silverBullet?.detected) {
+        const _sc = _silverBullet.priceAtFVG ? '#22c55e' : '#f59e0b';
+        _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:${_sc};font-size:0.69rem;min-width:52px">${_silverBullet.priceAtFVG ? '✅ 進場' : '⚡ 窗口'}</span><span style="font-size:0.71rem;color:var(--text1)">${_silverBullet.window.emoji} 銀彈　<span style="color:${_sc}">${_silverBullet.window.name}</span></span></div>`);
+      } else _mRows.push(`<div style="display:flex;gap:8px;margin-bottom:3px"><span style="color:var(--text3);font-size:0.69rem;min-width:52px">── 非窗口</span><span style="font-size:0.71rem;color:var(--text3)">🗽 銀彈模型</span></div>`);
+      return `<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06)"><div style="font-size:0.7rem;color:#a78bfa;font-weight:600;margin-bottom:5px">🎯 ICT 五大模型偵測</div>${_mRows.join('')}</div>`;
+    } catch(_me) { return ''; } })()}
     ${_ictBonus > 0 ? `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);color:#22c55e;font-size:0.72rem">✨ ICT/SMC 信心加成 <strong>+${_ictBonus}%</strong></div>` : ''}
   </div>`;
     } catch(_ie) { return ''; } })();

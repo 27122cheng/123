@@ -899,6 +899,199 @@ function computePremiumDiscount(klines) {
   };
 }
 
+/* ── ICT Turtle Soup（烏龜湯）偵測 ──────────────────────────────────────── */
+function detectTurtleSoup(klines) {
+  if (!klines || klines.length < 30) return null;
+  const n = klines.length;
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const cur = closes[n - 1];
+  const fp = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+
+  const lb = Math.min(50, n - 5);
+  const pivotHigh = Math.max(...highs.slice(n - lb, n - 5));
+  const pivotLow  = Math.min(...lows.slice(n - lb, n - 5));
+
+  let bull = null, bear = null;
+
+  // Bull Turtle Soup：掃蕩前低後快速收回
+  const minRL = Math.min(...lows.slice(n - 5));
+  if (minRL < pivotLow * 0.998 && cur > pivotLow) {
+    const quickReverse = closes.slice(n - 4).filter(c => c > pivotLow).length >= 2;
+    if (quickReverse) {
+      const depth = ((pivotLow - minRL) / pivotLow * 100).toFixed(2);
+      bull = { level: pivotLow, depth: parseFloat(depth),
+               label: `🐢 烏龜湯（多）：掃蕩前低 $${fp(pivotLow)} 後快速反轉（深度 ${depth}%）` };
+    }
+  }
+
+  // Bear Turtle Soup：掃蕩前高後快速跌回
+  const maxRH = Math.max(...highs.slice(n - 5));
+  if (maxRH > pivotHigh * 1.002 && cur < pivotHigh) {
+    const quickReverse = closes.slice(n - 4).filter(c => c < pivotHigh).length >= 2;
+    if (quickReverse) {
+      const depth = ((maxRH - pivotHigh) / pivotHigh * 100).toFixed(2);
+      bear = { level: pivotHigh, depth: parseFloat(depth),
+               label: `🐢 烏龜湯（空）：掃蕩前高 $${fp(pivotHigh)} 後快速反轉（深度 ${depth}%）` };
+    }
+  }
+
+  return (bull || bear) ? { bull, bear } : null;
+}
+
+/* ── ICT 2022 Core Model（流動性掃蕩 → MSS → FVG）────────────────────────── */
+function detectCoreModel2022(klines, isLong) {
+  if (!klines || klines.length < 40) return null;
+  const n = klines.length;
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const cur = closes[n - 1];
+  const fp = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+
+  const swingHigh = Math.max(...highs.slice(n - 30, n - 8));
+  const swingLow  = Math.min(...lows.slice(n - 30, n - 8));
+  const recentLows  = lows.slice(n - 10, n - 2);
+  const recentHighs = highs.slice(n - 10, n - 2);
+
+  let stage = null, sweepLevel = null, fvgZone = null;
+
+  if (isLong) {
+    if (Math.min(...recentLows) < swingLow * 0.999) {
+      sweepLevel = swingLow;
+      stage = 'sweep';
+      if (cur > swingHigh * 0.998) stage = 'mss';
+      // Find bullish FVG formed after sweep
+      for (let i = n - 7; i < n - 1; i++) {
+        if (i >= 2) {
+          const gL = highs[i - 2], gH = lows[i];
+          if (gH > gL && (gH - gL) / gL * 100 >= 0.1 && cur > gL) {
+            fvgZone = { high: gH, low: gL, mid: (gH + gL) / 2 };
+            stage = cur >= gL && cur <= gH ? 'fvg_entry' : 'fvg_formed';
+            break;
+          }
+        }
+      }
+    }
+  } else {
+    if (Math.max(...recentHighs) > swingHigh * 1.001) {
+      sweepLevel = swingHigh;
+      stage = 'sweep';
+      if (cur < swingLow * 1.002) stage = 'mss';
+      for (let i = n - 7; i < n - 1; i++) {
+        if (i >= 2) {
+          const gH = lows[i - 2], gL = highs[i];
+          if (gH > gL && (gH - gL) / gL * 100 >= 0.1 && cur < gH) {
+            fvgZone = { high: gH, low: gL, mid: (gH + gL) / 2 };
+            stage = cur >= gL && cur <= gH ? 'fvg_entry' : 'fvg_formed';
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (!stage) return null;
+  const stageMap = { sweep: '① 流動性掃蕩', mss: '② MSS 結構轉變', fvg_formed: '③ FVG 形成', fvg_entry: '④ FVG 進場點 🎯' };
+  return {
+    detected: true, stage, stageLabel: stageMap[stage] || stage,
+    sweepLevel, fvgZone, isComplete: stage === 'fvg_entry',
+    label: `📐 2022核心模型（${stageMap[stage] || stage}）${stage === 'fvg_entry' ? ' — 黃金進場' : ''}`
+  };
+}
+
+/* ── ICT Breaker Block 偵測 ──────────────────────────────────────────────── */
+function detectBreakerBlock(klines, isLong) {
+  if (!klines || klines.length < 30) return null;
+  const n = klines.length;
+  const opens  = klines.map(k => parseFloat(k[1]));
+  const highs  = klines.map(k => parseFloat(k[2]));
+  const lows   = klines.map(k => parseFloat(k[3]));
+  const closes = klines.map(k => parseFloat(k[4]));
+  const cur = closes[n - 1];
+  const fp = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+  const scanStart = Math.max(1, n - 40), scanEnd = n - 5;
+
+  if (isLong) {
+    // Bull Breaker：原始空頭 OB（下跌蠟燭）被價格突破後，轉為支撐
+    for (let i = scanStart; i < scanEnd; i++) {
+      if (closes[i] >= opens[i]) continue;
+      const obHigh = highs[i], obLow = lows[i];
+      if (!highs.slice(i + 1, n - 2).some(h => h > obHigh * 1.001)) continue;
+      if (cur >= obLow * 0.998 && cur <= obHigh * 1.012) {
+        return { high: obHigh, low: obLow, mid: (obHigh + obLow) / 2,
+                 type: 'bull', priceInBreaker: cur >= obLow && cur <= obHigh * 1.005,
+                 label: `🔵 Bull Breaker Block $${fp(obLow)} – $${fp(obHigh)}` };
+      }
+    }
+  } else {
+    // Bear Breaker：原始多頭 OB（上漲蠟燭）被價格跌破後，轉為阻力
+    for (let i = scanStart; i < scanEnd; i++) {
+      if (closes[i] <= opens[i]) continue;
+      const obHigh = highs[i], obLow = lows[i];
+      if (!lows.slice(i + 1, n - 2).some(l => l < obLow * 0.999)) continue;
+      if (cur >= obLow * 0.988 && cur <= obHigh * 1.002) {
+        return { high: obHigh, low: obLow, mid: (obHigh + obLow) / 2,
+                 type: 'bear', priceInBreaker: cur >= obLow * 0.995 && cur <= obHigh,
+                 label: `🔴 Bear Breaker Block $${fp(obLow)} – $${fp(obHigh)}` };
+      }
+    }
+  }
+  return null;
+}
+
+/* ── ICT Unicorn Model（Breaker Block + FVG 黃金重疊）──────────────────────── */
+function detectUnicornModel(klines, isLong) {
+  if (!klines || klines.length < 30) return null;
+  const bb  = detectBreakerBlock(klines, isLong);
+  if (!bb) return null;
+  const fvg = detectFairValueGaps(klines, isLong);
+  if (!fvg || fvg.filled) return null;
+  const overlapH = Math.min(bb.high, fvg.high);
+  const overlapL = Math.max(bb.low, fvg.low);
+  if (overlapH <= overlapL) return null;
+  const cur = parseFloat(klines[klines.length - 1][4]);
+  const fp = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+  const inZone = cur >= overlapL * 0.998 && cur <= overlapH * 1.002;
+  return {
+    detected: true, breakerBlock: bb, fvg, overlapHigh: overlapH, overlapLow: overlapL,
+    priceInGoldenZone: inZone,
+    label: `🦄 獨角獸模型：Breaker+FVG 黃金區 $${fp(overlapL)}–$${fp(overlapH)}${inZone ? ' ✅ 進場區' : ''}`
+  };
+}
+
+/* ── ICT Silver Bullet（時間窗口 FVG 進場）──────────────────────────────── */
+function detectSilverBullet(klines, isLong) {
+  if (!klines || klines.length < 10) return null;
+  const n = klines.length;
+  const lastTs = parseFloat(klines[n - 1][0]);
+  if (!lastTs || lastTs < 1e12) return null;
+  const h = new Date(lastTs).getUTCHours();
+
+  // 銀彈時間窗口（UTC）
+  const WINDOWS = [
+    { s: 0,  e: 1,  name: '倫敦午夜銀彈', emoji: '🌙' },
+    { s: 7,  e: 8,  name: '倫敦開盤銀彈', emoji: '🏦' },
+    { s: 13, e: 15, name: '紐約開盤銀彈', emoji: '🗽' },
+    { s: 16, e: 17, name: '紐約午後銀彈', emoji: '⭐' },
+  ];
+  const win = WINDOWS.find(w => h >= w.s && h < w.e)
+           || WINDOWS.find(w => h >= w.e && h < w.e + 2);
+  if (!win) return null;
+
+  const fvg = detectFairValueGaps(klines, isLong);
+  if (!fvg || fvg.filled) return null;
+  const cur = parseFloat(klines[n - 1][4]);
+  const fp = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
+  const atFVG = cur >= fvg.low * 0.998 && cur <= fvg.high * 1.002;
+  return {
+    detected: true, window: win, fvg,
+    isActive: h >= win.s && h < win.e, priceAtFVG: atFVG,
+    label: `${win.emoji} 銀彈模型（${win.name}）：FVG $${fp(fvg.low)}–$${fp(fvg.high)}${atFVG ? ' ✅ 進場區間' : ''}`
+  };
+}
+
 /* ── 傳統技術圖形識別（SQ ⑩）──────────────────────────────── */
 function detectChartPatterns(klines, isLong) {
   if (!klines || klines.length < 30) return { patterns: [], score: 0, aligned: [], opposing: [] };
