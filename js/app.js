@@ -4292,16 +4292,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // R/R < 1.3 硬性封鎖；風控與 R/R 品質已整合入 SQ 評分；hardBlocked 為最後防線
+    // R/R < 1.3 硬性封鎖（顯示層已在前面 return）
     const _btRROk = parseFloat(rr1str) >= 1.3;
-    // 進場條件：4 時框同向 + R/R >= 1.3 + 信心度 >= 60% + 週線 AI 不反向 + 週日預測無強烈衝突
-    const minConfForTrade = 60;
-    const minRRForTrade = 1.3;
-    const _btRROk2 = parseFloat(rr1str) >= minRRForTrade;
     const wkStrongBias = !_wkConfLow && weeklyBiasData.bias?.includes('strong');
     const todayStrongBias = todayBiasData.bias?.includes('strong');
     const conflictPred = todayStrongBias && wkStrongBias && ((isLong && todayBiasData.bias === 'strong_bear') || (!isLong && todayBiasData.bias === 'strong_bull'));
-    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled && _btRROk2 && _4tfAligned && !weeklyOpposed && conf >= minConfForTrade && !conflictPred) {
+    // 各類交易類型的個別進場條件
+    let _canAutoRecord = false;
+    if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
+      if (canScaleIn) {
+        // ── 長線單：5時框對齊 + 週向必須同向 + R/R≥1.5 + 信心≥65 + SQ≥S ──
+        _canAutoRecord = parseFloat(rr1str) >= 1.5
+          && conf >= 65
+          && !weeklyOpposed        // 長線單週向必須對齊（不允許逆週勢）
+          && !conflictPred
+          && ['SSS','SS','S'].includes(_sqGrade);
+      } else if (isRangeMode) {
+        // ── 震盪單：區間結構觸邊 + R/R≥1.2 + 信心≥55（無需時框對齊）──
+        _canAutoRecord = parseFloat(rr1str) >= 1.2 && conf >= 55 && !hardBlocked;
+      } else {
+        // ── 短線單：4時框對齊 + R/R≥1.3 + 信心≥60（週向逆勢允許，週預測僅作參考）──
+        _canAutoRecord = parseFloat(rr1str) >= 1.3
+          && _4tfAligned
+          && conf >= 60
+          && !conflictPred;
+        // 短線單不加 !weeklyOpposed：週預測信心低時已降為參考，不應封鎖 15m/1H 短線進場
+      }
+    }
+    if (_canAutoRecord) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
@@ -9408,12 +9426,22 @@ function recordSignalsFromScan(data) {
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
     // 高風險/極高風險（score >= 60）→ 強制觀望，不建立倉位
     if (_scanRisk.score >= 60) continue;
-    // R/R < 1.5 → 掃描不進場（高勝率篩選，提升風險回報）
-    const _scanRR = setup.rr1 || 0;
-    if (parseFloat(_scanRR) < 1.5) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
+
+    // 各類型 R/R 門檻（長線 ≥1.8，短線 ≥1.5）
+    const _scanRR = setup.rr1 || 0;
+    const _minScanRR = canScaleIn ? 1.8 : 1.5;
+    if (parseFloat(_scanRR) < _minScanRR) continue;
+    // 各類型信心度門檻（長線 ≥75，短線 ≥70）
+    const _minScanConf = canScaleIn ? 75 : 70;
+    if ((setup.conf || 0) < _minScanConf) continue;
+    // 長線單：週向必須對齊（短線允許週向逆勢）
+    if (canScaleIn) {
+      const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
+      if (!_wkAligned) continue;
+    }
 
     // MACD 方向（僅供 SQ 評分使用）
     const _scanMacd    = parseFloat(coin.macdHist) || 0;
@@ -9451,11 +9479,12 @@ function recordSignalsFromScan(data) {
     else if (_scanRisk.score <= 40) { _scanSqScore += 1; _scanSqFactors.push(`✅ 風控良好（${_scanRisk.score}分）`); }
     else if (_scanRisk.score <= 54) { _scanSqFactors.push(`⚠️ 風控中等（${_scanRisk.score}分）`); }
     else { _scanSqFactors.push(`❌ 風控偏高（${_scanRisk.score}分）`); }
-    // 最高 13 分；A 級門檻 ≥7（僅 S/A 級才進場）
+    // 最高 13 分；A 級門檻 ≥7
     const _scanSqGrade = _scanSqScore >= 10 ? 'S' : _scanSqScore >= 7 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 等級 B/C/D：訊號品質不足，不建立倉位，不推送 Telegram
-    if (!['S','A'].includes(_scanSqGrade)) continue;
+    // 長線單需頂級訊號 S；短線單需優質訊號 A 以上
+    const _reqGrades = canScaleIn ? ['S'] : ['S','A'];
+    if (!_reqGrades.includes(_scanSqGrade)) continue;
     // 短線單需 4 時框同向（日+4H+1H+15m），長線單需 5 時框同向（週+日+4H+1H+15m）
     if (!setup.isShortTerm && !setup.isLongTerm) continue;
 
