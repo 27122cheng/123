@@ -9672,6 +9672,73 @@ function recordSignalsFromScan(data) {
     newTrade._notifyRisk   = { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs };
   }
 
+  // ── 訊號品質持續監控：掛單未進場前每次掃描重新評估 SQ 等級，低於 A 級自動取消 ──
+  const _sqCancelIds = new Set();
+  for (const trade of tlog) {
+    if (trade.status !== 'pending' || trade.entryTime) continue;
+    if (trade.tradeType === 'range') continue;  // 震盪單不受 SQ 方向性門檻限制
+    const _sqCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
+    if (!_sqCoin) continue;
+    const _sqIsLong = trade.direction === 'long';
+    // 重算掃描版 SQ 分數（與建單時完全相同的 10 因子簡化版）
+    let _sqRecheckScore = 0;
+    const _sqRecheckFactors = [];
+    const _rcH4Ok  = _sqIsLong ? (_sqCoin.h4Signal    || '').includes('bull') : (_sqCoin.h4Signal    || '').includes('bear');
+    const _rcDayOk = _sqIsLong ? (_sqCoin.dailySignal || '').includes('bull') : (_sqCoin.dailySignal || '').includes('bear');
+    const _rcWkOk  = _sqIsLong ? (_sqCoin.weeklySignal|| '').includes('bull') : (_sqCoin.weeklySignal|| '').includes('bear');
+    if (_rcH4Ok && _rcDayOk) { _sqRecheckScore += 2; _sqRecheckFactors.push('✅ 4H+日線同向'); }
+    else if (_rcH4Ok || _rcDayOk) { _sqRecheckScore += 1; _sqRecheckFactors.push(_rcH4Ok ? '✅ 4H同向' : '✅ 日線同向'); }
+    if (_rcWkOk) { _sqRecheckScore += 1; }
+    if (_sqIsLong ? wBias.includes('bull') : wBias.includes('bear')) _sqRecheckScore += 1;
+    if (_sqIsLong ? tBias.includes('bull') : tBias.includes('bear')) _sqRecheckScore += 1;
+    const _rcFP = _footprintCache[_sqCoin.symbol];
+    if (_rcFP && !_rcFP.deltaDiv) {
+      if (_sqIsLong ? (_rcFP.deltaDir === 'bull') : (_rcFP.deltaDir === 'bear')) _sqRecheckScore += 1;
+    }
+    if ((parseFloat(_sqCoin.adx) || 20) >= 28) _sqRecheckScore += 1;
+    const _rcSetup = (() => { try { return computeSimpleSetup(_sqCoin, _sqIsLong); } catch(_e) { return null; } })();
+    if (_rcSetup && _rcSetup.techPenalty === 0) _sqRecheckScore += 1;
+    const _rcH1Ok = _sqIsLong ? (_sqCoin.h1Signal || '').includes('bull') : (_sqCoin.h1Signal || '').includes('bear');
+    if (_rcH1Ok) _sqRecheckScore += 1;
+    if (_sqIsLong ? (parseFloat(_sqCoin.macdHist) || 0) > 0 : (parseFloat(_sqCoin.macdHist) || 0) < 0) _sqRecheckScore += 1;
+    // 重算風控
+    let _rcRiskScore = 0;
+    try {
+      if (_rcSetup) {
+        const _rcRisk = computeFullRisk(_sqCoin, _rcSetup, _sqIsLong);
+        _rcRiskScore = _rcRisk.score;
+        if (_rcRiskScore <= 20) _sqRecheckScore += 2;
+        else if (_rcRiskScore <= 40) _sqRecheckScore += 1;
+      }
+    } catch(_re) {}
+    // 等級判定（與建單時一致：A ≥7，B ≥4，C ≥2，D <2）
+    const _rcGrade = _sqRecheckScore >= 10 ? 'S' : _sqRecheckScore >= 7 ? 'A' : _sqRecheckScore >= 4 ? 'B' : _sqRecheckScore >= 2 ? 'C' : 'D';
+    // 長線單門檻 S；短線單門檻 A
+    const _rcMinGrades = trade.canScaleIn ? ['S'] : ['S', 'A'];
+    if (!_rcMinGrades.includes(_rcGrade)) {
+      const _gradeLabel = { S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade] || _rcGrade;
+      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_gradeLabel}訊號，評分 ${_sqRecheckScore}），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
+      addCancelCooldown(trade, _sqCancelReason);
+      _sqCancelIds.add(trade.id);
+      changed = true;
+      // 更新 SQ 資訊，讓取消通知能顯示最新評分
+      trade.sqGrade = _rcGrade; trade.sqScore = _sqRecheckScore;
+      try { sendCancelTelegramNotification(trade, _sqCancelReason); } catch(_n) {}
+      try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級，自動取消掛單`, 'warning'); } catch(_t) {}
+    } else {
+      // SQ 等級仍合格 → 更新儲存的評分，確保持倉頁顯示最新值
+      if (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRecheckScore) {
+        trade.sqGrade = _rcGrade; trade.sqScore = _sqRecheckScore;
+        changed = true;
+      }
+    }
+  }
+  // 移除因 SQ 等級不足而取消的掛單
+  if (_sqCancelIds.size > 0) {
+    const _before = tlog.length;
+    tlog.splice(0, tlog.length, ...tlog.filter(t => !_sqCancelIds.has(t.id)));
+    console.log(`[SQ-monitor] 取消 ${_before - tlog.length} 筆訊號品質不足掛單`);
+  }
 
   if (changed) {
     if (tlog.length > 500) tlog.splice(500);
