@@ -2909,6 +2909,25 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (isLong  && _pocDelta > -0.010 && _pocDelta < 0) entry = Math.min(entry, _fpBTS.poc * 1.0025);
       if (!isLong && _pocDelta < 0.010  && _pocDelta > 0) entry = Math.max(entry, _fpBTS.poc * 0.9975);
     }
+    // VWAP 吸附與微結構質量判斷
+    if (_fpBTS?.vwap && price > 0) {
+      const _vwapDevBTS = (price - _fpBTS.vwap) / _fpBTS.vwap;
+      if (isLong  && _vwapDevBTS > -0.008 && _vwapDevBTS < 0.003)
+        entryReasons.push(`⚡ 價格貼近 VWAP $${fmtPrice(_fpBTS.vwap)}（偏離 ${(_vwapDevBTS*100).toFixed(2)}%），Tick 最佳進場區`);
+      else if (isLong && _vwapDevBTS > 0.015)
+        entryReasons.push(`⚠️ 價格高於 VWAP ${(_vwapDevBTS*100).toFixed(2)}%，建議等回測 VWAP $${fmtPrice(_fpBTS.vwap)} 再進`);
+      else if (!isLong && _vwapDevBTS < 0.008 && _vwapDevBTS > -0.003)
+        entryReasons.push(`⚡ 價格貼近 VWAP $${fmtPrice(_fpBTS.vwap)}（偏離 ${(_vwapDevBTS*100).toFixed(2)}%），Tick 最佳進場區`);
+      else if (!isLong && _vwapDevBTS < -0.015)
+        entryReasons.push(`⚠️ 價格低於 VWAP ${Math.abs(_vwapDevBTS*100).toFixed(2)}%，建議等反彈 VWAP $${fmtPrice(_fpBTS.vwap)} 再進`);
+    }
+    // 市場微結構質量警告（Bid-Ask Bounce 嚴重時降低訊號可信度）
+    if (_fpBTS?.bidAskBounceScore != null && _fpBTS.bidAskBounceScore > 65) {
+      entryReasons.push(`⚠️ 市場微結構質量低（噪音 ${_fpBTS.bidAskBounceScore}%），Tick 數據存在 Bid-Ask Bounce，建議等微結構穩定`);
+      rawConf = Math.max(rawConf - 3, 30);
+    } else if (_fpBTS?.microstructureQuality != null && _fpBTS.microstructureQuality >= 70) {
+      rawConf = Math.min(rawConf + 2, 90);
+    }
     // ICT 區位逆勢警告（溢價做多 / 折扣做空）
     if (_ictPD) {
       if (isLong  && _ictPD.pctInRange > 68 && !_ictPD.idealForLong)
@@ -3982,7 +4001,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const _dc = _fp.deltaDir === 'bull' ? '#22c55e' : _fp.deltaDir === 'bear' ? '#ef4444' : 'var(--text3)';
       const _dt = _fp.deltaDir === 'bull' ? '▲ 買盤主導' : _fp.deltaDir === 'bear' ? '▼ 賣盤主導' : '◆ 均衡';
       const _dw = _fp.deltaDiv ? ` <span style="background:rgba(239,68,68,.15);color:#ef4444;padding:1px 5px;border-radius:3px;font-size:0.68rem">⚡ Delta 背離</span>` : '';
-      return `<div style="display:flex;align-items:flex-start;gap:8px"><span style="color:var(--text3);min-width:70px">📈 足跡圖</span><div style="font-size:0.72rem;line-height:1.8"><span style="color:${_dc}">${_dt}</span>${_dw}&nbsp;&nbsp;POC $${_fmtFP(_fp.poc)}${_fp.absorption ? '　<span style="color:#22c55e;font-size:0.68rem">🔵 吸籌</span>' : ''}</div></div>`;
+      const _vwapDev = (_fp.vwap && price > 0) ? ((price - _fp.vwap) / _fp.vwap * 100) : null;
+      const _vwapStr = _fp.vwap ? `　VWAP $${_fmtFP(_fp.vwap)}${_vwapDev != null ? `（${_vwapDev>0?'+':''}${_vwapDev.toFixed(2)}%）` : ''}` : '';
+      const _msqClr = (_fp.microstructureQuality ?? 50) >= 70 ? '#22c55e' : (_fp.microstructureQuality ?? 50) >= 45 ? '#f59e0b' : '#ef4444';
+      const _msqStr = _fp.microstructureQuality != null ? `　<span style="color:${_msqClr};font-size:0.68rem">微結構${_fp.microstructureQuality}分</span>` : '';
+      return `<div style="display:flex;align-items:flex-start;gap:8px"><span style="color:var(--text3);min-width:70px">📈 足跡圖</span><div style="font-size:0.72rem;line-height:1.8"><span style="color:${_dc}">${_dt}</span>${_dw}&nbsp;&nbsp;POC $${_fmtFP(_fp.poc)}${_vwapStr}${_msqStr}${_fp.absorption ? '　<span style="color:#22c55e;font-size:0.68rem">🔵 吸籌</span>' : ''}</div></div>`;
     } catch(_fpe) { return ''; } })()}
     ${(() => { try {
       const _mRows = [];
@@ -5773,6 +5796,20 @@ function computeWeeklyAIBias(fg, globalMkt) {
       factors.push(`⚠️ 足跡圖 ${(fpDivRatio*100).toFixed(0)}% 背離，本週出現拉鋸局面，後續轉向風險高`);
     }
   }
+  // ⑫ 週度市場微結構質量（Tick 品質聚合 + VWAP 偏離）
+  const _wMsqEntries = Object.values(_footprintCache).filter(fp => fp && fp.microstructureQuality != null);
+  if (_wMsqEntries.length >= 1) {
+    const wMsqW = _getBiasWeight(weights, 'weekly_microstructure');
+    const avgMsqW = _wMsqEntries.reduce((s, fp) => s + fp.microstructureQuality, 0) / _wMsqEntries.length;
+    const highNoiseW = _wMsqEntries.filter(fp => fp.bidAskBounceScore > 65).length / _wMsqEntries.length;
+    if (avgMsqW >= 70 && highNoiseW < 0.2) {
+      factorVotes.msqW = 1; macroBull += 1 * wMsqW;
+      factors.push(`市場微結構質量良好（均${avgMsqW.toFixed(0)}分），本週 Tick 訂單流一致性強，訊號可靠性高`);
+    } else if (highNoiseW > 0.5) {
+      factorVotes.msqW = -1; macroBear += 1 * wMsqW;
+      factors.push(`本週市場微結構噪音偏高（${(highNoiseW*100).toFixed(0)}% 幣種 Bid-Ask Bounce），信心折扣`);
+    } else { factorVotes.msqW = 0; }
+  }
 
   // ⑤ 本週重大事件風險
   const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
@@ -6069,6 +6106,38 @@ function computeTodayAIBias(fg, globalMkt) {
     if (fpDivN >= Math.ceil(fpTotal * 0.5)) {
       bear += 0.5;
       reasons.push(`足跡圖偵測 ${fpDivN} 幣種 Delta 背離，趨勢動能可疑`);
+    }
+  }
+  // ⑫ 市場微結構質量（Tick 品質 + VWAP 偏離聚合）
+  const _fpMsqEntries = Object.values(_footprintCache).filter(fp => fp && fp.microstructureQuality != null);
+  if (_fpMsqEntries.length >= 1) {
+    const wMsq = _getBiasWeight(weights, 'daily_microstructure');
+    const avgMsq = _fpMsqEntries.reduce((s, fp) => s + fp.microstructureQuality, 0) / _fpMsqEntries.length;
+    const highNoiseFps = _fpMsqEntries.filter(fp => fp.bidAskBounceScore > 65).length;
+    const highNoiseRatio = highNoiseFps / _fpMsqEntries.length;
+    if (avgMsq >= 70 && highNoiseRatio < 0.2) {
+      factorVotes.microstructure = 1; bull += 1 * wMsq;
+      reasons.push(`市場微結構質量良好（平均 ${avgMsq.toFixed(0)} 分），Tick 訂單流方向一致，訊號可靠性高`);
+    } else if (highNoiseRatio > 0.5) {
+      factorVotes.microstructure = -1; bear += 1 * wMsq;
+      reasons.push(`⚠️ ${(highNoiseRatio*100).toFixed(0)}% 幣種 Tick 存在 Bid-Ask Bounce 高噪音，市場微結構不穩定，訊號可靠性下降`);
+    } else {
+      factorVotes.microstructure = 0;
+    }
+    // VWAP 偏離聚合：多數幣種偏離 VWAP > 1.5% → 均值回歸風險
+    const fpWithVwap = _fpMsqEntries.filter(fp => fp.vwap && fp.lastClose);
+    if (fpWithVwap.length >= 2) {
+      const aboveVwap = fpWithVwap.filter(fp => fp.lastClose > fp.vwap * 1.015).length;
+      const belowVwap = fpWithVwap.filter(fp => fp.lastClose < fp.vwap * 0.985).length;
+      const abovePct = Math.round(aboveVwap / fpWithVwap.length * 100);
+      const belowPct = Math.round(belowVwap / fpWithVwap.length * 100);
+      if (abovePct > 60) {
+        bear += 0.5;
+        reasons.push(`${abovePct}% 幣種顯著偏離 VWAP 向上（>1.5%），均值回歸風險，追漲謹慎`);
+      } else if (belowPct > 60) {
+        bull += 0.5;
+        reasons.push(`${belowPct}% 幣種顯著偏離 VWAP 向下（>1.5%），超賣反彈機會，可關注做多`);
+      }
     }
   }
 
@@ -7660,16 +7729,36 @@ function buildFootprintPanel(fp, coin) {
   const pocDist = cur ? Math.abs(cur - fp.poc) / cur * 100 : 0;
   const pocClr  = pocDist < 0.5 ? 'var(--bull)' : 'var(--text2)';
 
-  // ── Delta 柱狀圖（最多顯示 12 根 K 棒）──
+  // ── VWAP 偏離 ──
+  const vwapDev = (fp.vwap && cur) ? ((cur - fp.vwap) / fp.vwap * 100) : null;
+  const vwapClr = vwapDev == null ? 'var(--text3)'
+    : Math.abs(vwapDev) < 0.3 ? '#22c55e'
+    : Math.abs(vwapDev) < 1.0 ? '#f59e0b' : '#ef4444';
+
+  // ── 市場微結構質量 ──
+  const msq = fp.microstructureQuality ?? 50;
+  const msqClr = msq >= 70 ? '#22c55e' : msq >= 45 ? '#f59e0b' : '#ef4444';
+  const msqLabel = msq >= 70 ? '高（方向一致，訊號可靠）'
+    : msq >= 45 ? '中（有噪音，謹慎操作）'
+    : '低（Bid-Ask Bounce 嚴重，慎用訊號）';
+
+  // ── 足跡K棒雙欄視圖（買/賣量並排）──
   const dispCandles = fp.candles.slice(-12);
-  const maxAbs = Math.max(...dispCandles.map(c => Math.abs(c.delta)), 1);
+  const maxTotal = Math.max(...dispCandles.map(c => c.total || 1), 1);
   const bars = dispCandles.map(c => {
-    const pct  = Math.max(4, Math.abs(c.delta) / maxAbs * 100);
-    const clr  = c.delta >= 0 ? 'var(--bull)' : 'var(--bear)';
+    const buyH  = Math.max(4, (c.buyVol  / maxTotal) * 100);
+    const sellH = Math.max(4, (c.sellVol / maxTotal) * 100);
+    const ratio = c.total > 0 ? c.buyVol / c.total : 0.5;
+    const ratioClr = ratio > 0.55 ? '#22c55e' : ratio < 0.45 ? '#ef4444' : '#94a3b8';
     const time = new Date(c.ts).toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit', hour12:false });
-    return `<div class="fp-bar-wrap" title="${time}｜Δ ${c.delta >= 0 ? '+' : ''}${fmtQ(c.delta)}">
-      <div class="fp-bar" style="height:${pct}%;background:${clr};opacity:${0.55 + 0.45*(Math.abs(c.delta)/maxAbs)}"></div>
-      <div class="fp-bar-lbl" style="color:${clr}">${c.delta >= 0 ? '+' : ''}${fmtQ(c.delta)}</div>
+    const dSign = c.delta >= 0 ? '+' : '';
+    return `<div class="fp-bar-wrap" style="display:flex;flex-direction:column;align-items:center;gap:1px" title="${time}｜買:${fmtQ(c.buyVol)} 賣:${fmtQ(c.sellVol)} Δ${dSign}${fmtQ(c.delta)}">
+      <div style="display:flex;align-items:flex-end;gap:1px;height:50px">
+        <div style="width:8px;background:#22c55e;border-radius:2px 2px 0 0;height:${buyH}%;opacity:0.85" title="買 ${fmtQ(c.buyVol)}"></div>
+        <div style="width:8px;background:#ef4444;border-radius:2px 2px 0 0;height:${sellH}%;opacity:0.85" title="賣 ${fmtQ(c.sellVol)}"></div>
+      </div>
+      <div style="font-size:0.58rem;color:${ratioClr}">${Math.round(ratio*100)}%</div>
+      <div class="fp-bar-lbl" style="color:${c.delta>=0?'#22c55e':'#ef4444'};font-size:0.58rem">${dSign}${fmtQ(c.delta)}</div>
     </div>`;
   }).join('');
 
@@ -7704,14 +7793,35 @@ function buildFootprintPanel(fp, coin) {
       <div class="fp-sum-label">吸籌偵測</div>
       <div class="fp-sum-val">${absText}</div>
     </div>
+    ${fp.vwap ? `<div class="fp-sum-item">
+      <div class="fp-sum-label">VWAP（量加權均價）</div>
+      <div class="fp-sum-val" style="color:${vwapClr}">$${fmtP(fp.vwap)}${vwapDev != null ? ` <span style="font-size:0.7rem">${vwapDev > 0 ? '+' : ''}${vwapDev.toFixed(2)}%</span>` : ''}</div>
+    </div>` : ''}
+    <div class="fp-sum-item">
+      <div class="fp-sum-label">市場微結構質量</div>
+      <div class="fp-sum-val" style="color:${msqClr}">${msq}分　${msqLabel}</div>
+    </div>
+    ${fp.takerBuyRatio != null ? `<div class="fp-sum-item">
+      <div class="fp-sum-label">Taker 買盤佔比</div>
+      <div class="fp-sum-val" style="color:${fp.takerBuyRatio>0.52?'#22c55e':fp.takerBuyRatio<0.48?'#ef4444':'var(--text3)'}">${(fp.takerBuyRatio*100).toFixed(1)}% 買 / ${((1-fp.takerBuyRatio)*100).toFixed(1)}% 賣</div>
+    </div>` : ''}
   </div>
 
-  <div class="fp-section-title">5分鐘 Delta 足跡（近 12 根）</div>
-  <div class="fp-bars-area">${bars}</div>
+  <div class="fp-section-title">5分鐘足跡圖（藍=買量 / 紅=賣量，近 12 根）</div>
+  <div style="font-size:0.68rem;color:var(--text3);margin:-4px 0 6px">每根K棒顯示：🟢買方成交量 vs 🔴賣方成交量，下方百分比為買盤佔比</div>
+  <div class="fp-bars-area" style="align-items:flex-end;gap:4px">${bars}</div>
   <div class="fp-cum-row">
     累積 Delta：<span style="color:${cumTrClr}">${cumTrend}</span>
     <span style="color:var(--text3);font-size:0.72rem;margin-left:8px">近5根：${fp.recentDelta >= 0 ? '+' : ''}${fmtQ(fp.recentDelta)}</span>
   </div>
+
+  ${fp.bidAskBounceScore != null ? `<div style="margin:8px 0 4px;padding:7px 10px;border-radius:8px;background:rgba(${msq>=70?'34,197,94':msq>=45?'245,158,11':'239,68,68'},.07);border:1px solid rgba(${msq>=70?'34,197,94':msq>=45?'245,158,11':'239,68,68'},.18)">
+    <div style="font-size:0.72rem;font-weight:600;color:${msqClr};margin-bottom:3px">📊 市場微結構分析（Tick 品質）</div>
+    <div style="font-size:0.7rem;color:var(--text2)">Bid-Ask Bounce 噪音指數：<strong style="color:${fp.bidAskBounceScore<30?'#22c55e':fp.bidAskBounceScore<60?'#f59e0b':'#ef4444'}">${fp.bidAskBounceScore}%</strong>
+      <span style="color:var(--text3);margin-left:6px">${fp.bidAskBounceScore < 30 ? '低噪音，訊號可信度高' : fp.bidAskBounceScore < 60 ? '中等噪音，訊號需配合其他確認' : '高噪音（可能為Bid-Ask Bounce），訊號可靠性低'}</span></div>
+    ${fp.vwap && vwapDev != null ? `<div style="font-size:0.7rem;color:var(--text2);margin-top:3px">VWAP 偏離：<strong style="color:${vwapClr}">${vwapDev > 0 ? '+' : ''}${vwapDev.toFixed(2)}%</strong>
+      <span style="color:var(--text3);margin-left:6px">${Math.abs(vwapDev) < 0.3 ? '極近VWAP（最佳進場區）' : Math.abs(vwapDev) < 1.0 ? `偏離${vwapDev > 0 ? '偏高' : '偏低'}，可等回測VWAP($${fmtP(fp.vwap)})` : `嚴重偏離VWAP，均值回歸風險${vwapDev > 0 ? '向下' : '向上'}`}</span></div>` : ''}
+  </div>` : ''}
 
   <div class="fp-levels-grid">
     <div class="fp-lvl-col">

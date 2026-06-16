@@ -1043,12 +1043,19 @@ async function fetchFootprintData(symbol) {
       const BUCKET = 5 * 60 * 1000; // 5-minute candles
       const candleMap = new Map();
       const priceVolMap = new Map();
+      let _vwapPV = 0, _vwapV = 0; // for VWAP: Σ(price×qty), Σ(qty)
+      let _totalBuyVol = 0, _totalSellVol = 0;
 
       for (const tr of trades) {
         const ts    = tr.T;
         const p     = parseFloat(tr.p);
         const q     = parseFloat(tr.q);
         const isBuy = !tr.m; // m=true → buyer is maker (passive) = aggressor sold
+
+        // VWAP accumulation
+        _vwapPV += p * q;
+        _vwapV  += q;
+        if (isBuy) _totalBuyVol += q; else _totalSellVol += q;
 
         // Candle bucket
         const bucket = Math.floor(ts / BUCKET) * BUCKET;
@@ -1105,14 +1112,43 @@ async function fetchFootprintData(symbol) {
       const highBuyLevels  = [...sorted].sort((a, b) => b.delta - a.delta).slice(0, 5);
       const highSellLevels = [...sorted].sort((a, b) => a.delta - b.delta).slice(0, 5);
 
+      // VWAP（成交量加權平均價）
+      const vwap = _vwapV > 0 ? _vwapPV / _vwapV : lastClose;
+
+      // Bid-Ask Bounce Score：衡量買賣方向交替頻率（高 = 市場噪音大，tick品質差）
+      // 相鄰K棒 delta 正負交替次數 / (總K棒-1)，轉為 0-100
+      let _altCount = 0;
+      for (let i = 1; i < candles.length; i++) {
+        if ((candles[i].delta >= 0) !== (candles[i-1].delta >= 0)) _altCount++;
+      }
+      const bidAskBounceScore = candles.length > 1
+        ? Math.round(_altCount / (candles.length - 1) * 100) : 0;
+
+      // 市場微結構質量（0-100）：方向一致性越高越好
+      const microstructureQuality = Math.max(0, 100 - bidAskBounceScore);
+
+      // 整體買賣比率（Taker buy ratio）
+      const totalVol = _totalBuyVol + _totalSellVol;
+      const takerBuyRatio = totalVol > 0 ? _totalBuyVol / totalVol : 0.5;
+
+      // 各 K 棒買賣比（用於足跡圖視覺化）
+      const candlesWithRatio = candles.slice(-20).map(c => ({
+        ...c,
+        buyRatio: c.total > 0 ? c.buyVol / c.total : 0.5,
+      }));
+
       return {
-        candles:       candles.slice(-20),
+        candles:       candlesWithRatio,
         cumulativeDelta: cum,
         deltaDir,
         recentDelta,
         priceDir,
         deltaDiv,
         poc,
+        vwap,
+        bidAskBounceScore,
+        microstructureQuality,
+        takerBuyRatio,
         priceVols:     priceVols.slice(0, 20),
         highBuyLevels,
         highSellLevels,
