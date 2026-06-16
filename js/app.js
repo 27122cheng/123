@@ -4292,31 +4292,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       (Date.now() - (c.cancelTime || 0)) < SIGNAL_COOLDOWN
     );
 
-    // R/R < 1.3 硬性封鎖（顯示層已在前面 return）
-    const _btRROk = parseFloat(rr1str) >= 1.3;
-    const wkStrongBias = !_wkConfLow && weeklyBiasData.bias?.includes('strong');
-    const todayStrongBias = todayBiasData.bias?.includes('strong');
-    const conflictPred = todayStrongBias && wkStrongBias && ((isLong && todayBiasData.bias === 'strong_bear') || (!isLong && todayBiasData.bias === 'strong_bull'));
-    // 各類交易類型的個別進場條件
+    // 幣種詳情頁：訊號已通過 SQ≥A 和 R/R≥1.3 兩道硬性門檻（上方 return 確保）
+    // 只要幣種詳情顯示有效訊號（direction ≠ wait），就應納入持倉，確保 UI 與持倉一致
+    // 唯一保留：hasAnyActive（已有進場中倉位不重開）、recentlyCancelled（冷卻期）
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // ── 長線單：5時框對齊 + 週向必須同向 + R/R≥1.5 + 信心≥65 + SQ≥S ──
+        // 長線單：額外要求 R/R≥1.5 + 信心≥65 + 週向不逆勢（資本配置更謹慎）
         _canAutoRecord = parseFloat(rr1str) >= 1.5
           && conf >= 65
-          && !weeklyOpposed        // 長線單週向必須對齊（不允許逆週勢）
-          && !conflictPred
+          && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
-      } else if (isRangeMode) {
-        // ── 震盪單：區間結構觸邊 + R/R≥1.2 + 信心≥55（無需時框對齊）──
-        _canAutoRecord = parseFloat(rr1str) >= 1.2 && conf >= 55 && !hardBlocked;
       } else {
-        // ── 短線單：4時框對齊 + R/R≥1.3 + 信心≥60（週向逆勢允許，週預測僅作參考）──
-        _canAutoRecord = parseFloat(rr1str) >= 1.3
-          && _4tfAligned
-          && conf >= 60
-          && !conflictPred;
-        // 短線單不加 !weeklyOpposed：週預測信心低時已降為參考，不應封鎖 15m/1H 短線進場
+        // 短線單 / 震盪單：SQ 和 R/R 已確認，直接記錄（信心≥55 最低門檻）
+        // 移除 _4tfAligned 和 conflictPred：SQ 評分已整合時框和週日預測品質
+        // 幣種詳情顯示的訊號 = 持倉記錄，UI 與持倉完全一致
+        _canAutoRecord = conf >= 55;
       }
     }
     if (_canAutoRecord) {
