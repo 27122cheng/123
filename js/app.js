@@ -3945,11 +3945,50 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_sqLTE) {}
 
-  // 分數 floor 為 0，等級重新校準（全數據模式最高約 20 分）
+  // ⑳ ICT 五大模型（烏龜湯 / 2022核心 / 獨角獸 / 銀彈）— max +3
+  try {
+    let _sqIctModelPts = 0;
+    const _sqIctModelNames = [];
+    if (isLong ? _turtleSoup?.bull : _turtleSoup?.bear) {
+      _sqIctModelPts += 2; _sqIctModelNames.push('🐢 烏龜湯');
+    }
+    if (_coreModel?.detected) {
+      _sqIctModelPts += _coreModel.isComplete ? 2 : 1;
+      _sqIctModelNames.push(`📐 核心${_coreModel.isComplete ? '完成' : '進行'}`);
+    }
+    if (_unicornModel?.detected && _unicornModel.priceInGoldenZone) {
+      _sqIctModelPts += 2; _sqIctModelNames.push('🦄 獨角獸');
+    }
+    if (_silverBullet?.detected && _silverBullet.priceAtFVG) {
+      _sqIctModelPts += 2; _sqIctModelNames.push('🗽 銀彈');
+    }
+    _sqIctModelPts = Math.min(3, _sqIctModelPts);
+    if (_sqIctModelPts > 0) {
+      _sqScore += _sqIctModelPts;
+      _sqFactors.push(`✅ ⑳ICT五大模型（${_sqIctModelNames.join('+')}）+${_sqIctModelPts}`);
+    } else {
+      _sqFactors.push('⬜ ⑳ICT五大模型：未觸發');
+    }
+  } catch(_sqIctE) {}
+
+  // ㉑ 市場微結構品質（足跡圖 VWAP + Bid-Ask Bounce）— max +1
+  try {
+    if (_fpBTS?.microstructureQuality != null) {
+      if (_fpBTS.microstructureQuality >= 70) {
+        _sqScore += 1; _sqFactors.push(`✅ ㉑市場微結構優良（${_fpBTS.microstructureQuality}分）+1`);
+      } else if ((_fpBTS.bidAskBounceScore ?? 0) > 65) {
+        _sqScore -= 1; _sqFactors.push(`❌ ㉑市場微結構噪音高（Bounce ${_fpBTS.bidAskBounceScore}%）-1`);
+      } else {
+        _sqFactors.push(`⬜ ㉑市場微結構一般（${_fpBTS.microstructureQuality}分）`);
+      }
+    }
+  } catch(_sqMSE) {}
+
+  // 分數 floor 為 0，等級重新校準（全數據模式最高約 29 分）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 19 ? 'SSS'
-                 : _sqScore >= 17 ? 'SS'
-                 : _sqScore >= 14 ? 'S'
+  const _sqGrade = _sqScore >= 22 ? 'SSS'
+                 : _sqScore >= 19 ? 'SS'
+                 : _sqScore >= 15 ? 'S'
                  : _sqScore >= 10 ? 'A'
                  : _sqScore >= 6  ? 'B'
                  : _sqScore >= 3  ? 'C' : 'D';
