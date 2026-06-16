@@ -1030,100 +1030,97 @@ async function fetchWhaleTrades(symbol) {
 /* ═══════════════════ 市場足跡圖數據 ══════════════════════ */
 async function fetchFootprintData(symbol) {
   const base = symbol.replace('/', '').replace('USDT', '') + 'USDT';
-  // 使用 1m K棒取代 aggTrades：時間標準化、OHLC結構完整、column[9] = takerBuyBaseVol
-  const raw = await fetchKlines(base, '1m', 120); // 最近 120 根 1m K棒（約 2小時）
-  if (!raw || raw.length < 20) return null;
+  // 雙時框並行：5m（主交易邏輯）+ 1m（快進快出信號專用）
+  const [raw5m, raw1m] = await Promise.all([
+    fetchKlines(base, '5m', 60),   // 5小時 5m K棒 → 主邏輯（deltaDir、POC、VWAP、吸籌）
+    fetchKlines(base, '1m', 120),  // 2小時 1m K棒 → 快進快出信號偵測專用
+  ]);
+  if (!raw5m || raw5m.length < 10) return null;
   try {
-    const priceVolMap = new Map();
-    let _vwapPV = 0, _vwapV = 0;
-    let _totalBuyVol = 0, _totalSellVol = 0;
-
-    const candles = raw.map(bar => {
-      const ts      = parseFloat(bar[0]);
-      const open    = parseFloat(bar[1]);
-      const high    = parseFloat(bar[2]);
-      const low     = parseFloat(bar[3]);
-      const close   = parseFloat(bar[4]);
-      const vol     = parseFloat(bar[5]);
-      const buyVol  = parseFloat(bar[9]);  // takerBuyBaseAssetVolume
+    // ── 通用 K棒處理（供兩個時框共用）──
+    const processRaw = raw => raw.map(bar => {
+      const ts     = parseFloat(bar[0]);
+      const open   = parseFloat(bar[1]);
+      const high   = parseFloat(bar[2]);
+      const low    = parseFloat(bar[3]);
+      const close  = parseFloat(bar[4]);
+      const vol    = parseFloat(bar[5]);
+      const buyVol = parseFloat(bar[9]);  // takerBuyBaseAssetVolume
       const sellVol = Math.max(0, vol - buyVol);
       const delta   = buyVol - sellVol;
-
-      // VWAP 標準公式：典型價格 (H+L+C)/3 × 成交量
-      const tp = (high + low + close) / 3;
-      _vwapPV  += tp * vol;
-      _vwapV   += vol;
-      _totalBuyVol  += buyVol;
-      _totalSellVol += sellVol;
-
-      // 成交量分佈（POC 用）
-      const pLvl = parseFloat(close.toPrecision(4));
-      if (!priceVolMap.has(pLvl)) priceVolMap.set(pLvl, { price: pLvl, buyVol: 0, sellVol: 0 });
-      const lv = priceVolMap.get(pLvl);
-      lv.buyVol  += buyVol;
-      lv.sellVol += sellVol;
-
       return { ts, open, high, low, close, buyVol, sellVol, total: vol, delta,
                priceChange: close - open, buyRatio: vol > 0 ? buyVol / vol : 0.5 };
     });
 
-    // 累積 Delta 趨勢
+    // ── 5m 主邏輯計算（雜訊少，適合1H/4H交易決策）──
+    const candles5m       = processRaw(raw5m);
+    const priceVolMap     = new Map();
+    let _vwapPV = 0, _vwapV = 0, _totalBuyVol = 0, _totalSellVol = 0;
+
+    candles5m.forEach(c => {
+      const tp = (c.high + c.low + c.close) / 3;
+      _vwapPV += tp * c.total;
+      _vwapV  += c.total;
+      _totalBuyVol  += c.buyVol;
+      _totalSellVol += c.sellVol;
+      const pLvl = parseFloat(c.close.toPrecision(4));
+      if (!priceVolMap.has(pLvl)) priceVolMap.set(pLvl, { price: pLvl, buyVol: 0, sellVol: 0 });
+      const lv = priceVolMap.get(pLvl);
+      lv.buyVol  += c.buyVol;
+      lv.sellVol += c.sellVol;
+    });
+
     let cum = 0;
-    const cumDeltas = candles.map(c => { cum += c.delta; return cum; });
+    const cumDeltas = candles5m.map(c => { cum += c.delta; return cum; });
     const nc = cumDeltas.length;
     const deltaDir = nc < 3 ? 'neutral'
       : cumDeltas[nc-1] > cumDeltas[Math.floor(nc/3)] * 1.02 ? 'bull'
       : cumDeltas[nc-1] < cumDeltas[Math.floor(nc/3)] * 0.98 ? 'bear' : 'neutral';
 
-    const recentDelta = candles.slice(-5).reduce((s, c) => s + c.delta, 0);
-    const firstClose  = candles[0]?.close || 0;
-    const lastClose   = candles[candles.length-1]?.close || firstClose;
+    const recentDelta = candles5m.slice(-5).reduce((s, c) => s + c.delta, 0);
+    const firstClose  = candles5m[0]?.close || 0;
+    const lastClose   = candles5m[candles5m.length-1]?.close || firstClose;
     const priceDir    = lastClose > firstClose * 1.002 ? 'bull'
                       : lastClose < firstClose * 0.998 ? 'bear' : 'neutral';
     const deltaDiv    = priceDir !== 'neutral' && deltaDir !== 'neutral' && priceDir !== deltaDir;
 
-    // Volume Profile + POC
-    const priceVols = [...priceVolMap.values()]
+    const priceVols      = [...priceVolMap.values()]
       .map(lv => ({ ...lv, total: lv.buyVol + lv.sellVol, delta: lv.buyVol - lv.sellVol }))
       .sort((a, b) => b.total - a.total);
-    const poc = priceVols[0]?.price || lastClose;
-
-    // 吸籌偵測
-    const lastFew    = candles.slice(-4);
-    const absorption = lastFew.length >= 3
+    const poc            = priceVols[0]?.price || lastClose;
+    const lastFew        = candles5m.slice(-4);
+    const absorption     = lastFew.length >= 3
       && lastFew.filter(c => c.priceChange < 0).length >= 2
       && lastFew.reduce((s, c) => s + c.delta, 0) > 0;
-
     const sorted         = [...priceVols].filter(l => l.total > 0);
     const highBuyLevels  = [...sorted].sort((a, b) => b.delta - a.delta).slice(0, 5);
     const highSellLevels = [...sorted].sort((a, b) => a.delta - b.delta).slice(0, 5);
+    const vwap           = _vwapV > 0 ? _vwapPV / _vwapV : lastClose;
+    const totalVol       = _totalBuyVol + _totalSellVol;
+    const takerBuyRatio  = totalVol > 0 ? _totalBuyVol / totalVol : 0.5;
 
-    // VWAP（1m 標準公式：典型價 × 量）
-    const vwap = _vwapV > 0 ? _vwapPV / _vwapV : lastClose;
-
-    // 市場微結構：相鄰K棒 delta 方向交替率
-    let _altCount = 0;
-    for (let i = 1; i < candles.length; i++) {
-      if ((candles[i].delta >= 0) !== (candles[i-1].delta >= 0)) _altCount++;
+    // 5m 微結構（雜訊較少，1m 噪音不會影響主訊號）
+    let _altCount5m = 0;
+    for (let i = 1; i < candles5m.length; i++) {
+      if ((candles5m[i].delta >= 0) !== (candles5m[i-1].delta >= 0)) _altCount5m++;
     }
-    const bidAskBounceScore    = candles.length > 1 ? Math.round(_altCount / (candles.length-1) * 100) : 0;
+    const bidAskBounceScore    = candles5m.length > 1 ? Math.round(_altCount5m / (candles5m.length-1) * 100) : 0;
     const microstructureQuality = Math.max(0, 100 - bidAskBounceScore);
-    const totalVol              = _totalBuyVol + _totalSellVol;
-    const takerBuyRatio         = totalVol > 0 ? _totalBuyVol / totalVol : 0.5;
 
-    // 快進快出信號偵測（≥80% 勝率才觸發）
-    const scalpSignal = typeof detectScalpSignal === 'function'
-      ? detectScalpSignal(candles, lastClose, vwap, poc) : null;
+    // ── 1m 快進快出信號（只用於 scalpSignal，不影響主邏輯）──
+    const candles1m   = (raw1m && raw1m.length >= 20) ? processRaw(raw1m) : null;
+    const scalpSignal = (candles1m && typeof detectScalpSignal === 'function')
+      ? detectScalpSignal(candles1m, lastClose, vwap, poc) : null;
 
     return {
-      candles:            candles.slice(-20),
+      candles:            candles5m.slice(-20),   // 5m K棒供足跡面板顯示
       cumulativeDelta:    cum,
       deltaDir, recentDelta, priceDir, deltaDiv,
       poc, vwap, bidAskBounceScore, microstructureQuality, takerBuyRatio,
       priceVols:          priceVols.slice(0, 20),
       highBuyLevels, highSellLevels,
       absorption, lastClose,
-      scalpSignal,
+      scalpSignal,        // 來自 1m 資料，主邏輯不受影響
     };
   } catch { return null; }
 }

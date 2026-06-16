@@ -7861,7 +7861,7 @@ function buildFootprintPanel(fp, coin) {
   </div>
 
   <div class="fp-section-title">5分鐘足跡圖（藍=買量 / 紅=賣量，近 12 根）</div>
-  <div style="font-size:0.68rem;color:var(--text3);margin:-4px 0 6px">每根K棒顯示：🟢買方成交量 vs 🔴賣方成交量，下方百分比為買盤佔比</div>
+  <div style="font-size:0.68rem;color:var(--text3);margin:-4px 0 6px">每根K棒顯示：🟢買方成交量 vs 🔴賣方成交量，下方百分比為買盤佔比｜<span style="color:#f59e0b">快進快出信號另採 1m 資料偵測</span></div>
   <div class="fp-bars-area" style="align-items:flex-end;gap:4px">${bars}</div>
   <div class="fp-cum-row">
     累積 Delta：<span style="color:${cumTrClr}">${cumTrend}</span>
