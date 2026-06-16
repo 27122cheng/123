@@ -9402,8 +9402,8 @@ function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
-    // 信心度 < 70% → 不確定訊號，跳過（提升門檻確保高勝率）
-    if ((setup.conf || 0) < 70) continue;
+    // 信心度最低門檻（與幣種詳情頁一致）
+    if ((setup.conf || 0) < 55) continue;
     // 週日預測強度協同：不能週強多+日強空 或 週強空+日強多（衝突訊號跳過）
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
     if (wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
@@ -9424,15 +9424,13 @@ function recordSignalsFromScan(data) {
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     const canScaleIn = setup.isLongTerm === true;
 
-    // 各類型 R/R 門檻（長線 ≥1.8，短線 ≥1.5）
+    // R/R 門檻（與幣種詳情頁一致：長線 ≥1.5，短線 ≥1.3）
     const _scanRR = setup.rr1 || 0;
-    const _minScanRR = canScaleIn ? 1.8 : 1.5;
+    const _minScanRR = canScaleIn ? 1.5 : 1.3;
     if (parseFloat(_scanRR) < _minScanRR) continue;
-    // 各類型信心度門檻（長線 ≥75，短線 ≥70）
-    const _minScanConf = canScaleIn ? 75 : 70;
-    if ((setup.conf || 0) < _minScanConf) continue;
-    // 長線單：週向必須對齊（短線允許週向逆勢）
+    // 長線單：信心 ≥65 + 週向必須對齊
     if (canScaleIn) {
+      if ((setup.conf || 0) < 65) continue;
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
       if (!_wkAligned) continue;
     }
@@ -9476,11 +9474,11 @@ function recordSignalsFromScan(data) {
     // 最高 13 分；A 級門檻 ≥7
     const _scanSqGrade = _scanSqScore >= 10 ? 'S' : _scanSqScore >= 7 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
     const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單需頂級訊號 S；短線單需優質訊號 A 以上
+    // 長線單需頂級訊號 S；短線單需優質訊號 A 以上（與幣種詳情 SQ≥A 門檻一致）
     const _reqGrades = canScaleIn ? ['S'] : ['S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
-    // 短線單需 4 時框同向（日+4H+1H+15m），長線單需 5 時框同向（週+日+4H+1H+15m）
-    if (!setup.isShortTerm && !setup.isLongTerm) continue;
+    // 注意：移除 isShortTerm/isLongTerm 強制 4時框對齊要求
+    // SQ 等級已整合時框品質，與幣種詳情頁邏輯保持一致
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
