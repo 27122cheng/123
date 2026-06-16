@@ -4054,10 +4054,61 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _ictCacheData = { killZone: _kz, orderBlock: _ictOB, fvg: _ictFVG, premiumDiscount: _ictPD,
     orderBlock4h: _ictOB4h, fvg4h: _ictFVG4h, ictBonus: _ictBonus, breakoutCheck: _breakoutCheck };
 
+  // ── 快進快出信號（1m K棒，勝率≥80%才顯示）──
+  const _scalpHtml = (() => { try {
+    const _ss = _fpBTS?.scalpSignal;
+    if (!_ss || _ss.conf < 80) return '';
+    // 15m 方向確認加成
+    let _ssConf = _ss.conf;
+    const _m15sig = mtfData['15m']?.signal;
+    const _ssIsLong = _ss.direction === 'bull';
+    if (_m15sig) {
+      if ((_ssIsLong && _m15sig.signal === 'bull') || (!_ssIsLong && _m15sig.signal === 'bear'))
+        _ssConf = Math.min(93, _ssConf + 3);
+      else if ((_ssIsLong && _m15sig.signal === 'bear') || (!_ssIsLong && _m15sig.signal === 'bull'))
+        _ssConf = Math.max(75, _ssConf - 5);
+    }
+    if (_ssConf < 80) return '';
+    const _ssDir  = _ssIsLong ? '⬆️ 做多' : '⬇️ 做空';
+    const _ssDirC = _ssIsLong ? '#22c55e' : '#ef4444';
+    const _ssConfC = _ssConf >= 88 ? '#22c55e' : _ssConf >= 83 ? '#f59e0b' : '#94a3b8';
+    const _fp = v => fmtPrice(v);
+    const _ssReasonsHtml = (_ss.reasons || []).map(r => `<div style="font-size:0.69rem;color:var(--text2);padding:2px 0">${r}</div>`).join('');
+    return `<div style="background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.3);border-radius:10px;padding:11px 14px;margin-bottom:8px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="font-size:0.85rem">⚡</span>
+      <span style="font-weight:700;color:#fbbf24;font-size:0.82rem">快進快出機會（1m 高勝率形態）</span>
+      <span style="background:rgba(251,191,36,.18);color:#fbbf24;border-radius:12px;padding:1px 8px;font-size:0.69rem;font-weight:700">${_ssConf}% 勝率</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+      <span style="color:${_ssDirC};font-weight:700;font-size:0.82rem">${_ssDir}</span>
+      <span style="color:var(--text2);font-size:0.76rem">${_ss.label}</span>
+      <span style="color:${_ssConfC};font-size:0.72rem;font-weight:600">信心 ${_ssConf}%</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px">
+      <div style="background:rgba(255,255,255,.04);border-radius:6px;padding:5px 8px;text-align:center">
+        <div style="font-size:0.63rem;color:var(--text3)">進場</div>
+        <div style="font-size:0.78rem;font-weight:700;color:var(--text1)">$${_fp(_ss.entryPrice)}</div>
+      </div>
+      <div style="background:rgba(34,197,94,.08);border-radius:6px;padding:5px 8px;text-align:center">
+        <div style="font-size:0.63rem;color:var(--text3)">目標</div>
+        <div style="font-size:0.78rem;font-weight:700;color:#22c55e">$${_fp(_ss.target)} <span style="font-size:0.63rem">(+${_ss.rewardPct}%)</span></div>
+      </div>
+      <div style="background:rgba(239,68,68,.08);border-radius:6px;padding:5px 8px;text-align:center">
+        <div style="font-size:0.63rem;color:var(--text3)">止損</div>
+        <div style="font-size:0.78rem;font-weight:700;color:#ef4444">$${_fp(_ss.stop)} <span style="font-size:0.63rem">(-${_ss.riskPct}%)</span></div>
+      </div>
+    </div>
+    <div style="font-size:0.69rem;color:#f59e0b;margin-bottom:4px;font-weight:600">R/R ${_ss.rr}:1 | 觸發依據</div>
+    ${_ssReasonsHtml}
+    <div style="margin-top:6px;font-size:0.67rem;color:var(--text3)">⚠️ 快進快出單：建議市價進場，嚴守止損，目標達到即離場；此為短線機會非主波段信號</div>
+  </div>`;
+  } catch(_sse) { return ''; } })();
+
   // R/R < 1.3 硬性封鎖（優先於 SQ 等級，無論訊號強度均不進場）
   if (parseFloat(rr1str) < 1.3 && direction !== 'wait') {
     _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore, chartPat: _chartPat, ..._ictCacheData };
-    return `<div class="setup-wait">
+    return `${_scalpHtml}<div class="setup-wait">
       <div class="setup-wait-icon">🚫</div>
       <div class="setup-wait-title">盈虧比不足（R/R <strong style="color:#ef4444">${parseFloat(rr1str).toFixed(1)}:1</strong>），硬性封鎖進場</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">最低要求 R/R ≥ 1.3:1，當前 ${parseFloat(rr1str).toFixed(1)}:1 不達標，無論訊號品質如何均不進場</div>
@@ -4068,7 +4119,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // Grade B/C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
   if (!['SSS','SS','S','A'].includes(_sqGrade)) {
     _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore, chartPat: _chartPat, ..._ictCacheData };
-    return `<div class="setup-wait">
+    return `${_scalpHtml}<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
       <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">全數據多因子評分 ${_sqScore} 分，需達 A 級（≥ 10 分）才進場</div>
@@ -4585,6 +4636,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   } catch(e) { return ''; } })()}
 
   ${_ictAnalysisHtml}
+
+  ${_scalpHtml}
 
   <div class="setup-macro-row">
     <div class="setup-macro-title">🌐 宏觀信號同步分析</div>

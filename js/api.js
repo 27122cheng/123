@@ -1029,135 +1029,103 @@ async function fetchWhaleTrades(symbol) {
 
 /* ═══════════════════ 市場足跡圖數據 ══════════════════════ */
 async function fetchFootprintData(symbol) {
-  const sym = symbol.replace('/', '').replace('USDT', '') + 'USDT';
-  for (const host of BINANCE_HOSTS) {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(`${host}/api/v3/aggTrades?symbol=${sym}&limit=1000`, { signal: ctrl.signal });
-      clearTimeout(t);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const trades = await res.json();
-      if (!Array.isArray(trades) || trades.length < 20) return null;
+  const base = symbol.replace('/', '').replace('USDT', '') + 'USDT';
+  // 使用 1m K棒取代 aggTrades：時間標準化、OHLC結構完整、column[9] = takerBuyBaseVol
+  const raw = await fetchKlines(base, '1m', 120); // 最近 120 根 1m K棒（約 2小時）
+  if (!raw || raw.length < 20) return null;
+  try {
+    const priceVolMap = new Map();
+    let _vwapPV = 0, _vwapV = 0;
+    let _totalBuyVol = 0, _totalSellVol = 0;
 
-      const BUCKET = 5 * 60 * 1000; // 5-minute candles
-      const candleMap = new Map();
-      const priceVolMap = new Map();
-      let _vwapPV = 0, _vwapV = 0; // for VWAP: Σ(price×qty), Σ(qty)
-      let _totalBuyVol = 0, _totalSellVol = 0;
+    const candles = raw.map(bar => {
+      const ts      = parseFloat(bar[0]);
+      const open    = parseFloat(bar[1]);
+      const high    = parseFloat(bar[2]);
+      const low     = parseFloat(bar[3]);
+      const close   = parseFloat(bar[4]);
+      const vol     = parseFloat(bar[5]);
+      const buyVol  = parseFloat(bar[9]);  // takerBuyBaseAssetVolume
+      const sellVol = Math.max(0, vol - buyVol);
+      const delta   = buyVol - sellVol;
 
-      for (const tr of trades) {
-        const ts    = tr.T;
-        const p     = parseFloat(tr.p);
-        const q     = parseFloat(tr.q);
-        const isBuy = !tr.m; // m=true → buyer is maker (passive) = aggressor sold
+      // VWAP 標準公式：典型價格 (H+L+C)/3 × 成交量
+      const tp = (high + low + close) / 3;
+      _vwapPV  += tp * vol;
+      _vwapV   += vol;
+      _totalBuyVol  += buyVol;
+      _totalSellVol += sellVol;
 
-        // VWAP accumulation
-        _vwapPV += p * q;
-        _vwapV  += q;
-        if (isBuy) _totalBuyVol += q; else _totalSellVol += q;
+      // 成交量分佈（POC 用）
+      const pLvl = parseFloat(close.toPrecision(4));
+      if (!priceVolMap.has(pLvl)) priceVolMap.set(pLvl, { price: pLvl, buyVol: 0, sellVol: 0 });
+      const lv = priceVolMap.get(pLvl);
+      lv.buyVol  += buyVol;
+      lv.sellVol += sellVol;
 
-        // Candle bucket
-        const bucket = Math.floor(ts / BUCKET) * BUCKET;
-        if (!candleMap.has(bucket)) {
-          candleMap.set(bucket, { ts: bucket, buyVol: 0, sellVol: 0, open: p, close: p, high: p, low: p });
-        }
-        const c = candleMap.get(bucket);
-        if (isBuy) c.buyVol += q; else c.sellVol += q;
-        c.close = p;
-        if (p > c.high) c.high = p;
-        if (p < c.low)  c.low  = p;
+      return { ts, open, high, low, close, buyVol, sellVol, total: vol, delta,
+               priceChange: close - open, buyRatio: vol > 0 ? buyVol / vol : 0.5 };
+    });
 
-        // Price level (4 significant digits)
-        const pLvl = parseFloat(p.toPrecision(4));
-        if (!priceVolMap.has(pLvl)) priceVolMap.set(pLvl, { price: pLvl, buyVol: 0, sellVol: 0 });
-        const lv = priceVolMap.get(pLvl);
-        if (isBuy) lv.buyVol += q; else lv.sellVol += q;
-      }
+    // 累積 Delta 趨勢
+    let cum = 0;
+    const cumDeltas = candles.map(c => { cum += c.delta; return cum; });
+    const nc = cumDeltas.length;
+    const deltaDir = nc < 3 ? 'neutral'
+      : cumDeltas[nc-1] > cumDeltas[Math.floor(nc/3)] * 1.02 ? 'bull'
+      : cumDeltas[nc-1] < cumDeltas[Math.floor(nc/3)] * 0.98 ? 'bear' : 'neutral';
 
-      const candles = [...candleMap.values()]
-        .sort((a, b) => a.ts - b.ts)
-        .map(c => ({ ...c, delta: c.buyVol - c.sellVol, total: c.buyVol + c.sellVol,
-                     priceChange: c.close - c.open }));
+    const recentDelta = candles.slice(-5).reduce((s, c) => s + c.delta, 0);
+    const firstClose  = candles[0]?.close || 0;
+    const lastClose   = candles[candles.length-1]?.close || firstClose;
+    const priceDir    = lastClose > firstClose * 1.002 ? 'bull'
+                      : lastClose < firstClose * 0.998 ? 'bear' : 'neutral';
+    const deltaDiv    = priceDir !== 'neutral' && deltaDir !== 'neutral' && priceDir !== deltaDir;
 
-      // Cumulative delta
-      let cum = 0;
-      const cumDeltas = candles.map(c => { cum += c.delta; return cum; });
-      const n = cumDeltas.length;
-      const deltaDir = n < 3 ? 'neutral'
-        : cumDeltas[n - 1] > cumDeltas[Math.floor(n / 3)] * 1.02 ? 'bull'
-        : cumDeltas[n - 1] < cumDeltas[Math.floor(n / 3)] * 0.98 ? 'bear' : 'neutral';
+    // Volume Profile + POC
+    const priceVols = [...priceVolMap.values()]
+      .map(lv => ({ ...lv, total: lv.buyVol + lv.sellVol, delta: lv.buyVol - lv.sellVol }))
+      .sort((a, b) => b.total - a.total);
+    const poc = priceVols[0]?.price || lastClose;
 
-      const recentDelta = candles.slice(-5).reduce((s, c) => s + c.delta, 0);
-      const firstClose  = candles[0]?.close || 0;
-      const lastClose   = candles[candles.length - 1]?.close || firstClose;
-      const priceDir    = lastClose > firstClose * 1.002 ? 'bull'
-                        : lastClose < firstClose * 0.998 ? 'bear' : 'neutral';
-      const deltaDiv    = priceDir !== 'neutral' && deltaDir !== 'neutral' && priceDir !== deltaDir;
+    // 吸籌偵測
+    const lastFew    = candles.slice(-4);
+    const absorption = lastFew.length >= 3
+      && lastFew.filter(c => c.priceChange < 0).length >= 2
+      && lastFew.reduce((s, c) => s + c.delta, 0) > 0;
 
-      // Volume profile
-      const priceVols = [...priceVolMap.values()]
-        .map(lv => ({ ...lv, total: lv.buyVol + lv.sellVol, delta: lv.buyVol - lv.sellVol }))
-        .sort((a, b) => b.total - a.total);
-      const poc = priceVols[0]?.price || lastClose;
+    const sorted         = [...priceVols].filter(l => l.total > 0);
+    const highBuyLevels  = [...sorted].sort((a, b) => b.delta - a.delta).slice(0, 5);
+    const highSellLevels = [...sorted].sort((a, b) => a.delta - b.delta).slice(0, 5);
 
-      // Absorption: price fell but delta was net positive (buyers absorbed selling)
-      const lastFew = candles.slice(-4);
-      const absorption = lastFew.length >= 3
-        && lastFew.filter(c => c.priceChange < 0).length >= 2
-        && lastFew.reduce((s, c) => s + c.delta, 0) > 0;
+    // VWAP（1m 標準公式：典型價 × 量）
+    const vwap = _vwapV > 0 ? _vwapPV / _vwapV : lastClose;
 
-      // Imbalance levels: top 5 buy-dominant and sell-dominant price levels
-      const sorted = [...priceVols].filter(l => l.total > 0);
-      const highBuyLevels  = [...sorted].sort((a, b) => b.delta - a.delta).slice(0, 5);
-      const highSellLevels = [...sorted].sort((a, b) => a.delta - b.delta).slice(0, 5);
+    // 市場微結構：相鄰K棒 delta 方向交替率
+    let _altCount = 0;
+    for (let i = 1; i < candles.length; i++) {
+      if ((candles[i].delta >= 0) !== (candles[i-1].delta >= 0)) _altCount++;
+    }
+    const bidAskBounceScore    = candles.length > 1 ? Math.round(_altCount / (candles.length-1) * 100) : 0;
+    const microstructureQuality = Math.max(0, 100 - bidAskBounceScore);
+    const totalVol              = _totalBuyVol + _totalSellVol;
+    const takerBuyRatio         = totalVol > 0 ? _totalBuyVol / totalVol : 0.5;
 
-      // VWAP（成交量加權平均價）
-      const vwap = _vwapV > 0 ? _vwapPV / _vwapV : lastClose;
+    // 快進快出信號偵測（≥80% 勝率才觸發）
+    const scalpSignal = typeof detectScalpSignal === 'function'
+      ? detectScalpSignal(candles, lastClose, vwap, poc) : null;
 
-      // Bid-Ask Bounce Score：衡量買賣方向交替頻率（高 = 市場噪音大，tick品質差）
-      // 相鄰K棒 delta 正負交替次數 / (總K棒-1)，轉為 0-100
-      let _altCount = 0;
-      for (let i = 1; i < candles.length; i++) {
-        if ((candles[i].delta >= 0) !== (candles[i-1].delta >= 0)) _altCount++;
-      }
-      const bidAskBounceScore = candles.length > 1
-        ? Math.round(_altCount / (candles.length - 1) * 100) : 0;
-
-      // 市場微結構質量（0-100）：方向一致性越高越好
-      const microstructureQuality = Math.max(0, 100 - bidAskBounceScore);
-
-      // 整體買賣比率（Taker buy ratio）
-      const totalVol = _totalBuyVol + _totalSellVol;
-      const takerBuyRatio = totalVol > 0 ? _totalBuyVol / totalVol : 0.5;
-
-      // 各 K 棒買賣比（用於足跡圖視覺化）
-      const candlesWithRatio = candles.slice(-20).map(c => ({
-        ...c,
-        buyRatio: c.total > 0 ? c.buyVol / c.total : 0.5,
-      }));
-
-      return {
-        candles:       candlesWithRatio,
-        cumulativeDelta: cum,
-        deltaDir,
-        recentDelta,
-        priceDir,
-        deltaDiv,
-        poc,
-        vwap,
-        bidAskBounceScore,
-        microstructureQuality,
-        takerBuyRatio,
-        priceVols:     priceVols.slice(0, 20),
-        highBuyLevels,
-        highSellLevels,
-        absorption,
-        lastClose,
-      };
-    } catch { continue; }
-  }
-  return null;
+    return {
+      candles:            candles.slice(-20),
+      cumulativeDelta:    cum,
+      deltaDir, recentDelta, priceDir, deltaDiv,
+      poc, vwap, bidAskBounceScore, microstructureQuality, takerBuyRatio,
+      priceVols:          priceVols.slice(0, 20),
+      highBuyLevels, highSellLevels,
+      absorption, lastClose,
+      scalpSignal,
+    };
+  } catch { return null; }
 }
 
 /* ═══════════════════ 爆倉地圖 API ══════════════════════ */
