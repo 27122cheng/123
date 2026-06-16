@@ -9842,7 +9842,27 @@ function recordSignalsFromScan(data) {
       else if (_rcCFOpp >= 2) _sqRC -= 1;
     } catch(_e) {}
 
-    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（最高約 22 分）
+    // ⑥ ICT 結構（OB/FVG）— 使用 _tradeSetupCache 快取；背景 backgroundSQMonitorICT 定期刷新 — max +2
+    try {
+      const _rcIctC = _tradeSetupCache[_sqCoin.symbol];
+      if (_rcIctC && (_rcIctC.orderBlock !== undefined || _rcIctC.orderBlock4h !== undefined)) {
+        let _rcIctCnt = 0;
+        if (_rcIctC.orderBlock?.priceInOB || _rcIctC.orderBlock4h?.priceInOB) _rcIctCnt++;
+        if ((_rcIctC.fvg && !_rcIctC.fvg.filled) || (_rcIctC.fvg4h && !_rcIctC.fvg4h.filled)) _rcIctCnt++;
+        _sqRC += Math.min(2, _rcIctCnt);
+      }
+    } catch(_e) {}
+
+    // ⑯ 圖形確認（4H K棒）— 使用 _tradeSetupCache 快取 — max +2，逆向圖形扣分
+    try {
+      const _rcPat = _tradeSetupCache[_sqCoin.symbol]?.chartPat;
+      if (_rcPat) {
+        _sqRC += Math.min(2, Math.max(0, _rcPat.score || 0));
+        if ((_rcPat.opposing?.length || 0) > 0) _sqRC -= Math.min(2, _rcPat.opposing.length);
+      }
+    } catch(_e) {}
+
+    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（最高約 26 分含 ICT + 圖形）
     _sqRC = Math.max(0, _sqRC);
     const _rcGrade = _sqRC >= 22 ? 'SSS'
                    : _sqRC >= 19 ? 'SS'
@@ -9881,6 +9901,8 @@ function recordSignalsFromScan(data) {
   }
   // 背景檢測新建短線單是否符合長線條件（異步，不阻塞掃描）
   if (changed) setTimeout(() => backgroundRefineNewTrades(), 2000);
+  // 背景刷新掛單的 ICT 結構 + 圖形確認快取（每 30 分鐘最多一次），讓 SQ 監控可涵蓋 ⑥⑯ 兩因子
+  setTimeout(() => backgroundSQMonitorICT(), 5000);
 }
 /* ── 背景精煉：為新建短線單自動檢測長線條件 ─────────────────── */
 async function backgroundRefineNewTrades() {
@@ -10056,6 +10078,53 @@ async function backgroundRefineNewTrades() {
       saveTradeLog(tlogEdit);
     } catch(e) {
       console.warn('[backgroundRefine]', trade.symbol, e);
+    }
+  }
+}
+/* ── 背景 ICT/圖形快取刷新：為掛單定期抓取 MTF Klines，確保 SQ 監控含 ⑥+⑯ 兩因子 ─── */
+const _sqIctRefreshTs = {};  // { [symbol]: lastRefreshMs }
+const _SQ_ICT_INTERVAL = 30 * 60 * 1000;  // 每 30 分鐘刷新一次
+
+async function backgroundSQMonitorICT() {
+  const tlog = loadTradeLog();
+  const now  = Date.now();
+  const pending = tlog.filter(t =>
+    t.status === 'pending' &&
+    !t.entryTime &&
+    t.tradeType !== 'range' &&
+    (now - (_sqIctRefreshTs[t.symbol] || 0)) > _SQ_ICT_INTERVAL
+  );
+  if (!pending.length) return;
+
+  for (const trade of pending.slice(0, 4)) {
+    try {
+      const mtfData = await fetchMTFKlines(trade.symbol);
+      const isLong  = trade.direction === 'long';
+      const raw1h   = mtfData['1h']?.raw || [];
+      const raw4h   = mtfData['4h']?.raw || [];
+
+      let ictOB = null, ictFVG = null, ictOB4h = null, ictFVG4h = null;
+      if (raw1h.length >= 5 && typeof detectOrderBlocks   === 'function') ictOB   = detectOrderBlocks(raw1h,   isLong);
+      if (raw1h.length >= 5 && typeof detectFairValueGaps === 'function') ictFVG  = detectFairValueGaps(raw1h, isLong);
+      if (raw4h.length >= 5 && typeof detectOrderBlocks   === 'function') ictOB4h  = detectOrderBlocks(raw4h,  isLong);
+      if (raw4h.length >= 5 && typeof detectFairValueGaps === 'function') ictFVG4h = detectFairValueGaps(raw4h, isLong);
+
+      let chartPat = { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] };
+      if (raw4h.length >= 10 && typeof detectChartPatterns === 'function') {
+        chartPat = detectChartPatterns(raw4h, isLong);
+      }
+
+      // 更新 _tradeSetupCache — 下一輪同步 SQ 監控會自動帶入這兩個因子
+      if (!_tradeSetupCache[trade.symbol]) _tradeSetupCache[trade.symbol] = {};
+      Object.assign(_tradeSetupCache[trade.symbol], {
+        orderBlock: ictOB, fvg: ictFVG,
+        orderBlock4h: ictOB4h, fvg4h: ictFVG4h,
+        chartPat,
+      });
+      _sqIctRefreshTs[trade.symbol] = now;
+      console.log(`[bg-ict] ${trade.symbol} ICT/圖形快取已刷新（OB:${!!(ictOB?.priceInOB||ictOB4h?.priceInOB)} FVG:${!!(ictFVG&&!ictFVG.filled||ictFVG4h&&!ictFVG4h.filled)} 圖形分:${chartPat.score}）`);
+    } catch(_e) {
+      console.warn('[bg-ict]', trade.symbol, _e);
     }
   }
 }
