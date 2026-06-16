@@ -9672,72 +9672,207 @@ function recordSignalsFromScan(data) {
     newTrade._notifyRisk   = { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs };
   }
 
-  // ── 訊號品質持續監控：掛單未進場前每次掃描重新評估 SQ 等級，低於 A 級自動取消 ──
+  // ── 訊號品質持續監控：掛單未進場前每次掃描用完整 21 因子重新評估，低於 A 級自動取消 ──
+  // 使用與 buildTradeSetup 相同的等級門檻（SSS≥22/SS≥19/S≥15/A≥10/B≥6/C≥3/D<3）
+  // ICT結構和圖形確認需要異步 MTF Kline，其餘 ~18 個因子均可從掃描快取即時取得
   const _sqCancelIds = new Set();
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
-    if (trade.tradeType === 'range') continue;  // 震盪單不受 SQ 方向性門檻限制
+    if (trade.tradeType === 'range') continue;
     const _sqCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
     if (!_sqCoin) continue;
     const _sqIsLong = trade.direction === 'long';
-    // 重算掃描版 SQ 分數（與建單時完全相同的 10 因子簡化版）
-    let _sqRecheckScore = 0;
-    const _sqRecheckFactors = [];
-    const _rcH4Ok  = _sqIsLong ? (_sqCoin.h4Signal    || '').includes('bull') : (_sqCoin.h4Signal    || '').includes('bear');
-    const _rcDayOk = _sqIsLong ? (_sqCoin.dailySignal || '').includes('bull') : (_sqCoin.dailySignal || '').includes('bear');
-    const _rcWkOk  = _sqIsLong ? (_sqCoin.weeklySignal|| '').includes('bull') : (_sqCoin.weeklySignal|| '').includes('bear');
-    if (_rcH4Ok && _rcDayOk) { _sqRecheckScore += 2; _sqRecheckFactors.push('✅ 4H+日線同向'); }
-    else if (_rcH4Ok || _rcDayOk) { _sqRecheckScore += 1; _sqRecheckFactors.push(_rcH4Ok ? '✅ 4H同向' : '✅ 日線同向'); }
-    if (_rcWkOk) { _sqRecheckScore += 1; }
-    if (_sqIsLong ? wBias.includes('bull') : wBias.includes('bear')) _sqRecheckScore += 1;
-    if (_sqIsLong ? tBias.includes('bull') : tBias.includes('bear')) _sqRecheckScore += 1;
+
+    let _sqRC = 0;  // recheck score
+
+    // ① 多框架同向（4H+日線+週線）— max +3
+    const _rcH4Ok  = _sqIsLong ? (_sqCoin.h4Signal    ||'').includes('bull') : (_sqCoin.h4Signal    ||'').includes('bear');
+    const _rcDyOk  = _sqIsLong ? (_sqCoin.dailySignal ||'').includes('bull') : (_sqCoin.dailySignal ||'').includes('bear');
+    const _rcWkOk  = _sqIsLong ? (_sqCoin.weeklySignal||'').includes('bull') : (_sqCoin.weeklySignal||'').includes('bear');
+    if (_rcH4Ok && _rcDyOk && _rcWkOk) _sqRC += 3;
+    else if (_rcH4Ok && _rcDyOk)        _sqRC += 2;
+    else if (_rcH4Ok || _rcDyOk)        _sqRC += 1;
+
+    // ① 延伸：1H 同向 +1
+    const _rcH1Ok = _sqIsLong ? (_sqCoin.h1Signal||'').includes('bull') : (_sqCoin.h1Signal||'').includes('bear');
+    if (_rcH1Ok) _sqRC += 1;
+
+    // ① 延伸：MACD 同向 +1
+    const _rcMacd = parseFloat(_sqCoin.macdHist) || 0;
+    if (_sqIsLong ? _rcMacd > 0 : _rcMacd < 0) _sqRC += 1;
+
+    // ② 本週 AI 同向 ±1
+    if (_sqIsLong ? wBias.includes('bull') : wBias.includes('bear')) _sqRC += 1;
+    else if (_sqIsLong ? wBias.includes('bear') : wBias.includes('bull')) _sqRC -= 1;
+
+    // ③ 今日 AI 同向 ±1
+    if (_sqIsLong ? tBias.includes('bull') : tBias.includes('bear')) _sqRC += 1;
+    else if (_sqIsLong ? tBias.includes('bear') : tBias.includes('bull')) _sqRC -= 1;
+
+    // ④ 宏觀環境 ±2（與 buildTradeSetup 一致）
+    if (_macroCache) try {
+      const _rcFg  = _macroCache.fg;
+      const _rcFgV = parseInt(_rcFg?.value || '50');
+      const _rcNetDir = computeMacroNetDir(_rcFg, _macroCache);
+      const _rcMacOk  = _sqIsLong ? _rcNetDir.includes('bull') : _rcNetDir.includes('bear');
+      const _rcMacOpp = _sqIsLong ? _rcNetDir.includes('bear') : _rcNetDir.includes('bull');
+      const _rcFgNtrl = _rcFgV >= 40 && _rcFgV <= 60;
+      let _rcMacPts = 0;
+      if (_rcMacOk)  _rcMacPts += 1;
+      if (_rcFgNtrl && !_rcMacOpp) _rcMacPts += 1;
+      if (_rcMacOpp) _rcMacPts -= 2;
+      _sqRC += Math.max(-2, Math.min(2, _rcMacPts));
+    } catch(_e) {}
+
+    // ⑤ 足跡圖 Delta ±1
     const _rcFP = _footprintCache[_sqCoin.symbol];
-    if (_rcFP && !_rcFP.deltaDiv) {
-      if (_sqIsLong ? (_rcFP.deltaDir === 'bull') : (_rcFP.deltaDir === 'bear')) _sqRecheckScore += 1;
+    if (_rcFP) {
+      if (_rcFP.deltaDiv) _sqRC -= 1;
+      else if (_sqIsLong ? (_rcFP.deltaDir === 'bull') : (_rcFP.deltaDir === 'bear')) _sqRC += 1;
+      else if (_sqIsLong ? (_rcFP.deltaDir === 'bear') : (_rcFP.deltaDir === 'bull')) _sqRC -= 1;
+      // ㉑ 市場微結構品質 ±1
+      if ((_rcFP.microstructureQuality || 0) >= 7) _sqRC += 1;
+      else if ((_rcFP.microstructureQuality || 0) <= 3) _sqRC -= 1;
     }
-    if ((parseFloat(_sqCoin.adx) || 20) >= 28) _sqRecheckScore += 1;
+
+    // ⑦ ADX ±1
+    const _rcAdx = parseFloat(_sqCoin.adx) || 20;
+    if (_rcAdx >= 28) _sqRC += 1;
+    else if (_rcAdx < 20) _sqRC -= 1;
+
+    // ⑧ 訂單流 Taker ±1（from derivData）
+    try {
+      const _rcTkr = _sqCoin.derivData?.takerBuySell ?? 1;
+      if (_sqIsLong ? _rcTkr >= 1.08 : _rcTkr <= 0.92) _sqRC += 1;
+      else if (_sqIsLong ? _rcTkr < 0.88 : _rcTkr > 1.12) _sqRC -= 1;
+    } catch(_e) {}
+
+    // ⑨ 巨鯨籌碼 ±1（from whaleData）
+    try {
+      const _rcWhl = _sqCoin.whaleData;
+      if (_rcWhl) {
+        if (_sqIsLong ? (_rcWhl.bias === 'bull' && (_rcWhl.bigBuyCount  ||0) >= 2)
+                      : (_rcWhl.bias === 'bear' && (_rcWhl.bigSellCount ||0) >= 2)) _sqRC += 1;
+        else if (_sqIsLong ? (_rcWhl.bias === 'bear' && (_rcWhl.bigSellCount||0) >= 3)
+                           : (_rcWhl.bias === 'bull' && (_rcWhl.bigBuyCount ||0) >= 3)) _sqRC -= 1;
+      }
+    } catch(_e) {}
+
+    // ⑩ 成交量 ±1
+    const _rcVol = _sqCoin.volumeStrength || '';
+    if (_rcVol.includes('強') || _rcVol === 'high') _sqRC += 1;
+    else if (_rcVol.includes('弱') || _rcVol === 'low') _sqRC -= 1;
+
+    // ⑪ BB走軌 ±1（from coin.bb）
+    try {
+      const _rcBB = _sqCoin.bb;
+      if (_rcBB) {
+        if (_sqIsLong ? _rcBB.walkingBull : _rcBB.walkingBear) _sqRC += 1;
+        else if (_sqIsLong ? _rcBB.walkingBear : _rcBB.walkingBull) _sqRC -= 1;
+      }
+    } catch(_e) {}
+
+    // ⑫ 技術面逆風 ±1
     const _rcSetup = (() => { try { return computeSimpleSetup(_sqCoin, _sqIsLong); } catch(_e) { return null; } })();
-    if (_rcSetup && _rcSetup.techPenalty === 0) _sqRecheckScore += 1;
-    const _rcH1Ok = _sqIsLong ? (_sqCoin.h1Signal || '').includes('bull') : (_sqCoin.h1Signal || '').includes('bear');
-    if (_rcH1Ok) _sqRecheckScore += 1;
-    if (_sqIsLong ? (parseFloat(_sqCoin.macdHist) || 0) > 0 : (parseFloat(_sqCoin.macdHist) || 0) < 0) _sqRecheckScore += 1;
-    // 重算風控
-    let _rcRiskScore = 0;
+    if (_rcSetup) {
+      if (_rcSetup.techPenalty === 0) _sqRC += 1;
+      else if (_rcSetup.techPenalty >= 12) _sqRC -= 1;
+
+      // ⑬ R/R ±1
+      const _rcRR = parseFloat(_rcSetup.rr1) || 0;
+      if (_rcRR >= 2.0) _sqRC += 1;
+      else if (_rcRR < 1.3) _sqRC -= 1;
+    }
+
+    // ⑭ 風控分數 +2/+1/-1
     try {
       if (_rcSetup) {
         const _rcRisk = computeFullRisk(_sqCoin, _rcSetup, _sqIsLong);
-        _rcRiskScore = _rcRisk.score;
-        if (_rcRiskScore <= 20) _sqRecheckScore += 2;
-        else if (_rcRiskScore <= 40) _sqRecheckScore += 1;
+        if (_rcRisk.score <= 20)      _sqRC += 2;
+        else if (_rcRisk.score <= 40) _sqRC += 1;
+        else if (_rcRisk.score >= 55) _sqRC -= 1;
       }
-    } catch(_re) {}
-    // 等級判定（與建單時一致：A ≥7，B ≥4，C ≥2，D <2）
-    const _rcGrade = _sqRecheckScore >= 10 ? 'S' : _sqRecheckScore >= 7 ? 'A' : _sqRecheckScore >= 4 ? 'B' : _sqRecheckScore >= 2 ? 'C' : 'D';
-    // 長線單門檻 S；短線單門檻 A
-    const _rcMinGrades = trade.canScaleIn ? ['S'] : ['S', 'A'];
+    } catch(_e) {}
+
+    // ⑮ 止損學習懲罰 -1（嚴重時）
+    try {
+      const _rcLearn = applyLearnAdjustment(trade.direction, parseFloat(_sqCoin.rsi)||50, _rcAdx, { slType:'atr', skipAdxRule:true });
+      if ((_rcLearn.penalty || 0) >= 20) _sqRC -= 1;
+    } catch(_e) {}
+
+    // ⑰ AI新聞情緒 ±1
+    try {
+      const _rcIns = aiGenerateMarketInsights();
+      const _rcBear = _rcIns.filter(i => i.sentiment === 'bearish' || i.sentiment === 'bear').length;
+      const _rcBull = _rcIns.filter(i => i.sentiment === 'bullish' || i.sentiment === 'bull').length;
+      if (_rcBear + _rcBull > 0) {
+        if (_sqIsLong ? _rcBull > _rcBear : _rcBear > _rcBull) _sqRC += 1;
+        else if (_sqIsLong ? _rcBear > _rcBull : _rcBull > _rcBear) _sqRC -= 1;
+      }
+    } catch(_e) {}
+
+    // ⑱ 爆倉擠壓牆 +1
+    try {
+      const _rcLiq = _liquidationCache[_sqCoin.symbol];
+      const _rcCurP = parseFloat(_sqCoin.price) || 0;
+      if (_rcLiq && _rcCurP > 0) {
+        const _rcWall = _sqIsLong
+          ? (_rcLiq.shortLiqs || []).find(l => l.price > _rcCurP && l.price <= _rcCurP * 1.12)
+          : (_rcLiq.longLiqs  || []).find(l => l.price < _rcCurP && l.price >= _rcCurP * 0.88);
+        if (_rcWall) _sqRC += 1;
+      }
+    } catch(_e) {}
+
+    // ⑲ 重要數據事件 -1/-2
+    try {
+      const _rcEvs = getTodayEconEvents().filter(ev => {
+        const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+        return ev.impact === 'high' && mins >= -30 && mins <= 90;
+      });
+      if (_rcEvs.length >= 2) _sqRC -= 2;
+      else if (_rcEvs.length === 1) _sqRC -= 1;
+    } catch(_e) {}
+
+    // ⑳ 資金流動 ±1
+    try {
+      const _rcCF = getCapitalFlowBias();
+      const _rcCFOpp = (_rcCF.events || []).filter(ev => _sqIsLong ? ev.bear > 0 : ev.bull > 0).length;
+      const _rcCFOk  = (_rcCF.events || []).filter(ev => _sqIsLong ? ev.bull > 0 : ev.bear > 0).length;
+      if (_rcCFOk > 0 && _rcCFOpp === 0) _sqRC += 1;
+      else if (_rcCFOpp >= 2) _sqRC -= 1;
+    } catch(_e) {}
+
+    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（最高約 22 分）
+    _sqRC = Math.max(0, _sqRC);
+    const _rcGrade = _sqRC >= 22 ? 'SSS'
+                   : _sqRC >= 19 ? 'SS'
+                   : _sqRC >= 15 ? 'S'
+                   : _sqRC >= 10 ? 'A'
+                   : _sqRC >= 6  ? 'B'
+                   : _sqRC >= 3  ? 'C' : 'D';
+    const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
+
+    // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
+    const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_rcMinGrades.includes(_rcGrade)) {
-      const _gradeLabel = { S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade] || _rcGrade;
-      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_gradeLabel}訊號，評分 ${_sqRecheckScore}），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
+      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}/22），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
       addCancelCooldown(trade, _sqCancelReason);
       _sqCancelIds.add(trade.id);
       changed = true;
-      // 更新 SQ 資訊，讓取消通知能顯示最新評分
-      trade.sqGrade = _rcGrade; trade.sqScore = _sqRecheckScore;
+      trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
       try { sendCancelTelegramNotification(trade, _sqCancelReason); } catch(_n) {}
-      try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級，自動取消掛單`, 'warning'); } catch(_t) {}
+      try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級（${_sqRC}分），自動取消掛單`, 'warning'); } catch(_t) {}
     } else {
-      // SQ 等級仍合格 → 更新儲存的評分，確保持倉頁顯示最新值
-      if (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRecheckScore) {
-        trade.sqGrade = _rcGrade; trade.sqScore = _sqRecheckScore;
+      if (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRC) {
+        trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
         changed = true;
       }
     }
   }
-  // 移除因 SQ 等級不足而取消的掛單
   if (_sqCancelIds.size > 0) {
     const _before = tlog.length;
     tlog.splice(0, tlog.length, ...tlog.filter(t => !_sqCancelIds.has(t.id)));
-    console.log(`[SQ-monitor] 取消 ${_before - tlog.length} 筆訊號品質不足掛單`);
+    console.log(`[SQ-monitor] 取消 ${_before - tlog.length} 筆訊號品質不足掛單（18因子完整評估）`);
   }
 
   if (changed) {
