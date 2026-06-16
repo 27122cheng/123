@@ -936,6 +936,40 @@ function _buildHWRBannerFromTrade(t) {
   } catch(_e) { return ''; }
 }
 
+/* ── SQ 21因子面板（持倉 / 等待進場 共用）────────────────────── */
+function buildSQPanelFromTrade(t) {
+  try {
+    const factors = t.sqFactors;
+    if (!factors || !factors.length) return '';
+    const grade = t.sqGrade || '?';
+    const score = t.sqScore ?? 0;
+    const gradeLabel = t.sqGradeLabel || '';
+    const conf    = t.conf || 0;
+    const rawConf = t.rawConf || conf;
+    const gc = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[grade] || '#9ca3af';
+    const barW  = Math.round(Math.min(100, (score / 22) * 100));
+    const pos   = factors.filter(f => f.startsWith('✅'));
+    const neg   = factors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
+    const warn  = factors.filter(f => f.startsWith('⚠️'));
+    const neut  = factors.filter(f => f.startsWith('⬜'));
+    const cClr  = conf >= 70 ? '#22c55e' : conf >= 60 ? '#f59e0b' : '#ef4444';
+    return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-top:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:0.78rem;font-weight:700;color:var(--text2)">📊 訊號品質評分（SQ）</span>
+        <span style="font-size:0.8rem;font-weight:800;color:${gc};background:${gc}22;border:1px solid ${gc}55;padding:2px 10px;border-radius:20px">${grade} ${gradeLabel}　${score}分</span>
+      </div>
+      <div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-bottom:10px">
+        <div style="height:100%;width:${barW}%;background:${gc};border-radius:2px"></div>
+      </div>
+      ${pos.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#22c55e;font-weight:600;margin-bottom:3px">✅ 同向加分（${pos.length}項）</div>${pos.map(f=>`<div style="font-size:0.73rem;color:#86efac;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      ${neg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${neg.length}項）</div>${neg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      ${warn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${warn.length}項）</div>${warn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      ${neut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${neut.length}項）</div>${neut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">進場信心 <strong style="color:${cClr}">${conf}%</strong>（原始 ${rawConf}%）　需 A 級以上（≥10分）方可入場</div>
+    </div>`;
+  } catch(e) { return ''; }
+}
+
 /* ── 已開倉時顯示持倉詳情 + 即時損益 ──────────────────────────── */
 function buildOpenPositionSetup(t, currentPrice) {
   const isLong   = t.direction === 'long';
@@ -1065,10 +1099,14 @@ function buildOpenPositionSetup(t, currentPrice) {
 
   // 長線單止盈：只顯示最終止盈位（ltTP 或 tp1）；加倉位在回踩後由下方加倉進度區塊顯示
   const ltFinalTP = t.ltTP || tp1;
+  const _oRisk = Math.abs(entry - sl) || 1;
+  const _oLtR  = (entry && ltFinalTP) ? (Math.abs(ltFinalTP - entry) / _oRisk).toFixed(1) : null;
+  const _oTp1R = (entry && tp1) ? (Math.abs(tp1 - entry) / _oRisk).toFixed(1) : null;
+  const _oTp2R = (entry && tp2) ? (Math.abs(tp2 - entry) / _oRisk).toFixed(1) : null;
   const tpRows = isLongTermTrade ? `
     <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
       <div class="level-tag">🏁 最終止盈</div>
-      <div class="level-desc">${t.ltTPReason || t.aiScaleReason || '長線最終目標'}</div>
+      <div class="level-desc">${t.ltTPReason || t.aiScaleReason || '長線最終目標'}${_oLtR ? `　<span style="color:#22c55e;font-weight:700;font-size:0.78rem">最終 ${_oLtR}R</span>` : ''}</div>
       <div class="level-price-val" style="color:#22c55e">${fmt(ltFinalTP)}${pctStr(entry, ltFinalTP)}</div>
     </div>
     ${t.ltPartialTP ? `<div class="level-row" style="border-left:3px solid rgba(251,191,36,.6)">
@@ -1078,12 +1116,12 @@ function buildOpenPositionSetup(t, currentPrice) {
     </div>` : ''}` : `
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈1</div>
-      <div class="level-desc">${t.tp1Reason || '—'}</div>
+      <div class="level-desc">${t.tp1Reason || '—'}${_oTp1R ? `　<span style="color:#f59e0b;font-size:0.75rem">${_oTp1R}R</span>` : ''}</div>
       <div class="level-price-val">${fmt(tp1)}${pctStr(entry, tp1)}</div>
     </div>
     <div class="level-row" style="border-left:3px solid #22c55e">
-      <div class="level-tag">🚀 止盈2</div>
-      <div class="level-desc">${t.tp2Reason || '—'}</div>
+      <div class="level-tag">🚀 最終止盈</div>
+      <div class="level-desc">${t.tp2Reason || '—'}${_oTp2R ? `　<span style="color:#22c55e;font-weight:700;font-size:0.78rem">最終 ${_oTp2R}R</span>` : ''}</div>
       <div class="level-price-val">${fmt(tp2)}${pctStr(entry, tp2)}</div>
     </div>`;
 
@@ -1133,7 +1171,8 @@ function buildOpenPositionSetup(t, currentPrice) {
         </div>`).join('')}
       </div>`;
     })()}
-    <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　進場確認：<strong style="color:var(--bull)">${t.entryTime ? fmtDateTime(t.entryTime) : '—'}</strong></div>`;
+    <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　進場確認：<strong style="color:var(--bull)">${t.entryTime ? fmtDateTime(t.entryTime) : '—'}</strong></div>
+    ${buildSQPanelFromTrade(t)}`;
 }
 
 /* ── 等待進場確認畫面 ────────────────────────────────────────── */
@@ -1199,11 +1238,17 @@ function buildPendingPositionSetup(t, currentPrice) {
       <div class="level-desc">${distPct !== null ? `現價距進場位 <span style="color:${distClr}">${distPct > 0 ? '+' : ''}${distPct}%</span>` : '計算中…'}</div>
       <div class="level-price-val">${fmtPrice(entry)}</div>
     </div>
-    ${t.canScaleIn ? `
+    ${(() => {
+      const _pRsk = Math.abs(entry - sl) || 1;
+      const _pLtTP = t.ltTP || tp1;
+      const _pLtR = (entry && _pLtTP) ? (Math.abs(_pLtTP - entry) / _pRsk).toFixed(1) : null;
+      const _p1R = (entry && tp1) ? (Math.abs(tp1 - entry) / _pRsk).toFixed(1) : null;
+      const _p2R = (entry && tp2) ? (Math.abs(tp2 - entry) / _pRsk).toFixed(1) : null;
+      return t.canScaleIn ? `
     <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
       <div class="level-tag">🏁 最終止盈</div>
-      <div class="level-desc">${t.ltTPReason || t.aiScaleReason || '長線最終目標'}</div>
-      <div class="level-price-val" style="color:#22c55e">${fmtPrice(t.ltTP || tp1)}</div>
+      <div class="level-desc">${t.ltTPReason || t.aiScaleReason || '長線最終目標'}${_pLtR ? `　<span style="color:#22c55e;font-weight:700;font-size:0.78rem">最終 ${_pLtR}R</span>` : ''}</div>
+      <div class="level-price-val" style="color:#22c55e">${fmtPrice(_pLtTP)}</div>
     </div>
     ${t.ltPartialTP ? `
     <div class="level-row" style="border-left:3px solid rgba(251,191,36,.6)">
@@ -1216,14 +1261,15 @@ function buildPendingPositionSetup(t, currentPrice) {
     </div>` : `
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈一</div>
-      <div class="level-desc">${t.tp1Reason || '短線目標'}</div>
+      <div class="level-desc">${t.tp1Reason || '短線目標'}${_p1R ? `　<span style="color:#f59e0b;font-size:0.75rem">${_p1R}R</span>` : ''}</div>
       <div class="level-price-val">${fmtPrice(tp1)}</div>
     </div>
     <div class="level-row level-tp2">
-      <div class="level-tag">🚀 止盈二</div>
-      <div class="level-desc">${t.tp2Reason || '波段目標'}</div>
+      <div class="level-tag">🚀 最終止盈</div>
+      <div class="level-desc">${t.tp2Reason || '波段目標'}${_p2R ? `　<span style="color:#22c55e;font-weight:700;font-size:0.78rem">最終 ${_p2R}R</span>` : ''}</div>
       <div class="level-price-val">${fmtPrice(tp2)}</div>
-    </div>`}
+    </div>`;
+    })()}
     <div class="level-row level-sl">
       <div class="level-tag">🛑 止損</div>
       <div class="level-desc">${t.slReason || '結構止損'}</div>
@@ -1231,7 +1277,8 @@ function buildPendingPositionSetup(t, currentPrice) {
     </div>
   </div>
   ${_confBreakdown}
-  <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　有效期至：${fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2)}</div>`;
+  <div style="margin-top:10px;font-size:0.72rem;color:var(--text3)">信號時間：${fmtDateTime(t.timestamp)}　有效期至：${fmtDateTime(t.timestamp + SIGNAL_COOLDOWN * 2)}</div>
+  ${buildSQPanelFromTrade(t)}`;
 }
 
 /* ── ICT Kill Zone 獵殺時段偵測 ────────────────────────────── */
@@ -3656,8 +3703,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }, isLong);
   } catch(_re) { console.warn('[buildTradeSetup risk]', coin?.symbol, _re); }
 
-  // 高風險及以上（≥60）→ 觀望，不顯示進場建議
-  if (_risk.score >= 60) {
+  // 高風險及以上（≥55）→ 觀望，不顯示進場建議
+  if (_risk.score >= 55) {
     _tradeSetupCache[coin.symbol] = {
       direction: 'wait',
       riskScore: _risk.score, riskLevel: _risk.level,
@@ -3685,6 +3732,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
       </div>
       ${_erHtml()}
+      ${_sqPanelHtml}
     </div>`;
   }
 
@@ -3995,6 +4043,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
+  // ── SQ 21因子完整面板（幣種詳情 / 觀望 / 持倉均可注入）──
+  const _sqPanelHtml = (() => { try {
+    const _sqPos  = _sqFactors.filter(f => f.startsWith('✅'));
+    const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
+    const _sqWarn = _sqFactors.filter(f => f.startsWith('⚠️'));
+    const _sqNeut = _sqFactors.filter(f => f.startsWith('⬜'));
+    const _sqBarW = Math.round(Math.min(100, (_sqScore / 22) * 100));
+    const _sqBClr = _sqGradeColor || '#9ca3af';
+    const _cClr   = conf >= 70 ? '#22c55e' : conf >= 60 ? '#f59e0b' : '#ef4444';
+    return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:0.78rem;font-weight:700;color:var(--text2)">📊 訊號品質評分（SQ）</span>
+        <span style="font-size:0.8rem;font-weight:800;color:${_sqBClr};background:${_sqBClr}22;border:1px solid ${_sqBClr}55;padding:2px 10px;border-radius:20px">${_sqGrade} ${_sqGradeLabel}　${_sqScore}分</span>
+      </div>
+      <div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-bottom:10px">
+        <div style="height:100%;width:${_sqBarW}%;background:${_sqBClr};border-radius:2px"></div>
+      </div>
+      ${_sqPos.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#22c55e;font-weight:600;margin-bottom:3px">✅ 同向加分（${_sqPos.length}項）</div>${_sqPos.map(f=>`<div style="font-size:0.73rem;color:#86efac;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      ${_sqNeg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${_sqNeg.length}項）</div>${_sqNeg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      ${_sqWarn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${_sqWarn.length}項）</div>${_sqWarn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      ${_sqNeut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${_sqNeut.length}項）</div>${_sqNeut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">進場信心 <strong style="color:${_cClr}">${conf}%</strong>（原始 ${rawConf}%）　需 A 級以上（≥10分）方可入場</div>
+    </div>`;
+  } catch(_sqPE) { return ''; } })();
+
+  // ── SQ→信心整合：評分高時提振信心，低時抑制（僅對A+等級有效，B以下已被grade gate攔截）──
+  const _sqConfBoost = Math.round(Math.max(-8, Math.min(12, _sqScore - 10)));
+
   // ── ICT / SMC / SNR + 圖形識別（所有情況均顯示於交易建議區）──
   const _ictAnalysisHtml = (() => { try {
     const _ictH = (() => { try {
@@ -4289,7 +4365,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ex.hardAdxPenalty = hardAdxPenalty; ex.learnPenalty = learnPenalty;
     ex.macroPenalty = macroOpposePenalty; ex.aiTrendPenalty = aiTrendPenalty;
     ex.techPenalty = techPenalty; ex.chipsPenalty = chipsPenalty;
-    ex.sqGrade = _sqGrade; ex.sqScore = _sqScore; ex.sqGradeLabel = _sqGradeLabel;
+    ex.sqGrade = _sqGrade; ex.sqScore = _sqScore; ex.sqGradeLabel = _sqGradeLabel; ex.sqFactors = _sqFactors;
+    ex.dirPenalty = 0; ex.bbPenalty = 0; // PATH B 不獨立計算這兩項，歸零確保持倉與幣種詳情信心分一致
     ex.longTermBias = ltBias;
     if (!ex.entryTime) ex.canScaleIn = canScaleIn; // only update for pending (not yet entered) trades
     ex.is4hDayAligned = isDayAligned;
@@ -4343,10 +4420,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ 和 R/R 已確認，直接記錄（信心≥55 最低門檻）
-        // 移除 _4tfAligned 和 conflictPred：SQ 評分已整合時框和週日預測品質
-        // 幣種詳情顯示的訊號 = 持倉記錄，UI 與持倉完全一致
-        _canAutoRecord = conf >= 55;
+        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已確認，信心≥62 才納入持倉（減少雜訊）
+        _canAutoRecord = conf >= 62;
       }
     }
     if (_canAutoRecord) {
@@ -4374,7 +4449,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ltTPReason: (canScaleIn && ltTPReason) ? ltTPReason : null,
         ltPartialTP: ltPartialTP || null,
         scaleIns: [], peakPrice: null,
-        sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel,
+        sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel, sqFactors: _sqFactors,
+        dirPenalty: 0, bbPenalty: 0,
         lowWinRate: _isLowWinRate || undefined,
         ...tradeCtx,
       });
@@ -4446,6 +4522,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
       </div>
       ${_erHtml()}
+      ${_sqPanelHtml}
     </div>`;
   }
 
@@ -4474,6 +4551,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         ${(weeklyOpposed || todayOpposed) ? `<div style="font-size:0.71rem;color:var(--bear);margin-top:6px">⚠️ AI 預測${weeklyOpposed && todayOpposed ? '本週與今日均' : weeklyOpposed ? '本週' : '今日'}與${isLong ? '做多' : '做空'}方向相反，是信心扣分主因之一</div>` : ''}
       </div>
       ${_erHtml()}
+      ${_sqPanelHtml}
     </div>`;
   }
 
@@ -4683,6 +4761,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   } catch(e) { return ''; } })()}
 
+  ${_sqPanelHtml}
+
   ${_ictAnalysisHtml}
 
   ${_scalpHtml}
@@ -4771,7 +4851,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   ${_recordBlockedByCooldown ? (() => { const cancelledT = loadCancelCooldowns().find(c => c.symbol === coin.symbol && c.direction === direction && (Date.now() - (c.cancelTime||0)) < SIGNAL_COOLDOWN); const minsAgo = cancelledT ? Math.round((Date.now() - (cancelledT.cancelTime||0)) / 60000) : 0; const minsLeft = cancelledT ? Math.max(0, Math.round((SIGNAL_COOLDOWN - (Date.now() - (cancelledT.cancelTime||0))) / 60000)) : 0; return `<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#f59e0b">⏱ 此幣種 ${direction === 'long' ? '多' : '空'}單 ${minsAgo} 分鐘前被取消（冷卻期還有約 ${minsLeft} 分鐘），<strong>未計入掛單記錄</strong>；冷卻結束後掃描將自動重新評估</div>`; })() : ''}
   ${_recordBlockedByActive ? `<div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:9px;padding:9px 14px;margin-bottom:10px;font-size:0.78rem;color:#818cf8">📌 此幣種已有持倉進行中，<strong>未計入掛單記錄</strong>（不重複開倉）</div>` : ''}
 
-  ${canScaleIn && ltTP ? `
+  ${(() => {
+    const _ltFinalR = (risk > 0 && ltTP) ? (Math.abs(ltTP - entry) / risk).toFixed(1) : null;
+    const _tp1R = (risk > 0 && tp1) ? (Math.abs(tp1 - entry) / risk).toFixed(1) : null;
+    const _tp2R = (risk > 0 && tp2) ? (Math.abs(tp2 - entry) / risk).toFixed(1) : null;
+    return canScaleIn && ltTP ? `
   <!-- ═══ 長線單：進場 + 加倉（AI決定次數）+ 最終止盈 ═══ -->
   <div style="font-size:0.73rem;color:#a78bfa;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:7px;padding:7px 11px;margin-bottom:8px">
     🤖 AI 加倉判斷：${_aiScaleReason}
@@ -4779,7 +4863,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   <div class="setup-levels">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
-      <div class="level-desc">${entryReasons.join('　')}</div>
+      <div class="level-desc">${entryReasons.join('　')}${_ltFinalR ? `　<span style="font-size:0.72rem;color:#4ade80;font-weight:600">預期最終 ${_ltFinalR}R</span>` : ''}</div>
       <div class="level-price-val">${fmtPrice(_px(entry))}</div>
     </div>
     ${scaleInLevels.map((si, i) => {
@@ -4793,7 +4877,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }).join('')}
     <div class="level-row level-tp2" style="border-left:3px solid rgba(34,197,94,.6)">
       <div class="level-tag">🏁 最終止盈</div>
-      <div class="level-desc">${ltTPReason}</div>
+      <div class="level-desc">${ltTPReason}${_ltFinalR ? `　<span style="color:#22c55e;font-weight:700;font-size:0.78rem">最終 ${_ltFinalR}R</span>` : ''}</div>
       <div class="level-price-val" style="color:var(--bull)">${fmtPrice(_px(ltTP))}</div>
     </div>
     ${ltPartialTP ? `<div class="level-row" style="border-left:3px solid rgba(251,191,36,.6)">
@@ -4821,17 +4905,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   <div class="setup-levels">
     <div class="level-row level-entry">
       <div class="level-tag">📍 進場</div>
-      <div class="level-desc">${entryReasons.join('　')}</div>
+      <div class="level-desc">${entryReasons.join('　')}${_tp2R ? `　<span style="font-size:0.72rem;color:#4ade80;font-weight:600">預期最終 ${_tp2R}R</span>` : ''}</div>
       <div class="level-price-val">${fmtPrice(_px(entry))}</div>
     </div>
     <div class="level-row level-tp1">
       <div class="level-tag">🎯 止盈1</div>
-      <div class="level-desc">${tp1Reason}</div>
+      <div class="level-desc">${tp1Reason}${_tp1R ? `　<span style="color:#f59e0b;font-size:0.75rem">${_tp1R}R</span>` : ''}</div>
       <div class="level-price-val">${fmtPrice(_px(tp1))}</div>
     </div>
     <div class="level-row level-tp2">
       <div class="level-tag">🚀 止盈2</div>
-      <div class="level-desc">${tp2Reason}</div>
+      <div class="level-desc">${tp2Reason}${_tp2R ? `　<span style="color:#22c55e;font-weight:700;font-size:0.78rem">最終 ${_tp2R}R</span>` : ''}</div>
       <div class="level-price-val">${fmtPrice(_px(tp2))}</div>
     </div>
     <div class="level-row level-sl">
@@ -4848,7 +4932,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     <div class="rule-item">✦ 若 15m K棒轉向且成交量放大，不等止損主動離場</div>
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
-  `}
+  `; })()}
 
   <!-- ═══ AI 風險評估 ═══ -->
   <div class="setup-risk-card" style="margin:10px 0;padding:14px 16px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-left:3px solid ${_risk.levelColor};border-radius:10px">
