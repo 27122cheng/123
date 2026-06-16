@@ -9373,9 +9373,10 @@ function recordSignalsFromScan(data) {
     } catch(e) { /* 宏觀計算失敗 → 維持 neutral，允許記錄 */ }
   }
 
-  // ── 方向封鎖：強宏觀反向 + 週線 AI 明確反向 → 硬封鎖；避免在市場轉折後繼續進場 ──
-  const blockLong  = macroNetDir === 'strong_bear' || wBias.includes('bear');
-  const blockShort = macroNetDir === 'strong_bull' || wBias.includes('bull');
+  // ── 方向封鎖：僅在「宏觀 strong_bear/bull」或「週線 strong_bear/bull（最高等級）」才全局硬封鎖 ──
+  // slight_bear / bear 等中弱信號不封鎖全局，改為在個別長線單的週向對齊條件中處理
+  const blockLong  = macroNetDir === 'strong_bear' || wBias === 'strong_bear';
+  const blockShort = macroNetDir === 'strong_bull' || wBias === 'strong_bull';
 
   // ── 全中性輔助判定（用於迴圈內按幣種條件判斷）──
   const _wNeutral = !wBias.includes('bull') && !wBias.includes('bear') || wbRangeMode;
@@ -9400,9 +9401,11 @@ function recordSignalsFromScan(data) {
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-    // 今日 AI 明確反向 → 當日不建立該方向倉位（slight 不封鎖）
-    if (isLong  && tBias === 'bear') continue;
-    if (!isLong && tBias === 'bull') continue;
+    // 今日 AI 明確反向（信心≥70）→ 當日不建立該方向倉位；信心<70 時僅作參考不封鎖
+    if (isLong  && tBias === 'bear'       && tBiasConf >= 70) continue;
+    if (!isLong && tBias === 'bull'       && tBiasConf >= 70) continue;
+    if (isLong  && tBias === 'strong_bear'&& tBiasConf >= 60) continue;
+    if (!isLong && tBias === 'strong_bull'&& tBiasConf >= 60) continue;
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     const setup = computeSimpleSetup(coin, isLong);
