@@ -4420,8 +4420,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已確認，信心≥62 才納入持倉（減少雜訊）
-        _canAutoRecord = conf >= 62;
+        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已由上方早返回確認，直接納入持倉確保與詳情頁同步
+        _canAutoRecord = true;
       }
     }
     if (_canAutoRecord) {
@@ -9564,14 +9564,51 @@ async function recordSignalsFromScan(data) {
     const _sfCached = _scanFetchCache[coin.symbol];
     if (!_sfCached || (_sfNow - _sfCached.ts) > 5 * 60 * 1000) {
       try {
-        const [_sfDeriv, _sfWhale, _sfFP] = await Promise.all([
+        const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF] = await Promise.all([
           fetchDerivativesData(coin.symbol),
           fetchWhaleTrades(coin.symbol),
           fetchFootprintData(coin.symbol),
+          fetchLiquidationMap(coin.symbol),
+          fetchMTFKlines(coin.symbol),
         ]);
         if (_sfDeriv) coin.derivData = _sfDeriv;
         if (_sfWhale) coin.whaleData = _sfWhale;
         if (_sfFP)    _footprintCache[coin.symbol] = _sfFP;
+        if (_sfLiq) {
+          // 與幣種詳情頁相同的爆倉地圖後處理
+          if (_sfLiq.source === 'estimated' && _sfLiq.leverages) {
+            const _p = parseFloat(coin.price) || 0;
+            if (_p > 0) {
+              _liquidationCache[coin.symbol] = {
+                longLiqs:  _sfLiq.leverages.map(lev => ({ price: _p / (1 + 1 / lev), strength: 1 / lev * 1000, leverage: lev })),
+                shortLiqs: _sfLiq.leverages.map(lev => ({ price: _p / (1 - 1 / lev), strength: 1 / lev * 1000, leverage: lev })),
+                source: 'estimated',
+              };
+            }
+          } else {
+            _liquidationCache[coin.symbol] = _sfLiq;
+          }
+        }
+        // ICT 結構 + 圖形確認（需要多週期 K 線）→ 寫入 _tradeSetupCache 供 SQ ⑥⑯ 使用
+        if (_sfMTF) {
+          const _sfR1h = _sfMTF['1h']?.rawCandles;
+          const _sfR4h = _sfMTF['4h']?.rawCandles;
+          let _sfOB = null, _sfFVG = null, _sfOB4h = null, _sfFVG4h = null, _sfPat = null;
+          try {
+            if (_sfR1h?.length >= 5 && typeof detectOrderBlocks   === 'function') _sfOB   = detectOrderBlocks(_sfR1h, isLong);
+            if (_sfR1h?.length >= 5 && typeof detectFairValueGaps === 'function') _sfFVG  = detectFairValueGaps(_sfR1h, isLong);
+            if (_sfR4h?.length >= 5 && typeof detectOrderBlocks   === 'function') _sfOB4h = detectOrderBlocks(_sfR4h, isLong);
+            if (_sfR4h?.length >= 5 && typeof detectFairValueGaps === 'function') _sfFVG4h= detectFairValueGaps(_sfR4h, isLong);
+            if (_sfR4h?.length >= 30 && typeof detectChartPatterns === 'function') _sfPat = detectChartPatterns(_sfR4h, isLong);
+          } catch(_ice) {}
+          if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
+          Object.assign(_tradeSetupCache[coin.symbol], {
+            orderBlock: _sfOB, fvg: _sfFVG,
+            orderBlock4h: _sfOB4h, fvg4h: _sfFVG4h,
+            chartPat: _sfPat,
+            killZone: typeof computeKillZone === 'function' ? computeKillZone() : null,
+          });
+        }
         _scanFetchCache[coin.symbol] = { ts: _sfNow };
       } catch(_fe) { /* API 失敗時繼續評分，缺項因子不得分 */ }
     }
