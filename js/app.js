@@ -9562,46 +9562,201 @@ function recordSignalsFromScan(data) {
     const _scanMacd    = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
 
-    // ── 掃描版訊號品質評分（簡化版，使用掃描時可用資料）──
+    // ── 完整版訊號品質評分（與 buildTradeSetup 相同的 20 因子 + 等級門檻 SSS≥22/SS≥19/S≥15/A≥10/B≥6/C≥3/D<3）──
     let _scanSqScore = 0;
     const _scanSqFactors = [];
-    const _ssH4Ok  = isLong ? (coin.h4Signal     || '').includes('bull') : (coin.h4Signal     || '').includes('bear');
-    const _ssDayOk = isLong ? (coin.dailySignal   || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
-    const _ssWkOk  = isLong ? (coin.weeklySignal  || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
-    if (_ssH4Ok && _ssDayOk) { _scanSqScore += 2; _scanSqFactors.push('✅ 4H+日線同向'); }
-    else if (_ssH4Ok || _ssDayOk) { _scanSqScore += 1; _scanSqFactors.push(_ssH4Ok ? '✅ 4H同向' : '✅ 日線同向'); }
-    if (_ssWkOk) { _scanSqScore += 1; _scanSqFactors.push('✅ 週線同向'); }
-    if (isLong ? wBias.includes('bull') : wBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 本週 AI 同向'); }
-    if (isLong ? tBias.includes('bull') : tBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 今日 AI 同向'); }
+
+    // ① 多框架同向（4H+日線+週線）— max +3
+    const _ssH4Ok  = isLong ? (coin.h4Signal    ||'').includes('bull') : (coin.h4Signal    ||'').includes('bear');
+    const _ssDayOk = isLong ? (coin.dailySignal ||'').includes('bull') : (coin.dailySignal ||'').includes('bear');
+    const _ssWkOk  = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
+    if (_ssH4Ok && _ssDayOk && _ssWkOk) { _scanSqScore += 3; _scanSqFactors.push('✅ 4H+日線+週線三框架同向 +3'); }
+    else if (_ssH4Ok && _ssDayOk)        { _scanSqScore += 2; _scanSqFactors.push('✅ 4H+日線同向 +2'); }
+    else if (_ssH4Ok || _ssDayOk)        { _scanSqScore += 1; _scanSqFactors.push(_ssH4Ok ? '⚠️ 4H同向 +1' : '⚠️ 日線同向 +1'); }
+    else                                  { _scanSqFactors.push('❌ 大框架無確認'); }
+    // 1H 同向 +1
+    const _ssH1Ok = isLong ? (coin.h1Signal||'').includes('bull') : (coin.h1Signal||'').includes('bear');
+    if (_ssH1Ok) { _scanSqScore += 1; _scanSqFactors.push('✅ 1H 同向 +1'); }
+    // MACD +1
+    if (_macdAligned) { _scanSqScore += 1; _scanSqFactors.push('✅ MACD 同向 +1'); }
+
+    // ② 本週 AI ±1
+    if (isLong ? wBias.includes('bull') : wBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push(`✅ 本週AI同向（${wBiasLabel}）+1`); }
+    else if (isLong ? wBias.includes('bear') : wBias.includes('bull')) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 本週AI逆向（${wBiasLabel}）-1`); }
+    else { _scanSqFactors.push(`⚠️ 本週AI中性（${wBiasLabel || '—'}）`); }
+
+    // ③ 今日 AI ±1
+    if (isLong ? tBias.includes('bull') : tBias.includes('bear')) { _scanSqScore += 1; _scanSqFactors.push(`✅ 今日AI同向（${tBiasLabel}）+1`); }
+    else if (isLong ? tBias.includes('bear') : tBias.includes('bull')) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 今日AI逆向（${tBiasLabel}）-1`); }
+    else { _scanSqFactors.push(`⚠️ 今日AI中性（${tBiasLabel || '—'}）`); }
+
+    // ④ 宏觀環境 ±2
+    if (_macroCache) try {
+      const _ssFg   = _macroCache.fg;
+      const _ssFgV  = parseInt(_ssFg?.value || '50');
+      const _ssNet  = computeMacroNetDir(_ssFg, _macroCache);
+      const _ssMOk  = isLong ? _ssNet.includes('bull') : _ssNet.includes('bear');
+      const _ssMOpp = isLong ? _ssNet.includes('bear') : _ssNet.includes('bull');
+      const _ssFgN  = _ssFgV >= 40 && _ssFgV <= 60;
+      let _ssMacPts = 0;
+      if (_ssMOk)  _ssMacPts += 1;
+      if (_ssFgN && !_ssMOpp) _ssMacPts += 1;
+      if (_ssMOpp) _ssMacPts -= 2;
+      _scanSqScore += Math.max(-2, Math.min(2, _ssMacPts));
+      if (_ssMacPts >= 2)       _scanSqFactors.push(`✅ 宏觀環境同向（F&G ${_ssFgV}）+2`);
+      else if (_ssMacPts === 1) _scanSqFactors.push(`⚠️ 宏觀環境部分支持（F&G ${_ssFgV}）+1`);
+      else if (_ssMacPts < 0)   _scanSqFactors.push(`❌ 宏觀環境逆風（${_ssNet}）`);
+      else                      _scanSqFactors.push(`⬜ 宏觀環境中性（F&G ${_ssFgV}）`);
+    } catch(_e) {}
+
+    // ⑤ 足跡圖 Delta ±1 + 市場微結構 ±1
     const _ssFP = _footprintCache[coin.symbol];
-    if (_ssFP && !_ssFP.deltaDiv) {
-      if (isLong ? (_ssFP.deltaDir === 'bull') : (_ssFP.deltaDir === 'bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 足跡圖 Delta 確認'); }
+    if (_ssFP) {
+      if (_ssFP.deltaDiv) { _scanSqScore -= 1; _scanSqFactors.push('⚡ 足跡圖 Delta 背離 -1'); }
+      else if (isLong ? (_ssFP.deltaDir === 'bull') : (_ssFP.deltaDir === 'bear')) { _scanSqScore += 1; _scanSqFactors.push('✅ 足跡圖 Delta 確認 +1'); }
+      else if (isLong ? (_ssFP.deltaDir === 'bear') : (_ssFP.deltaDir === 'bull')) { _scanSqScore -= 1; _scanSqFactors.push('❌ 足跡圖 Delta 逆向 -1'); }
+      else { _scanSqFactors.push('⬜ 足跡圖 Delta 中性'); }
+      if ((_ssFP.microstructureQuality || 0) >= 7) { _scanSqScore += 1; _scanSqFactors.push(`✅ 市場微結構優質（${_ssFP.microstructureQuality}分）+1`); }
+      else if ((_ssFP.microstructureQuality || 0) <= 3) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 市場微結構偏弱（${_ssFP.microstructureQuality}分）-1`); }
     }
-    if ((parseFloat(coin.adx) || 20) >= 28) { _scanSqScore += 1; _scanSqFactors.push(`✅ ADX 趨勢確立`); }
-    if (setup.techPenalty === 0) { _scanSqScore += 1; _scanSqFactors.push('✅ 技術面無逆風'); }
-    // 1H 訊號同向（多週期確認加分）
-    const _ssH1Ok = isLong ? (coin.h1Signal || '').includes('bull') : (coin.h1Signal || '').includes('bear');
-    if (_ssH1Ok) { _scanSqScore += 1; _scanSqFactors.push('✅ 1H 同向'); }
-    // MACD 方向加分
-    if (_macdAligned) { _scanSqScore += 1; _scanSqFactors.push('✅ MACD 同向'); }
-    // R/R 品質（止損盈虧比）
+
+    // ⑦ ADX ±1
+    const _ssAdx = parseFloat(coin.adx) || 20;
+    if (_ssAdx >= 28) { _scanSqScore += 1; _scanSqFactors.push(`✅ ADX ${_ssAdx} 趨勢確立 +1`); }
+    else if (_ssAdx >= 22) { _scanSqFactors.push(`⚠️ ADX ${_ssAdx} 趨勢偏弱`); }
+    else { _scanSqScore -= 1; _scanSqFactors.push(`❌ ADX ${_ssAdx} 趨勢過弱 -1`); }
+
+    // ⑧ Taker 訂單流 ±1
+    try {
+      const _ssTkr = coin.derivData?.takerBuySell ?? 1;
+      if (isLong ? _ssTkr >= 1.08 : _ssTkr <= 0.92) { _scanSqScore += 1; _scanSqFactors.push(`✅ 訂單流同向（Taker ${_ssTkr.toFixed(2)}）+1`); }
+      else if (isLong ? _ssTkr < 0.88 : _ssTkr > 1.12) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 訂單流逆向（Taker ${_ssTkr.toFixed(2)}）-1`); }
+      else { _scanSqFactors.push(`⬜ 訂單流中性（Taker ${_ssTkr.toFixed(2)}）`); }
+    } catch(_e) {}
+
+    // ⑨ 巨鯨籌碼 ±1
+    try {
+      const _ssWhl = coin.whaleData;
+      if (_ssWhl) {
+        if (isLong ? (_ssWhl.bias === 'bull' && (_ssWhl.bigBuyCount  ||0) >= 2)
+                   : (_ssWhl.bias === 'bear' && (_ssWhl.bigSellCount ||0) >= 2))
+          { _scanSqScore += 1; _scanSqFactors.push(`✅ 巨鯨${isLong?'買入':'賣出'}同向 +1`); }
+        else if (isLong ? (_ssWhl.bias === 'bear' && (_ssWhl.bigSellCount||0) >= 3)
+                        : (_ssWhl.bias === 'bull' && (_ssWhl.bigBuyCount ||0) >= 3))
+          { _scanSqScore -= 1; _scanSqFactors.push(`❌ 巨鯨${isLong?'賣出':'買入'}逆向 -1`); }
+      }
+    } catch(_e) {}
+
+    // ⑩ 成交量 ±1
+    const _ssVol = coin.volumeStrength || '';
+    if (_ssVol.includes('強') || _ssVol === 'high') { _scanSqScore += 1; _scanSqFactors.push('✅ 成交量放大同向 +1'); }
+    else if (_ssVol.includes('弱') || _ssVol === 'low') { _scanSqScore -= 1; _scanSqFactors.push('❌ 成交量萎縮 -1'); }
+
+    // ⑪ BB走軌 ±1
+    try {
+      const _ssBB = coin.bb;
+      if (_ssBB) {
+        if (isLong ? _ssBB.walkingBull : _ssBB.walkingBear) { _scanSqScore += 1; _scanSqFactors.push(`✅ BB${isLong?'多':'空'}頭走軌確認 +1`); }
+        else if (isLong ? _ssBB.walkingBear : _ssBB.walkingBull) { _scanSqScore -= 1; _scanSqFactors.push(`❌ BB逆向走軌 -1`); }
+      }
+    } catch(_e) {}
+
+    // ⑫ 技術面 ±1
+    if (setup.techPenalty === 0) { _scanSqScore += 1; _scanSqFactors.push('✅ 技術面無逆風 +1'); }
+    else if (setup.techPenalty >= 12) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 技術面逆風（-${setup.techPenalty}%）-1`); }
+
+    // ⑬ R/R ±1
     const _sqRRScan = parseFloat(setup.rr1) || 0;
-    if (_sqRRScan >= 2.0) { _scanSqScore += 1; _scanSqFactors.push(`✅ R/R ${_sqRRScan.toFixed(1)}:1 優良`); }
-    else if (_sqRRScan >= 1.3) { /* 合格但不加分 */ }
-    else { _scanSqFactors.push(`❌ R/R ${_sqRRScan.toFixed(1)}:1 盈虧比不足`); }
-    // 風控分數（整合入訊號品質，hardBlocked+rrBlocked 為硬性防線）
-    if (_scanRisk.score <= 20) { _scanSqScore += 2; _scanSqFactors.push(`✅ 風控優良（${_scanRisk.score}分）`); }
-    else if (_scanRisk.score <= 40) { _scanSqScore += 1; _scanSqFactors.push(`✅ 風控良好（${_scanRisk.score}分）`); }
+    if (_sqRRScan >= 2.0) { _scanSqScore += 1; _scanSqFactors.push(`✅ R/R ${_sqRRScan.toFixed(1)}:1 優良 +1`); }
+    else if (_sqRRScan >= 1.3) { _scanSqFactors.push(`⚠️ R/R ${_sqRRScan.toFixed(1)}:1（可接受）`); }
+    else { _scanSqScore -= 1; _scanSqFactors.push(`❌ R/R ${_sqRRScan.toFixed(1)}:1 不足 -1`); }
+
+    // ⑭ 風控分數 +2/+1/-1
+    if (_scanRisk.score <= 20)      { _scanSqScore += 2; _scanSqFactors.push(`✅ 風控優良（${_scanRisk.score}分）+2`); }
+    else if (_scanRisk.score <= 40) { _scanSqScore += 1; _scanSqFactors.push(`✅ 風控良好（${_scanRisk.score}分）+1`); }
     else if (_scanRisk.score <= 54) { _scanSqFactors.push(`⚠️ 風控中等（${_scanRisk.score}分）`); }
-    else { _scanSqFactors.push(`❌ 風控偏高（${_scanRisk.score}分）`); }
-    // 最高 13 分；A 級門檻 ≥7
-    const _scanSqGrade = _scanSqScore >= 10 ? 'S' : _scanSqScore >= 7 ? 'A' : _scanSqScore >= 4 ? 'B' : _scanSqScore >= 2 ? 'C' : 'D';
-    const _scanSqLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單需頂級訊號 S；短線單需優質訊號 A 以上（與幣種詳情 SQ≥A 門檻一致）
-    const _reqGrades = canScaleIn ? ['S'] : ['S','A'];
+    else                             { _scanSqScore -= 1; _scanSqFactors.push(`❌ 風控偏高（${_scanRisk.score}分）-1`); }
+
+    // ⑮ 止損學習懲罰 -1
+    try {
+      const _ssLearn = applyLearnAdjustment(direction, parseFloat(coin.rsi)||50, _ssAdx, { slType:'atr', skipAdxRule:true });
+      if ((_ssLearn.penalty || 0) >= 20) { _scanSqScore -= 1; _scanSqFactors.push('❌ 止損AI警告（歷史高懲罰）-1'); }
+    } catch(_e) {}
+
+    // ⑰ AI新聞 ±1
+    try {
+      const _ssIns = aiGenerateMarketInsights();
+      const _ssBear = _ssIns.filter(i => i.sentiment === 'bearish' || i.sentiment === 'bear').length;
+      const _ssBull = _ssIns.filter(i => i.sentiment === 'bullish' || i.sentiment === 'bull').length;
+      if (_ssBear + _ssBull > 0) {
+        if (isLong ? _ssBull > _ssBear : _ssBear > _ssBull) { _scanSqScore += 1; _scanSqFactors.push('✅ AI新聞利多/空 +1'); }
+        else if (isLong ? _ssBear > _ssBull : _ssBull > _ssBear) { _scanSqScore -= 1; _scanSqFactors.push('❌ AI新聞逆向 -1'); }
+      }
+    } catch(_e) {}
+
+    // ⑱ 爆倉擠壓牆 +1
+    try {
+      const _ssLiq = _liquidationCache[coin.symbol];
+      const _ssCurP = parseFloat(coin.price) || 0;
+      if (_ssLiq && _ssCurP > 0) {
+        const _ssWall = isLong
+          ? (_ssLiq.shortLiqs || []).find(l => l.price > _ssCurP && l.price <= _ssCurP * 1.12)
+          : (_ssLiq.longLiqs  || []).find(l => l.price < _ssCurP && l.price >= _ssCurP * 0.88);
+        if (_ssWall) { _scanSqScore += 1; _scanSqFactors.push('✅ 爆倉擠壓牆 +1'); }
+      }
+    } catch(_e) {}
+
+    // ⑲ 重要數據事件 -1/-2
+    try {
+      const _ssEvs = getTodayEconEvents().filter(ev => {
+        const mins = (ev.eventTime.getTime() - Date.now()) / 60000;
+        return ev.impact === 'high' && mins >= -30 && mins <= 90;
+      });
+      if (_ssEvs.length >= 2) { _scanSqScore -= 2; _scanSqFactors.push(`❌ 多個重要事件即將公布 -2`); }
+      else if (_ssEvs.length === 1) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 重要事件即將公布 -1`); }
+    } catch(_e) {}
+
+    // ⑳ 資金流動 ±1
+    try {
+      const _ssCF = getCapitalFlowBias();
+      const _ssCFOpp = (_ssCF.events || []).filter(ev => isLong ? ev.bear > 0 : ev.bull > 0).length;
+      const _ssCFOk  = (_ssCF.events || []).filter(ev => isLong ? ev.bull > 0 : ev.bear > 0).length;
+      if (_ssCFOk > 0 && _ssCFOpp === 0) { _scanSqScore += 1; _scanSqFactors.push('✅ 資金流動同向 +1'); }
+      else if (_ssCFOpp >= 2) { _scanSqScore -= 1; _scanSqFactors.push('❌ 資金流動逆向 -1'); }
+    } catch(_e) {}
+
+    // ⑥ ICT 結構（使用 _tradeSetupCache 快取）+2
+    try {
+      const _ssIctC = _tradeSetupCache[coin.symbol];
+      if (_ssIctC && (_ssIctC.orderBlock !== undefined || _ssIctC.orderBlock4h !== undefined)) {
+        let _ssIctCnt = 0;
+        if (_ssIctC.orderBlock?.priceInOB || _ssIctC.orderBlock4h?.priceInOB) _ssIctCnt++;
+        if ((_ssIctC.fvg && !_ssIctC.fvg.filled) || (_ssIctC.fvg4h && !_ssIctC.fvg4h.filled)) _ssIctCnt++;
+        if (_ssIctCnt > 0) { _scanSqScore += Math.min(2, _ssIctCnt); _scanSqFactors.push(`✅ ICT 結構確認 +${Math.min(2,_ssIctCnt)}`); }
+      }
+    } catch(_e) {}
+
+    // ⑯ 圖形確認（使用 _tradeSetupCache 快取）±2
+    try {
+      const _ssPat = _tradeSetupCache[coin.symbol]?.chartPat;
+      if (_ssPat) {
+        if ((_ssPat.score || 0) > 0) { _scanSqScore += Math.min(2, _ssPat.score); _scanSqFactors.push(`✅ 圖形確認（${_ssPat.aligned?.length||0}種）+${Math.min(2,_ssPat.score)}`); }
+        if ((_ssPat.opposing?.length || 0) > 0) { _scanSqScore -= Math.min(2, _ssPat.opposing.length); _scanSqFactors.push(`❌ 逆向圖形警告 -${Math.min(2,_ssPat.opposing.length)}`); }
+      }
+    } catch(_e) {}
+
+    // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（最高約 26 分）
+    _scanSqScore = Math.max(0, _scanSqScore);
+    const _scanSqGrade = _scanSqScore >= 22 ? 'SSS'
+                       : _scanSqScore >= 19 ? 'SS'
+                       : _scanSqScore >= 15 ? 'S'
+                       : _scanSqScore >= 10 ? 'A'
+                       : _scanSqScore >= 6  ? 'B'
+                       : _scanSqScore >= 3  ? 'C' : 'D';
+    const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
+    // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
+    const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
-    // 注意：移除 isShortTerm/isLongTerm 強制 4時框對齊要求
-    // SQ 等級已整合時框品質，與幣種詳情頁邏輯保持一致
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
