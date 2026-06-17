@@ -10682,20 +10682,28 @@ function updateOpenTrades(data) {
           }
           _cfP = Math.min(10, _cfP);
         } catch(_e) {}
+        // 原始扣分值（用於取消門檻判斷，不受 70% 底線影響）
+        let _rawFreshConf;
         if (trade.tradeType === 'range') {
-          // 震盪單：只扣學習懲罰，不套用方向性宏觀/AI/技術扣分
-          // （震盪單本來就在中性市場建立，方向性扣分會誤殺合法震盪單）
-          freshConf = Math.max(0, baseConf - _adxPen - _learnPen);
+          _rawFreshConf = Math.max(0, baseConf - _adxPen - _learnPen);
+          // AI 頂級交易員信心度：震盪單不扣宏觀/方向，只反映歷史止損學習
+          const _aiTechR = Math.max(0, baseConf - 62) * 0.55;
+          const _aiHistR = Math.min(8, _learnPen * 0.5);
+          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechR - _aiHistR)));
         } else {
-          // 方向性單：完整扣分（宏觀/AI/技術/籌碼/大方向等動態因子）
-          // rawConf 為建單時基礎分，各項懲罰依最新市場數據重算，確保信心度動態反映市況
-          freshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
+          _rawFreshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
+          // AI 頂級交易員信心度：已通過 SQ+RR 精篩，底線 70%
+          // 宏觀逆風（_macP + CF 資金流）≤10%，歷史止損學習 ≤8%
+          const _aiTechD  = Math.max(0, baseConf - 62) * 0.55;
+          const _aiMacroD = Math.min(10, _macP + _cfP);
+          const _aiHistD  = Math.min(8, _learnPen * 0.5);
+          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechD - _aiMacroD - _aiHistD)));
         }
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 信心度跌破 50% → 自動取消掃描粗估單（與進場門檻一致）
-        if (freshConf < 50 && !trade.entryTime) {
-          const _confReason = `信心度動態更新後跌至 ${freshConf}%，低於進場門檻 50%（宏觀/AI/技術面扣分累積）`;
+        // 信心度跌破 50%（原始扣分值）→ 自動取消掃描粗估單
+        if (_rawFreshConf < 50 && !trade.entryTime) {
+          const _confReason = `信心度原始評分跌至 ${_rawFreshConf}%，低於進場門檻 50%（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -10704,11 +10712,15 @@ function updateOpenTrades(data) {
         }
       } catch(_e) {}
     } else {
-      // 無宏觀快取時仍套用 ADX + 學習規則扣分（確保止損記錄反映在信心度）
-      const _structConf = Math.max(0, baseConf - _adxPen - _learnPen);
+      // 無宏觀快取時：ADX + 學習規則扣分用於取消判斷，AI信心度套用 70% 底線
+      const _structRaw  = Math.max(0, baseConf - _adxPen - _learnPen);
+      const _stAiTech   = Math.max(0, baseConf - 62) * 0.55;
+      const _stAiHist   = Math.min(8, _learnPen * 0.5);
+      const _structConf = Math.max(70, Math.round(Math.min(99, 70 + _stAiTech - _stAiHist)));
+      freshConf = _structConf;
       if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
-      if (_structConf < 50 && !trade.entryTime) {
-        const _confReason = `信心度動態更新後跌至 ${_structConf}%，低於進場門檻 50%（ADX/風控規則扣分）`;
+      if (_structRaw < 50 && !trade.entryTime) {
+        const _confReason = `信心度原始評分跌至 ${_structRaw}%，低於進場門檻 50%（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -10716,9 +10728,9 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
-    // 風險評估升至高風險 → 取消未入場掛單（信心度需已低於 50% 才取消，與進場門檻一致）
-    // 只有 freshConf < 50 時才做風險二次檢查：信心度 ≥ 50% 的單不因風險評分被取消
-    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && freshConf < 50) {
+    // 風險評估升至高風險 → 取消未入場掛單（原始扣分值低於 50% 才觸發，AI顯示值有底線保護）
+    const _rawFreshForRisk = typeof _rawFreshConf !== 'undefined' ? _rawFreshConf : Math.max(0, (trade.rawConf || trade.conf || 70) - (trade.hardAdxPenalty||0) - (trade.learnPenalty||0));
+    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && _rawFreshForRisk < 50) {
       try {
         const _brResult = buildRisk(_fCoin);                          // UI 顯示的風險（≥55 = 高風險）
         const _frSetup  = computeSimpleSetup(_fCoin, _isL);
