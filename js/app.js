@@ -9679,6 +9679,9 @@ function recordSignalsFromScan(data) {
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
+    // ⚡ 剛建立且尚未發送進場通知的交易跳過本輪 SQ 監控
+    // 讓 updateOpenTrades 先完成入場 Telegram 通知，下一輪再開始品質監控
+    if (trade.pendingNotify) continue;
     const _sqCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
     if (!_sqCoin) continue;
     const _sqIsLong = trade.direction === 'long';
@@ -10768,20 +10771,35 @@ function updateOpenTrades(data) {
       }
     }
   }
-  // 發送延遲通知：只有通過所有取消檢查的新訊號才推送 Telegram
+  // 發送延遲通知：只有通過所有取消檢查的新訊號才推送 Telegram + 瀏覽器通知
   const _pendingNotify = tlog.filter(t => t.pendingNotify === true && !toDeleteIds.has(t.id));
   if (_pendingNotify.length > 0) {
     try {
       const _ns = loadSettings();
       for (const _pnt of _pendingNotify) {
+        const _pntCoin = data?.find(d => d.symbol === _pnt.symbol) || { symbol: _pnt.symbol, price: _pnt.entryPrice };
+        // Telegram 通知
         if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
           try {
-            const _pntCoin = data?.find(d => d.symbol === _pnt.symbol) || { symbol: _pnt.symbol, price: _pnt.entryPrice };
             const _tgSetup = Object.assign({}, _pnt, _pnt._notifyRisk || {});
             sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
               buildTelegramText(_pntCoin, _pnt.direction, _tgSetup, _macroCache, window.location.origin + window.location.pathname));
             _pnt.telegramSent = true;
           } catch(_e) { console.warn('[deferred-notify tg]', _pnt.symbol, _e); }
+        }
+        // 瀏覽器通知（Telegram 未設定時也能收到）
+        if (_ns.notifBrowser) {
+          try {
+            const _bDir  = _pnt.direction === 'long' ? '▲做多' : '▼做空';
+            const _bConf = _pnt.conf || 0;
+            const _bGrade = _pnt.sqGrade || '';
+            const _bLabel = _pnt.canScaleIn ? '💎長線單' : '📡短線單';
+            sendBrowserNotification(
+              `${_bLabel} 新掛單：${_pnt.symbol} ${_bDir}`,
+              `信心 ${_bConf}%　SQ ${_bGrade}　進場 ${_pnt.entry || ''}`,
+              `csp-pending-${_pnt.symbol}`
+            );
+          } catch(_be) {}
         }
         _pnt.pendingNotify  = false;
         delete _pnt._notifyRisk;
