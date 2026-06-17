@@ -3683,7 +3683,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   techPenReasons.forEach(r => aiTrendReasons.push(`📐 技術面：${r}`));
   chipsPenReasons.forEach(r => aiTrendReasons.push(`🐋 籌碼面：${r}`));
 
-  const conf = Math.max(0, rawConf - learnPenalty - macroOpposePenalty - aiTrendPenalty - hardAdxPenalty - techPenalty - chipsPenalty);
+  // hardAdxPenalty / learnPenalty / aiTrendPenalty / techPenalty / chipsPenalty 已由 SQ ⑦⑮④㉑⑫⑧⑨ 負責把關，不重複扣分
+  const conf = Math.max(0, rawConf - macroOpposePenalty);
   // 三層分析中間值（供 UI 展示決策流程用）
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
@@ -15265,7 +15266,8 @@ function computeSimpleSetup(coin, isLong) {
     _sCFPen = Math.min(10, _sCFPen);
   } catch(_e) {}
 
-  const conf = Math.max(0, rawConf - hardAdxPenalty - learnPenalty - _sMacroPen - _sAIPen - _sCFPen - _sTechPen - _sChipsPen - _sBBPenalty - _sDirPen);
+  // SQ21 已涵蓋：hardAdxPenalty⑦ learnPenalty⑮ _sAIPen④㉑ _sCFPen⑳ _sTechPen⑫ _sChipsPen⑧⑨ _sBBPenalty⑪ _sDirPen①
+  const conf = Math.max(0, rawConf - _sMacroPen);
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const macdH  = parseFloat(coin.macdHist) || 0;
