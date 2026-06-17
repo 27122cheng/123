@@ -4068,11 +4068,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   } catch(_sqPE) { return ''; } })();
 
-  // ── AI 超級頂級交易員信心度：SQ21 評分為主軸，整合技術強度與宏觀調整 ──
-  // 已通過 SQ≥A + R/R≥1.3 兩道門檻才到這裡，conf 代表頂級交易員對這筆訊號的整體信心
-  // rawConf（技術質量）＋ SQ 超額分數 × 1.5%/分 ＋ 宏觀逆風扣分
-  conf = Math.round(Math.max(0, Math.min(99,
-    rawConf + (_sqScore - 10) * 1.5 - macroOpposePenalty
+  // ── AI 頂級交易員信心度：綜合所有維度的整體判斷 ──
+  // 框架：已通過 SQ≥A + R/R≥1.3 雙重精篩，頂級交易員對這類訊號的最低信心底線為 70%
+  // ① 技術質量：rawConf 超過 62% 的部分 × 0.55（涵蓋技術面/籌碼/MTF/ICT/巨鯨/Kill Zone）
+  // ② SQ 品質超額：每高出 A 級基準(10分) 貢獻 1.3%（SS=+11.7%, SSS=+15.6%）
+  // ③ 宏觀逆風：F&G / BTC 占比 / 市值變動（上限扣 10%）
+  // ④ 歷史止損學習：同向過往虧損經驗（上限扣 8%，權重 0.5×）
+  const _aiTechBonus = Math.max(0, rawConf - 62) * 0.55;
+  const _aiSqBonus   = (_sqScore - 10) * 1.3;
+  const _aiMacroDrag = Math.min(10, macroOpposePenalty);
+  const _aiHistDrag  = Math.min(8, learnPenalty * 0.5);
+  conf = Math.max(70, Math.round(Math.min(99,
+    70 + _aiTechBonus + _aiSqBonus - _aiMacroDrag - _aiHistDrag
   )));
 
   // ── ICT / SMC / SNR + 圖形識別（所有情況均顯示於交易建議區）──
@@ -4418,14 +4425,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // 長線單：額外要求 R/R≥1.5 + 信心≥65 + 週向不逆勢（資本配置更謹慎）
+        // 長線單：額外要求 R/R≥1.5 + AI信心≥82 + 週向不逆勢（資本配置更謹慎）
         _canAutoRecord = parseFloat(rr1str) >= 1.5
-          && conf >= 65
+          && conf >= 82
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已確認，信心≥55 才納入持倉
-        _canAutoRecord = conf >= 55;
+        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已確認，AI信心底線 70% 即可納入持倉
+        _canAutoRecord = conf >= 70;
       }
     }
     if (_canAutoRecord) {
@@ -15269,8 +15276,12 @@ function computeSimpleSetup(coin, isLong) {
     _sCFPen = Math.min(10, _sCFPen);
   } catch(_e) {}
 
-  // SQ21 已涵蓋：hardAdxPenalty⑦ learnPenalty⑮ _sAIPen④㉑ _sCFPen⑳ _sTechPen⑫ _sChipsPen⑧⑨ _sBBPenalty⑪ _sDirPen①
-  const conf = Math.max(0, rawConf - _sMacroPen);
+  // AI 頂級交易員信心度（掃描版）：已通過 SQ≥A 精篩，最低信心底線 70%
+  // 技術質量超額（rawConf > 62 的部分）＋ 歷史風控 ＋ 宏觀逆風（上限 10%）
+  const _ssAiTech = Math.max(0, rawConf - 62) * 0.55;
+  const _ssAiHist = Math.min(8, learnPenalty * 0.5);
+  const _ssAiMacro = Math.min(10, _sMacroPen);
+  const conf = Math.max(70, Math.round(Math.min(99, 70 + _ssAiTech - _ssAiHist - _ssAiMacro)));
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const macdH  = parseFloat(coin.macdHist) || 0;
