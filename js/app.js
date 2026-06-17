@@ -3732,7 +3732,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         </div>
       </div>
       ${_erHtml()}
-      ${_sqPanelHtml}
     </div>`;
   }
 
