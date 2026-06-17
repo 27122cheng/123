@@ -4420,8 +4420,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已由上方早返回確認，直接納入持倉確保與詳情頁同步
-        _canAutoRecord = true;
+        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已確認，信心≥55 才納入持倉
+        _canAutoRecord = conf >= 55;
       }
     }
     if (_canAutoRecord) {
