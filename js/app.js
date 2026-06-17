@@ -6,6 +6,7 @@
 const _tradeSetupCache  = {};
 const _footprintCache   = {};  // 足跡圖數據緩存（幣種詳情頁抓取後寫入）
 const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓取後寫入）
+const _scanFetchCache   = {};  // 掃描器補充抓取快取（5 分鐘 TTL，避免每 15s 重複請求）
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
@@ -9427,7 +9428,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
 }
 
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
-function recordSignalsFromScan(data) {
+async function recordSignalsFromScan(data) {
   const tlog = loadTradeLog();
   let changed = false;
 
@@ -9555,6 +9556,24 @@ function recordSignalsFromScan(data) {
       if ((setup.conf || 0) < 65) continue;
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
       if (!_wkAligned) continue;
+    }
+
+    // ── 補充抓取掃描情境缺少的非同步資料（讓 SQ 評分與幣種詳情頁完全一致）──
+    // 使用 5 分鐘快取避免每 15s 輪掃時重複請求
+    const _sfNow = Date.now();
+    const _sfCached = _scanFetchCache[coin.symbol];
+    if (!_sfCached || (_sfNow - _sfCached.ts) > 5 * 60 * 1000) {
+      try {
+        const [_sfDeriv, _sfWhale, _sfFP] = await Promise.all([
+          fetchDerivativesData(coin.symbol),
+          fetchWhaleTrades(coin.symbol),
+          fetchFootprintData(coin.symbol),
+        ]);
+        if (_sfDeriv) coin.derivData = _sfDeriv;
+        if (_sfWhale) coin.whaleData = _sfWhale;
+        if (_sfFP)    _footprintCache[coin.symbol] = _sfFP;
+        _scanFetchCache[coin.symbol] = { ts: _sfNow };
+      } catch(_fe) { /* API 失敗時繼續評分，缺項因子不得分 */ }
     }
 
     // MACD 方向（僅供 SQ 評分使用）
@@ -9744,19 +9763,16 @@ function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（最高約 26 分）
+    // 分數 floor 0，等級門檻與 buildTradeSetup + 持倉監控完全一致（最高約 26 分）
     _scanSqScore = Math.max(0, _scanSqScore);
-    // 掃描情境門檻（比 buildTradeSetup 低 3 分）：掃描時缺少足跡圖、Taker、巨鯨、
-    // 爆倉地圖、ICT/圖形快取等非同步資料（理論上少 ~7 可得分），
-    // 調整後與 buildTradeSetup 保持相同比例門檻（約最高分的 38%）。
-    const _scanSqGrade = _scanSqScore >= 19 ? 'SSS'
-                       : _scanSqScore >= 16 ? 'SS'
-                       : _scanSqScore >= 12 ? 'S'
-                       : _scanSqScore >= 7  ? 'A'
-                       : _scanSqScore >= 4  ? 'B'
-                       : _scanSqScore >= 2  ? 'C' : 'D';
+    const _scanSqGrade = _scanSqScore >= 22 ? 'SSS'
+                       : _scanSqScore >= 19 ? 'SS'
+                       : _scanSqScore >= 15 ? 'S'
+                       : _scanSqScore >= 10 ? 'A'
+                       : _scanSqScore >= 6  ? 'B'
+                       : _scanSqScore >= 3  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單 S 以上；短線單 A 以上（掃描版門檻）
+    // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
     const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
 
