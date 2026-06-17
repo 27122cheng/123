@@ -3683,13 +3683,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   techPenReasons.forEach(r => aiTrendReasons.push(`📐 技術面：${r}`));
   chipsPenReasons.forEach(r => aiTrendReasons.push(`🐋 籌碼面：${r}`));
 
-  // hardAdxPenalty / learnPenalty / aiTrendPenalty / techPenalty / chipsPenalty 已由 SQ ⑦⑮④㉑⑫⑧⑨ 負責把關，不重複扣分
-  const conf = Math.max(0, rawConf - macroOpposePenalty);
-  // 三層分析中間值（供 UI 展示決策流程用）
+  // 前置信心度（供 direction gate 使用）：rawConf - 宏觀扣分
+  let conf = Math.max(0, rawConf - macroOpposePenalty);
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
   const finalConf = conf;
-  // 最終防線：被AI風控硬封鎖 OR 信心低於60% → 觀望
+  // 最終防線：被AI風控硬封鎖 OR 信心低於50% → 觀望
   if (conf < 50 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
@@ -4069,8 +4068,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   } catch(_sqPE) { return ''; } })();
 
-  // ── SQ→信心整合：評分高時提振信心，低時抑制（僅對A+等級有效，B以下已被grade gate攔截）──
-  const _sqConfBoost = Math.round(Math.max(-8, Math.min(12, _sqScore - 10)));
+  // ── AI 超級頂級交易員信心度：SQ21 評分為主軸，整合技術強度與宏觀調整 ──
+  // 已通過 SQ≥A + R/R≥1.3 兩道門檻才到這裡，conf 代表頂級交易員對這筆訊號的整體信心
+  // rawConf（技術質量）＋ SQ 超額分數 × 1.5%/分 ＋ 宏觀逆風扣分
+  conf = Math.round(Math.max(0, Math.min(99,
+    rawConf + (_sqScore - 10) * 1.5 - macroOpposePenalty
+  )));
 
   // ── ICT / SMC / SNR + 圖形識別（所有情況均顯示於交易建議區）──
   const _ictAnalysisHtml = (() => { try {
@@ -13302,7 +13305,7 @@ function renderPositionsPage() {
           <div class="pos-cell-val" style="color:#a78bfa">${(t.scaleIns||[]).filter(s=>s.status==='open').length} / ${t.maxScaleIns}</div>
         </div>` : ''}
         <div class="pos-cell" style="grid-column:span 2">
-          <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
+          <div class="pos-cell-lbl">🤖 AI 頂級交易員信心度</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf}%</span>
             ${t.rawConf ? `<span style="color:var(--text3);font-size:0.7rem">原始 ${t.rawConf}% → ${[
@@ -13325,7 +13328,7 @@ function renderPositionsPage() {
           <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(_tpx(tp2))}${entry&&tp2 ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)}% <span style="color:#22c55e;font-weight:700">${(Math.abs(tp2-entry)/risk).toFixed(1)}R</span></span>` : ''}</div>
         </div>
         <div class="pos-cell" style="grid-column:span 3">
-          <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
+          <div class="pos-cell-lbl">🤖 AI 頂級交易員信心度</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf}%</span>
             ${t.rawConf ? `<span style="color:var(--text3);font-size:0.7rem">原始 ${t.rawConf}% → ${[
@@ -13488,7 +13491,7 @@ function renderPositionsPage() {
                 ${(t.tp2 || _fbR > 0) ? (() => { const _pTp2 = t.tp2 || (t.direction === 'long' ? (t.entry||0) + _fbR * 2.5 : (t.entry||0) - _fbR * 2.5); return `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(_pTp2)}${_fbR > 0 ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px"><span style="color:#22c55e;font-weight:700">${(Math.abs(_pTp2 - (t.entry||0)) / _fbR).toFixed(1)}R</span></span>` : ''}</div></div>`; })() : ''}
                 `}
                 <div class="pos-cell" style="grid-column:span ${isLongTermCard ? 1 : 1}">
-                  <div class="pos-cell-lbl">最終信心度</div>
+                  <div class="pos-cell-lbl">🤖 AI 頂級交易員信心度</div>
                   <div class="pos-cell-val" style="color:${_pConfClr}">${_pConf}%</div>
                 </div>
                 ${isLongTermCard && _siTargets.length ? `
