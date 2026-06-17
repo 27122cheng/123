@@ -13444,10 +13444,10 @@ function renderPositionsPage() {
                 <div class="pos-cell"><div class="pos-cell-lbl">現價距進場</div><div class="pos-cell-val" style="color:${distClr}">${distPct !== null ? distPct + '%' : '—'}</div></div>
                 <div class="pos-cell"><div class="pos-cell-lbl">止損位</div><div class="pos-cell-val" style="color:var(--bear)">${fmt(t.sl)}</div></div>
                 ${isLongTermCard ? `
-                <div class="pos-cell"><div class="pos-cell-lbl">最終止盈位</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.ltTP || t.tp2 || t.tp1)}</div></div>
+                <div class="pos-cell"><div class="pos-cell-lbl">最終止盈位</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.ltTP || t.tp2 || t.tp1)}${_fbR > 0 && (t.ltTP || t.tp2 || t.tp1) ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px"><span style="color:#22c55e;font-weight:700">${(Math.abs((t.ltTP || t.tp2 || t.tp1) - (t.entry||0)) / _fbR).toFixed(1)}R</span></span>` : ''}</div></div>
                 ` : `
-                <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(_fbTp1)}</div></div>
-                ${(t.tp2 || _fbR > 0) ? `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(t.tp2 || (t.direction === 'long' ? (t.entry||0) + _fbR * 2.5 : (t.entry||0) - _fbR * 2.5))}</div></div>` : ''}
+                <div class="pos-cell"><div class="pos-cell-lbl">止盈一</div><div class="pos-cell-val" style="color:var(--bull)">${fmt(_fbTp1)}${_fbR > 0 ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px"><span style="color:#f59e0b;font-weight:700">${(Math.abs(_fbTp1 - (t.entry||0)) / _fbR).toFixed(1)}R</span></span>` : ''}</div></div>
+                ${(t.tp2 || _fbR > 0) ? (() => { const _pTp2 = t.tp2 || (t.direction === 'long' ? (t.entry||0) + _fbR * 2.5 : (t.entry||0) - _fbR * 2.5); return `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(_pTp2)}${_fbR > 0 ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px"><span style="color:#22c55e;font-weight:700">${(Math.abs(_pTp2 - (t.entry||0)) / _fbR).toFixed(1)}R</span></span>` : ''}</div></div>`; })() : ''}
                 `}
                 <div class="pos-cell" style="grid-column:span ${isLongTermCard ? 1 : 1}">
                   <div class="pos-cell-lbl">最終信心度</div>
