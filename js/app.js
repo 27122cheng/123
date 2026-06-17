@@ -9746,14 +9746,17 @@ function recordSignalsFromScan(data) {
 
     // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（最高約 26 分）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 22 ? 'SSS'
-                       : _scanSqScore >= 19 ? 'SS'
-                       : _scanSqScore >= 15 ? 'S'
-                       : _scanSqScore >= 10 ? 'A'
-                       : _scanSqScore >= 6  ? 'B'
-                       : _scanSqScore >= 3  ? 'C' : 'D';
+    // 掃描情境門檻（比 buildTradeSetup 低 3 分）：掃描時缺少足跡圖、Taker、巨鯨、
+    // 爆倉地圖、ICT/圖形快取等非同步資料（理論上少 ~7 可得分），
+    // 調整後與 buildTradeSetup 保持相同比例門檻（約最高分的 38%）。
+    const _scanSqGrade = _scanSqScore >= 19 ? 'SSS'
+                       : _scanSqScore >= 16 ? 'SS'
+                       : _scanSqScore >= 12 ? 'S'
+                       : _scanSqScore >= 7  ? 'A'
+                       : _scanSqScore >= 4  ? 'B'
+                       : _scanSqScore >= 2  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
+    // 長線單 S 以上；短線單 A 以上（掃描版門檻）
     const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
 
