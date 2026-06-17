@@ -13240,7 +13240,7 @@ function renderPositionsPage() {
         ${isLongTermOpen ? `
         <div class="pos-cell">
           <div class="pos-cell-lbl">最終目標</div>
-          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(_tpx(t.ltTP || tp2))}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&(t.ltTP||tp2) ? ((isLong?(t.ltTP||tp2)-entry:entry-(t.ltTP||tp2))/entry*100).toFixed(2)+'%' : ''}</span></div>
+          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(_tpx(t.ltTP || tp2))}${entry&&(t.ltTP||tp2) ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${((isLong?(t.ltTP||tp2)-entry:entry-(t.ltTP||tp2))/entry*100).toFixed(2)}% <span style="color:#22c55e;font-weight:700">${(Math.abs((t.ltTP||tp2)-entry)/risk).toFixed(1)}R</span></span>` : ''}</div>
         </div>
         ${t.maxScaleIns > 0 ? `
         <div class="pos-cell">
@@ -13264,11 +13264,11 @@ function renderPositionsPage() {
         ` : `
         <div class="pos-cell">
           <div class="pos-cell-lbl">止盈一</div>
-          <div class="pos-cell-val" style="color:var(--bull)">${fmtPrice(_tpx(tp1))}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp1 ? ((isLong?tp1-entry:entry-tp1)/entry*100).toFixed(2)+'%' : ''}</span></div>
+          <div class="pos-cell-val" style="color:var(--bull)">${fmtPrice(_tpx(tp1))}${entry&&tp1 ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${((isLong?tp1-entry:entry-tp1)/entry*100).toFixed(2)}% <span style="color:#f59e0b;font-weight:700">${(Math.abs(tp1-entry)/risk).toFixed(1)}R</span></span>` : ''}</div>
         </div>
         <div class="pos-cell">
           <div class="pos-cell-lbl">止盈二</div>
-          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(_tpx(tp2))}<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${entry&&tp2 ? ((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)+'%' : ''}</span></div>
+          <div class="pos-cell-val" style="color:#22c55e">${fmtPrice(_tpx(tp2))}${entry&&tp2 ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px">${((isLong?tp2-entry:entry-tp2)/entry*100).toFixed(2)}% <span style="color:#22c55e;font-weight:700">${(Math.abs(tp2-entry)/risk).toFixed(1)}R</span></span>` : ''}</div>
         </div>
         <div class="pos-cell" style="grid-column:span 3">
           <div class="pos-cell-lbl">進場時信心度（已鎖定）</div>
