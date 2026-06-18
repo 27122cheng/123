@@ -3887,6 +3887,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (_risk.recs?.length) {
     _sqFactors.push(`💡 止損AI建議：${_risk.recs[0]}`);
   }
+  // 過往止損規則參考（不列入評分，僅供參考）
+  {
+    const _sqRuleViol = _sqDefChecks.filter(c => !c.pass && c.type === 'rule' && (c.penalty || 0) > 0);
+    const _sqSuggViol = _sqDefChecks.filter(c => !c.pass && (c.type === 'sugg_required' || c.type === 'sugg_ref'));
+    if (_sqRuleViol.length > 0 || _sqSuggViol.length > 0) {
+      _sqFactors.push(`📋 止損規則參考（${_sqRuleViol.length + _sqSuggViol.length} 項，不列入評分）`);
+      _sqRuleViol.slice(0, 2).forEach(c => _sqFactors.push(`　▸ 📉 ${c.label}`));
+      _sqSuggViol.slice(0, 2).forEach(c => _sqFactors.push(`　▸ 📌 ${c.label}`));
+    }
+  }
 
   // ⑭ 技術圖形識別（傳統形態 + ICT）— max +2，逆向圖形時扣 1 分
   _sqScore += Math.min(2, _chartPat.score);
