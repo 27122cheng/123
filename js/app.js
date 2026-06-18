@@ -192,8 +192,8 @@ function startRefreshCycle() {
   clearInterval(_bgScanTimer);
   _bgScanTimer = setInterval(() => {
     if (!state.data || !state.data.length) return;
-    try { recordSignalsFromScan(state.data); } catch(e) {}
     try { updateOpenTrades(state.data); } catch(e) {}
+    try { recordSignalsFromScan(state.data); } catch(e) {}
     if (state.currentPage === 'positions') {
       try { renderPositionsPage(); } catch(e) {}
     }
@@ -490,8 +490,8 @@ function navigateTo(page, coinSymbol) {
     if (_positionsScanTimer) clearInterval(_positionsScanTimer);
     _positionsScanTimer = setInterval(() => {
       if (state.data && state.data.length) {
-        try { recordSignalsFromScan(state.data); } catch(e) {}
         try { updateOpenTrades(state.data); } catch(e) {}
+        try { recordSignalsFromScan(state.data); } catch(e) {}
       }
       try { renderPositionsPage(); } catch(e) {}
     }, 10000);
@@ -4024,7 +4024,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGrade = _sqScore >= 22 ? 'SSS'
                  : _sqScore >= 19 ? 'SS'
                  : _sqScore >= 17 ? 'S'
-                 : _sqScore >= 12 ? 'A'
+                 : _sqScore >= 10 ? 'A'
                  : _sqScore >= 7  ? 'B'
                  : _sqScore >= 4  ? 'C' : 'D';
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
@@ -4051,7 +4051,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ${_sqNeg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${_sqNeg.length}項）</div>${_sqNeg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${_sqWarn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${_sqWarn.length}項）</div>${_sqWarn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${_sqNeut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${_sqNeut.length}項）</div>${_sqNeut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
-      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 60分　需 SQ≥A（≥12分）方可入場</div>
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 60分　需 SQ≥A（≥10分）方可入場</div>
     </div>`;
   } catch(_sqPE) { return ''; } })();
 
@@ -4400,13 +4400,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // 長線單：風控分≥60（與短線門檻一致）+ R/R≥1.5 + 週向不逆勢 + SQ≥S（長線要求更高）
+        // 長線單：風控分≥60 + R/R≥1.5 + 週向不逆勢 + SQ≥A（與短線一致）
         _canAutoRecord = conf >= 60
           && parseFloat(rr1str) >= 1.5
           && !weeklyOpposed
-          && ['SSS','SS','S'].includes(_sqGrade);
+          && ['SSS','SS','S','A'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥A（≥12分）且風控分≥60 方可自動建倉
+        // 短線單 / 震盪單：SQ≥A（≥10分）且風控分≥60 方可自動建倉
         _canAutoRecord = conf >= 60 && ['SSS','SS','S','A'].includes(_sqGrade);
       }
     }
@@ -9150,72 +9150,11 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqEmoji   = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
   const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（評分 ${_sqScoreTG}/10）`;
 
-  // ── 風控分扣分明細（無箭頭）──
-  const _macroPen = setup.macroOpposePenalty || setup.macroPenalty || 0;
-  const _wContra2 = isLong ? wBias.includes('bear') : wBias.includes('bull');
-  const _tContra2 = isLong ? tBias.includes('bear') : tBias.includes('bull');
+  // ── 風控分扣分明細（只顯示止損風控扣分，與風控分公式一致）──
+  const _learnPenTg = Math.min(50, setup.learnPenalty || 0);
   const _penLines = [];
-  if (_macroPen > 0 && macroCache) {
-    const _dom = macroCache.btcDominance || 0;
-    const _chg = macroCache.marketCapChange || 0;
-    const _fg  = macroCache.fg ? parseInt(macroCache.fg.value) : null;
-    const _why = [];
-    if (isLong) {
-      if (_dom > 58) _why.push(`BTC主導率偏高 ${_dom.toFixed(1)}%`);
-      if (_chg < -2) _why.push(`市值下跌 ${_chg.toFixed(1)}%`);
-      if (_fg != null && _fg < 30) _why.push(`恐貪指數偏低 ${_fg}`);
-    } else {
-      if (_dom < 44) _why.push(`BTC主導率偏低 ${_dom.toFixed(1)}%`);
-      if (_chg > 2)  _why.push(`市值上漲 ${_chg.toFixed(1)}%`);
-      if (_fg != null && _fg > 70) _why.push(`恐貪指數偏高 ${_fg}`);
-    }
-    _penLines.push(`   宏觀逆風 -${_macroPen}%${_why.length ? `（${_why.join('；')}）` : ''}`);
-  }
-  if (wBiasLabel) {
-    if (_wContra2) _penLines.push(`   本週AI預測 ${_esc(wBiasLabel)}，與${isLong ? '做多' : '做空'}逆向 -${wBias.includes('strong') ? 8 : 4}%`);
-    else if (wBias !== 'neutral') _penLines.push(`   本週AI預測 ${_esc(wBiasLabel)}，方向一致`);
-  }
-  if (tBiasLabel) {
-    if (_tContra2) _penLines.push(`   今日AI預測 ${_esc(tBiasLabel)}，${isLong ? '多頭今日逆風' : '空頭今日逆風'} -5%`);
-    else if (tBias !== 'neutral') _penLines.push(`   今日AI預測 ${_esc(tBiasLabel)}，今日方向一致`);
-  }
-  const _dirPen = setup.dirPenalty || 0;
-  if (_dirPen > 0) {
-    const _dWkOp = isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull');
-    const _dDyOp = isLong ? (coin.dailySignal||'').includes('bear')  : (coin.dailySignal||'').includes('bull');
-    const _dParts = [];
-    if (_dWkOp) _dParts.push('週線逆向');
-    if (_dDyOp) _dParts.push('日線逆向');
-    _penLines.push(`   大方向${_dParts.join('+')} -${_dirPen}%`);
-  }
-  const _techPen = setup.techPenalty || 0;
-  if (_techPen > 0) {
-    const _macdH = parseFloat(coin.macdHist) || 0;
-    const _rsiV  = parseFloat(coin.rsi) || 50;
-    const _volSt = coin.volumeStrength || '';
-    if (isLong  && _macdH < 0) _penLines.push(`   MACD柱狀負值，多頭動能待確認 -4%`);
-    if (!isLong && _macdH > 0) _penLines.push(`   MACD柱狀正值，空頭動能待確認 -4%`);
-    if (isLong  && _rsiV > 78) _penLines.push(`   RSI ${_rsiV} 嚴重超買 -8%`);
-    else if (isLong && _rsiV > 70) _penLines.push(`   RSI ${_rsiV} 超買 -5%`);
-    if (!isLong && _rsiV < 22) _penLines.push(`   RSI ${_rsiV} 嚴重超賣 -8%`);
-    else if (!isLong && _rsiV < 30) _penLines.push(`   RSI ${_rsiV} 超賣 -5%`);
-    if (_volSt === '低' || _volSt.includes('弱')) _penLines.push(`   成交量弱（${_volSt}） -4%`);
-  }
-  const _chipsPen = setup.chipsPenalty || 0;
-  if (_chipsPen > 0) {
-    const _deriv = coin.derivData;
-    const _whale = coin.whaleData;
-    if (_deriv) {
-      const _tkr = _deriv.takerBuySell ?? 1;
-      if (isLong  && _tkr < 0.80) _penLines.push(`   主動賣盤強勢（Taker ${_tkr.toFixed(2)}） -6%`);
-      else if (isLong  && _tkr < 0.88) _penLines.push(`   主動賣盤偏多（Taker ${_tkr.toFixed(2)}） -4%`);
-      else if (!isLong && _tkr > 1.20) _penLines.push(`   主動買盤強勢（Taker ${_tkr.toFixed(2)}） -6%`);
-      else if (!isLong && _tkr > 1.12) _penLines.push(`   主動買盤偏多（Taker ${_tkr.toFixed(2)}） -4%`);
-    }
-    if (_whale) {
-      if (isLong  && _whale.bias === 'bear' && (_whale.bigSellCount||0) >= 3) _penLines.push(`   巨鯨持續出貨（${_whale.bigSellCount}筆大賣） -5%`);
-      if (!isLong && _whale.bias === 'bull' && (_whale.bigBuyCount ||0) >= 3) _penLines.push(`   巨鯨持續買入（${_whale.bigBuyCount}筆大買） -5%`);
-    }
+  if (_learnPenTg > 0) {
+    _penLines.push(`   止損風控扣分 -${_learnPenTg} 分`);
   }
 
   // ── 各方向確認（短線：日/4H/1H/15m；長線加週線）──
@@ -9359,7 +9298,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` +
     `\n${_priceLines}\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
-    (_penLines.length ? `\n📉 <b>止損風控詳情</b>\n${_penLines.join('\n')}\n` : '') +
+    (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
     _riskBanner +
     _revBlock +
     `\n${_tags}\n` +
@@ -9497,6 +9436,14 @@ async function recordSignalsFromScan(data) {
       if ((setup.conf || 0) < 60) continue;
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
       if (!_wkAligned) continue;
+    }
+    // 建單前確認評分與趨勢符合 updateOpenTrades 的取消門檻，避免建單後立即取消
+    // 短線單：評分 ≥55（多）或 ≤45（空）；趨勢不能已反轉
+    if (!canScaleIn) {
+      if (isLong  && (coin.score || 50) < 55) continue;
+      if (!isLong && (coin.score || 50) > 45) continue;
+      if (isLong  && (coin.trend || '').includes('看跌')) continue;
+      if (!isLong && (coin.trend || '').includes('看漲')) continue;
     }
 
     // ── 補充抓取掃描情境缺少的非同步資料（讓 SQ 評分與幣種詳情頁完全一致）──
@@ -9746,12 +9693,12 @@ async function recordSignalsFromScan(data) {
     const _scanSqGrade = _scanSqScore >= 22 ? 'SSS'
                        : _scanSqScore >= 19 ? 'SS'
                        : _scanSqScore >= 17 ? 'S'
-                       : _scanSqScore >= 12 ? 'A'
+                       : _scanSqScore >= 10 ? 'A'
                        : _scanSqScore >= 7  ? 'B'
                        : _scanSqScore >= 4  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
-    const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
+    // 長線單與短線單統一要求 SQ≥A（≥10分）
+    const _reqGrades = ['SSS','SS','S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
 
     const newTrade = {
@@ -10031,15 +9978,15 @@ async function recordSignalsFromScan(data) {
     const _rcGrade = _sqRC >= 22 ? 'SSS'
                    : _sqRC >= 19 ? 'SS'
                    : _sqRC >= 17 ? 'S'
-                   : _sqRC >= 12 ? 'A'
+                   : _sqRC >= 10 ? 'A'
                    : _sqRC >= 7  ? 'B'
                    : _sqRC >= 4  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
-    // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
-    const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
+    // 長線單與短線單統一要求 SQ≥A（≥10分）
+    const _rcMinGrades = ['SSS','SS','S','A'];
     if (!_rcMinGrades.includes(_rcGrade)) {
-      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
+      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於A 級要求，自動取消掛單`;
       addCancelCooldown(trade, _sqCancelReason);
       _sqCancelIds.add(trade.id);
       changed = true;
