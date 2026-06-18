@@ -9369,6 +9369,8 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
 async function recordSignalsFromScan(data) {
   const tlog = loadTradeLog();
+  // 記錄本次掃描開始前已存在的掛單 ID，SQ 監控只處理這些（不重複驗證剛建立的掛單）
+  const _existingTradeIds = new Set(tlog.map(t => t.id));
   let changed = false;
 
   // ── 預先計算宏觀方向（使用與大方向進度條完全一致的多因子評分）──
@@ -9816,9 +9818,18 @@ async function recordSignalsFromScan(data) {
     const _tLabel = canScaleIn ? '長線單' : '短線單';
     const _tIcon  = canScaleIn ? '💎' : '📡';
     try { if (typeof showToast === 'function') showToast(`${_tIcon} ${_tLabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 風控分 ${setup.conf} 分，已加入持倉`, 'success'); } catch(_te) {}
-    // 延遲 Telegram 通知：等 updateOpenTrades 確認此單不會立即被止損記憶/風控分取消後才發送
-    newTrade.pendingNotify = true;
-    newTrade._notifyRisk   = { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs };
+    // 建單即時發送 Telegram（條件在掃描時已完整驗證，不需延遲）
+    try {
+      const _scanNs = loadSettings();
+      if (_scanNs.notifTelegram && _scanNs.tgToken && _scanNs.tgChatId) {
+        const _scanTgSetup = Object.assign({}, newTrade, setup,
+          { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs });
+        sendTelegramMessage(_scanNs.tgToken, _scanNs.tgChatId,
+          buildTelegramText(coin, direction, _scanTgSetup, _macroCache,
+            typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
+        newTrade.telegramSent = true;
+      }
+    } catch(_scanTe) { console.warn('[recordSignalsFromScan tg]', _scanTe); }
   }
 
   // ── 訊號品質持續監控：掛單未進場前每次掃描用完整 21 因子重新評估，低於 A 級自動取消 ──
@@ -9828,8 +9839,9 @@ async function recordSignalsFromScan(data) {
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
-    // ⚡ 剛建立且尚未發送進場通知的交易跳過本輪 SQ 監控
-    // 讓 updateOpenTrades 先完成入場 Telegram 通知，下一輪再開始品質監控
+    // 本次掃描新建立的掛單已在建單時完整驗證，不需在同一輪掃描內再次 SQ 審查
+    if (!_existingTradeIds.has(trade.id)) continue;
+    // pendingNotify = true 代表從幣種詳情頁建單、Telegram 尚未發送，同樣跳過
     if (trade.pendingNotify) continue;
     const _sqCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
     if (!_sqCoin) continue;
