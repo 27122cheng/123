@@ -9828,9 +9828,10 @@ async function recordSignalsFromScan(data) {
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
     if (trade.tradeType === 'range') continue;
-    // ⚡ 剛建立且尚未發送進場通知的交易跳過本輪 SQ 監控
-    // 讓 updateOpenTrades 先完成入場 Telegram 通知，下一輪再開始品質監控
+    // ⚡ 剛建立（10 分鐘內）或尚未發送進場通知的交易跳過 SQ 監控
+    // 讓 updateOpenTrades 先完成入場 Telegram 通知，再開始品質監控
     if (trade.pendingNotify) continue;
+    if (Date.now() - (trade.timestamp || 0) < 10 * 60 * 1000) continue;
     const _sqCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
     if (!_sqCoin) continue;
     const _sqIsLong = trade.direction === 'long';
@@ -10616,8 +10617,8 @@ function updateOpenTrades(data) {
         const _rawFreshConf = freshConf;
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 風控分跌破取消門檻 → 自動取消掃描粗估單
-        if (freshConf < 55 && !trade.entryTime) {
+        // 風控分跌破取消門檻 → 自動取消掃描粗估單（pendingNotify 保護：讓入場通知先送出）
+        if (freshConf < 55 && !trade.entryTime && !trade.pendingNotify) {
           const _confReason = `風控分跌至 ${freshConf} 分，低於取消門檻（止損風控扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
@@ -10631,7 +10632,7 @@ function updateOpenTrades(data) {
       const _cLD = Math.min(50, _learnPen);
       freshConf = Math.max(0, Math.round(100 - _cLD));
       if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-      if (freshConf < 55 && !trade.entryTime) {
+      if (freshConf < 55 && !trade.entryTime && !trade.pendingNotify) {
         const _confReason = `風控分跌至 ${freshConf} 分，低於取消門檻（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
