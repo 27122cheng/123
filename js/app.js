@@ -12492,23 +12492,23 @@ function getLearnProfile() {
 function computeRulePenalty(total, rate) {
   const _t = total || 0, _r = rate || 0;
   if (_t >= 50) {
-    if (_r >= 0.90) return 15;
-    if (_r >= 0.80) return 10;
-    if (_r >= 0.70) return  7;
-    if (_r >= 0.60) return  4;
+    if (_r >= 0.90) return 12;
+    if (_r >= 0.80) return  8;
+    if (_r >= 0.70) return  5;
+    if (_r >= 0.60) return  3;
     if (_r >= 0.50) return  2;
     if (_r >= 0.30) return  1;
     return 0;
   }
   if (_t >= 20) {
-    if (_r >= 0.90) return 12;
-    if (_r >= 0.80) return  8;
-    if (_r >= 0.70) return  5;
-    if (_r >= 0.60) return  3;
+    if (_r >= 0.90) return 10;
+    if (_r >= 0.80) return  6;
+    if (_r >= 0.70) return  4;
+    if (_r >= 0.60) return  2;
     if (_r >= 0.50) return  1;
     return 0;
   }
-  return Math.max(1, Math.min(8, Math.round(_r * 10)));
+  return Math.max(1, Math.min(6, Math.round(_r * 8)));
 }
 
 function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
@@ -12534,19 +12534,19 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       let _slPen = 0;
       if (_totClosed >= 50) {
         // ≥50筆：標準扣分（止損率30%起生效；>80%時扣分足以讓風控分跌破70門檻）
-        if (_slRate > 0.90)      _slPen = 35;
-        else if (_slRate > 0.80) _slPen = 30;
-        else if (_slRate > 0.70) _slPen = 20;
-        else if (_slRate > 0.60) _slPen = 10;
-        else if (_slRate > 0.50) _slPen =  5;
-        else if (_slRate > 0.30) _slPen =  2;
+        if (_slRate > 0.90)      _slPen = 28;
+        else if (_slRate > 0.80) _slPen = 24;
+        else if (_slRate > 0.70) _slPen = 16;
+        else if (_slRate > 0.60) _slPen =  8;
+        else if (_slRate > 0.50) _slPen =  4;
+        else if (_slRate > 0.30) _slPen =  1;
       } else {
         // 20-49筆：同一組門檻，扣分稍低（樣本較少，參考性較弱）
-        if (_slRate > 0.90)      _slPen = 25;
-        else if (_slRate > 0.80) _slPen = 18;
-        else if (_slRate > 0.70) _slPen = 12;
-        else if (_slRate > 0.60) _slPen =  7;
-        else if (_slRate > 0.50) _slPen =  3;
+        if (_slRate > 0.90)      _slPen = 20;
+        else if (_slRate > 0.80) _slPen = 14;
+        else if (_slRate > 0.70) _slPen =  9;
+        else if (_slRate > 0.60) _slPen =  5;
+        else if (_slRate > 0.50) _slPen =  2;
         else if (_slRate > 0.30) _slPen =  0;
       }
       if (_slPen > 0) {
