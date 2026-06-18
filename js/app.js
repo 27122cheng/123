@@ -4223,7 +4223,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     return `${_scalpHtml}<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">全數據多因子評分 ${_sqScore} 分，需達 A 級（≥ 12 分）才進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">全數據多因子評分 ${_sqScore} 分，需達 A 級（≥ 10 分）才進場</div>
+      <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
+    </div>`;
+  }
+
+  // 風控分不足（< 60 分）→ 觀望，不顯示交易建議
+  if (conf < 60) {
+    _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore, chartPat: _chartPat, ..._ictCacheData };
+    return `${_scalpHtml}<div class="setup-wait">
+      <div class="setup-wait-icon">🛡️</div>
+      <div class="setup-wait-title">風控分不足（<strong style="color:#ef4444">${conf} 分</strong>），低於門檻 60 分，建議觀望</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">止損歷史風控扣分後信心不足，需達 60 分以上才顯示交易建議</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
@@ -9148,7 +9159,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqScoreTG = setup.sqScore ?? '—';
   const _sqLabelTG = setup.sqGradeLabel || { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGradeTG] || '—';
   const _sqEmoji   = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
-  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（評分 ${_sqScoreTG}/10）`;
+  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（21因子評分 ${_sqScoreTG} 分）`;
 
   // ── 風控分扣分明細（只顯示止損風控扣分，與風控分公式一致）──
   const _learnPenTg = Math.min(50, setup.learnPenalty || 0);
@@ -15316,7 +15327,8 @@ function computeSimpleSetup(coin, isLong) {
   if (_cssFP && !_cssFP.deltaDiv && (isLong ? _cssFP.deltaDir === 'bull' : _cssFP.deltaDir === 'bear')) { _cssqScore += 1; _cssqFactors.push('✅ 足跡圖 Delta 確認'); }
   if (adx >= 28) { _cssqScore += 1; _cssqFactors.push('✅ ADX 趨勢確立'); }
   if (_sTechPen === 0) { _cssqScore += 1; _cssqFactors.push('✅ 技術面無逆風'); }
-  // 最高 9 分；B 級門檻 ≥4（與 buildTradeSetup 及 recordSignalsFromScan 一致）
+  // 最高 9 分；此為快速掃描用的簡版 9 因子 SQ（不作為建立門檻，僅供內部邏輯參考）
+  // 建立門檻使用 buildTradeSetup 或 recordSignalsFromScan 的 21 因子版（A≥10，最高約 28 分）
   const sqGrade = _cssqScore >= 8 ? 'S' : _cssqScore >= 6 ? 'A' : _cssqScore >= 4 ? 'B' : _cssqScore >= 2 ? 'C' : 'D';
   const sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[sqGrade];
 
