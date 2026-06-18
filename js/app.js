@@ -9986,13 +9986,23 @@ async function recordSignalsFromScan(data) {
     // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
     const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_rcMinGrades.includes(_rcGrade)) {
-      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
-      addCancelCooldown(trade, _sqCancelReason);
-      _sqCancelIds.add(trade.id);
-      changed = true;
-      trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
-      try { sendCancelTelegramNotification(trade, _sqCancelReason); } catch(_n) {}
-      try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級（${_sqRC}分），自動取消掛單`, 'warning'); } catch(_t) {}
+      // 建立後 2 分鐘保護期（與進場等待期一致）：只更新等級顯示，暫不取消
+      // 防止邊界 A 分（10 分）掛單因宏觀/AI 因子微調（-1 分）而被立即取消
+      const _sqAgeMs = Date.now() - (trade.timestamp || 0);
+      if (_sqAgeMs < 120 * 1000) {
+        if (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRC) {
+          trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
+          changed = true;
+        }
+      } else {
+        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
+        addCancelCooldown(trade, _sqCancelReason);
+        _sqCancelIds.add(trade.id);
+        changed = true;
+        trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
+        try { sendCancelTelegramNotification(trade, _sqCancelReason); } catch(_n) {}
+        try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級（${_sqRC}分），自動取消掛單`, 'warning'); } catch(_t) {}
+      }
     } else {
       if (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRC) {
         trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
@@ -10647,7 +10657,9 @@ function updateOpenTrades(data) {
       const signalWeak = false; // 已廢棄：原 nowScore < 68 會讓剛建立的掛單立即被取消（建立門檻75 vs 取消門檻68）
       // 精煉單（幣種詳情頁建立，refined=true）保留至自然到期或 SL/TP 觸發；
       // 掃描粗略單（refined=false）才依趨勢/評分自動取消
-      if (!trade.refined && (trendReversed || scoreFailed || signalWeak)) {
+      // 2 分鐘保護期：與 SQ 監控一致，防止同秒或 15 秒後立即取消
+      const _tradeAgeMs = Date.now() - (trade.timestamp || 0);
+      if (!trade.refined && _tradeAgeMs >= 120 * 1000 && (trendReversed || scoreFailed || signalWeak)) {
         const reasons = [];
         if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
