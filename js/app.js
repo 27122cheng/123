@@ -4668,6 +4668,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_hwrE) { return ''; } })();
 
+  // ── 止損規則分析面板（交易建議參考，不影響評分）──
+  const _slRuleRefPanelHtml = (() => { try {
+    const _slCheck  = _sqDefChecks.find(c => c.type === 'slRate');
+    const _ruleViol = _sqDefChecks.filter(c => c.type === 'rule' && !c.pass);
+    const _suggViol = _sqDefChecks.filter(c => (c.type === 'sugg_required' || c.type === 'sugg_ref') && !c.pass);
+    if (!_slCheck && !_ruleViol.length && !_suggViol.length) return '';
+    const _slClr = (!_slCheck || _slCheck.pass) ? '#22c55e' : '#f59e0b';
+    return `<div style="background:rgba(99,102,241,.05);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:11px 14px;margin-bottom:10px">
+      <div style="font-size:0.78rem;font-weight:600;color:var(--text2);margin-bottom:7px">📋 止損規則分析（參考）</div>
+      ${_slCheck ? `<div style="font-size:0.73rem;color:${_slClr};margin-bottom:5px">${_slCheck.pass ? '✅' : '⚠️'} ${_slCheck.label}</div>` : ''}
+      ${_ruleViol.length ? `<div style="margin-bottom:4px">${_ruleViol.slice(0,4).map(c=>`<div style="font-size:0.72rem;color:#fca5a5;padding:1px 0">📉 ${c.label}${c.penalty > 0 ? `（觸發扣 ${c.penalty} 分）` : ''}</div>`).join('')}</div>` : ''}
+      ${_suggViol.length ? `<div>${_suggViol.slice(0,3).map(c=>`<div style="font-size:0.72rem;color:#fcd34d;padding:1px 0">📌 ${c.label}</div>`).join('')}</div>` : ''}
+    </div>`;
+  } catch(e) { return ''; } })();
+
   return `${_hwrBannerHtml}<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
@@ -4710,6 +4725,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   } catch(e) { return ''; } })()}
 
   ${_sqPanelHtml}
+
+  ${_slRuleRefPanelHtml}
 
   ${_ictAnalysisHtml}
 
