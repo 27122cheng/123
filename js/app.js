@@ -10632,11 +10632,9 @@ function updateOpenTrades(data) {
       const trendReversed = !isLongTermTrade && (isLong
         ? coin.trend?.includes('看跌')
         : coin.trend?.includes('看漲'));
-      // 評分跌破取消門檻（長線單寬鬆：多頭<50 / 空頭>50；普通：多頭<55 / 空頭>45）
-      // 建單門檻多頭 score>=60、空頭 score<=40，取消門檻需留 5 分緩衝避免建單後立即撤單
-      const scoreFailed = (isLong
-        ? (isLongTermTrade ? nowScore < 50 : nowScore < 55)
-        : (isLongTermTrade ? nowScore > 50 : nowScore > 45));
+      // 評分方向反轉判斷：與 recordSignalsFromScan 建立方向門檻完全一致（score>50=多，score<50=空）
+      // 僅在方向真正反轉時取消，避免 score 落在 46-49 或 51-54 的正常弱信號被誤判為失效
+      const scoreFailed = isLong ? nowScore < 50 : nowScore > 50;
       // 信號轉弱（長線單跳過；短線單以 scoreFailed 為主，避免評分短暫波動觸發過早取消）
       // 注意：signalWeak 門檻從 68 移除，改為只在 trendReversed 或 scoreFailed 時才取消
       const signalWeak = false; // 已廢棄：原 nowScore < 68 會讓剛建立的掛單立即被取消（建立門檻75 vs 取消門檻68）
