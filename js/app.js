@@ -10587,8 +10587,8 @@ function updateOpenTrades(data) {
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
         // 風控分跌破取消門檻 → 自動取消掃描粗估單
-        if (freshConf < 55 && !trade.entryTime) {
-          const _confReason = `風控分跌至 ${freshConf} 分，低於取消門檻（止損風控扣分累積）`;
+        if (freshConf < 60 && !trade.entryTime) {
+          const _confReason = `風控分跌至 ${freshConf} 分，低於門檻 60 分（止損風控扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -10601,8 +10601,8 @@ function updateOpenTrades(data) {
       const _cLD = Math.min(50, _learnPen);
       freshConf = Math.max(0, Math.round(100 - _cLD));
       if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-      if (freshConf < 55 && !trade.entryTime) {
-        const _confReason = `風控分跌至 ${freshConf} 分，低於取消門檻（止損風控扣分累積）`;
+      if (freshConf < 60 && !trade.entryTime) {
+        const _confReason = `風控分跌至 ${freshConf} 分，低於門檻 60 分（止損風控扣分累積）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -10610,8 +10610,8 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
-    // 風險評估升至高風險 → 取消未入場掛單（風控分低於 55 分才觸發）
-    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && freshConf < 55) {
+    // 風險評估升至高風險 → 取消未入場掛單（風控分低於 60 分才觸發）
+    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && freshConf < 60) {
       try {
         const _brResult = buildRisk(_fCoin);                          // UI 顯示的風險（≥55 = 高風險）
         const _frSetup  = computeSimpleSetup(_fCoin, _isL);
