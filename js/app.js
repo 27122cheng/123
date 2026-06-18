@@ -4418,8 +4418,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：信心≥70（100分制門檻，已確保風控通過）
-        _canAutoRecord = conf >= 70;
+        // 短線單 / 震盪單：SQ≥A（≥10分）且風控分≥70 方可自動建倉
+        _canAutoRecord = conf >= 70 && ['SSS','SS','S','A'].includes(_sqGrade);
       }
     }
     if (_canAutoRecord) {
@@ -4484,7 +4484,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (hardBlocked) {
       blockReasons.slice(0, 3).forEach(r => deductLines.push(r));
     } else {
-      if (learnPenalty > 0) deductLines.push(`AI 止損風控扣 ${_cLearnDrag} 分（歷史止損率/規則觸發/建議違反）`);
+      // 逐項列出有實際扣分的風控原因
+      const _failedPenalty = _sqDefChecks.filter(c => !c.pass && (c.penalty || 0) > 0);
+      if (_failedPenalty.length > 0) {
+        _failedPenalty.forEach(c => {
+          const _icon = c.type === 'slRate' ? '📉' : c.type === 'rule' ? '⚡' : '🔒';
+          deductLines.push(`${_icon} ${c.label} — 扣 ${c.penalty} 分`);
+        });
+      } else if (learnPenalty > 0) {
+        deductLines.push(`AI 止損風控扣 ${_cLearnDrag} 分`);
+      }
       deductLines.push(`風控分 ${conf} 分，低於入場門檻 70 分（其餘逆風見 SQ 因子）`);
     }
     const confFlow = [
@@ -12489,19 +12498,19 @@ function getLearnProfile() {
 function computeRulePenalty(total, rate) {
   const _t = total || 0, _r = rate || 0;
   if (_t >= 50) {
-    if (_r >= 0.90) return 12;
-    if (_r >= 0.80) return  8;
-    if (_r >= 0.70) return  5;
-    if (_r >= 0.60) return  3;
+    if (_r >= 0.90) return 15;
+    if (_r >= 0.80) return 10;
+    if (_r >= 0.70) return  7;
+    if (_r >= 0.60) return  4;
     if (_r >= 0.50) return  2;
     if (_r >= 0.30) return  1;
     return 0;
   }
   if (_t >= 20) {
-    if (_r >= 0.90) return 10;
-    if (_r >= 0.80) return  7;
-    if (_r >= 0.70) return  4;
-    if (_r >= 0.60) return  2;
+    if (_r >= 0.90) return 12;
+    if (_r >= 0.80) return  8;
+    if (_r >= 0.70) return  5;
+    if (_r >= 0.60) return  3;
     if (_r >= 0.50) return  1;
     return 0;
   }
@@ -12530,20 +12539,20 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       // 按止損率分級扣分（同一組門檻，≥50筆維持原扣分，20-49筆稍低）
       let _slPen = 0;
       if (_totClosed >= 50) {
-        // ≥50筆：標準扣分（止損率30%起生效）
-        if (_slRate > 0.90)      _slPen = 20;
-        else if (_slRate > 0.80) _slPen = 15;
-        else if (_slRate > 0.70) _slPen = 10;
-        else if (_slRate > 0.60) _slPen =  6;
-        else if (_slRate > 0.50) _slPen =  3;
-        else if (_slRate > 0.30) _slPen =  1;
+        // ≥50筆：標準扣分（止損率30%起生效；>80%時扣分足以讓風控分跌破70門檻）
+        if (_slRate > 0.90)      _slPen = 35;
+        else if (_slRate > 0.80) _slPen = 30;
+        else if (_slRate > 0.70) _slPen = 20;
+        else if (_slRate > 0.60) _slPen = 10;
+        else if (_slRate > 0.50) _slPen =  5;
+        else if (_slRate > 0.30) _slPen =  2;
       } else {
         // 20-49筆：同一組門檻，扣分稍低（樣本較少，參考性較弱）
-        if (_slRate > 0.90)      _slPen = 14;
-        else if (_slRate > 0.80) _slPen = 10;
-        else if (_slRate > 0.70) _slPen =  7;
-        else if (_slRate > 0.60) _slPen =  4;
-        else if (_slRate > 0.50) _slPen =  2;
+        if (_slRate > 0.90)      _slPen = 25;
+        else if (_slRate > 0.80) _slPen = 18;
+        else if (_slRate > 0.70) _slPen = 12;
+        else if (_slRate > 0.60) _slPen =  7;
+        else if (_slRate > 0.50) _slPen =  3;
         else if (_slRate > 0.30) _slPen =  0;
       }
       if (_slPen > 0) {
@@ -12897,7 +12906,7 @@ function buildAILearnPanel(closed) {
         const _pen = computeRulePenalty(r.total, r.rate);
         const _penHtml = _blocked
           ? `<span style="color:var(--bear);font-weight:700">🚫 觸發封鎖</span>`
-          : `<span style="color:#f59e0b">觸發扣 -${_pen}%</span>`;
+          : `<span style="color:#f59e0b">觸發扣 -${_pen} 分</span>`;
         return `<div class="ai-rule-item">
           <div class="ai-rule-cond">⚡ ${r.warning} ${memBadge}</div>
           <div class="ai-rule-stats">樣本 ${r.total} 筆 · 止損率 <strong style="color:var(--bear)">${Math.round(r.rate*100)}%</strong> · ${_penHtml}${fd ? ' · ' + fd : ''}${occ ? ' ' + occ : ''}</div>
@@ -12933,7 +12942,7 @@ function buildAILearnPanel(closed) {
           return `
           <div class="ai-issue-row">
             <div class="ai-issue-txt">⚠️ ${iss.text}<span class="ai-issue-cnt">×${iss.count}</span>${_enforced ? `<span style="background:rgba(239,68,68,.15);color:#ef4444;border-radius:4px;padding:1px 6px;font-size:0.68rem;margin-left:6px">🔒 必須條件</span>` : ''}${iss.firstDetected ? `<span class="ai-mem-date">首次 ${fmtDate(iss.firstDetected)}</span>` : ''}</div>
-            ${iss.suggestion ? `<div class="ai-sugg-txt">→ ${iss.suggestion}${_enforced ? '（已納入交易分析條件，違反扣 10%）' : ''}</div>` : ''}
+            ${iss.suggestion ? `<div class="ai-sugg-txt">→ ${iss.suggestion}${_enforced ? '（已納入交易分析條件，違反扣 10 分）' : ''}</div>` : ''}
           </div>`; }).join('')}
       </div>`
     : `<div class="ai-learn-section">
