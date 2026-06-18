@@ -1203,19 +1203,20 @@ function buildPendingPositionSetup(t, currentPrice) {
     return `<span style="font-size:0.7rem;font-weight:700;background:${gc}22;border:1px solid ${gc}55;color:${gc};padding:2px 7px;border-radius:20px;margin-left:7px">${ge} AI ${_effGrade} ${_effLabel}</span>`;
   })();
 
-  // 風控分計算（含所有扣分項，與 buildTradeSetup 一致）
+  // 風控分（100分制，直接取 t.conf；fallback 用 learnPenalty 扣分重算）
   const _pConf = t.conf != null ? t.conf
-    : (t.rawConf != null
-      ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0) - (t.dirPenalty||0) - (t.bbPenalty||0))
+    : (t.learnPenalty != null
+      ? Math.max(0, Math.round(100 - Math.min(50, t.learnPenalty)))
       : Math.min(90, t.score || 60));
 
-  // 風控分分項明細（僅顯示止損風控扣分）
+  // 風控分分項明細（止損風控扣分）
+  const _pLearnDrag = Math.min(50, t.learnPenalty || 0);
   const _confBreakdown = (t.learnPenalty != null) ? `
   <div class="conf-breakdown" style="margin-top:10px;padding:9px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;font-size:0.73rem;line-height:1.9">
-    <div style="font-weight:700;color:var(--text2);margin-bottom:4px">📊 風控分分項明細</div>
+    <div style="font-weight:700;color:var(--text2);margin-bottom:4px">🛡️ 風控分項明細</div>
     <div>滿分 <strong>100 分</strong></div>
-    ${(t.learnPenalty||0) > 0 ? `<div style="color:#f59e0b">↳ AI止損風控 <strong>-${Math.min(50, t.learnPenalty||0)} 分</strong>（歷史止損率/規則/建議）</div>` : '<div style="color:#22c55e">↳ AI止損風控通過（無扣分）</div>'}
-    <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px;font-weight:700">風控分：<span style="color:${_pConf >= 80 ? '#22c55e' : _pConf >= 70 ? '#f59e0b' : '#ef4444'}">${_pConf} 分</span>　<span style="font-size:0.68rem;color:var(--text3)">（其餘逆風見 SQ 因子）</span></div>
+    ${_pLearnDrag > 0 ? `<div style="color:#f59e0b">↳ 止損風控扣分 <strong>-${_pLearnDrag} 分</strong></div>` : '<div style="color:#22c55e">↳ 止損風控通過（無扣分）</div>'}
+    <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px;font-weight:700">= 風控分：<span style="color:${_pConf >= 80 ? '#22c55e' : _pConf >= 70 ? '#f59e0b' : '#ef4444'}">${_pConf} 分</span></div>
   </div>` : '';
 
   return `<div class="pending-banner">
@@ -3742,17 +3743,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqDefChecks  = learnResult?.defenseChecks || [];
   const _sqFailChecks = _sqDefChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
 
-  // ① 大時框架一致性（4H / 日線 / 週線）— max +3
-  const _sq4hOk  = h4?.signal?.includes(isLong ? 'bull' : 'bear');
-  const _sqD1Ok  = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
-  const _sqWk1Ok = wkS?.signal?.includes(isLong ? 'bull' : 'bear');
-  if (_sq4hOk)  _sqScore += 1;
-  if (_sqD1Ok)  _sqScore += 1;
-  if (_sqWk1Ok) _sqScore += 1;
-  if (_sq4hOk && _sqD1Ok && _sqWk1Ok) _sqFactors.push('✅ 4H+日線+週線三框架同向 +3');
-  else if (_sq4hOk && _sqD1Ok)         _sqFactors.push('✅ 4H+日線同向 +2');
-  else if (_sq4hOk || _sqD1Ok)         _sqFactors.push('⚠️ 單一大框架確認 +1');
-  else                                  _sqFactors.push('❌ 大框架無確認');
+  // ① 各週期走勢同向（週/日/4H/1H/15m）— 同向各 +1，週/日逆向各 -1，max +5
+  {
+    const _sq15mOk = m15?.signal?.includes(isLong ? 'bull' : 'bear');
+    const _sq15mOp = m15?.signal?.includes(isLong ? 'bear' : 'bull');
+    const _sqH1Ok  = h1?.signal?.includes(isLong ? 'bull' : 'bear');
+    const _sqH1Op  = h1?.signal?.includes(isLong ? 'bear' : 'bull');
+    const _sq4hOk  = h4?.signal?.includes(isLong ? 'bull' : 'bear');
+    const _sq4hOp  = h4?.signal?.includes(isLong ? 'bear' : 'bull');
+    const _sqD1Ok  = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
+    const _sqD1Op  = d1sig_?.signal?.includes(isLong ? 'bear' : 'bull');
+    const _sqWk1Ok = wkS?.signal?.includes(isLong ? 'bull' : 'bear');
+    const _sqWk1Op = wkS?.signal?.includes(isLong ? 'bear' : 'bull');
+    if (_sq15mOk) { _sqScore += 1; _sqFactors.push('✅ 15m 走勢同向 +1'); }
+    else if (_sq15mOp)               { _sqFactors.push('❌ 15m 走勢逆向'); }
+    else                             { _sqFactors.push('⬜ 15m 走勢中性'); }
+    if (_sqH1Ok)  { _sqScore += 1; _sqFactors.push('✅ 1H 走勢同向 +1'); }
+    else if (_sqH1Op)                { _sqFactors.push('❌ 1H 走勢逆向'); }
+    else                             { _sqFactors.push('⬜ 1H 走勢中性'); }
+    if (_sq4hOk)  { _sqScore += 1; _sqFactors.push('✅ 4H 走勢同向 +1'); }
+    else if (_sq4hOp) { _sqScore -= 1; _sqFactors.push('❌ 4H 走勢逆向 -1'); }
+    else                             { _sqFactors.push('⬜ 4H 走勢中性'); }
+    if (_sqD1Ok)  { _sqScore += 1; _sqFactors.push('✅ 日線走勢同向 +1'); }
+    else if (_sqD1Op) { _sqScore -= 1; _sqFactors.push('❌ 日線走勢逆向 -1'); }
+    else                             { _sqFactors.push('⬜ 日線走勢中性'); }
+    if (_sqWk1Ok) { _sqScore += 1; _sqFactors.push('✅ 週線走勢同向 +1'); }
+    else if (_sqWk1Op){ _sqScore -= 1; _sqFactors.push('❌ 週線走勢逆向 -1'); }
+    else                             { _sqFactors.push('⬜ 週線走勢中性'); }
+  }
 
   // ② AI 預測（本週+今日）— max +2，逆向各扣 1 分
   const _sqWkAI    = weeklyBiasData?.bias?.includes(isLong ? 'bull' : 'bear');
@@ -4412,8 +4430,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // 長線單：信心≥75 + R/R≥1.5 + 週向不逆勢（100分制，75分以上才配置長線倉位）
-        _canAutoRecord = conf >= 75
+        // 長線單：風控分≥70（與短線門檻一致）+ R/R≥1.5 + 週向不逆勢 + SQ≥S（長線要求更高）
+        _canAutoRecord = conf >= 70
           && parseFloat(rr1str) >= 1.5
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
@@ -4496,17 +4514,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       }
       deductLines.push(`風控分 ${conf} 分，低於入場門檻 70 分（其餘逆風見 SQ 因子）`);
     }
-    const confFlow = [
-      `<span style="color:var(--text3);font-size:0.73rem">滿分 100 分</span>`,
-      _cLearnDrag > 0 ? `<span style="color:#f59e0b;font-size:0.73rem">→ 止損風控 -${_cLearnDrag}</span>` : '',
-      `<span style="color:var(--text3);font-size:0.73rem">= 風控分</span> <span style="font-weight:700;color:${cColor(conf)}">${conf} 分</span>`,
-    ].filter(Boolean).join(' ');
     const _wClrW = weeklyOpposed ? 'var(--bear)' : weeklyNeutral ? '#f59e0b' : 'var(--bull)';
     const _tClrW = todayOpposed  ? 'var(--bear)' : todayNeutral  ? '#f59e0b' : 'var(--bull)';
     return `<div class="setup-wait">
       <div class="setup-wait-icon">${hardBlocked ? '🚫' : '⚠️'}</div>
       <div class="setup-wait-title">${hardBlocked ? '本次不進場（AI 風控封鎖）' : '本次不推薦交易'}</div>
-      ${!hardBlocked ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin:4px 0 6px;font-size:0.73rem">${confFlow}</div>` : ''}
       ${deductLines.length ? `<ul class="setup-wait-reasons">${deductLines.map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
       <div style="margin-top:10px;padding:10px 12px;background:rgba(129,140,248,.05);border:1px solid rgba(129,140,248,.15);border-radius:9px">
         <div style="font-size:0.73rem;font-weight:600;color:var(--text2);margin-bottom:7px">🤖 AI 趨勢預測（本週 · 今日）</div>
@@ -13425,8 +13437,8 @@ function renderPositionsPage() {
                 ${(t.tp2 || _fbR > 0) ? (() => { const _pTp2 = t.tp2 || (t.direction === 'long' ? (t.entry||0) + _fbR * 2.5 : (t.entry||0) - _fbR * 2.5); return `<div class="pos-cell"><div class="pos-cell-lbl">止盈二</div><div class="pos-cell-val" style="color:#22c55e">${fmt(_pTp2)}${_fbR > 0 ? `<span style="font-size:0.7rem;color:var(--text3);margin-left:3px"><span style="color:#22c55e;font-weight:700">${(Math.abs(_pTp2 - (t.entry||0)) / _fbR).toFixed(1)}R</span></span>` : ''}</div></div>`; })() : ''}
                 `}
                 <div class="pos-cell" style="grid-column:span ${isLongTermCard ? 1 : 1}">
-                  <div class="pos-cell-lbl">🤖 AI 頂級交易員風控分</div>
-                  <div class="pos-cell-val" style="color:${_pConfClr}">${_pConf}%</div>
+                  <div class="pos-cell-lbl">🛡️ AI 風控分</div>
+                  <div class="pos-cell-val" style="color:${_pConfClr}">${_pConf} 分</div>
                 </div>
                 ${isLongTermCard && _siTargets.length ? `
                 <div class="pos-cell" style="grid-column:span 2">
