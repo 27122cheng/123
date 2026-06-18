@@ -3887,14 +3887,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (_risk.recs?.length) {
     _sqFactors.push(`💡 止損AI建議：${_risk.recs[0]}`);
   }
-  // 過往止損規則參考（不列入評分，僅供參考）
+  // 有實際扣分記錄的項目 → 扣 SQ 分；零扣分建議 → 僅參考顯示
   {
-    const _sqRuleViol = _sqDefChecks.filter(c => !c.pass && c.type === 'rule' && (c.penalty || 0) > 0);
-    const _sqSuggViol = _sqDefChecks.filter(c => !c.pass && (c.type === 'sugg_required' || c.type === 'sugg_ref'));
-    if (_sqRuleViol.length > 0 || _sqSuggViol.length > 0) {
-      _sqFactors.push(`📋 止損規則參考（${_sqRuleViol.length + _sqSuggViol.length} 項，不列入評分）`);
-      _sqRuleViol.slice(0, 2).forEach(c => _sqFactors.push(`　▸ 📉 ${c.label}`));
-      _sqSuggViol.slice(0, 2).forEach(c => _sqFactors.push(`　▸ 📌 ${c.label}`));
+    const _sqPenChecks = _sqDefChecks.filter(c => !c.pass && (c.penalty || 0) > 0);
+    const _sqRefOnly   = _sqDefChecks.filter(c => !c.pass && (c.penalty || 0) === 0 && c.type !== 'sugg_ref');
+    if (_sqPenChecks.length) {
+      const _sqFlPen = Math.min(3, _sqPenChecks.length);
+      _sqScore -= _sqFlPen;
+      _sqFactors.push(`❌ 止損記錄警告（${_sqPenChecks.length} 項有扣分）-${_sqFlPen}`);
+      _sqPenChecks.slice(0, 2).forEach(c => _sqFactors.push(`　▸ 📉 ${c.label}（扣 ${c.penalty} 分）`));
+    }
+    if (_sqRefOnly.length) {
+      _sqRefOnly.slice(0, 2).forEach(c => _sqFactors.push(`　▸ 📌 ${c.label}（參考）`));
     }
   }
 
@@ -4668,21 +4672,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_hwrE) { return ''; } })();
 
-  // ── 止損規則分析面板（交易建議參考，不影響評分）──
-  const _slRuleRefPanelHtml = (() => { try {
-    const _slCheck  = _sqDefChecks.find(c => c.type === 'slRate');
-    const _ruleViol = _sqDefChecks.filter(c => c.type === 'rule' && !c.pass);
-    const _suggViol = _sqDefChecks.filter(c => (c.type === 'sugg_required' || c.type === 'sugg_ref') && !c.pass);
-    if (!_slCheck && !_ruleViol.length && !_suggViol.length) return '';
-    const _slClr = (!_slCheck || _slCheck.pass) ? '#22c55e' : '#f59e0b';
-    return `<div style="background:rgba(99,102,241,.05);border:1px solid rgba(99,102,241,.18);border-radius:10px;padding:11px 14px;margin-bottom:10px">
-      <div style="font-size:0.78rem;font-weight:600;color:var(--text2);margin-bottom:7px">📋 止損規則分析（參考）</div>
-      ${_slCheck ? `<div style="font-size:0.73rem;color:${_slClr};margin-bottom:5px">${_slCheck.pass ? '✅' : '⚠️'} ${_slCheck.label}</div>` : ''}
-      ${_ruleViol.length ? `<div style="margin-bottom:4px">${_ruleViol.slice(0,4).map(c=>`<div style="font-size:0.72rem;color:#fca5a5;padding:1px 0">📉 ${c.label}${c.penalty > 0 ? `（觸發扣 ${c.penalty} 分）` : ''}</div>`).join('')}</div>` : ''}
-      ${_suggViol.length ? `<div>${_suggViol.slice(0,3).map(c=>`<div style="font-size:0.72rem;color:#fcd34d;padding:1px 0">📌 ${c.label}</div>`).join('')}</div>` : ''}
-    </div>`;
-  } catch(e) { return ''; } })();
-
   return `${_hwrBannerHtml}<div class="setup-verdict ${isLong ? 'verdict-long' : 'verdict-short'}">
     <div class="verdict-dir">
       <span class="verdict-arrow">${dirIcon}</span>
@@ -4725,8 +4714,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   } catch(e) { return ''; } })()}
 
   ${_sqPanelHtml}
-
-  ${_slRuleRefPanelHtml}
 
   ${_ictAnalysisHtml}
 
