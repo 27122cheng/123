@@ -9781,12 +9781,7 @@ async function recordSignalsFromScan(data) {
       const _scanNs = loadSettings();
       if (_scanNs.notifTelegram && _scanNs.tgToken && _scanNs.tgChatId) {
         const _scanTgSetup = Object.assign({}, newTrade, setup,
-          {
-            riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs,
-            // 強制使用 18 因子 SQ（newTrade），避免被 computeSimpleSetup 的 9 因子 SQ 覆蓋
-            sqGrade: newTrade.sqGrade, sqScore: newTrade.sqScore,
-            sqGradeLabel: newTrade.sqGradeLabel, sqFactors: newTrade.sqFactors,
-          });
+          { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs });
         sendTelegramMessage(_scanNs.tgToken, _scanNs.tgChatId,
           buildTelegramText(coin, direction, _scanTgSetup, _macroCache,
             typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
@@ -10916,10 +10911,7 @@ function updateOpenTrades(data) {
         // Telegram 通知
         if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
           try {
-            // 合併 _notifyRisk 後強制還原 21因子 SQ（避免 computeSimpleSetup 9因子覆蓋）
-            const _tgSetup = Object.assign({}, _pnt, _pnt._notifyRisk || {},
-              { sqGrade: _pnt.sqGrade, sqScore: _pnt.sqScore,
-                sqGradeLabel: _pnt.sqGradeLabel, sqFactors: _pnt.sqFactors });
+            const _tgSetup = Object.assign({}, _pnt, _pnt._notifyRisk || {});
             sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
               buildTelegramText(_pntCoin, _pnt.direction, _tgSetup, _macroCache, window.location.origin + window.location.pathname));
             _pnt.telegramSent = true;
@@ -15323,36 +15315,6 @@ function computeSimpleSetup(coin, isLong) {
   const tp1Reason = `${_tp1DescMap[_tp1Tag] || `短線目標 R/R ${_rr1}:1`}${_mtfLabel}，到達後減倉 60%`;
   const tp2Reason = `${_tp2DescMap[_tp2Tag] || `波段目標 R/R ${_rr2}:1`}，剩餘倉位移至成本`;
 
-  // ── 訊號品質評分（與 recordSignalsFromScan 一致的 9 因子掃描版）──
-  let _cssqScore = 0;
-  const _cssqFactors = [];
-  const _cssH4Ok  = isLong ? (coin.h4Signal     || '').includes('bull') : (coin.h4Signal     || '').includes('bear');
-  const _cssDayOk = isLong ? (coin.dailySignal   || '').includes('bull') : (coin.dailySignal  || '').includes('bear');
-  const _cssWkOk  = isLong ? (coin.weeklySignal  || '').includes('bull') : (coin.weeklySignal || '').includes('bear');
-  const _cssH1Ok  = isLong ? (coin.h1Signal      || '').includes('bull') : (coin.h1Signal      || '').includes('bear');
-  if (_cssH4Ok && _cssDayOk) { _cssqScore += 2; _cssqFactors.push('✅ 4H+日線同向'); }
-  else if (_cssH4Ok || _cssDayOk) { _cssqScore += 1; }
-  if (_cssWkOk) { _cssqScore += 1; _cssqFactors.push('✅ 週線同向'); }
-  if (_cssH1Ok) { _cssqScore += 1; _cssqFactors.push('✅ 1H 同向'); }
-  try {
-    if (typeof computeWeeklyAIBias === 'function' && _macroCache) {
-      const _wb2 = computeWeeklyAIBias(_macroCache.fg, _macroCache);
-      if (isLong ? _wb2.bias.includes('bull') : _wb2.bias.includes('bear')) { _cssqScore += 1; _cssqFactors.push('✅ 本週 AI 同向'); }
-    }
-    if (typeof computeTodayAIBias === 'function' && _macroCache) {
-      const _tb2 = computeTodayAIBias(_macroCache.fg, _macroCache);
-      if (isLong ? _tb2.bias.includes('bull') : _tb2.bias.includes('bear')) { _cssqScore += 1; _cssqFactors.push('✅ 今日 AI 同向'); }
-    }
-  } catch(_sse) {}
-  const _cssFP = (typeof _footprintCache !== 'undefined' && _footprintCache[coin.symbol]) || null;
-  if (_cssFP && !_cssFP.deltaDiv && (isLong ? _cssFP.deltaDir === 'bull' : _cssFP.deltaDir === 'bear')) { _cssqScore += 1; _cssqFactors.push('✅ 足跡圖 Delta 確認'); }
-  if (adx >= 28) { _cssqScore += 1; _cssqFactors.push('✅ ADX 趨勢確立'); }
-  if (_sTechPen === 0) { _cssqScore += 1; _cssqFactors.push('✅ 技術面無逆風'); }
-  // 最高 9 分；此為快速掃描用的簡版 9 因子 SQ（不作為建立門檻，僅供內部邏輯參考）
-  // 建立門檻使用 buildTradeSetup 或 recordSignalsFromScan 的 21 因子版（A≥10，最高約 28 分）
-  const sqGrade = _cssqScore >= 8 ? 'S' : _cssqScore >= 6 ? 'A' : _cssqScore >= 4 ? 'B' : _cssqScore >= 2 ? 'C' : 'D';
-  const sqGradeLabel = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[sqGrade];
-
   return {
     entry, sl, tp1, tp2,
     entryReasons: reasons,                // 陣列版（buildTelegramText 優先使用）
@@ -15374,7 +15336,6 @@ function computeSimpleSetup(coin, isLong) {
     rrBlocked, rrReason,
     isLongTerm: _isLongTermFinal, isShortTerm: _isShortTerm,
     mtfBothAlign: _mtfBothAlign, mtfContraWk: _mtfContraWk, mtfContraDay: _mtfContraDay, mtfContraH4: _mtfContraH4,
-    sqGrade, sqScore: _cssqScore, sqGradeLabel, sqFactors: _cssqFactors,
   };
 }
 
