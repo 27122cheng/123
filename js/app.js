@@ -9770,7 +9770,12 @@ async function recordSignalsFromScan(data) {
       const _scanNs = loadSettings();
       if (_scanNs.notifTelegram && _scanNs.tgToken && _scanNs.tgChatId) {
         const _scanTgSetup = Object.assign({}, newTrade, setup,
-          { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs });
+          {
+            riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs,
+            // 強制使用 18 因子 SQ（newTrade），避免被 computeSimpleSetup 的 9 因子 SQ 覆蓋
+            sqGrade: newTrade.sqGrade, sqScore: newTrade.sqScore,
+            sqGradeLabel: newTrade.sqGradeLabel, sqFactors: newTrade.sqFactors,
+          });
         sendTelegramMessage(_scanNs.tgToken, _scanNs.tgChatId,
           buildTelegramText(coin, direction, _scanTgSetup, _macroCache,
             typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
