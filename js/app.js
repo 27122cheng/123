@@ -872,8 +872,8 @@ function _buildHWRBannerFromTrade(t) {
 
     // ② 風控分（100分制）
     if (conf >= 80)      _P.push(`風控分 ${conf} 分（強勢）`);
-    else if (conf >= 70) _W.push({ level:'caution', text:`風控分 ${conf} 分（達門檻，部分風控提示）`, source:'風控分' });
-    else                 _W.push({ level:'danger',  text:`風控分 ${conf} 分（低於門檻 70 分）`, source:'風控分' });
+    else if (conf >= 60) _W.push({ level:'caution', text:`風控分 ${conf} 分（達門檻，部分風控提示）`, source:'風控分' });
+    else                 _W.push({ level:'danger',  text:`風控分 ${conf} 分（低於門檻 60 分）`, source:'風控分' });
 
     // ③ AI 止損風控
     const lp = t.learnPenalty || 0;
@@ -901,7 +901,7 @@ function _buildHWRBannerFromTrade(t) {
 
     const dc = _W.filter(w=>w.level==='danger').length;
     const cc = _W.filter(w=>w.level==='caution').length;
-    const isHigh = dc === 0 && cc <= 1 && (sg === 'S' || sg === 'A') && conf >= 70;
+    const isHigh = dc === 0 && cc <= 1 && (sg === 'S' || sg === 'A') && conf >= 60;
     const isLow  = dc >= 1 || cc >= 3;
 
     if (isHigh) {
@@ -951,7 +951,7 @@ function buildSQPanelFromTrade(t) {
     const neg   = factors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
     const warn  = factors.filter(f => f.startsWith('⚠️'));
     const neut  = factors.filter(f => f.startsWith('⬜'));
-    const cClr  = conf >= 70 ? '#22c55e' : conf >= 60 ? '#f59e0b' : '#ef4444';
+    const cClr  = conf >= 60 ? '#22c55e' : conf >= 50 ? '#f59e0b' : '#ef4444';
     return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-top:10px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <span style="font-size:0.78rem;font-weight:700;color:var(--text2)">📊 訊號品質評分（SQ）</span>
@@ -1133,7 +1133,7 @@ function buildOpenPositionSetup(t, currentPrice) {
       <div class="verdict-conf-wrap">
         <span style="font-size:0.78rem;color:var(--text3)">風控分</span>
         <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confClr}"></div></div>
-        <span style="color:${confClr};font-weight:700;font-size:0.9rem">${conf} 分</span>${conf < 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">低於門檻</span>' : ''}
+        <span style="color:${confClr};font-weight:700;font-size:0.9rem">${conf} 分</span>${conf < 60 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">低於門檻</span>' : ''}
       </div>
       ${isLongTermTrade ? `<div style="font-size:0.7rem;color:#4ade80;margin-top:4px">✅ 日線信號 + 週線信號均同向確認</div>` : ''}
     </div>
@@ -3657,8 +3657,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
   const finalConf = conf;
-  // 入場門檻：風控分 < 70 或 AI 硬封鎖 → 觀望
-  if (conf < 70 || hardBlocked) direction = 'wait';
+  // 入場門檻：風控分 < 60 或 AI 硬封鎖 → 觀望
+  if (conf < 60 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -4038,7 +4038,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _sqNeut = _sqFactors.filter(f => f.startsWith('⬜'));
     const _sqBarW = Math.round(Math.min(100, (_sqScore / 22) * 100));
     const _sqBClr = _sqGradeColor || '#9ca3af';
-    const _cClr   = conf >= 70 ? '#22c55e' : conf >= 60 ? '#f59e0b' : '#ef4444';
+    const _cClr   = conf >= 60 ? '#22c55e' : conf >= 50 ? '#f59e0b' : '#ef4444';
     return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <span style="font-size:0.78rem;font-weight:700;color:var(--text2)">📊 訊號品質評分（SQ）</span>
@@ -4400,14 +4400,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // 長線單：風控分≥70（與短線門檻一致）+ R/R≥1.5 + 週向不逆勢 + SQ≥S（長線要求更高）
-        _canAutoRecord = conf >= 70
+        // 長線單：風控分≥60（與短線門檻一致）+ R/R≥1.5 + 週向不逆勢 + SQ≥S（長線要求更高）
+        _canAutoRecord = conf >= 60
           && parseFloat(rr1str) >= 1.5
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥A（≥12分）且風控分≥70 方可自動建倉
-        _canAutoRecord = conf >= 70 && ['SSS','SS','S','A'].includes(_sqGrade);
+        // 短線單 / 震盪單：SQ≥A（≥12分）且風控分≥60 方可自動建倉
+        _canAutoRecord = conf >= 60 && ['SSS','SS','S','A'].includes(_sqGrade);
       }
     }
     if (_canAutoRecord) {
@@ -4567,8 +4567,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
     // ② 風控分
     if (conf >= 80)      _hwrP.push(`風控分 ${conf} 分（高）`);
-    else if (conf >= 70) _hwrW.push({ level:'caution', text:`風控分 ${conf} 分（達門檻，部分風控提示）`, source:'風控分' });
-    else                 _hwrW.push({ level:'danger',  text:`風控分 ${conf} 分（低於門檻 70 分）`, source:'風控分' });
+    else if (conf >= 60) _hwrW.push({ level:'caution', text:`風控分 ${conf} 分（達門檻，部分風控提示）`, source:'風控分' });
+    else                 _hwrW.push({ level:'danger',  text:`風控分 ${conf} 分（低於門檻 60 分）`, source:'風控分' });
 
     // ③ AI 學習攔截
     if (hardBlocked) _hwrW.push({ level:'danger', text:`AI 學習風控攔截（${blockReasons[0] || '歷史止損模式觸發'}）`, source:'AI 學習' });
@@ -4620,7 +4620,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // 判斷總體勝率等級
     const _hwrDanger  = _hwrW.filter(w => w.level === 'danger').length;
     const _hwrCaution = _hwrW.filter(w => w.level === 'caution').length;
-    const _hwrIsHigh = _hwrDanger === 0 && _hwrCaution <= 1 && (_sqGrade === 'S' || _sqGrade === 'A') && conf >= 70;
+    const _hwrIsHigh = _hwrDanger === 0 && _hwrCaution <= 1 && (_sqGrade === 'S' || _sqGrade === 'A') && conf >= 60;
     // 低勝率用已計算的 _isLowWinRate（與 tlog 封鎖邏輯完全一致）
     if (_isLowWinRate) {
       const _waitSrc = [...new Set(_hwrW.map(w => w.source))].join('、');
@@ -4679,7 +4679,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ${conf >= 50 ? `<div class="verdict-conf-wrap">
       <span style="font-size:0.78rem;color:var(--text3)">風控分</span>
       <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${dirColor}"></div></div>
-      <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf} 分</span>${conf < 70 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">低於門檻</span>' : ''}
+      <span style="color:${dirColor};font-weight:700;font-size:0.9rem">${conf} 分</span>${conf < 60 ? '<span style="font-size:0.7rem;color:#f59e0b;margin-left:4px">低於門檻</span>' : ''}
     </div>` : ''}
     ${bbChipsHtml}
   </div>
@@ -5953,7 +5953,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const biasColor  = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
   // 風控分根據當天最新市場數據計算（每天更新）
   const conf       = Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0) + (fgValNow != null ? 5 : 0));
-  const confColor  = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
+  const confColor  = conf >= 60 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
 
   const _wTopFacts = factors.slice(0, 2).map(f => f.split('，')[0]).join('；');
   const aiOpinion = bias === 'strong_bull'
@@ -7036,7 +7036,7 @@ function buildNewsWidget(items) {
     const color    = sentimentColor[sent] || 'var(--text3)';
     const label    = sentimentLabel[sent] || '中性';
     const conf     = item.conf ?? 50;
-    const confColor = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#f0a500' : 'var(--text3)';
+    const confColor = conf >= 60 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
     const timeAgo  = item.publishedAt ? (() => {
       const ts = typeof item.publishedAt === 'number' ? item.publishedAt : new Date(item.publishedAt).getTime();
       if (isNaN(ts)) return '';
@@ -8300,7 +8300,7 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
           <div style="font-weight:700;color:#fbbf24;margin-bottom:5px">👑 頂級交易員視角</div>
           <div style="font-size:0.84rem;line-height:1.8;color:var(--text2)">
             從機構視角分析 <strong>${coin.symbol}</strong>：${_ttParts.join('；')}。
-            ${_ttSetup.conf >= 80 ? `<br>風控分 <strong style="color:#22c55e">${_ttSetup.conf} 分</strong>，具備高確信度進場條件。` : _ttSetup.conf >= 70 ? `<br>風控分 <strong style="color:#f59e0b">${_ttSetup.conf} 分</strong>，達入場門檻，控倉保守進場。` : ''}
+            ${_ttSetup.conf >= 80 ? `<br>風控分 <strong style="color:#22c55e">${_ttSetup.conf} 分</strong>，具備高確信度進場條件。` : _ttSetup.conf >= 60 ? `<br>風控分 <strong style="color:#f59e0b">${_ttSetup.conf} 分</strong>，達入場門檻，控倉保守進場。` : ''}
           </div>
         </div>`;
       }
@@ -9356,7 +9356,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     `⏰ ${_ts}\n` +
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
-    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 70 ? '（⚠️ 低於門檻 70 分）' : ''}\n` +
+    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` +
     `\n${_priceLines}\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n📉 <b>止損風控詳情</b>\n${_penLines.join('\n')}\n` : '') +
@@ -13085,7 +13085,7 @@ function renderPositionsPage() {
     }
 
     const conf      = t.conf != null ? t.conf : Math.min(90, t.score || 60);
-    const confClr   = conf >= 70 ? 'var(--bull)' : conf >= 55 ? '#ff6d00' : 'var(--text3)';
+    const confClr   = conf >= 60 ? 'var(--bull)' : conf >= 50 ? '#ff6d00' : 'var(--text3)';
     const isLongTermOpen = t.canScaleIn === true;
     const dirLabel  = isLong ? '▲ 做多' : '▼ 做空';
     const dirColor  = isLong ? 'var(--bull)' : 'var(--bear)';
@@ -15372,7 +15372,7 @@ function computeSimpleSetup(coin, isLong) {
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
-    learnFiltered: (conf < 70 || hardBlocked) && rawConf >= 70,
+    learnFiltered: (conf < 60 || hardBlocked) && rawConf >= 60,
     hardBlocked,
     isRangeMode: false,
     flipRisks:   [],
