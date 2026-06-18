@@ -10895,10 +10895,31 @@ function updateOpenTrades(data) {
       const _ns = loadSettings();
       for (const _pnt of _pendingNotify) {
         const _pntCoin = data?.find(d => d.symbol === _pnt.symbol) || { symbol: _pnt.symbol, price: _pnt.entryPrice };
+
+        // 安全門：pendingNotify 發送前再驗證 21因子 SQ ≥ A（長線 ≥ S）且風控分 ≥ 60
+        const _pntMinGrades = _pnt.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
+        const _pntSqGrade = _pnt.sqGrade || 'D';
+        const _pntConf = _pnt.conf || 0;
+        if (!_pntMinGrades.includes(_pntSqGrade) || _pntConf < 60) {
+          const _pntCancelReason = !_pntMinGrades.includes(_pntSqGrade)
+            ? `訊號品質 ${_pntSqGrade} 級不足（需 ${_pnt.canScaleIn ? 'S' : 'A'} 級以上），自動取消掛單`
+            : `風控分 ${_pntConf} 分低於門檻 60 分，自動取消掛單`;
+          addCancelCooldown(_pnt, _pntCancelReason);
+          toDeleteIds.add(_pnt.id);
+          _pnt.pendingNotify = false;
+          delete _pnt._notifyRisk;
+          changed = true;
+          try { sendCancelTelegramNotification(_pnt, _pntCancelReason); } catch(_n) {}
+          continue;
+        }
+
         // Telegram 通知
         if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
           try {
-            const _tgSetup = Object.assign({}, _pnt, _pnt._notifyRisk || {});
+            // 合併 _notifyRisk 後強制還原 21因子 SQ（避免 computeSimpleSetup 9因子覆蓋）
+            const _tgSetup = Object.assign({}, _pnt, _pnt._notifyRisk || {},
+              { sqGrade: _pnt.sqGrade, sqScore: _pnt.sqScore,
+                sqGradeLabel: _pnt.sqGradeLabel, sqFactors: _pnt.sqFactors });
             sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
               buildTelegramText(_pntCoin, _pnt.direction, _tgSetup, _macroCache, window.location.origin + window.location.pathname));
             _pnt.telegramSent = true;
