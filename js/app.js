@@ -860,9 +860,7 @@ function _buildHWRBannerFromTrade(t) {
     const sg   = t.sqGrade || '';
     const sc   = t.sqScore ?? '—';
     const conf = t.conf != null ? t.conf
-      : Math.max(0, (t.rawConf||60) - (t.hardAdxPenalty||0) - (t.learnPenalty||0)
-          - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0)
-          - (t.chipsPenalty||0) - (t.dirPenalty||0) - (t.bbPenalty||0));
+      : Math.max(0, 100 - Math.min(50, t.learnPenalty || 0));
     const adx  = t.adx || 20;
     const _W = [], _P = [];
 
@@ -981,11 +979,9 @@ function buildOpenPositionSetup(t, currentPrice) {
   const tp1      = t.tp1  || 0;
   const tp2      = t.tp2  || 0;
   const risk     = Math.abs(entry - sl) || 1;
-  // 最終風控分：由 rawConf 扣除各懲罰計算（與持倉頁一致，含 bbPenalty）
+  // 最終風控分：僅以止損學習懲罰計算（風控/止損原因）
   const conf     = t.conf != null ? t.conf
-    : (t.rawConf != null
-      ? Math.max(0, t.rawConf - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0) - (t.chipsPenalty||0) - (t.dirPenalty||0) - (t.bbPenalty||0))
-      : Math.min(90, t.score || 60));
+    : Math.max(0, 100 - Math.min(50, t.learnPenalty || 0));
   const confClr  = conf >= 75 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
   const ltBias  = t.longTermBias;
   const isLong_ = t.direction === 'long';
@@ -996,7 +992,7 @@ function buildOpenPositionSetup(t, currentPrice) {
   const _openGradeColors = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' };
   const _openGradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
   const _openGradeLabels = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
-  const _openEffConf = t.conf != null ? t.conf : Math.max(0, (t.rawConf||60) - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0));
+  const _openEffConf = t.conf != null ? t.conf : Math.max(0, 100 - Math.min(50, t.learnPenalty || 0));
   const _openEffGrade = t.sqGrade || (_openEffConf >= 82 ? 'A' : _openEffConf >= 74 ? 'B' : _openEffConf >= 65 ? 'C' : 'D');
   const _openEffLabel = t.sqGradeLabel || _openGradeLabels[_openEffGrade] || '';
   const _openSqTag = (() => {
@@ -1193,8 +1189,8 @@ function buildPendingPositionSetup(t, currentPrice) {
   const _gradeColors = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' };
   const _gradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
   const _gradeLabels = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
-  // 若 sqGrade 缺失（舊版交易），從風控分反推等級
-  const _effConf = t.conf != null ? t.conf : Math.max(0, (t.rawConf||60) - (t.hardAdxPenalty||0) - (t.learnPenalty||0) - (t.macroPenalty||0) - (t.aiTrendPenalty||0) - (t.techPenalty||0));
+  // 若 sqGrade 缺失（舊版交易），從風控分反推等級（僅止損/風控扣分）
+  const _effConf = t.conf != null ? t.conf : Math.max(0, 100 - Math.min(50, t.learnPenalty || 0));
   const _effGrade = t.sqGrade || (_effConf >= 82 ? 'A' : _effConf >= 74 ? 'B' : _effConf >= 65 ? 'C' : 'D');
   const _effLabel = t.sqGradeLabel || _gradeLabels[_effGrade] || '';
   const _sqTag = (() => {
@@ -1937,7 +1933,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       const bbPenNow    = existingActive.bbPenalty || 0;
       let rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      let freshConf  = Math.max(0, rawConfNow - hardAdxNow - macroPenNow - aiTrendPenNow - learnPenNow - cfPenNow - techPenNow - chipsPenNow - dirPenNow - bbPenNow);
+      let freshConf  = Math.max(0, 100 - Math.min(50, learnPenNow));
       if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
