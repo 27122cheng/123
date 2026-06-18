@@ -4457,7 +4457,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       try {
         const _ns = loadSettings();
         if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
-          const _btsSetup = _tradeSetupCache[coin.symbol] || {};
+          // 合併 trade 物件（含 sqGrade/conf 等）和 cache（含 risk/ICT 等）
+          const _btsSetup = Object.assign({}, tlog[0] || {}, _tradeSetupCache[coin.symbol] || {}, {
+            sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel, sqFactors: _sqFactors,
+          });
           sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
             buildTelegramText(coin, direction, _btsSetup, _macroCache,
               typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
@@ -9157,8 +9160,9 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   // ── AI 訊號品質等級 ──
   const _sqGradeTG = setup.sqGrade || '?';
   const _sqScoreTG = setup.sqScore ?? '—';
-  const _sqLabelTG = setup.sqGradeLabel || { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGradeTG] || '—';
-  const _sqEmoji   = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
+  const _sqLabelMap = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
+  const _sqLabelTG = setup.sqGradeLabel || _sqLabelMap[_sqGradeTG] || '—';
+  const _sqEmoji   = { SSS:'👑', SS:'💎', S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
   const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（21因子評分 ${_sqScoreTG} 分）`;
 
   // ── 風控分扣分明細（只顯示止損風控扣分，與風控分公式一致）──
