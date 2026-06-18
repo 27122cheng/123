@@ -9694,6 +9694,13 @@ async function recordSignalsFromScan(data) {
     const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
 
+    // 短線單趨勢預檢：若趨勢已反向，建單後 updateOpenTrades 的 trendReversed 會立即取消，
+    // 預先攔截，避免同秒建立後馬上取消（與 updateOpenTrades trendReversed 判斷完全一致）
+    if (!canScaleIn) {
+      const _preTrendReversed = isLong ? coin.trend?.includes('看跌') : coin.trend?.includes('看漲');
+      if (_preTrendReversed) continue;
+    }
+
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -10584,7 +10591,7 @@ function updateOpenTrades(data) {
       freshConf = Math.max(0, Math.round(100 - _cLD));
       if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       if (freshConf < 55 && !trade.entryTime) {
-        const _confReason = `風控分跌至 ${freshConf} 分，低於取消門檻（ADX/風控規則扣分）`;
+        const _confReason = `風控分跌至 ${freshConf} 分，低於取消門檻（止損風控扣分累積）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -10986,6 +10993,9 @@ function sendCancelTelegramNotification(trade, reason) {
 
   // ── 取消原因 bullets ──
   const bullets = [];
+  // 實際取消觸發原因（主要，永遠顯示）
+  bullets.push(esc(reason));
+
   const hasMacro = typeof _macroCache !== 'undefined' && _macroCache;
 
   if (hasMacro && confDrop > 1) {
@@ -11063,8 +11073,7 @@ function sendCancelTelegramNotification(trade, reason) {
     } catch (e) {}
   }
 
-  if ((trade.hardAdxPenalty|| 0) > 0) bullets.push(`ADX 過低扣分 -${trade.hardAdxPenalty}%`);
-  if (!bullets.length) bullets.push(esc(reason));
+  // 注意：ADX 不影響風控分（conf 公式只扣止損風控），不在此顯示
 
   const reasonsBlock = bullets.map(b => `  • ${b}`).join('\n');
   const msg =
