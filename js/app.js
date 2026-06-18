@@ -3564,10 +3564,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     learnResult = { penalty: 0, warnings: [], hardBlocked: false, blockReasons: [], defenseChecks: [] };
   }
   const { penalty: learnPenalty, warnings: learnWarn0, hardBlocked, blockReasons } = learnResult;
-  // 風控規則直接扣減基礎分數（包括歷史止損 + 當前交易的技術/籌碼逆風）
-  // rawConf 應反映完整的風控狀況，而非被 AI 風控分底線人為保護
-  const _totalDefenseDrag = learnPenalty + hardAdxPenalty + techPenalty + chipsPenalty;
-  rawConf = Math.max(40, rawConf - _totalDefenseDrag);
   // 合併警告：硬性 ADX 警告 + AI 學習警告 + 最終防線
   const learnWarnings = [...learnWarn0];
   if (hardAdxPenalty > 0) {
@@ -3650,6 +3646,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (!isLong && whale.bias === 'bull' && (whale.bigBuyCount  || 0) >= 3) { chipsPenalty += 4; chipsPenReasons.push(`巨鯨持續買入（${whale.bigBuyCount} 筆大額買單），空頭逆風，扣 4%`); }
   }
   chipsPenalty = Math.min(10, chipsPenalty);
+  // 風控規則直接扣減基礎分數（包括歷史止損 + 當前交易的技術/籌碼逆風）
+  const _totalDefenseDrag = learnPenalty + hardAdxPenalty + techPenalty + chipsPenalty;
+  rawConf = Math.max(40, rawConf - _totalDefenseDrag);
 
   // 合併扣分原因
   techPenReasons.forEach(r => aiTrendReasons.push(`📐 技術面：${r}`));
