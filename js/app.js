@@ -4400,11 +4400,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // 長線單：風控分≥60 + R/R≥1.5 + 週向不逆勢 + SQ≥A（與短線一致）
+        // 長線單：風控分≥60 + R/R≥1.5 + 週向不逆勢 + SQ≥S（長線要求更高）
         _canAutoRecord = conf >= 60
           && parseFloat(rr1str) >= 1.5
           && !weeklyOpposed
-          && ['SSS','SS','S','A'].includes(_sqGrade);
+          && ['SSS','SS','S'].includes(_sqGrade);
       } else {
         // 短線單 / 震盪單：SQ≥A（≥10分）且風控分≥60 方可自動建倉
         _canAutoRecord = conf >= 60 && ['SSS','SS','S','A'].includes(_sqGrade);
@@ -9073,8 +9073,8 @@ function triggerRescan() {
     state.data = data; state.dataSource = source;
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
-    recordSignalsFromScan(data);
     updateOpenTrades(data);
+    recordSignalsFromScan(data);
     checkAndSendAlerts(data);
   });
 }
@@ -9697,8 +9697,8 @@ async function recordSignalsFromScan(data) {
                        : _scanSqScore >= 7  ? 'B'
                        : _scanSqScore >= 4  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單與短線單統一要求 SQ≥A（≥10分）
-    const _reqGrades = ['SSS','SS','S','A'];
+    // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
+    const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
 
     const newTrade = {
@@ -9983,10 +9983,10 @@ async function recordSignalsFromScan(data) {
                    : _sqRC >= 4  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
-    // 長線單與短線單統一要求 SQ≥A（≥10分）
-    const _rcMinGrades = ['SSS','SS','S','A'];
+    // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
+    const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_rcMinGrades.includes(_rcGrade)) {
-      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於A 級要求，自動取消掛單`;
+      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
       addCancelCooldown(trade, _sqCancelReason);
       _sqCancelIds.add(trade.id);
       changed = true;
@@ -10993,74 +10993,8 @@ function sendCancelTelegramNotification(trade, reason) {
     ? `📶 風控分：${rawConf} 分 → 降至 ${freshConf} 分（扣 -${confDrop}${freshConf < _confThreshold ? '，低於門檻 60 分' : ''}）`
     : `📶 風控分：${freshConf} 分`;
 
-  // ── 取消原因 bullets ──
+  // ── 取消原因 bullets（只顯示風控/止損相關扣分）──
   const bullets = [];
-  const hasMacro = typeof _macroCache !== 'undefined' && _macroCache;
-
-  if (hasMacro && confDrop > 1) {
-    try {
-      const _fg = _macroCache.fg;
-      const _gm = _macroCache;
-      const fgV = _fg ? parseInt(_fg.value) : null;
-      const dom = _gm.btcDominance   || 0;
-      const chg = _gm.marketCapChange || 0;
-      let against = 0;
-      if (isLong) {
-        if (chg < -2) against++;
-        if (dom > 58) against++;
-        if (fgV != null && fgV < 30) against++;
-        if (fgV != null && fgV > 75) against += 0.5;
-      } else {
-        if (chg > 2)  against++;
-        if (dom < 44) against++;
-        if (fgV != null && fgV > 70) against++;
-        if (fgV != null && fgV < 25) against += 0.5;
-      }
-      let macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
-      const bigDir  = computeMacroNetDir(_fg, _gm);
-      const bdAg    = (isLong && bigDir.includes('bear')) || (!isLong && bigDir.includes('bull'));
-      if (bdAg) { const bdMin = (bigDir === 'slight_bear' || bigDir === 'slight_bull') ? 3 : 7; if (macroPen < bdMin) macroPen = bdMin; }
-      if (macroPen > 0) {
-        const why = [];
-        if (isLong) {
-          if (dom > 58) why.push(`BTC主導率偏高 ${dom.toFixed(1)}%`);
-          if (chg < -2) why.push(`市值下跌 ${chg.toFixed(1)}%`);
-          if (fgV != null && fgV < 30) why.push(`恐貪指數偏低 ${fgV}`);
-        } else {
-          if (dom < 44) why.push(`BTC主導率偏低 ${dom.toFixed(1)}%`);
-          if (chg > 2)  why.push(`市值上漲 ${chg.toFixed(1)}%`);
-          if (fgV != null && fgV > 70) why.push(`恐貪指數偏高 ${fgV}`);
-        }
-        bullets.push(`宏觀環境逆風 -${macroPen}%${why.length ? `（${why.join('；')}）` : ''}`);
-      }
-      const wb = computeWeeklyAIBias(_fg, _gm);
-      const tb = computeTodayAIBias(_fg, _gm);
-      const wOp   = isLong ? (wb.bias||'').includes('bear') : (wb.bias||'').includes('bull');
-      const tOp   = isLong ? (tb.bias||'').includes('bear') : (tb.bias||'').includes('bull');
-      const wNeut = (wb.bias||'') === 'neutral';
-      const tNeut = (tb.bias||'') === 'neutral';
-      if (wOp) {
-        const wPen = (wb.bias||'').includes('strong') ? 10 : 6;
-        bullets.push(`本週AI預測 ${esc(wb.biasLabel||'')}，${isLong ? '與做多逆向' : '與做空逆向'}，扣 ${wPen}%`);
-      } else if (wNeut) {
-        bullets.push(`本週AI預測震盪中性，方向不明，扣 3%`);
-      }
-      if (tOp) {
-        bullets.push(`今日AI預測 ${esc(tb.biasLabel||'')}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 7%`);
-      } else if (tNeut) {
-        bullets.push(`今日AI預測中性，方向不確定，扣 2%`);
-      }
-      // 資金流動事件
-      try {
-        const _cfC = getCapitalFlowBias();
-        for (const ev of _cfC.events) {
-          if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 5 : 3; bullets.push(`💹 ${ev.name}：資金流出逆風 -${p}%`); }
-          else if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 5 : 3; bullets.push(`💹 ${ev.name}：資金流入逆風 -${p}%`); }
-          else if (ev.bull === 0 && ev.bear === 0) { bullets.push(`💹 ${ev.name}：資金方向中性 -2%`); }
-        }
-      } catch(_e) {}
-    } catch (e) {}
-  }
 
   // 學習記憶扣分 + 詳細建議
   const learnPen = trade.learnPenalty || 0;
