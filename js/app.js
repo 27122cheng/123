@@ -865,10 +865,12 @@ function _buildHWRBannerFromTrade(t) {
     const _W = [], _P = [];
 
     // ① 訊號品質
-    if (sg === 'S')      _P.push('訊號品質 S 級（頂級）');
-    else if (sg === 'A') _P.push('訊號品質 A 級（優質）');
-    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（評分 ${sc}/10）`, source:'AI 訊號品質' });
-    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（評分 ${sc}/10）`, source:'AI 訊號品質' });
+    if (sg === 'SSS')    _P.push('訊號品質 SSS 級（神級）');
+    else if (sg === 'SS') _P.push('訊號品質 SS 級（完美）');
+    else if (sg === 'S')  _P.push('訊號品質 S 級（頂級）');
+    else if (sg === 'A')  _P.push('訊號品質 A 級（優質）');
+    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（21因子評分 ${sc} 分）`, source:'AI 訊號品質' });
+    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（21因子評分 ${sc} 分）`, source:'AI 訊號品質' });
 
     // ② 風控分（100分制）
     if (conf >= 80)      _P.push(`風控分 ${conf} 分（強勢）`);
@@ -979,9 +981,10 @@ function buildOpenPositionSetup(t, currentPrice) {
   const tp1      = t.tp1  || 0;
   const tp2      = t.tp2  || 0;
   const risk     = Math.abs(entry - sl) || 1;
-  // 最終風控分：僅以止損學習懲罰計算（風控/止損原因）
-  const conf     = t.conf != null ? t.conf
-    : Math.max(0, 100 - Math.min(50, t.learnPenalty || 0));
+  // 最終風控分：優先用 learnPenalty 重算（確保與風控分明細一致）
+  const conf     = t.learnPenalty != null
+    ? Math.max(0, Math.round(100 - Math.min(50, t.learnPenalty)))
+    : (t.conf != null ? t.conf : Math.max(0, 100 - Math.min(50, t.learnPenalty || 0)));
   const confClr  = conf >= 75 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
   const ltBias  = t.longTermBias;
   const isLong_ = t.direction === 'long';
@@ -4239,14 +4242,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
-  // 長線單門檻：必須達 S 級（≥ 14 分），否則降格為短線單
+  // 長線單門檻：必須達 S 級（≥ 17 分），否則降格為短線單
   if (canScaleIn && !['SSS','SS','S'].includes(_sqGrade)) {
     const _wasLT = _tradeSetupCache[coin.symbol]?.canScaleIn === true;
     canScaleIn = false; ltTP = null; ltTag = '';
     tp1 = _stTp1; tp2 = _stTp2; tp1Reason = _stTp1R; tp2Reason = _stTp2R;
     if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
     else dirLabel = isLong ? '做多' : '做空';
-    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（14分），已降格為短線單`);
+    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（17分），已降格為短線單`);
     // 若之前是長線單 → 更新 tlog + 發送降格通知
     if (_wasLT) try {
       const _tlogDG = loadTradeLog();
@@ -4574,10 +4577,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _hwrP = [];   // pass items
 
     // ① 訊號品質
-    if (_sqGrade === 'S')      _hwrP.push('訊號品質 S 級（頂級）');
-    else if (_sqGrade === 'A') _hwrP.push('訊號品質 A 級（優質）');
-    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，評分 ${_sqScore}/10）`, source:'AI 訊號品質' });
-    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（評分 ${_sqScore}/10），勝率基礎偏弱`, source:'AI 訊號品質' });
+    if (_sqGrade === 'SSS')     _hwrP.push('訊號品質 SSS 級（神級）');
+    else if (_sqGrade === 'SS') _hwrP.push('訊號品質 SS 級（完美）');
+    else if (_sqGrade === 'S')  _hwrP.push('訊號品質 S 級（頂級）');
+    else if (_sqGrade === 'A')  _hwrP.push('訊號品質 A 級（優質）');
+    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，21因子評分 ${_sqScore} 分）`, source:'AI 訊號品質' });
+    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（21因子評分 ${_sqScore} 分），勝率基礎偏弱`, source:'AI 訊號品質' });
 
     // ② 風控分
     if (conf >= 80)      _hwrP.push(`風控分 ${conf} 分（高）`);
@@ -9440,7 +9445,7 @@ async function recordSignalsFromScan(data) {
     if (_scanRisk.score >= 60) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
-    const canScaleIn = setup.isLongTerm === true;
+    let canScaleIn = setup.isLongTerm === true;
 
     // R/R 門檻（與幣種詳情頁一致：長線 ≥1.5，短線 ≥1.3）
     const _scanRR = setup.rr1 || 0;
@@ -9706,8 +9711,14 @@ async function recordSignalsFromScan(data) {
                        : _scanSqScore >= 4  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
-    const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
-    if (!_reqGrades.includes(_scanSqGrade)) continue;
+    // 若長線單 SQ 未達 S 級但達 A 級，降格為短線單繼續建單
+    if (canScaleIn && !['SSS','SS','S'].includes(_scanSqGrade)) {
+      if (!['SSS','SS','S','A'].includes(_scanSqGrade)) continue; // 短線也不達標 → 跳過
+      canScaleIn = false; // 降格為短線單
+      _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（17分），已降格為短線單`);
+    } else if (!canScaleIn && !['SSS','SS','S','A'].includes(_scanSqGrade)) {
+      continue; // 短線單也不達標
+    }
 
     // 短線單趨勢預檢：若趨勢已反向，建單後 updateOpenTrades 的 trendReversed 會立即取消，
     // 預先攔截，避免同秒建立後馬上取消（與 updateOpenTrades trendReversed 判斷完全一致）
