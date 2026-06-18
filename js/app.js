@@ -3884,12 +3884,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (_risk.score <= 54) { _sqFactors.push(`⚠️ 風控中等（${_risk.score}分）`); }
   else                        { _sqScore -= 1; _sqFactors.push(`❌ 風控偏高（${_risk.score}分）-1`); }
   if (_risk.factors?.length) _risk.factors.slice(0, 2).forEach(f => _sqFactors.push(`　▸ ${f}`));
-  if (_sqFailChecks.length) {
-    const _sqFlPen = Math.min(2, _sqFailChecks.length);
-    _sqScore -= _sqFlPen;
-    _sqFactors.push(`❌ 止損AI警告（${_sqFailChecks.length}項觸發）-${_sqFlPen}`);
-    _sqFailChecks.slice(0, 2).forEach(c => _sqFactors.push(`　▸ ${c.label}（${c.count}次止損記錄）`));
-  } else if (_risk.recs?.length) {
+  if (_risk.recs?.length) {
     _sqFactors.push(`💡 止損AI建議：${_risk.recs[0]}`);
   }
 
@@ -3957,23 +3952,6 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_sqCFE) {}
 
-  // ⑱ 風控分風控評估（偵測 100 分制風控分，越高得分越多）
-  if (hardBlocked) {
-    _sqScore -= 3; _sqFactors.push(`🚫 AI歷史止損硬封鎖（${blockReasons[0]?.slice(0,35) || '規則觸發'}）-3`);
-  } else if (conf >= 90) {
-    _sqScore += 2; _sqFactors.push(`✅ 風控分 ${conf}分（強勢，所有風控通過）+2`);
-  } else if (conf >= 80) {
-    _sqScore += 1; _sqFactors.push(`✅ 風控分 ${conf}分（良好，風控達標）+1`);
-  } else if (conf >= 70) {
-    _sqFactors.push(`⚠️ 風控分 ${conf}分（達門檻，部分風控提示）`);
-  } else if (conf >= 60) {
-    _sqScore -= 1; _sqFactors.push(`❌ 風控分 ${conf}分（低於門檻）-1`);
-  } else {
-    _sqScore -= 3; _sqFactors.push(`🚫 風控分 ${conf}分（風控攔截，嚴重逆風）-3`);
-  }
-  if (learnPenalty > 0 && !hardBlocked) {
-    learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
-  }
 
   // ⑲ 長線單額外審查（月線逆向 / EMA200 距離追高）
   if (canScaleIn) try {
@@ -4031,10 +4009,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_sqMSE) {}
 
-  // 分數 floor 為 0，等級重新校準（加入5週期走勢因子後最高約 31 分）
+  // 分數 floor 為 0，等級校準（移除止損風控因子，最高約 29 分）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 24 ? 'SSS'
-                 : _sqScore >= 21 ? 'SS'
+  const _sqGrade = _sqScore >= 22 ? 'SSS'
+                 : _sqScore >= 19 ? 'SS'
                  : _sqScore >= 17 ? 'S'
                  : _sqScore >= 12 ? 'A'
                  : _sqScore >= 7  ? 'B'
@@ -4048,7 +4026,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
     const _sqWarn = _sqFactors.filter(f => f.startsWith('⚠️'));
     const _sqNeut = _sqFactors.filter(f => f.startsWith('⬜'));
-    const _sqBarW = Math.round(Math.min(100, (_sqScore / 24) * 100));
+    const _sqBarW = Math.round(Math.min(100, (_sqScore / 22) * 100));
     const _sqBClr = _sqGradeColor || '#9ca3af';
     const _cClr   = conf >= 70 ? '#22c55e' : conf >= 60 ? '#f59e0b' : '#ef4444';
     return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
@@ -4063,7 +4041,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ${_sqNeg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${_sqNeg.length}項）</div>${_sqNeg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${_sqWarn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${_sqWarn.length}項）</div>${_sqWarn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${_sqNeut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${_sqNeut.length}項）</div>${_sqNeut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
-      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 70分　需 SQ≥A（≥10分）方可入場</div>
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 70分　需 SQ≥A（≥12分）方可入場</div>
     </div>`;
   } catch(_sqPE) { return ''; } })();
 
@@ -9753,8 +9731,8 @@ async function recordSignalsFromScan(data) {
 
     // 分數 floor 0，等級門檻與 buildTradeSetup + 持倉監控完全一致（加入5週期因子後最高約 28 分）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 24 ? 'SSS'
-                       : _scanSqScore >= 21 ? 'SS'
+    const _scanSqGrade = _scanSqScore >= 22 ? 'SSS'
+                       : _scanSqScore >= 19 ? 'SS'
                        : _scanSqScore >= 17 ? 'S'
                        : _scanSqScore >= 12 ? 'A'
                        : _scanSqScore >= 7  ? 'B'
@@ -10028,8 +10006,8 @@ async function recordSignalsFromScan(data) {
 
     // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（加入5週期因子後最高約 28 分）
     _sqRC = Math.max(0, _sqRC);
-    const _rcGrade = _sqRC >= 24 ? 'SSS'
-                   : _sqRC >= 21 ? 'SS'
+    const _rcGrade = _sqRC >= 22 ? 'SSS'
+                   : _sqRC >= 19 ? 'SS'
                    : _sqRC >= 17 ? 'S'
                    : _sqRC >= 12 ? 'A'
                    : _sqRC >= 7  ? 'B'
