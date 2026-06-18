@@ -10887,35 +10887,7 @@ function updateOpenTrades(data) {
       for (const _pnt of _pendingNotify) {
         const _pntCoin = data?.find(d => d.symbol === _pnt.symbol) || { symbol: _pnt.symbol, price: _pnt.entryPrice };
 
-        // 安全門：pendingNotify 發送前再驗證 SQ ≥ A（長線 ≥ S）、風控分 ≥ 60、風險等級 < 高風險
-        const _pntMinGrades = _pnt.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
-        const _pntSqGrade = _pnt.sqGrade || 'D';
-        const _pntConf = _pnt.conf || 0;
-        const _pntIsLong = _pnt.direction === 'long';
-        let _pntHighRisk = false;
-        let _pntRiskReason = '';
-        try {
-          const _pntRiskSetup = computeSimpleSetup(_pntCoin, _pntIsLong);
-          const _pntRisk = computeFullRisk(_pntCoin, _pntRiskSetup, _pntIsLong);
-          if (_pntRisk.score >= 60) {
-            _pntHighRisk = true;
-            _pntRiskReason = `AI 風險評估升至${_pntRisk.level}（${_pntRisk.score}/100）：${(_pntRisk.factors || []).slice(0, 2).join('、')}，自動取消掛單`;
-          }
-        } catch(_pre) {}
-        if (!_pntMinGrades.includes(_pntSqGrade) || _pntConf < 60 || _pntHighRisk) {
-          const _pntCancelReason = !_pntMinGrades.includes(_pntSqGrade)
-            ? `訊號品質 ${_pntSqGrade} 級不足（需 ${_pnt.canScaleIn ? 'S' : 'A'} 級以上），自動取消掛單`
-            : _pntHighRisk ? _pntRiskReason
-            : `風控分 ${_pntConf} 分低於門檻 60 分，自動取消掛單`;
-          addCancelCooldown(_pnt, _pntCancelReason);
-          toDeleteIds.add(_pnt.id);
-          _pnt.pendingNotify = false;
-          delete _pnt._notifyRisk;
-          changed = true;
-          try { sendCancelTelegramNotification(_pnt, _pntCancelReason); } catch(_n) {}
-          continue;
-        }
-
+        // 交易已在建單前通過 SQ≥A、風控分≥60、風險<60 三道門檻，此處直接推送通知
         // Telegram 通知
         if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
           try {
