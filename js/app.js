@@ -1204,13 +1204,10 @@ function buildPendingPositionSetup(t, currentPrice) {
   })();
 
   // 風控分（100分制，直接取 t.conf；fallback 用 learnPenalty 扣分重算）
-  const _pConf = t.conf != null ? t.conf
-    : (t.learnPenalty != null
-      ? Math.max(0, Math.round(100 - Math.min(50, t.learnPenalty)))
-      : Math.min(90, t.score || 60));
-
-  // 風控分分項明細（止損風控扣分）
   const _pLearnDrag = Math.min(50, t.learnPenalty || 0);
+  const _pConf = t.learnPenalty != null
+    ? Math.max(0, Math.round(100 - _pLearnDrag))
+    : (t.conf != null ? t.conf : Math.min(90, t.score || 60));
   const _confBreakdown = (t.learnPenalty != null) ? `
   <div class="conf-breakdown" style="margin-top:10px;padding:9px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;font-size:0.73rem;line-height:1.9">
     <div style="font-weight:700;color:var(--text2);margin-bottom:4px">🛡️ 風控分項明細</div>
@@ -2003,36 +2000,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       // 已進場：顯示進場時鎖定的風控分，不再動態重算（進場後市況變化不影響已開倉決策）
       if (existingActive.entryTime) {
-        const _lockedConf = existingActive.conf || 0;
-        const _rawC = existingActive.rawConf || _lockedConf;
+        const _learnPen = existingActive.learnPenalty != null ? existingActive.learnPenalty : null;
+        const _lockDrag = _learnPen != null ? Math.min(50, _learnPen) : 0;
+        const _lockedConf = _learnPen != null
+          ? Math.max(0, Math.round(100 - _lockDrag))
+          : (existingActive.conf || 0);
         const _clr = _cc(_lockedConf);
-        const _baseDeduct = 100 - _rawC;
-        const _adxPen   = existingActive.hardAdxPenalty || 0;
-        const _learnPen = existingActive.learnPenalty   || 0;
-        const _macroPen = existingActive.macroPenalty   || 0;
-        const _aiPen    = existingActive.aiTrendPenalty || 0;
-        const _techPen  = existingActive.techPenalty    || 0;
-        const _chipsPen = existingActive.chipsPenalty   || 0;
-        const _dirPen   = existingActive.dirPenalty     || 0;
-        const _bbPen    = existingActive.bbPenalty      || 0;
         const lockedConfPanel = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
-          <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:6px">📊 風控分評估（進場時已鎖定）</div>
+          <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:6px">🛡️ 風控分項明細（進場時）</div>
           <div style="font-size:0.73rem;line-height:2">
-            <div><span style="color:var(--text3)">滿分</span> <strong>100%</strong></div>
-            ${_baseDeduct > 0 ? `<div style="color:#f59e0b">　基礎評估 <strong>-${_baseDeduct}%</strong>（入場條件綜合評分）</div>` : ''}
-            ${_adxPen   > 0 ? `<div style="color:#f59e0b">　ADX <strong>-${_adxPen}%</strong>（趨勢強度不足）</div>` : ''}
-            ${_learnPen > 0 ? `<div style="color:#f59e0b">　AI風控 <strong>-${_learnPen}%</strong>（歷史止損規則觸發）</div>` : ''}
-            ${_macroPen > 0 ? `<div style="color:#f59e0b">　宏觀 <strong>-${_macroPen}%</strong>（宏觀環境逆風）</div>` : ''}
-            ${_aiPen    > 0 ? `<div style="color:#f59e0b">　AI趨勢 <strong>-${_aiPen}%</strong>（週/日方向逆向）</div>` : ''}
-            ${_techPen  > 0 ? `<div style="color:#f59e0b">　技術 <strong>-${_techPen}%</strong>（RSI/MACD/BB 逆風）</div>` : ''}
-            ${_chipsPen > 0 ? `<div style="color:#f59e0b">　籌碼 <strong>-${_chipsPen}%</strong>（Taker/巨鯨 逆向）</div>` : ''}
-            ${_dirPen   > 0 ? `<div style="color:#f59e0b">　方向 <strong>-${_dirPen}%</strong>（大方向逆向）</div>` : ''}
-            ${_bbPen    > 0 ? `<div style="color:#f59e0b">　BB型態 <strong>-${_bbPen}%</strong>（布林通道逆風）</div>` : ''}
+            <div><span style="color:var(--text3)">滿分</span> <strong>100 分</strong></div>
+            ${_lockDrag > 0 ? `<div style="color:#f59e0b">　↳ 止損風控扣分 <strong>-${_lockDrag} 分</strong></div>` : '<div style="color:#22c55e">　↳ 止損風控通過（無扣分）</div>'}
             <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px">
-              <span style="color:var(--text3)">風控分</span> <strong style="color:${_clr};font-size:1rem">${_lockedConf} 分</strong>
+              <span style="color:var(--text3)">= 風控分</span> <strong style="color:${_clr};font-size:1rem">${_lockedConf} 分</strong>
+              <span style="font-size:0.68rem;color:var(--text3);margin-left:6px">其餘逆風見 SQ 因子</span>
             </div>
           </div>
-          <div style="font-size:0.68rem;color:var(--text3);margin-top:4px">已進場，風控分評估以進場時為準，不隨市況動態變動</div>
         </div>`;
         if (existingActive.status === 'open')    return buildOpenPositionSetup(existingActive, price) + lockedConfPanel;
         if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price) + lockedConfPanel;
@@ -4049,14 +4032,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_sqMSE) {}
 
-  // 分數 floor 為 0，等級重新校準（全數據模式最高約 29 分）
+  // 分數 floor 為 0，等級重新校準（加入5週期走勢因子後最高約 31 分）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 22 ? 'SSS'
-                 : _sqScore >= 19 ? 'SS'
-                 : _sqScore >= 15 ? 'S'
-                 : _sqScore >= 10 ? 'A'
-                 : _sqScore >= 6  ? 'B'
-                 : _sqScore >= 3  ? 'C' : 'D';
+  const _sqGrade = _sqScore >= 24 ? 'SSS'
+                 : _sqScore >= 21 ? 'SS'
+                 : _sqScore >= 17 ? 'S'
+                 : _sqScore >= 12 ? 'A'
+                 : _sqScore >= 7  ? 'B'
+                 : _sqScore >= 4  ? 'C' : 'D';
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
@@ -4066,7 +4049,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
     const _sqWarn = _sqFactors.filter(f => f.startsWith('⚠️'));
     const _sqNeut = _sqFactors.filter(f => f.startsWith('⬜'));
-    const _sqBarW = Math.round(Math.min(100, (_sqScore / 22) * 100));
+    const _sqBarW = Math.round(Math.min(100, (_sqScore / 24) * 100));
     const _sqBClr = _sqGradeColor || '#9ca3af';
     const _cClr   = conf >= 70 ? '#22c55e' : conf >= 60 ? '#f59e0b' : '#ef4444';
     return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
@@ -9769,14 +9752,14 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，等級門檻與 buildTradeSetup + 持倉監控完全一致（最高約 26 分）
+    // 分數 floor 0，等級門檻與 buildTradeSetup + 持倉監控完全一致（加入5週期因子後最高約 28 分）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 22 ? 'SSS'
-                       : _scanSqScore >= 19 ? 'SS'
-                       : _scanSqScore >= 15 ? 'S'
-                       : _scanSqScore >= 10 ? 'A'
-                       : _scanSqScore >= 6  ? 'B'
-                       : _scanSqScore >= 3  ? 'C' : 'D';
+    const _scanSqGrade = _scanSqScore >= 24 ? 'SSS'
+                       : _scanSqScore >= 21 ? 'SS'
+                       : _scanSqScore >= 17 ? 'S'
+                       : _scanSqScore >= 12 ? 'A'
+                       : _scanSqScore >= 7  ? 'B'
+                       : _scanSqScore >= 4  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
     const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
@@ -10044,20 +10027,20 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（最高約 26 分含 ICT + 圖形）
+    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（加入5週期因子後最高約 28 分）
     _sqRC = Math.max(0, _sqRC);
-    const _rcGrade = _sqRC >= 22 ? 'SSS'
-                   : _sqRC >= 19 ? 'SS'
-                   : _sqRC >= 15 ? 'S'
-                   : _sqRC >= 10 ? 'A'
-                   : _sqRC >= 6  ? 'B'
-                   : _sqRC >= 3  ? 'C' : 'D';
+    const _rcGrade = _sqRC >= 24 ? 'SSS'
+                   : _sqRC >= 21 ? 'SS'
+                   : _sqRC >= 17 ? 'S'
+                   : _sqRC >= 12 ? 'A'
+                   : _sqRC >= 7  ? 'B'
+                   : _sqRC >= 4  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
     // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
     const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_rcMinGrades.includes(_rcGrade)) {
-      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}/22），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
+      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
       addCancelCooldown(trade, _sqCancelReason);
       _sqCancelIds.add(trade.id);
       changed = true;
