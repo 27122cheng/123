@@ -3596,9 +3596,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     learnResult = { penalty: 0, warnings: [], hardBlocked: false, blockReasons: [], defenseChecks: [] };
   }
   const { penalty: learnPenalty, warnings: learnWarn0, hardBlocked, blockReasons } = learnResult;
-  // 止損風控直接扣減基礎分數（不依賴後期權重削弱）
-  // rawConf 應反映歷史止損率，而非被 AI 信心度底線人為保護
-  rawConf = Math.max(40, rawConf - learnPenalty);
+  // 風控規則直接扣減基礎分數（包括歷史止損 + 當前交易的技術/籌碼逆風）
+  // rawConf 應反映完整的風控狀況，而非被 AI 信心度底線人為保護
+  const _totalDefenseDrag = learnPenalty + hardAdxPenalty + techPenalty + chipsPenalty;
+  rawConf = Math.max(40, rawConf - _totalDefenseDrag);
   // 合併警告：硬性 ADX 警告 + AI 學習警告 + 最終防線
   const learnWarnings = [...learnWarn0];
   if (hardAdxPenalty > 0) {
@@ -10684,8 +10685,9 @@ function updateOpenTrades(data) {
           }
           _cfP = Math.min(10, _cfP);
         } catch(_e) {}
-        // 動態止損風控（重新評估歷史記錄）直接減低基礎分數，體現在 AI 信心度上
-        const _adjustedBase = Math.max(40, baseConf - _learnPen);
+        // 動態風控（重新評估所有規則）直接減低基礎分數：止損 + 技術 + 籌碼 + ADX
+        const _totalDrag = _learnPen + _techP + _chipsP + _adxPen;
+        const _adjustedBase = Math.max(40, baseConf - _totalDrag);
         // 原始扣分值（用於取消門檻判斷，不受 70% 底線影響）
         let _rawFreshConf;
         if (trade.tradeType === 'range') {
@@ -15289,8 +15291,10 @@ function computeSimpleSetup(coin, isLong) {
     _sCFPen = Math.min(10, _sCFPen);
   } catch(_e) {}
 
-  // 止損風控直接扣減基礎分數（不依賴後期權重削弱），與 buildTradeSetup 一致
-  const _ssAdjustedRaw = Math.max(40, rawConf - learnPenalty);
+  // 風控規則直接扣減基礎分數（止損 + 技術 + 籌碼 + ADX），與 buildTradeSetup 一致
+  const _ssHardAdx = adx < 18 ? 18 : adx < 22 ? 10 : 0;
+  const _ssTotalDrag = learnPenalty + _sTechPen + _sChipsPen + _ssHardAdx;
+  const _ssAdjustedRaw = Math.max(40, rawConf - _ssTotalDrag);
   // AI 頂級交易員信心度（掃描版）：已通過 SQ≥A 精篩，最低信心底線 70%
   // 技術質量超額（調整後的 rawConf > 62 的部分，含止損風控扣減）＋ 宏觀逆風（上限 10%）
   const _ssAiTech = Math.max(0, _ssAdjustedRaw - 62) * 0.6;
