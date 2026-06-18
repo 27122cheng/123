@@ -3596,6 +3596,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     learnResult = { penalty: 0, warnings: [], hardBlocked: false, blockReasons: [], defenseChecks: [] };
   }
   const { penalty: learnPenalty, warnings: learnWarn0, hardBlocked, blockReasons } = learnResult;
+  // 止損風控直接扣減基礎分數（不依賴後期權重削弱）
+  // rawConf 應反映歷史止損率，而非被 AI 信心度底線人為保護
+  rawConf = Math.max(40, rawConf - learnPenalty);
   // 合併警告：硬性 ADX 警告 + AI 學習警告 + 最終防線
   const learnWarnings = [...learnWarn0];
   if (hardAdxPenalty > 0) {
@@ -4070,16 +4073,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // ── AI 頂級交易員信心度：綜合所有維度的整體判斷 ──
   // 框架：已通過 SQ≥A + R/R≥1.3 雙重精篩，頂級交易員對這類訊號的最低信心底線為 70%
-  // ① 技術質量：rawConf 超過 62% 的部分 × 0.55（涵蓋技術面/籌碼/MTF/ICT/巨鯨/Kill Zone）
+  // rawConf 已內含止損風控（learnPenalty）與技術質量，直接作為基準
+  // ① 技術質量 + 止損風控：rawConf 超過 62% 的部分 × 0.6（含 learnPenalty 扣減的真實基礎分）
   // ② SQ 品質超額：每高出 A 級基準(10分) 貢獻 1.3%（SS=+11.7%, SSS=+15.6%）
   // ③ 宏觀逆風：F&G / BTC 占比 / 市值變動（上限扣 10%）
-  // ④ 歷史止損學習：同向過往虧損經驗（上限扣 8%，權重 0.5×）
-  const _aiTechBonus = Math.max(0, rawConf - 62) * 0.55;
+  const _aiTechBonus = Math.max(0, rawConf - 62) * 0.6;
   const _aiSqBonus   = (_sqScore - 10) * 1.3;
   const _aiMacroDrag = Math.min(10, macroOpposePenalty);
-  const _aiHistDrag  = Math.min(8, learnPenalty * 0.5);
   conf = Math.max(70, Math.round(Math.min(99,
-    70 + _aiTechBonus + _aiSqBonus - _aiMacroDrag - _aiHistDrag
+    70 + _aiTechBonus + _aiSqBonus - _aiMacroDrag
   )));
 
   // ── ICT / SMC / SNR + 圖形識別（所有情況均顯示於交易建議區）──
@@ -10682,22 +10684,21 @@ function updateOpenTrades(data) {
           }
           _cfP = Math.min(10, _cfP);
         } catch(_e) {}
+        // 動態止損風控（重新評估歷史記錄）直接減低基礎分數，體現在 AI 信心度上
+        const _adjustedBase = Math.max(40, baseConf - _learnPen);
         // 原始扣分值（用於取消門檻判斷，不受 70% 底線影響）
         let _rawFreshConf;
         if (trade.tradeType === 'range') {
-          _rawFreshConf = Math.max(0, baseConf - _adxPen - _learnPen);
-          // AI 頂級交易員信心度：震盪單不扣宏觀/方向，只反映歷史止損學習
-          const _aiTechR = Math.max(0, baseConf - 62) * 0.55;
-          const _aiHistR = Math.min(8, _learnPen * 0.5);
-          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechR - _aiHistR)));
+          _rawFreshConf = Math.max(0, _adjustedBase - _adxPen);
+          // AI 頂級交易員信心度：震盪單不扣宏觀/方向，止損風控已在基礎分中體現
+          const _aiTechR = Math.max(0, _adjustedBase - 62) * 0.6;
+          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechR)));
         } else {
-          _rawFreshConf = Math.max(0, baseConf - _adxPen - _learnPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
-          // AI 頂級交易員信心度：已通過 SQ+RR 精篩，底線 70%
-          // 宏觀逆風（_macP + CF 資金流）≤10%，歷史止損學習 ≤8%
-          const _aiTechD  = Math.max(0, baseConf - 62) * 0.55;
+          _rawFreshConf = Math.max(0, _adjustedBase - _adxPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
+          // AI 頂級交易員信心度：底線 70%，止損風控已在基礎分中體現
+          const _aiTechD  = Math.max(0, _adjustedBase - 62) * 0.6;
           const _aiMacroD = Math.min(10, _macP + _cfP);
-          const _aiHistD  = Math.min(8, _learnPen * 0.5);
-          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechD - _aiMacroD - _aiHistD)));
+          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechD - _aiMacroD)));
         }
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
@@ -15288,12 +15289,13 @@ function computeSimpleSetup(coin, isLong) {
     _sCFPen = Math.min(10, _sCFPen);
   } catch(_e) {}
 
+  // 止損風控直接扣減基礎分數（不依賴後期權重削弱），與 buildTradeSetup 一致
+  const _ssAdjustedRaw = Math.max(40, rawConf - learnPenalty);
   // AI 頂級交易員信心度（掃描版）：已通過 SQ≥A 精篩，最低信心底線 70%
-  // 技術質量超額（rawConf > 62 的部分）＋ 歷史風控 ＋ 宏觀逆風（上限 10%）
-  const _ssAiTech = Math.max(0, rawConf - 62) * 0.55;
-  const _ssAiHist = Math.min(8, learnPenalty * 0.5);
+  // 技術質量超額（調整後的 rawConf > 62 的部分，含止損風控扣減）＋ 宏觀逆風（上限 10%）
+  const _ssAiTech = Math.max(0, _ssAdjustedRaw - 62) * 0.6;
   const _ssAiMacro = Math.min(10, _sMacroPen);
-  const conf = Math.max(70, Math.round(Math.min(99, 70 + _ssAiTech - _ssAiHist - _ssAiMacro)));
+  const conf = Math.max(70, Math.round(Math.min(99, 70 + _ssAiTech - _ssAiMacro)));
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const macdH  = parseFloat(coin.macdHist) || 0;
