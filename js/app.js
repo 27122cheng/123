@@ -3687,13 +3687,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   techPenReasons.forEach(r => aiTrendReasons.push(`📐 技術面：${r}`));
   chipsPenReasons.forEach(r => aiTrendReasons.push(`🐋 籌碼面：${r}`));
 
-  // 前置信心度（供 direction gate 使用）：rawConf - 宏觀扣分
-  let conf = Math.max(0, rawConf - macroOpposePenalty);
+  // ── 信心度（100 分扣分制）──
+  // 止損風控 + 技術/籌碼 + 宏觀，各類扣分直接體現，入場門檻 70 分
+  const _cLearnDrag = Math.min(50, learnPenalty);                          // 歷史止損率 + 規則觸發 + 建議違反（上限50）
+  const _cAdxDrag   = hardAdxPenalty > 0 ? (adxVal < 18 ? 10 : 5) : 0;   // ADX 偏低：<18=-10, 18-22=-5
+  const _cTechDrag  = Math.min(15, techPenalty);                           // RSI極端/MACD/量能弱（上限15）
+  const _cChipsDrag = Math.min(10, chipsPenalty);                          // Taker比例/巨鯨逆向（上限10）
+  const _cMacroDrag = Math.min(15, macroOpposePenalty + Math.round(aiTrendPenalty * 0.4)); // 宏觀+AI趨勢（上限15）
+  let conf = Math.max(0, Math.round(100 - _cLearnDrag - _cAdxDrag - _cTechDrag - _cChipsDrag - _cMacroDrag));
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
   const finalConf = conf;
-  // 最終防線：被AI風控硬封鎖 OR 信心低於50% → 觀望
-  if (conf < 50 || hardBlocked) direction = 'wait';
+  // 入場門檻：信心度 < 70 或 AI 硬封鎖 → 觀望
+  if (conf < 70 || hardBlocked) direction = 'wait';
   if (learnWarnings.length && direction !== 'wait') {
     learnWarnings.forEach(w => entryReasons.push(`⚠️ ${w}`));
   }
@@ -3971,12 +3977,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_sqCFE) {}
 
-  // ⑱ 歷史止損記憶（硬封鎖扣 3 分 / 有警告時顯示）
-  if (hardBlocked && blockReasons.length) {
-    _sqScore -= 3; _sqFactors.push(`🚫 歷史止損封鎖（${blockReasons.length}條規則觸發）-3`);
-    blockReasons.slice(0, 3).forEach(r => _sqFactors.push(`　▸ ${r}`));
-  } else if (!_sqFailChecks.length && learnPenalty > 0 && learnWarnings.length) {
-    _sqFactors.push(`📚 止損記憶扣分（-${learnPenalty}%）`);
+  // ⑱ 信心度風控評估（偵測 100 分制信心度，越高得分越多）
+  if (hardBlocked) {
+    _sqScore -= 3; _sqFactors.push(`🚫 AI歷史止損硬封鎖（${blockReasons[0]?.slice(0,35) || '規則觸發'}）-3`);
+  } else if (conf >= 90) {
+    _sqScore += 2; _sqFactors.push(`✅ 信心度 ${conf}分（強勢，所有風控通過）+2`);
+  } else if (conf >= 80) {
+    _sqScore += 1; _sqFactors.push(`✅ 信心度 ${conf}分（良好，風控達標）+1`);
+  } else if (conf >= 70) {
+    _sqFactors.push(`⚠️ 信心度 ${conf}分（達門檻，部分風控提示）`);
+  } else if (conf >= 60) {
+    _sqScore -= 1; _sqFactors.push(`❌ 信心度 ${conf}分（低於門檻）-1`);
+  } else {
+    _sqScore -= 3; _sqFactors.push(`🚫 信心度 ${conf}分（風控攔截，嚴重逆風）-3`);
+  }
+  if (learnPenalty > 0 && !hardBlocked) {
     learnWarnings.slice(0, 2).forEach(r => _sqFactors.push(`　▸ ${r}`));
   }
 
@@ -4068,22 +4083,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ${_sqNeg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${_sqNeg.length}項）</div>${_sqNeg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${_sqWarn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${_sqWarn.length}項）</div>${_sqWarn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${_sqNeut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${_sqNeut.length}項）</div>${_sqNeut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
-      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">進場信心 <strong style="color:${_cClr}">${conf}%</strong>（原始 ${rawConf}%）　需 A 級以上（≥10分）方可入場</div>
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">信心度 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 70分　需 SQ≥A（≥10分）方可入場</div>
     </div>`;
   } catch(_sqPE) { return ''; } })();
 
-  // ── AI 頂級交易員信心度：綜合所有維度的整體判斷 ──
-  // 框架：已通過 SQ≥A + R/R≥1.3 雙重精篩，頂級交易員對這類訊號的最低信心底線為 70%
-  // rawConf 已內含止損風控（learnPenalty）與技術質量，直接作為基準
-  // ① 技術質量 + 止損風控：rawConf 超過 62% 的部分 × 0.6（含 learnPenalty 扣減的真實基礎分）
-  // ② SQ 品質超額：每高出 A 級基準(10分) 貢獻 1.3%（SS=+11.7%, SSS=+15.6%）
-  // ③ 宏觀逆風：F&G / BTC 占比 / 市值變動（上限扣 10%）
-  const _aiTechBonus = Math.max(0, rawConf - 62) * 0.6;
-  const _aiSqBonus   = (_sqScore - 10) * 1.3;
-  const _aiMacroDrag = Math.min(10, macroOpposePenalty);
-  conf = Math.max(70, Math.round(Math.min(99,
-    70 + _aiTechBonus + _aiSqBonus - _aiMacroDrag
-  )));
+  // conf 已在 SQ 計算前完成（100分扣分制），此處不再覆蓋
 
   // ── ICT / SMC / SNR + 圖形識別（所有情況均顯示於交易建議區）──
   const _ictAnalysisHtml = (() => { try {
@@ -4428,13 +4432,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // 長線單：額外要求 R/R≥1.5 + AI信心≥82 + 週向不逆勢（資本配置更謹慎）
-        _canAutoRecord = parseFloat(rr1str) >= 1.5
-          && conf >= 82
+        // 長線單：信心≥75 + R/R≥1.5 + 週向不逆勢（100分制，75分以上才配置長線倉位）
+        _canAutoRecord = conf >= 75
+          && parseFloat(rr1str) >= 1.5
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥A + R/R≥1.3 已確認，AI信心底線 70% 即可納入持倉
+        // 短線單 / 震盪單：信心≥70（100分制門檻，已確保風控通過）
         _canAutoRecord = conf >= 70;
       }
     }
@@ -9539,8 +9543,8 @@ async function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
-    // 信心度最低門檻（與幣種詳情頁一致）
-    if ((setup.conf || 0) < 55) continue;
+    // 信心度最低門檻（100 分制，與幣種詳情頁一致）
+    if ((setup.conf || 0) < 70) continue;
     // 週日預測強度協同：不能週強多+日強空 或 週強空+日強多（衝突訊號跳過）
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
     if (wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
@@ -10685,28 +10689,20 @@ function updateOpenTrades(data) {
           }
           _cfP = Math.min(10, _cfP);
         } catch(_e) {}
-        // 動態風控（重新評估所有規則）直接減低基礎分數：止損 + 技術 + 籌碼 + ADX
-        const _totalDrag = _learnPen + _techP + _chipsP + _adxPen;
-        const _adjustedBase = Math.max(40, baseConf - _totalDrag);
-        // 原始扣分值（用於取消門檻判斷，不受 70% 底線影響）
-        let _rawFreshConf;
-        if (trade.tradeType === 'range') {
-          _rawFreshConf = Math.max(0, _adjustedBase - _adxPen);
-          // AI 頂級交易員信心度：震盪單不扣宏觀/方向，止損風控已在基礎分中體現
-          const _aiTechR = Math.max(0, _adjustedBase - 62) * 0.6;
-          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechR)));
-        } else {
-          _rawFreshConf = Math.max(0, _adjustedBase - _adxPen - _macP - _aiP - _cfP - _techP - _chipsP - _dirP);
-          // AI 頂級交易員信心度：底線 70%，止損風控已在基礎分中體現
-          const _aiTechD  = Math.max(0, _adjustedBase - 62) * 0.6;
-          const _aiMacroD = Math.min(10, _macP + _cfP);
-          freshConf = Math.max(70, Math.round(Math.min(99, 70 + _aiTechD - _aiMacroD)));
-        }
+        // 100分扣分制信心度（與 buildTradeSetup 一致）
+        const _cLearnDrag = Math.min(50, _learnPen);
+        const _cAdxDrag   = _adxPen > 0 ? (_curAdx < 18 ? 10 : 5) : 0;
+        const _cTechDrag  = Math.min(15, _techP + _dirP);
+        const _cChipsDrag = Math.min(10, _chipsP);
+        const _cMacroDrag = trade.tradeType === 'range' ? 0
+          : Math.min(15, _macP + _cfP + Math.round(_aiP * 0.4));
+        freshConf = Math.max(0, Math.round(100 - _cLearnDrag - _cAdxDrag - _cTechDrag - _cChipsDrag - _cMacroDrag));
+        const _rawFreshConf = freshConf;
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
         if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 信心度跌破 50%（原始扣分值）→ 自動取消掃描粗估單
-        if (_rawFreshConf < 50 && !trade.entryTime) {
-          const _confReason = `信心度原始評分跌至 ${_rawFreshConf}%，低於進場門檻 50%（宏觀/AI/技術面扣分累積）`;
+        // 信心度跌破取消門檻 → 自動取消掃描粗估單
+        if (freshConf < 55 && !trade.entryTime) {
+          const _confReason = `信心度跌至 ${freshConf} 分，低於取消門檻（宏觀/AI/技術面扣分累積）`;
           addCancelCooldown(trade, _confReason);
           toDeleteIds.add(trade.id);
           cancelledSymbols.add(trade.symbol);
@@ -10715,15 +10711,13 @@ function updateOpenTrades(data) {
         }
       } catch(_e) {}
     } else {
-      // 無宏觀快取時：ADX + 學習規則扣分用於取消判斷，AI信心度套用 70% 底線
-      const _structRaw  = Math.max(0, baseConf - _adxPen - _learnPen);
-      const _stAiTech   = Math.max(0, baseConf - 62) * 0.55;
-      const _stAiHist   = Math.min(8, _learnPen * 0.5);
-      const _structConf = Math.max(70, Math.round(Math.min(99, 70 + _stAiTech - _stAiHist)));
-      freshConf = _structConf;
-      if (trade.conf !== _structConf) { trade.conf = _structConf; changed = true; }
-      if (_structRaw < 50 && !trade.entryTime) {
-        const _confReason = `信心度原始評分跌至 ${_structRaw}%，低於進場門檻 50%（ADX/風控規則扣分）`;
+      // 無宏觀快取時：只用 learnPenalty + ADX 扣分（100 分制）
+      const _cLD = Math.min(50, _learnPen);
+      const _cAD = _adxPen > 0 ? (_curAdx < 18 ? 10 : 5) : 0;
+      freshConf = Math.max(0, Math.round(100 - _cLD - _cAD));
+      if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
+      if (freshConf < 55 && !trade.entryTime) {
+        const _confReason = `信心度跌至 ${freshConf} 分，低於取消門檻（ADX/風控規則扣分）`;
         addCancelCooldown(trade, _confReason);
         toDeleteIds.add(trade.id);
         cancelledSymbols.add(trade.symbol);
@@ -10731,9 +10725,8 @@ function updateOpenTrades(data) {
         sendCancelTelegramNotification(trade, _confReason);
       }
     }
-    // 風險評估升至高風險 → 取消未入場掛單（原始扣分值低於 50% 才觸發，AI顯示值有底線保護）
-    const _rawFreshForRisk = typeof _rawFreshConf !== 'undefined' ? _rawFreshConf : Math.max(0, (trade.rawConf || trade.conf || 70) - (trade.hardAdxPenalty||0) - (trade.learnPenalty||0));
-    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && _rawFreshForRisk < 50) {
+    // 風險評估升至高風險 → 取消未入場掛單（信心度低於 55 分才觸發）
+    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin && freshConf < 55) {
       try {
         const _brResult = buildRisk(_fCoin);                          // UI 顯示的風險（≥55 = 高風險）
         const _frSetup  = computeSimpleSetup(_fCoin, _isL);
@@ -15291,15 +15284,13 @@ function computeSimpleSetup(coin, isLong) {
     _sCFPen = Math.min(10, _sCFPen);
   } catch(_e) {}
 
-  // 風控規則直接扣減基礎分數（止損 + 技術 + 籌碼 + ADX），與 buildTradeSetup 一致
-  const _ssHardAdx = adx < 18 ? 18 : adx < 22 ? 10 : 0;
-  const _ssTotalDrag = learnPenalty + _sTechPen + _sChipsPen + _ssHardAdx;
-  const _ssAdjustedRaw = Math.max(40, rawConf - _ssTotalDrag);
-  // AI 頂級交易員信心度（掃描版）：已通過 SQ≥A 精篩，最低信心底線 70%
-  // 技術質量超額（調整後的 rawConf > 62 的部分，含止損風控扣減）＋ 宏觀逆風（上限 10%）
-  const _ssAiTech = Math.max(0, _ssAdjustedRaw - 62) * 0.6;
-  const _ssAiMacro = Math.min(10, _sMacroPen);
-  const conf = Math.max(70, Math.round(Math.min(99, 70 + _ssAiTech - _ssAiMacro)));
+  // 100分扣分制信心度（掃描版，與 buildTradeSetup 一致）
+  const _ssLearnDrag  = Math.min(50, learnPenalty);
+  const _ssAdxDrag    = hardAdxPenalty > 0 ? (adx < 18 ? 10 : 5) : 0;
+  const _ssTechDrag   = Math.min(15, _sTechPen + _sDirPen + _sBBPenalty);
+  const _ssChipsDrag  = Math.min(10, _sChipsPen);
+  const _ssMacroDrag  = Math.min(15, _sMacroPen + _sCFPen + Math.round(_sAIPen * 0.4));
+  const conf = Math.max(0, Math.round(100 - _ssLearnDrag - _ssAdxDrag - _ssTechDrag - _ssChipsDrag - _ssMacroDrag));
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
   const macdH  = parseFloat(coin.macdHist) || 0;
@@ -15484,7 +15475,7 @@ function computeSimpleSetup(coin, isLong) {
     learnWarn,        // 警告字串陣列
     blockReasons,     // 硬封鎖原因陣列
     defenseChecks: [], // computeSimpleSetup 不計算防線審查，回傳空陣列
-    learnFiltered: (conf < 50 || hardBlocked) && rawConf >= 50,
+    learnFiltered: (conf < 70 || hardBlocked) && rawConf >= 70,
     hardBlocked,
     isRangeMode: false,
     flipRisks:   [],
@@ -16078,4 +16069,4 @@ function buildCapitalFlowEventsWidget() {
   </div>
   ${body}`;
 }
-// v20260613-restored
+// v20260617o
