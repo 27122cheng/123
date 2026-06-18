@@ -192,8 +192,8 @@ function startRefreshCycle() {
   clearInterval(_bgScanTimer);
   _bgScanTimer = setInterval(() => {
     if (!state.data || !state.data.length) return;
-    try { updateOpenTrades(state.data); } catch(e) {}
     try { recordSignalsFromScan(state.data); } catch(e) {}
+    try { updateOpenTrades(state.data); } catch(e) {}
     if (state.currentPage === 'positions') {
       try { renderPositionsPage(); } catch(e) {}
     }
@@ -490,8 +490,8 @@ function navigateTo(page, coinSymbol) {
     if (_positionsScanTimer) clearInterval(_positionsScanTimer);
     _positionsScanTimer = setInterval(() => {
       if (state.data && state.data.length) {
-        try { updateOpenTrades(state.data); } catch(e) {}
         try { recordSignalsFromScan(state.data); } catch(e) {}
+        try { updateOpenTrades(state.data); } catch(e) {}
       }
       try { renderPositionsPage(); } catch(e) {}
     }, 10000);
@@ -9073,8 +9073,8 @@ function triggerRescan() {
     state.data = data; state.dataSource = source;
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
-    updateOpenTrades(data);
     recordSignalsFromScan(data);
+    updateOpenTrades(data);
     checkAndSendAlerts(data);
   });
 }
@@ -9437,14 +9437,7 @@ async function recordSignalsFromScan(data) {
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
       if (!_wkAligned) continue;
     }
-    // 建單前確認評分與趨勢符合 updateOpenTrades 的取消門檻，避免建單後立即取消
-    // 短線單：評分 ≥55（多）或 ≤45（空）；趨勢不能已反轉
-    if (!canScaleIn) {
-      if (isLong  && (coin.score || 50) < 55) continue;
-      if (!isLong && (coin.score || 50) > 45) continue;
-      if (isLong  && (coin.trend || '').includes('看跌')) continue;
-      if (!isLong && (coin.trend || '').includes('看漲')) continue;
-    }
+
 
     // ── 補充抓取掃描情境缺少的非同步資料（讓 SQ 評分與幣種詳情頁完全一致）──
     // 使用 5 分鐘快取避免每 15s 輪掃時重複請求
@@ -10993,8 +10986,74 @@ function sendCancelTelegramNotification(trade, reason) {
     ? `📶 風控分：${rawConf} 分 → 降至 ${freshConf} 分（扣 -${confDrop}${freshConf < _confThreshold ? '，低於門檻 60 分' : ''}）`
     : `📶 風控分：${freshConf} 分`;
 
-  // ── 取消原因 bullets（只顯示風控/止損相關扣分）──
+  // ── 取消原因 bullets ──
   const bullets = [];
+  const hasMacro = typeof _macroCache !== 'undefined' && _macroCache;
+
+  if (hasMacro && confDrop > 1) {
+    try {
+      const _fg = _macroCache.fg;
+      const _gm = _macroCache;
+      const fgV = _fg ? parseInt(_fg.value) : null;
+      const dom = _gm.btcDominance   || 0;
+      const chg = _gm.marketCapChange || 0;
+      let against = 0;
+      if (isLong) {
+        if (chg < -2) against++;
+        if (dom > 58) against++;
+        if (fgV != null && fgV < 30) against++;
+        if (fgV != null && fgV > 75) against += 0.5;
+      } else {
+        if (chg > 2)  against++;
+        if (dom < 44) against++;
+        if (fgV != null && fgV > 70) against++;
+        if (fgV != null && fgV < 25) against += 0.5;
+      }
+      let macroPen = against >= 3 ? 18 : against >= 2 ? 12 : against >= 1 ? 5 : 0;
+      const bigDir  = computeMacroNetDir(_fg, _gm);
+      const bdAg    = (isLong && bigDir.includes('bear')) || (!isLong && bigDir.includes('bull'));
+      if (bdAg) { const bdMin = (bigDir === 'slight_bear' || bigDir === 'slight_bull') ? 3 : 7; if (macroPen < bdMin) macroPen = bdMin; }
+      if (macroPen > 0) {
+        const why = [];
+        if (isLong) {
+          if (dom > 58) why.push(`BTC主導率偏高 ${dom.toFixed(1)}%`);
+          if (chg < -2) why.push(`市值下跌 ${chg.toFixed(1)}%`);
+          if (fgV != null && fgV < 30) why.push(`恐貪指數偏低 ${fgV}`);
+        } else {
+          if (dom < 44) why.push(`BTC主導率偏低 ${dom.toFixed(1)}%`);
+          if (chg > 2)  why.push(`市值上漲 ${chg.toFixed(1)}%`);
+          if (fgV != null && fgV > 70) why.push(`恐貪指數偏高 ${fgV}`);
+        }
+        bullets.push(`宏觀環境逆風 -${macroPen}%${why.length ? `（${why.join('；')}）` : ''}`);
+      }
+      const wb = computeWeeklyAIBias(_fg, _gm);
+      const tb = computeTodayAIBias(_fg, _gm);
+      const wOp   = isLong ? (wb.bias||'').includes('bear') : (wb.bias||'').includes('bull');
+      const tOp   = isLong ? (tb.bias||'').includes('bear') : (tb.bias||'').includes('bull');
+      const wNeut = (wb.bias||'') === 'neutral';
+      const tNeut = (tb.bias||'') === 'neutral';
+      if (wOp) {
+        const wPen = (wb.bias||'').includes('strong') ? 10 : 6;
+        bullets.push(`本週AI預測 ${esc(wb.biasLabel||'')}，${isLong ? '與做多逆向' : '與做空逆向'}，扣 ${wPen}%`);
+      } else if (wNeut) {
+        bullets.push(`本週AI預測震盪中性，方向不明，扣 3%`);
+      }
+      if (tOp) {
+        bullets.push(`今日AI預測 ${esc(tb.biasLabel||'')}，${isLong ? '多頭今日逆風' : '空頭今日逆風'}，扣 7%`);
+      } else if (tNeut) {
+        bullets.push(`今日AI預測中性，方向不確定，扣 2%`);
+      }
+      // 資金流動事件
+      try {
+        const _cfC = getCapitalFlowBias();
+        for (const ev of _cfC.events) {
+          if (isLong  && ev.bear > 0) { const p = ev.bear >= 1.2 ? 5 : 3; bullets.push(`💹 ${ev.name}：資金流出逆風 -${p}%`); }
+          else if (!isLong && ev.bull > 0) { const p = ev.bull >= 1.2 ? 5 : 3; bullets.push(`💹 ${ev.name}：資金流入逆風 -${p}%`); }
+          else if (ev.bull === 0 && ev.bear === 0) { bullets.push(`💹 ${ev.name}：資金方向中性 -2%`); }
+        }
+      } catch(_e) {}
+    } catch (e) {}
+  }
 
   // 學習記憶扣分 + 詳細建議
   const learnPen = trade.learnPenalty || 0;
