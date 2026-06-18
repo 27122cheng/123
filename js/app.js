@@ -4229,13 +4229,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     </div>`;
   }
 
-  // Grade C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
-  if (!['SSS','SS','S','A','B'].includes(_sqGrade)) {
+  // Grade B/C/D：訊號品質不足 → 觀望，不顯示交易建議，不推送 Telegram
+  if (!['SSS','SS','S','A'].includes(_sqGrade)) {
     _tradeSetupCache[coin.symbol] = { direction: 'wait', sqGrade: _sqGrade, sqScore: _sqScore, chartPat: _chartPat, ..._ictCacheData };
     return `${_scalpHtml}<div class="setup-wait">
       <div class="setup-wait-icon">🤖</div>
       <div class="setup-wait-title">AI 訊號過濾：品質不足（<strong style="color:${_sqGradeColor}">${_sqGrade} 級 — ${_sqGradeLabel}</strong>），建議觀望</div>
-      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">全數據多因子評分 ${_sqScore} 分，需達 B 級（≥ 7 分）才進場</div>
+      <div style="font-size:0.72rem;color:var(--text3);margin:4px 0 8px">全數據多因子評分 ${_sqScore} 分，需達 A 級（≥ 12 分）才進場</div>
       <ul class="setup-wait-reasons">${_sqFactors.map(f => `<li>${f}</li>`).join('')}</ul>
     </div>`;
   }
@@ -4339,7 +4339,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 低勝率評估（函數域宣告，供 else 建倉判斷 & _hwrBannerHtml 共用）
   const _isLowWinRate =
-    !['SSS','SS','S','A','B'].includes(_sqGrade)                                        // 訊號品質 C/D
+    !['SSS','SS','S','A'].includes(_sqGrade)                                            // 訊號品質 B/C/D
     || hardBlocked                                                            // AI 學習硬性攔截
     || bigTrendBlocked                                                        // 大時框逆勢
     || (weeklyOpposed && todayOpposed)                                        // 本週+今日 AI 均逆向
@@ -4418,8 +4418,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥B（≥7分）且風控分≥70 方可自動建倉
-        _canAutoRecord = conf >= 70 && ['SSS','SS','S','A','B'].includes(_sqGrade);
+        // 短線單 / 震盪單：SQ≥A（≥12分）且風控分≥70 方可自動建倉
+        _canAutoRecord = conf >= 70 && ['SSS','SS','S','A'].includes(_sqGrade);
       }
     }
     if (_canAutoRecord) {
@@ -9760,8 +9760,8 @@ async function recordSignalsFromScan(data) {
                        : _scanSqScore >= 7  ? 'B'
                        : _scanSqScore >= 4  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單 S 以上；短線單 B 以上（與 buildTradeSetup + SQ 監控完全一致）
-    const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A','B'];
+    // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
+    const _reqGrades = canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_reqGrades.includes(_scanSqGrade)) continue;
 
     const newTrade = {
@@ -10036,10 +10036,10 @@ async function recordSignalsFromScan(data) {
                    : _sqRC >= 4  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
-    // 長線單門檻 S；短線單門檻 B（與 buildTradeSetup 一致）
-    const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A','B'];
+    // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
+    const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_rcMinGrades.includes(_rcGrade)) {
-      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'B'} 級要求，自動取消掛單`;
+      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
       addCancelCooldown(trade, _sqCancelReason);
       _sqCancelIds.add(trade.id);
       changed = true;
