@@ -14626,25 +14626,13 @@ async function checkAndSendAlerts(data) {
     const _riskScoreGate = notifSetup.riskScore ?? 0;
     if (_riskScoreGate >= 60) continue;
 
-    // 風控分達標 → 完整交易信號通知
-    if (s.notifBrowser) {
-      sendBrowserNotification(
-        `${isLong ? '▲ 做多' : '▼ 做空'} 信號：${coin.symbol}`,
-        `評分 ${coin.score} | ${coin.trend} | 現價 $${coin.price}`,
-        coin.symbol
-      );
-    }
-    if (s.notifTelegram && s.tgToken && s.tgChatId) {
-      sendTelegramMessage(s.tgToken, s.tgChatId,
-        buildTelegramText(coin, dir, notifSetup, _macroCache, window.location.origin + window.location.pathname));
-    }
-
-    // 自動加入持倉：與 Telegram 同步建立掛單（需通過 SQ ≥ A 門檻，避免被 SQ 監控立即取消）
+    // 所有條件驗證通過 → 先建立持倉掛單（pendingNotify=true）
+    // Telegram 通知由 updateOpenTrades 在確認掛單存活後統一發送，確保建單在前、通知在後
     try {
       const _tlog2 = loadTradeLog();
       const _alreadyIn = _tlog2.some(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
-      if (!_alreadyIn && _sqPassGate) {
+      if (!_alreadyIn) {
         const _isLongTermEntry = notifSetup.isLongTerm === true;
         const _newTrade = {
           id: `${coin.symbol}-${Date.now()}`,
@@ -14674,7 +14662,16 @@ async function checkAndSendAlerts(data) {
           scaleIns: [], peakPrice: null,
           sqGrade: notifSetup.sqGrade || null, sqScore: notifSetup.sqScore ?? null,
           sqGradeLabel: notifSetup.sqGradeLabel || null,
-          telegramSent: !!(s.notifTelegram && s.tgToken && s.tgChatId),
+          telegramSent: false,
+          pendingNotify: true,
+          _notifyRisk: {
+            weeklyBias: notifSetup.weeklyBias, weeklyConf: notifSetup.weeklyConf,
+            todayBias:  notifSetup.todayBias,  todayConf:  notifSetup.todayConf,
+            riskScore:  notifSetup.riskScore,  riskLevel:  notifSetup.riskLevel,
+            riskRecs:   notifSetup.riskRecs,
+            rr1: notifSetup.rr1, rr2: notifSetup.rr2,
+            flipRisks: notifSetup.flipRisks,
+          },
         };
         _tlog2.unshift(_newTrade);
         saveTradeLog(_tlog2);
