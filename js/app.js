@@ -63,8 +63,8 @@ async function init() {
 
   hideLoading();
   hideScanBar();
-  renderAll();
-  loadDashboardMacro();
+  try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
+  loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro]', e));
   startRefreshCycle();
   startDailyBriefingCheck();
   startEconCalendarCheck();
@@ -216,7 +216,7 @@ function startRefreshCycle() {
     }
     if (msToNext === Infinity) msToNext = todayBase + 86400000 + scanHoursUTC[0] * 3600000 - nowUTC;
     _erScanTimer = setTimeout(() => {
-      backgroundExtremeRevScan().then(() => renderErDashboardWidget());
+      backgroundExtremeRevScan().then(() => renderErDashboardWidget()).catch(e => console.warn('[er-scan]', e));
       scheduleErScan();
     }, msToNext);
     // 找最近一個已過的掃描點；若尚未掃描則立即執行
@@ -227,7 +227,7 @@ function startRefreshCycle() {
     }
     if (lastScanPoint === 0) lastScanPoint = todayBase - 86400000 + scanHoursUTC[3] * 3600000;
     if ((_tradeSetupCache['BTC/USDT']?.extremeRevTime || 0) < lastScanPoint) {
-      setTimeout(() => backgroundExtremeRevScan().then(() => renderErDashboardWidget()), 5000);
+      setTimeout(() => backgroundExtremeRevScan().then(() => renderErDashboardWidget()).catch(e => console.warn('[er-scan-init]', e)), 5000);
     }
   })();
 
@@ -10037,9 +10037,9 @@ async function recordSignalsFromScan(data) {
     saveTradeLog(tlog);
   }
   // 背景檢測新建短線單是否符合長線條件（異步，不阻塞掃描）
-  if (changed) setTimeout(() => backgroundRefineNewTrades(), 2000);
+  if (changed) setTimeout(() => backgroundRefineNewTrades().catch(e => console.warn('[bg-refine]', e)), 2000);
   // 背景刷新掛單的 ICT 結構 + 圖形確認快取（每 30 分鐘最多一次），讓 SQ 監控可涵蓋 ⑥⑯ 兩因子
-  setTimeout(() => backgroundSQMonitorICT(), 5000);
+  setTimeout(() => backgroundSQMonitorICT().catch(e => console.warn('[bg-ict]', e)), 5000);
 }
 /* ── 背景精煉：為新建短線單自動檢測長線條件 ─────────────────── */
 async function backgroundRefineNewTrades() {
@@ -11192,9 +11192,9 @@ function startDailyBriefingCheck() {
         await sendDailyBriefing();
       }
     }
-  })();
+  })().catch(e => console.warn('[daily-brief-init]', e));
   // 每分鐘持續監聽，準時 9 點觸發
-  setInterval(async () => {
+  setInterval(() => {
     const now   = new Date();
     const hour  = now.getHours();
     const today = now.toDateString();
@@ -11202,7 +11202,7 @@ function startDailyBriefingCheck() {
     const lastSent = localStorage.getItem(DAILY_BRIEF_KEY);
     if (lastSent === today) return;
     localStorage.setItem(DAILY_BRIEF_KEY, today);
-    await sendDailyBriefing();
+    sendDailyBriefing().catch(e => console.warn('[daily-brief]', e));
   }, 60 * 1000);
 }
 
@@ -11483,8 +11483,8 @@ const ECON_ALERT_KEY = 'csp_econ_alert_sent';
 function startEconCalendarCheck() {
   // 每分鐘檢查一次：公布前預警 + 公布後 AI 分析
   setInterval(() => {
-    checkUpcomingEconEvents();
-    checkPostEventAnalysis();
+    checkUpcomingEconEvents().catch(e => console.warn('[econ-upcoming]', e));
+    checkPostEventAnalysis().catch(e => console.warn('[econ-post]', e));
   }, 60 * 1000);
 }
 
