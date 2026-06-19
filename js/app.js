@@ -14586,7 +14586,7 @@ async function checkAndSendAlerts(data) {
         const _qRR = parseFloat(notifSetup.rr1)||0;
         if (_qRR>=2.0) _qSq+=1; else if (_qRR<1.3) _qSq-=1;
         // ⑭ 風控分 ⑮ 止損學習
-        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);if(_qRisk.score<=20)_qSq+=2;else if(_qRisk.score<=40)_qSq+=1;else if(_qRisk.score>=55)_qSq-=1; } catch(_e){}
+        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);if(!notifSetup.riskScore){notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level;}if(_qRisk.score<=20)_qSq+=2;else if(_qRisk.score<=40)_qSq+=1;else if(_qRisk.score>=55)_qSq-=1; } catch(_e){}
         if ((notifSetup.learnPenalty||0)>=20) _qSq-=1;
         // ⑰ 新聞情緒 ⑱ 爆倉牆 ⑲ 數據事件 ⑳ 資金流
         try { const _qIns=aiGenerateMarketInsights();const _qBr=_qIns.filter(i=>i.sentiment==='bearish'||i.sentiment==='bear').length;const _qBl=_qIns.filter(i=>i.sentiment==='bullish'||i.sentiment==='bull').length;if(_qBr+_qBl>0){if(isLong?_qBl>_qBr:_qBr>_qBl)_qSq+=1;else if(isLong?_qBr>_qBl:_qBl>_qBr)_qSq-=1;} } catch(_e){}
@@ -14621,6 +14621,10 @@ async function checkAndSendAlerts(data) {
     // SQ 等級未達 A 級 → 不通知、不建單
     const _sqPassGate = ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
     if (!_sqPassGate) continue;
+
+    // 高風險（≥60）→ 不通知、不建單
+    const _riskScoreGate = notifSetup.riskScore ?? 0;
+    if (_riskScoreGate >= 60) continue;
 
     // 風控分達標 → 完整交易信號通知
     if (s.notifBrowser) {
