@@ -14618,6 +14618,10 @@ async function checkAndSendAlerts(data) {
 
     if (notifConf < 60) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
 
+    // SQ 等級未達 A 級 → 不通知、不建單
+    const _sqPassGate = ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
+    if (!_sqPassGate) continue;
+
     // 風控分達標 → 完整交易信號通知
     if (s.notifBrowser) {
       sendBrowserNotification(
@@ -14636,7 +14640,6 @@ async function checkAndSendAlerts(data) {
       const _tlog2 = loadTradeLog();
       const _alreadyIn = _tlog2.some(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
-      const _sqPassGate = ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
       if (!_alreadyIn && _sqPassGate) {
         const _isLongTermEntry = notifSetup.isLongTerm === true;
         const _newTrade = {
