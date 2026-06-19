@@ -14538,6 +14538,72 @@ async function checkAndSendAlerts(data) {
       }
     }
 
+    // ── 快速 SQ 評分（使用掃描快取 + 同步因子，盡量與 recordSignalsFromScan 一致）──
+    // 避免通知顯示「? 級」且防止建單後被 SQ 監控立即取消
+    if (!notifSetup.sqGrade) {
+      try {
+        let _qSq = 0;
+        // ① 多框架同向（4H+日+週+1H+MACD）
+        const _qH4 = isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear');
+        const _qDy = isLong ? (coin.dailySignal||'').includes('bull') : (coin.dailySignal||'').includes('bear');
+        const _qWk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
+        if (_qH4 && _qDy && _qWk) _qSq += 3; else if (_qH4 && _qDy) _qSq += 2; else if (_qH4 || _qDy) _qSq += 1;
+        if (isLong ? (coin.h1Signal||'').includes('bull') : (coin.h1Signal||'').includes('bear')) _qSq += 1;
+        if (isLong ? (parseFloat(coin.macdHist)||0) > 0 : (parseFloat(coin.macdHist)||0) < 0) _qSq += 1;
+        // ②③ AI 週/日偏向（從 notifSetup 已計算的偏向讀取）
+        if (_macroCache) {
+          try {
+            const _qWb = computeWeeklyAIBias(_macroCache.fg, _macroCache);
+            const _qTb = computeTodayAIBias(_macroCache.fg, _macroCache);
+            if (isLong ? _qWb.bias.includes('bull') : _qWb.bias.includes('bear')) _qSq += 1;
+            else if (isLong ? _qWb.bias.includes('bear') : _qWb.bias.includes('bull')) _qSq -= 1;
+            if (isLong ? _qTb.bias.includes('bull') : _qTb.bias.includes('bear')) _qSq += 1;
+            else if (isLong ? _qTb.bias.includes('bear') : _qTb.bias.includes('bull')) _qSq -= 1;
+            // ④ 宏觀環境 ±2
+            const _qFgV = parseInt(_macroCache.fg?.value||'50');
+            const _qChg = _macroCache.marketCapChange||0;
+            const _qDom = _macroCache.btcDominance||50;
+            let _qMAg = 0;
+            if (isLong) { if (_qChg<-2) _qMAg++; if (_qDom>58) _qMAg++; if (_qFgV<30) _qMAg++; }
+            else        { if (_qChg> 2) _qMAg++; if (_qDom<44) _qMAg++; if (_qFgV>70) _qMAg++; }
+            let _qMp = _qMAg>=3?-2:_qMAg>=2?-1:0; if (_qMAg===0)_qMp+=1;
+            _qSq += Math.max(-2, Math.min(2, _qMp));
+          } catch(_e){}
+        }
+        // ⑤ 足跡 + ㉑ 微結構
+        try { const _qFP=_footprintCache[coin.symbol]; if(_qFP){if(_qFP.deltaDiv)_qSq-=1;else if(isLong?_qFP.deltaDir==='bull':_qFP.deltaDir==='bear')_qSq+=1;else if(isLong?_qFP.deltaDir==='bear':_qFP.deltaDir==='bull')_qSq-=1;if((_qFP.microstructureQuality||0)>=7)_qSq+=1;else if((_qFP.microstructureQuality||0)<=3)_qSq-=1;} } catch(_e){}
+        // ⑦ ADX ⑩ 成交量 ⑪ BB走軌
+        const _qAdx = parseFloat(coin.adx)||20;
+        if (_qAdx>=28) _qSq+=1; else if (_qAdx<20) _qSq-=1;
+        const _qVol = coin.volumeStrength||'';
+        if (_qVol.includes('強')||_qVol==='high') _qSq+=1; else if (_qVol.includes('弱')||_qVol==='low') _qSq-=1;
+        try { const _qBB=coin.bb; if(_qBB){if(isLong?_qBB.walkingBull:_qBB.walkingBear)_qSq+=1;else if(isLong?_qBB.walkingBear:_qBB.walkingBull)_qSq-=1;} } catch(_e){}
+        // ⑧ 訂單流 Taker ⑨ 巨鯨
+        try { const _qTkr=coin.derivData?.takerBuySell??1;if(isLong?_qTkr>=1.08:_qTkr<=0.92)_qSq+=1;else if(isLong?_qTkr<0.88:_qTkr>1.12)_qSq-=1; } catch(_e){}
+        try { const _qWhl=coin.whaleData;if(_qWhl){if(isLong?(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=2):(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=2))_qSq+=1;else if(isLong?(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=3):(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=3))_qSq-=1;} } catch(_e){}
+        // ⑫⑬ 技術面 + R/R
+        if ((notifSetup.techPenalty||0)===0) _qSq+=1; else if ((notifSetup.techPenalty||0)>=12) _qSq-=1;
+        const _qRR = parseFloat(notifSetup.rr1)||0;
+        if (_qRR>=2.0) _qSq+=1; else if (_qRR<1.3) _qSq-=1;
+        // ⑭ 風控分 ⑮ 止損學習
+        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);if(_qRisk.score<=20)_qSq+=2;else if(_qRisk.score<=40)_qSq+=1;else if(_qRisk.score>=55)_qSq-=1; } catch(_e){}
+        if ((notifSetup.learnPenalty||0)>=20) _qSq-=1;
+        // ⑰ 新聞情緒 ⑱ 爆倉牆 ⑲ 數據事件 ⑳ 資金流
+        try { const _qIns=aiGenerateMarketInsights();const _qBr=_qIns.filter(i=>i.sentiment==='bearish'||i.sentiment==='bear').length;const _qBl=_qIns.filter(i=>i.sentiment==='bullish'||i.sentiment==='bull').length;if(_qBr+_qBl>0){if(isLong?_qBl>_qBr:_qBr>_qBl)_qSq+=1;else if(isLong?_qBr>_qBl:_qBl>_qBr)_qSq-=1;} } catch(_e){}
+        try { const _qLiq=_liquidationCache[coin.symbol];const _qP=parseFloat(coin.price)||0;if(_qLiq&&_qP>0){const _qW=isLong?(_qLiq.shortLiqs||[]).find(l=>l.price>_qP&&l.price<=_qP*1.12):(_qLiq.longLiqs||[]).find(l=>l.price<_qP&&l.price>=_qP*0.88);if(_qW)_qSq+=1;} } catch(_e){}
+        try { const _qEvs=getTodayEconEvents().filter(ev=>{const m=(ev.eventTime.getTime()-Date.now())/60000;return ev.impact==='high'&&m>=-30&&m<=90;});if(_qEvs.length>=2)_qSq-=2;else if(_qEvs.length===1)_qSq-=1; } catch(_e){}
+        try { const _qCF=getCapitalFlowBias();const _qCFOpp=(_qCF.events||[]).filter(ev=>isLong?ev.bear>0:ev.bull>0).length;const _qCFOk=(_qCF.events||[]).filter(ev=>isLong?ev.bull>0:ev.bear>0).length;if(_qCFOk>0&&_qCFOpp===0)_qSq+=1;else if(_qCFOpp>=2)_qSq-=1; } catch(_e){}
+        // ⑥⑯ ICT 結構 + 圖形確認（從快取讀取）
+        try { const _qIctC=_tradeSetupCache[coin.symbol];if(_qIctC){let _qIct=0;if(_qIctC.orderBlock?.priceInOB||_qIctC.orderBlock4h?.priceInOB)_qIct++;if((_qIctC.fvg&&!_qIctC.fvg.filled)||(_qIctC.fvg4h&&!_qIctC.fvg4h.filled))_qIct++;_qSq+=Math.min(2,_qIct);const _qPat=_qIctC.chartPat;if(_qPat){_qSq+=Math.min(2,Math.max(0,_qPat.score||0));if((_qPat.opposing?.length||0)>0)_qSq-=Math.min(2,_qPat.opposing.length);}} } catch(_e){}
+
+        _qSq = Math.max(0, _qSq);
+        const _qGrade = _qSq>=22?'SSS':_qSq>=19?'SS':_qSq>=17?'S':_qSq>=10?'A':_qSq>=7?'B':_qSq>=4?'C':'D';
+        notifSetup.sqGrade      = _qGrade;
+        notifSetup.sqScore      = _qSq;
+        notifSetup.sqGradeLabel = {SSS:'神級訊號',SS:'完美訊號',S:'頂級訊號',A:'優質訊號',B:'良好訊號',C:'一般訊號',D:'訊號偏弱'}[_qGrade]||'';
+      } catch(_qE) {}
+    }
+
     // AI 風控攔截 或 方向=觀望 或 R/R 不足 → 完全不通知
     if (notifSetup.hardBlocked || notifSetup.direction === 'wait' || notifSetup.rrBlocked) continue;
 
@@ -14565,12 +14631,13 @@ async function checkAndSendAlerts(data) {
         buildTelegramText(coin, dir, notifSetup, _macroCache, window.location.origin + window.location.pathname));
     }
 
-    // 自動加入持倉：與 Telegram 同步建立掛單
+    // 自動加入持倉：與 Telegram 同步建立掛單（需通過 SQ ≥ A 門檻，避免被 SQ 監控立即取消）
     try {
       const _tlog2 = loadTradeLog();
       const _alreadyIn = _tlog2.some(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
-      if (!_alreadyIn) {
+      const _sqPassGate = ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
+      if (!_alreadyIn && _sqPassGate) {
         const _isLongTermEntry = notifSetup.isLongTerm === true;
         const _newTrade = {
           id: `${coin.symbol}-${Date.now()}`,
