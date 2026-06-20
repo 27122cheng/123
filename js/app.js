@@ -4414,9 +4414,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     let _canAutoRecord = false;
     if (direction !== 'wait' && !hasAnyActive && !recentlyCancelled) {
       if (canScaleIn) {
-        // 長線單：風控分≥60 + R/R≥1.5 + 週向不逆勢 + SQ≥S（長線要求更高）
+        // 長線單：風控分≥60 + R/R≥1.3 + 週向不逆勢 + SQ≥S（長線要求更高）
         _canAutoRecord = conf >= 60
-          && parseFloat(rr1str) >= 1.5
+          && parseFloat(rr1str) >= 1.3
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
@@ -9415,11 +9415,9 @@ async function recordSignalsFromScan(data) {
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
 
-    // 今日 AI 明確反向（信心≥70）→ 當日不建立該方向倉位；信心<70 時僅作參考不封鎖
-    if (isLong  && tBias === 'bear'       && tBiasConf >= 70) continue;
-    if (!isLong && tBias === 'bull'       && tBiasConf >= 70) continue;
-    if (isLong  && tBias === 'strong_bear'&& tBiasConf >= 60) continue;
-    if (!isLong && tBias === 'strong_bull'&& tBiasConf >= 60) continue;
+    // 今日 AI 反向 → 無論信心度一律封鎖；週預測信心<70 僅作參考
+    if (isLong  && (tBias === 'bear' || tBias === 'strong_bear')) continue;
+    if (!isLong && (tBias === 'bull' || tBias === 'strong_bull')) continue;
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     const setup = computeSimpleSetup(coin, isLong);
@@ -9427,9 +9425,9 @@ async function recordSignalsFromScan(data) {
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
     // 風控分最低門檻（100 分制，與幣種詳情頁一致）
     if ((setup.conf || 0) < 60) continue;
-    // 週日預測強度協同：不能週強多+日強空 或 週強空+日強多（衝突訊號跳過）
+    // 週預測信心≥70 且強衝突（週強多+日強空 或 週強空+日強多）→ 硬封鎖；信心<70 僅作參考
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
-    if (wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
+    if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
 
     // 完整風險評估（10 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -9447,13 +9445,11 @@ async function recordSignalsFromScan(data) {
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     let canScaleIn = setup.isLongTerm === true;
 
-    // R/R 門檻（與幣種詳情頁一致：長線 ≥1.5，短線 ≥1.3）
+    // R/R 門檻：多空皆 ≥1.3
     const _scanRR = setup.rr1 || 0;
-    const _minScanRR = canScaleIn ? 1.5 : 1.3;
-    if (parseFloat(_scanRR) < _minScanRR) continue;
-    // 長線單：風控分 ≥60 + 週向必須對齊
-    if (canScaleIn) {
-      if ((setup.conf || 0) < 60) continue;
+    if (parseFloat(_scanRR) < 1.3) continue;
+    // 長線單：週預測信心≥70 時週向須對齊（信心<70 僅作參考）
+    if (canScaleIn && wBiasConf >= 70) {
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
       if (!_wkAligned) continue;
     }
@@ -10010,15 +10006,26 @@ async function recordSignalsFromScan(data) {
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
     // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
+    // 長線單 SQ 降至 A 級（≥A <S）→ 降級為短線單繼續持有；< A 才取消
     const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
     if (!_rcMinGrades.includes(_rcGrade)) {
-      const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
-      addCancelCooldown(trade, _sqCancelReason);
-      _sqCancelIds.add(trade.id);
-      changed = true;
-      trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
-      try { sendCancelTelegramNotification(trade, _sqCancelReason); } catch(_n) {}
-      try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級（${_sqRC}分），自動取消掛單`, 'warning'); } catch(_t) {}
+      if (trade.canScaleIn && _rcGrade === 'A') {
+        // 長線 → 短線降級
+        trade.canScaleIn = false;
+        trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
+        changed = true;
+        const _downgradeReason = `訊號品質降至 ${_rcGrade} 級（${_sqRC}分），由長線單降級為短線單繼續監控`;
+        try { sendCancelTelegramNotification(trade, _downgradeReason); } catch(_n) {}
+        try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} SQ 降至 A 級，長線單降格為短線單`, 'warning'); } catch(_t) {}
+      } else {
+        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
+        addCancelCooldown(trade, _sqCancelReason);
+        _sqCancelIds.add(trade.id);
+        changed = true;
+        trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
+        try { sendCancelTelegramNotification(trade, _sqCancelReason); } catch(_n) {}
+        try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級（${_sqRC}分），自動取消掛單`, 'warning'); } catch(_t) {}
+      }
     } else {
       // SQ 通過 → 繼續監控 ② 風控分 ③ 風險評估
       if (!_sqCancelIds.has(trade.id)) {
@@ -14430,31 +14437,7 @@ async function checkAndSendAlerts(data) {
       const _existTrade = _tlog.find(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
       if (_existTrade) {
-        // pendingNotify === true 的掛單由 updateOpenTrades 統一發送，此處跳過避免重複通知
-        if (_existTrade.pendingNotify === true) {
-          next[coin.symbol] = { dir, sentAt: now };
-          continue;
-        }
-        if (!_existTrade.telegramSent && s.notifTelegram && s.tgToken && s.tgChatId) {
-          // 補發漏掉的進場通知：使用掛單建立時的原始風控分作為門檻，避免舊掛單或風控分跌落後補發
-          const _retryConf = _existTrade.conf ?? 0;
-          if (_retryConf < 50) {
-            // 風控分不足 60%（低於進場門檻的舊掛單）→ 靜默抑制，標記已處理
-            const _ri = _tlog.findIndex(t => t.id === _existTrade.id);
-            if (_ri >= 0) { _tlog[_ri].telegramSent = true; saveTradeLog(_tlog); }
-          } else {
-            // 優先用快取，fallback 用 tlog 存儲的欄位；sqGrade 優先保留掛單原始值
-            const _cacheSetup = _tradeSetupCache[coin.symbol] || {};
-            const _rsSetup = Object.assign({}, _existTrade, _cacheSetup);
-            if (!_rsSetup.sqGrade && _existTrade.sqGrade) _rsSetup.sqGrade = _existTrade.sqGrade;
-            try {
-              sendTelegramMessage(s.tgToken, s.tgChatId,
-                buildTelegramText(coin, dir, _rsSetup, _macroCache, window.location.origin + window.location.pathname));
-              const _ri = _tlog.findIndex(t => t.id === _existTrade.id);
-              if (_ri >= 0) { _tlog[_ri].telegramSent = true; saveTradeLog(_tlog); }
-            } catch(_rse) { console.warn('[checkAndSendAlerts] retry send failed', _rse); }
-          }
-        }
+        // 已有建單（open/pending）→ 完全跳過，不發任何通知
         next[coin.symbol] = { dir, sentAt: now };
         continue;
       }
