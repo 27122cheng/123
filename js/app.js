@@ -10020,7 +10020,35 @@ async function recordSignalsFromScan(data) {
       try { sendCancelTelegramNotification(trade, _sqCancelReason); } catch(_n) {}
       try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 訊號品質降至 ${_rcGrade} 級（${_sqRC}分），自動取消掛單`, 'warning'); } catch(_t) {}
     } else {
-      if (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRC) {
+      // SQ 通過 → 繼續監控 ② 風控分 ③ 風險評估
+      if (!_sqCancelIds.has(trade.id)) {
+        // ② 風控分 < 60 → 取消
+        const _rcLearnPen = trade.learnPenalty || 0;
+        const _rcConf = Math.max(0, (trade.rawConf || trade.conf || 100) - _rcLearnPen);
+        if (_rcConf < 60) {
+          const _confCancel = `風控分降至 ${_rcConf} 分（止損風控扣分 -${_rcLearnPen}），低於 60 分門檻，自動取消掛單`;
+          addCancelCooldown(trade, _confCancel);
+          _sqCancelIds.add(trade.id);
+          changed = true;
+          try { sendCancelTelegramNotification(trade, _confCancel); } catch(_n) {}
+          try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 風控分 ${_rcConf}分 < 60，自動取消掛單`, 'warning'); } catch(_t) {}
+        }
+      }
+      if (!_sqCancelIds.has(trade.id)) {
+        // ③ 風險升至高風險 → 取消
+        try {
+          const _rcRisk = computeFullRisk(_sqCoin, trade, _sqIsLong);
+          if (_rcRisk.score >= 60) {
+            const _riskCancel = `AI 風險評估升至${_rcRisk.level}（${_rcRisk.score}/100），超過高風險門檻，自動取消掛單`;
+            addCancelCooldown(trade, _riskCancel);
+            _sqCancelIds.add(trade.id);
+            changed = true;
+            try { sendCancelTelegramNotification(trade, _riskCancel); } catch(_n) {}
+            try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} AI風險 ${_rcRisk.score}/100 升至高風險，自動取消掛單`, 'warning'); } catch(_t) {}
+          }
+        } catch(_rcRiskE) {}
+      }
+      if (!_sqCancelIds.has(trade.id) && (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRC)) {
         trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
         changed = true;
       }
@@ -14607,22 +14635,19 @@ async function checkAndSendAlerts(data) {
     // AI 風控攔截 或 方向=觀望 或 R/R 不足 → 完全不通知
     if (notifSetup.hardBlocked || notifSetup.direction === 'wait' || notifSetup.rrBlocked) continue;
 
-    // 最終風控分（扣完所有項目後）
-    const notifConf = notifSetup.conf
-      ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
-      ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
-
-    // 原始風控分（扣分前）
-    const rawConfVal = notifSetup.rawConf
-      ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
-
-    if (notifConf < 60) continue;  // 扣完分後未過門檻 → 靜默跳過，不通知也不取消
-
-    // SQ 等級未達 A 級 → 不通知、不建單
+    // ① SQ 21因子 ≥ A 級（訊號品質門檻，最先判斷）
     const _sqPassGate = ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
     if (!_sqPassGate) continue;
 
-    // 高風險（≥60）→ 不通知、不建單
+    // ② 風控分 ≥ 60（扣完所有罰分後）
+    const notifConf = notifSetup.conf
+      ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
+      ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
+    const rawConfVal = notifSetup.rawConf
+      ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
+    if (notifConf < 60) continue;
+
+    // ③ 風險評估 < 高風險（riskScore < 60）
     const _riskScoreGate = notifSetup.riskScore ?? 0;
     if (_riskScoreGate >= 60) continue;
 
