@@ -10031,7 +10031,7 @@ async function recordSignalsFromScan(data) {
       if (!_sqCancelIds.has(trade.id)) {
         // ② 風控分 < 60 → 取消
         const _rcLearnPen = trade.learnPenalty || 0;
-        const _rcConf = Math.max(0, (trade.rawConf || trade.conf || 100) - _rcLearnPen);
+        const _rcConf = Math.max(0, 100 - Math.min(50, _rcLearnPen));
         if (_rcConf < 60) {
           const _confCancel = `風控分降至 ${_rcConf} 分（止損風控扣分 -${_rcLearnPen}），低於 60 分門檻，自動取消掛單`;
           addCancelCooldown(trade, _confCancel);
