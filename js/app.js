@@ -9723,6 +9723,10 @@ async function recordSignalsFromScan(data) {
       if (_preTrendReversed) continue;
     }
 
+    // 防競態：async fetch 期間 checkAndSendAlerts 可能已建立同幣種掛單，重新讀取確認
+    const _freshTlog = loadTradeLog();
+    if (_freshTlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
+
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -9782,7 +9786,9 @@ async function recordSignalsFromScan(data) {
         : _scanCurPrice < newTrade.entry * 0.997;  // 空單：現價已跌過進場位 0.3%
       if (_pastEntry) newTrade.note = '等待回踩確認進場';
     }
-    tlog.unshift(newTrade);
+    _freshTlog.unshift(newTrade);
+    // 將新交易同步回 tlog（供後續 SQ 監控迴圈使用）
+    tlog.splice(0, tlog.length, ..._freshTlog);
     changed = true;
     const _tLabel = canScaleIn ? '長線單' : '短線單';
     const _tIcon  = canScaleIn ? '💎' : '📡';
@@ -10013,6 +10019,7 @@ async function recordSignalsFromScan(data) {
         // 長線 → 短線降級
         trade.canScaleIn = false;
         trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
+        trade.pendingNotify = false;  // 防止 updateOpenTrades 在降級後再次發送信號通知
         changed = true;
         const _downgradeReason = `訊號品質降至 ${_rcGrade} 級（${_sqRC}分），由長線單降級為短線單繼續監控`;
         try { sendCancelTelegramNotification(trade, _downgradeReason); } catch(_n) {}
@@ -10962,6 +10969,7 @@ function updateOpenTrades(data) {
           } catch(_be) {}
         }
         _pnt.pendingNotify  = false;
+        _pnt.telegramSent   = true;  // 標記已通知，後續取消才能正確發送取消 Telegram
         delete _pnt._notifyRisk;
         changed = true;
       }
