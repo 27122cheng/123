@@ -9787,7 +9787,9 @@ async function recordSignalsFromScan(data) {
       if (_pastEntry) newTrade.note = '等待回踩確認進場';
     }
     _freshTlog.unshift(newTrade);
-    // 將新交易同步回 tlog（供後續 SQ 監控迴圈使用）
+    // 立即存檔：防止同批掃描中下一幣種的 _freshTlog 讀取到舊狀態而覆蓋本次建單
+    saveTradeLog(_freshTlog);
+    // 同步回 tlog 供後續 SQ 監控迴圈使用（splice 保留同一陣列引用）
     tlog.splice(0, tlog.length, ..._freshTlog);
     changed = true;
     const _tLabel = canScaleIn ? '長線單' : '短線單';
