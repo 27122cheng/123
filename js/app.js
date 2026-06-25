@@ -11049,20 +11049,21 @@ function sendCancelTelegramNotification(trade, reason) {
   const now = new Date();
   const ts   = now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) + ' ' +
                now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
-  const tags = `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #取消`;
+  // 降級通知 vs 取消通知（降級 = 長線單降為短線單，仍繼續持有）
+  const isDowngrade = (reason || '').includes('降級為短線單');
+  const tags = isDowngrade
+    ? `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #降級`
+    : `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #取消`;
 
-  // ── 風控分顯示 ──
+  // ── 風控分顯示（與信號通知一致，直接顯示 freshConf）──
   const rawConf   = trade.rawConf || 0;
   const freshConf = trade.conf    || 0;
-  const confDrop  = Math.max(0, rawConf - freshConf);
-  const _confThreshold = 60;
-  const confLine  = (rawConf > 0 && confDrop > 1)
-    ? `📶 風控分：${rawConf} 分 → 降至 ${freshConf} 分（扣 -${confDrop}${freshConf < _confThreshold ? '，低於門檻 60 分' : ''}）`
-    : `📶 風控分：${freshConf} 分`;
+  const confDrop  = Math.max(0, rawConf - freshConf); // 供 macro bullets 條件判斷用
+  const confLine  = `📶 風控分：${freshConf} 分`;
 
-  // ── 取消原因 bullets ──
+  // ── 取消/降級原因 bullets ──
   const bullets = [];
-  // 實際取消觸發原因（主要，永遠顯示）
+  // 實際觸發原因（主要，永遠顯示）
   bullets.push(esc(reason));
 
   const hasMacro = typeof _macroCache !== 'undefined' && _macroCache;
@@ -11145,11 +11146,13 @@ function sendCancelTelegramNotification(trade, reason) {
   // 注意：ADX 不影響風控分（conf 公式只扣止損風控），不在此顯示
 
   const reasonsBlock = bullets.map(b => `  • ${b}`).join('\n');
+  const titleLine   = isDowngrade ? `⚠️ <b>交易降級通知</b>` : `🚫 <b>交易建議已取消</b>`;
+  const reasonLabel = isDowngrade ? `📋 <b>降級原因</b>` : `📋 <b>取消原因</b>`;
   const msg =
-    `🚫 <b>交易建議已取消</b>\n\n` +
+    `${titleLine}\n\n` +
     `${dirLabel}：<b>${trade.symbol}</b>\n` +
     `${confLine}\n\n` +
-    `📋 <b>取消原因</b>\n${reasonsBlock}\n\n` +
+    `${reasonLabel}\n${reasonsBlock}\n\n` +
     `⏰ ${ts}\n` +
     `${tags}\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
@@ -14651,7 +14654,8 @@ async function checkAndSendAlerts(data) {
       const _alreadyIn = _tlog2.some(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
       if (!_alreadyIn) {
-        const _isLongTermEntry = notifSetup.isLongTerm === true;
+        // 長線單需 SQ ≥ S；SQ = A 時降格為短線單建單，避免建立後立即被 SQ 監控降格
+        const _isLongTermEntry = notifSetup.isLongTerm === true && ['SSS','SS','S'].includes(notifSetup.sqGrade);
         const _newTrade = {
           id: `${coin.symbol}-${Date.now()}`,
           symbol: coin.symbol, direction: dir,
