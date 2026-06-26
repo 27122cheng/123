@@ -3725,9 +3725,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqDefChecks  = learnResult?.defenseChecks || [];
   const _sqFailChecks = _sqDefChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
 
-  // ① 其餘時框同向加分（1H / 日線 / 週線）— 4H+15m 已為硬性進場條件，不重複計分
-  // 4H ✅ + 15m ✅（硬性條件已通過才能到此）
-  _sqFactors.push('✅ 4H+15m 雙確認（硬性條件）');
+  // ① 其餘時框同向加分（1H / 日線 / 週線）— 4H+15m（短線）或日線+4H+15m（長線）為硬性條件，不重複計分
+  // 硬性條件通過標籤：長線顯示日線+4H+15m，短線顯示4H+15m
+  _sqFactors.push(canScaleIn ? '✅ 日線+4H+15m 三確認（長線硬性條件）' : '✅ 4H+15m 雙確認（短線硬性條件）');
   {
     const _sqH1Ok  = h1?.signal?.includes(isLong ? 'bull' : 'bear');
     const _sqH1Op  = h1?.signal?.includes(isLong ? 'bear' : 'bull');
@@ -9163,7 +9163,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqEmoji   = { SSS:'👑', SS:'💎', S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
   const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（21因子評分 ${_sqScoreTG} 分）`;
 
-  // ── 風控分扣分明細（只顯示止損風控扣分，與風控分公式一致）──
+  // ── 風控分扣分明細（止損風控 + 風險評估扣分，在 _riskScore 已知後補充）──
   const _learnPenTg = Math.min(50, setup.learnPenalty || 0);
   const _penLines = [];
   if (_learnPenTg > 0) {
@@ -9259,6 +9259,10 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _riskScore = setup.riskScore || _ictCache.riskScore || 0;
   const _riskLevel = setup.riskLevel || _ictCache.riskLevel || '低風險';
   const _riskRecs  = setup.riskRecs  || _ictCache.riskRecs  || [];
+  // 風險評估扣分 → 加入扣分明細
+  const _riskPenTg = setup.riskPenalty != null ? setup.riskPenalty
+    : (_riskScore >= 75 ? 20 : _riskScore >= 60 ? 12 : _riskScore >= 28 ? 5 : 0);
+  if (_riskPenTg > 0) _penLines.push(`   風險評估扣分 -${_riskPenTg} 分（${_riskLevel} ${_riskScore}/100）`);
   let _riskBanner = '';
   if (_riskScore >= 28) {
     const _riskEmoji = _riskScore >= 75 ? '🚨🚨🚨' : _riskScore >= 60 ? '⛔⛔' : '⚠️';
@@ -9432,8 +9436,9 @@ async function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 高風險/極高風險（score >= 60）→ 強制觀望，不建立倉位
-    if (_scanRisk.score >= 60) continue;
+    // 風險評估扣分：中/高/極高風險分別扣 5/12/20 分，扣後低於 60 → 跳過
+    const _scanRiskPen = _scanRisk.score >= 75 ? 20 : _scanRisk.score >= 60 ? 12 : _scanRisk.score >= 28 ? 5 : 0;
+    if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < 60) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     let canScaleIn = setup.isLongTerm === true;
@@ -9515,10 +9520,11 @@ async function recordSignalsFromScan(data) {
     const _ssH4Ok  = isLong ? (coin.h4Signal  ||'').includes('bull') : (coin.h4Signal  ||'').includes('bear');
     const _ss15mSig = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
     const _ss15mOk  = isLong ? _ss15mSig.includes('bull') : _ss15mSig.includes('bear');
-    if (!_ssH4Ok || !_ss15mOk) continue; // 硬性條件未達標 → 跳過
-    _scanSqFactors.push('✅ 4H+15m 雙確認（硬性條件）');
-    // 其餘時框同向加分（1H / 日線 / 週線）— max +3
     const _ssDayOk = isLong ? (coin.dailySignal ||'').includes('bull') : (coin.dailySignal ||'').includes('bear');
+    if (!_ssH4Ok || !_ss15mOk) continue; // 硬性條件未達標 → 跳過
+    if (canScaleIn && !_ssDayOk) continue; // 長線單額外需日線同向（canScaleIn 已保證此條件，這是防禦性檢查）
+    _scanSqFactors.push(canScaleIn ? '✅ 日線+4H+15m 三確認（長線硬性條件）' : '✅ 4H+15m 雙確認（短線硬性條件）');
+    // 其餘時框同向加分（1H / 日線 / 週線）— max +3
     const _ssWkOk  = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
     const _ssH1Ok  = isLong ? (coin.h1Signal    ||'').includes('bull') : (coin.h1Signal    ||'').includes('bear');
     if (_ssDayOk)      { _scanSqScore += 1; _scanSqFactors.push('✅ 日線同向 +1'); }
@@ -9740,7 +9746,8 @@ async function recordSignalsFromScan(data) {
       rsi: parseFloat(coin.rsi) || 50,
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
-      conf: setup.conf, rawConf: setup.rawConf,
+      conf: Math.max(0, (setup.conf || 0) - (_scanRiskPen || 0)), rawConf: setup.rawConf,
+      riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
       learnPenalty: setup.learnPenalty || 0,
       macroPenalty: setup.macroPenalty || 0,
@@ -10043,31 +10050,28 @@ async function recordSignalsFromScan(data) {
     } else {
       // SQ 通過 → 繼續監控 ② 風控分 ③ 風險評估
       if (!_sqCancelIds.has(trade.id)) {
-        // ② 風控分 < 60 → 取消
+        // ② 風控分（止損風控 + 風險評估扣分）< 60 → 取消
         const _rcLearnPen = trade.learnPenalty || 0;
-        const _rcConf = Math.max(0, 100 - Math.min(50, _rcLearnPen));
+        let _rcRiskPen = 0;
+        try {
+          const _rcRisk = computeFullRisk(_sqCoin, trade, _sqIsLong);
+          _rcRiskPen = _rcRisk.score >= 75 ? 20 : _rcRisk.score >= 60 ? 12 : _rcRisk.score >= 28 ? 5 : 0;
+          // 更新 trade 上的風險記錄（供 Telegram 明細使用）
+          if (trade.riskScore !== _rcRisk.score || trade.riskLevel !== _rcRisk.level) {
+            trade.riskScore = _rcRisk.score; trade.riskLevel = _rcRisk.level; changed = true;
+          }
+          trade.riskPenalty = _rcRiskPen;
+        } catch(_rcRiskE) {}
+        const _rcConf = Math.max(0, 100 - Math.min(50, _rcLearnPen) - _rcRiskPen);
         if (_rcConf < 60) {
-          const _confCancel = `風控分降至 ${_rcConf} 分（止損風控扣分 -${_rcLearnPen}），低於 60 分門檻，自動取消掛單`;
+          const _riskDesc = _rcRiskPen > 0 ? `，風險評估扣分 -${_rcRiskPen}（${trade.riskLevel || ''} ${trade.riskScore || 0}/100）` : '';
+          const _confCancel = `風控分降至 ${_rcConf} 分（止損風控 -${_rcLearnPen}${_riskDesc}），低於 60 分門檻，自動取消掛單`;
           addCancelCooldown(trade, _confCancel);
           _sqCancelIds.add(trade.id);
           changed = true;
           try { sendCancelTelegramNotification(trade, _confCancel); } catch(_n) {}
           try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 風控分 ${_rcConf}分 < 60，自動取消掛單`, 'warning'); } catch(_t) {}
         }
-      }
-      if (!_sqCancelIds.has(trade.id)) {
-        // ③ 風險升至高風險 → 取消
-        try {
-          const _rcRisk = computeFullRisk(_sqCoin, trade, _sqIsLong);
-          if (_rcRisk.score >= 60) {
-            const _riskCancel = `AI 風險評估升至${_rcRisk.level}（${_rcRisk.score}/100），超過高風險門檻，自動取消掛單`;
-            addCancelCooldown(trade, _riskCancel);
-            _sqCancelIds.add(trade.id);
-            changed = true;
-            try { sendCancelTelegramNotification(trade, _riskCancel); } catch(_n) {}
-            try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} AI風險 ${_rcRisk.score}/100 升至高風險，自動取消掛單`, 'warning'); } catch(_t) {}
-          }
-        } catch(_rcRiskE) {}
       }
       if (!_sqCancelIds.has(trade.id) && (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRC)) {
         trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
@@ -14575,9 +14579,12 @@ async function checkAndSendAlerts(data) {
             });
             notifSetup.learnPenalty = _lrN.penalty || 0;
           } catch(_lrE) {}
-          // 風控分固定用 learnPenalty 計算（宏觀/AI/資金流由 SQ 評分處理，不重複扣入 conf）
-          // 這樣確保 conf 與 computeSimpleSetup / updateOpenTrades / Telegram 明細完全一致
-          notifSetup.conf = Math.max(0, Math.round(100 - Math.min(50, notifSetup.learnPenalty || 0)));
+          // 風控分 = 100 - 止損風控 - 風險評估扣分（中/高/極高風險各 -5/-12/-20）
+          const _chkRiskPen = (notifSetup.riskScore || 0) >= 75 ? 20
+            : (notifSetup.riskScore || 0) >= 60 ? 12
+            : (notifSetup.riskScore || 0) >= 28 ? 5 : 0;
+          notifSetup.riskPenalty = _chkRiskPen;
+          notifSetup.conf = Math.max(0, Math.round(100 - Math.min(50, notifSetup.learnPenalty || 0)) - _chkRiskPen);
         } catch (e) { /* macro enrichment failed, keep simple conf */ }
       }
     }
