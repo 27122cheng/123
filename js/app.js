@@ -2210,30 +2210,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── 大時間框架趨勢一致性強制篩選 ──────────────────────────────
-  // 規則：
-  //   ① 4H + 1D 雙雙確認同向 → 全部通過，建議交易
-  //   ② 任一中性或方向分歧（含單邊確認）→ 中性趨勢，提示謹慎操作，仍可進場
-  //   ③ 4H + 1D 雙雙確認反向 → 嚴格攔截，不建議進場
-  const bigBullSig = (h4?.signal?.includes('bull') ? 1 : 0) + (d1sig_?.signal?.includes('bull') ? 1 : 0);
-  const bigBearSig = (h4?.signal?.includes('bear') ? 1 : 0) + (d1sig_?.signal?.includes('bear') ? 1 : 0);
-  // 需要兩個大時框架同時確認才算趨勢確立；單邊確認或方向分歧均視為中性
-  const bigTrend   = bigBullSig >= 2 ? 'bull'
-                   : bigBearSig >= 2 ? 'bear' : 'mixed';
-  const h4TrendLabel = h4?.signal?.includes('bull') ? '▲ 偏多'
-                     : h4?.signal?.includes('bear') ? '▼ 偏空' : '— 中性';
-  const d1TrendLabel = d1sig_?.signal?.includes('bull') ? '▲ 偏多'
-                     : d1sig_?.signal?.includes('bear') ? '▼ 偏空' : '— 中性';
+  // 規則（更新）：
+  //   硬性條件：4H + 15m 必須雙雙同向才允許進場
+  //   ① 4H ✅ + 15m ✅ → 通過，建議交易
+  //   ② 任一未同向（中性或逆向）→ 嚴格攔截，不建議進場
+  //   其餘時框（1H / 日線 / 週線）進入 SQ 加分項
+  const _btH4Ok  = direction === 'long' ? !!(h4?.signal?.includes('bull'))  : !!(h4?.signal?.includes('bear'));
+  const _btM15Ok = direction === 'long' ? !!(m15?.signal?.includes('bull')) : !!(m15?.signal?.includes('bear'));
+  const h4TrendLabel  = h4?.signal?.includes('bull') ? '▲ 偏多'
+                      : h4?.signal?.includes('bear') ? '▼ 偏空' : '— 中性';
+  const m15TrendLabel = m15?.signal?.includes('bull') ? '▲ 偏多'
+                      : m15?.signal?.includes('bear') ? '▼ 偏空' : '— 中性';
+  const d1TrendLabel  = d1sig_?.signal?.includes('bull') ? '▲ 偏多'
+                      : d1sig_?.signal?.includes('bear') ? '▼ 偏空' : '— 中性';
   let bigTrendBlocked = false, bigTrendBlockReason = '';
-  if (direction === 'long' && bigTrend === 'bear') {
-    // 4H + 1D 雙雙確認偏空 → 嚴格攔截做多
+  if (direction !== 'wait' && !(_btH4Ok && _btM15Ok)) {
     direction = 'wait';
     bigTrendBlocked = true;
-    bigTrendBlockReason = `4H 與日線雙雙偏空（4h ${h4TrendLabel} / 日線 ${d1TrendLabel}），小週期做多逆大趨勢，嚴格攔截`;
-  } else if (direction === 'short' && bigTrend === 'bull') {
-    // 4H + 1D 雙雙確認偏多 → 嚴格攔截做空
-    direction = 'wait';
-    bigTrendBlocked = true;
-    bigTrendBlockReason = `4H 與日線雙雙偏多（4h ${h4TrendLabel} / 日線 ${d1TrendLabel}），小週期做空逆大趨勢，嚴格攔截`;
+    const _btMiss = !_btH4Ok && !_btM15Ok
+      ? `4H（${h4TrendLabel}）與 15m（${m15TrendLabel}）均未同向`
+      : !_btH4Ok
+      ? `4H（${h4TrendLabel}）未同向，缺少大框架確認`
+      : `15m（${m15TrendLabel}）未同向，缺少短線入場信號`;
+    bigTrendBlockReason = `${_btMiss}，硬性條件未達標，嚴格攔截`;
   }
 
   // ATR：優先使用 1h 真實 ATR
@@ -2371,15 +2370,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
     const entryHigh = resists[0] || swHigh;
     const entryLow  = supps[0]  || swLow;
-    // 大時間框架趨勢狀態顯示
-    const h4Clr_w = h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
-    const d1Clr_w = d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
+    // 大時間框架趨勢狀態顯示（硬性條件：4H + 15m 同向）
+    const h4Clr_w  = h4?.signal?.includes('bull') ? 'var(--bull)' : h4?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
+    const m15Clr_w = m15?.signal?.includes('bull') ? 'var(--bull)' : m15?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
+    const d1Clr_w  = d1sig_?.signal?.includes('bull') ? 'var(--bull)' : d1sig_?.signal?.includes('bear') ? 'var(--bear)' : 'var(--text3)';
     const bigTrendPanel = `<div style="margin-top:12px;padding:10px 12px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.2);border-radius:9px">
-      <div style="font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px">📐 大時間框架趨勢</div>
+      <div style="font-size:0.75rem;font-weight:600;color:var(--text2);margin-bottom:6px">📐 進場硬性條件（4H + 15m）</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <span style="font-size:0.73rem;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.05);color:${h4Clr_w};border:1px solid ${h4Clr_w}40">4H ${h4TrendLabel}${h4?.rsi != null ? ' RSI '+h4.rsi : ''}</span>
-        <span style="font-size:0.73rem;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.05);color:${d1Clr_w};border:1px solid ${d1Clr_w}40">日線 ${d1TrendLabel}${d1sig_?.rsi != null ? ' RSI '+d1sig_.rsi : ''}</span>
-        ${bigTrendBlocked ? `<span style="font-size:0.73rem;color:var(--bear);font-weight:600">❌ 大小方向衝突</span>` : `<span style="font-size:0.73rem;color:#f59e0b">⚠️ 等待大趨勢確認</span>`}
+        <span style="font-size:0.73rem;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.05);color:${m15Clr_w};border:1px solid ${m15Clr_w}40">15m ${m15TrendLabel}</span>
+        <span style="font-size:0.73rem;padding:2px 8px;border-radius:20px;background:rgba(255,255,255,.05);color:${d1Clr_w};border:1px solid ${d1Clr_w}40">日線 ${d1TrendLabel}（參考）</span>
+        ${bigTrendBlocked ? `<span style="font-size:0.73rem;color:var(--bear);font-weight:600">❌ 硬性條件未達標</span>` : `<span style="font-size:0.73rem;color:#f59e0b">⚠️ 等待進場信號</span>`}
       </div>
     </div>`;
     const _wWait = weeklyBiasData?.biasLabel || '—';
@@ -3724,27 +3725,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqDefChecks  = learnResult?.defenseChecks || [];
   const _sqFailChecks = _sqDefChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
 
-  // ① 各週期走勢同向（週/日/4H/1H/15m）— 同向各 +1，週/日逆向各 -1，max +5
+  // ① 其餘時框同向加分（1H / 日線 / 週線）— 4H+15m 已為硬性進場條件，不重複計分
+  // 4H ✅ + 15m ✅（硬性條件已通過才能到此）
+  _sqFactors.push('✅ 4H+15m 雙確認（硬性條件）');
   {
-    const _sq15mOk = m15?.signal?.includes(isLong ? 'bull' : 'bear');
-    const _sq15mOp = m15?.signal?.includes(isLong ? 'bear' : 'bull');
     const _sqH1Ok  = h1?.signal?.includes(isLong ? 'bull' : 'bear');
     const _sqH1Op  = h1?.signal?.includes(isLong ? 'bear' : 'bull');
-    const _sq4hOk  = h4?.signal?.includes(isLong ? 'bull' : 'bear');
-    const _sq4hOp  = h4?.signal?.includes(isLong ? 'bear' : 'bull');
     const _sqD1Ok  = d1sig_?.signal?.includes(isLong ? 'bull' : 'bear');
     const _sqD1Op  = d1sig_?.signal?.includes(isLong ? 'bear' : 'bull');
     const _sqWk1Ok = wkS?.signal?.includes(isLong ? 'bull' : 'bear');
     const _sqWk1Op = wkS?.signal?.includes(isLong ? 'bear' : 'bull');
-    if (_sq15mOk) { _sqScore += 1; _sqFactors.push('✅ 15m 走勢同向 +1'); }
-    else if (_sq15mOp)               { _sqFactors.push('❌ 15m 走勢逆向'); }
-    else                             { _sqFactors.push('⬜ 15m 走勢中性'); }
     if (_sqH1Ok)  { _sqScore += 1; _sqFactors.push('✅ 1H 走勢同向 +1'); }
     else if (_sqH1Op)                { _sqFactors.push('❌ 1H 走勢逆向'); }
     else                             { _sqFactors.push('⬜ 1H 走勢中性'); }
-    if (_sq4hOk)  { _sqScore += 1; _sqFactors.push('✅ 4H 走勢同向 +1'); }
-    else if (_sq4hOp) { _sqScore -= 1; _sqFactors.push('❌ 4H 走勢逆向 -1'); }
-    else                             { _sqFactors.push('⬜ 4H 走勢中性'); }
     if (_sqD1Ok)  { _sqScore += 1; _sqFactors.push('✅ 日線走勢同向 +1'); }
     else if (_sqD1Op) { _sqScore -= 1; _sqFactors.push('❌ 日線走勢逆向 -1'); }
     else                             { _sqFactors.push('⬜ 日線走勢中性'); }
@@ -4022,14 +4015,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_sqMSE) {}
 
-  // 分數 floor 為 0，等級校準（移除止損風控因子，最高約 29 分）
+  // 分數 floor 為 0，等級校準（4H+15m 改硬性條件後 max ≈ 27 分，門檻對應下調 2 分）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 22 ? 'SSS'
-                 : _sqScore >= 19 ? 'SS'
-                 : _sqScore >= 17 ? 'S'
-                 : _sqScore >= 10 ? 'A'
-                 : _sqScore >= 7  ? 'B'
-                 : _sqScore >= 4  ? 'C' : 'D';
+  const _sqGrade = _sqScore >= 20 ? 'SSS'
+                 : _sqScore >= 17 ? 'SS'
+                 : _sqScore >= 15 ? 'S'
+                 : _sqScore >= 9  ? 'A'
+                 : _sqScore >= 6  ? 'B'
+                 : _sqScore >= 3  ? 'C' : 'D';
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
@@ -4039,7 +4032,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
     const _sqWarn = _sqFactors.filter(f => f.startsWith('⚠️'));
     const _sqNeut = _sqFactors.filter(f => f.startsWith('⬜'));
-    const _sqBarW = Math.round(Math.min(100, (_sqScore / 22) * 100));
+    const _sqBarW = Math.round(Math.min(100, (_sqScore / 20) * 100));
     const _sqBClr = _sqGradeColor || '#9ca3af';
     const _cClr   = conf >= 60 ? '#22c55e' : conf >= 50 ? '#f59e0b' : '#ef4444';
     return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
@@ -4249,7 +4242,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     tp1 = _stTp1; tp2 = _stTp2; tp1Reason = _stTp1R; tp2Reason = _stTp2R;
     if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
     else dirLabel = isLong ? '做多' : '做空';
-    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（17分），已降格為短線單`);
+    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（15分），已降格為短線單`);
     // 若之前是長線單 → 更新 tlog + 發送降格通知
     if (_wasLT) try {
       const _tlogDG = loadTradeLog();
@@ -9514,21 +9507,30 @@ async function recordSignalsFromScan(data) {
     const _scanMacd    = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
 
-    // ── 完整版訊號品質評分（與 buildTradeSetup 相同的 20 因子 + 等級門檻 SSS≥22/SS≥19/S≥15/A≥10/B≥6/C≥3/D<3）──
+    // ── 完整版訊號品質評分（4H+15m 硬性條件 + 其餘時框加分，等級門檻 SSS≥20/SS≥17/S≥15/A≥9/B≥6/C≥3/D<3）──
     let _scanSqScore = 0;
     const _scanSqFactors = [];
 
-    // ① 多框架同向（4H+日線+週線）— max +3
-    const _ssH4Ok  = isLong ? (coin.h4Signal    ||'').includes('bull') : (coin.h4Signal    ||'').includes('bear');
+    // ① 硬性條件：4H + 15m 雙雙同向（不符合直接跳過，不進入 SQ 評分）
+    const _ssH4Ok  = isLong ? (coin.h4Signal  ||'').includes('bull') : (coin.h4Signal  ||'').includes('bear');
+    const _ss15mSig = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
+    const _ss15mOk  = isLong ? _ss15mSig.includes('bull') : _ss15mSig.includes('bear');
+    if (!_ssH4Ok || !_ss15mOk) continue; // 硬性條件未達標 → 跳過
+    _scanSqFactors.push('✅ 4H+15m 雙確認（硬性條件）');
+    // 其餘時框同向加分（1H / 日線 / 週線）— max +3
     const _ssDayOk = isLong ? (coin.dailySignal ||'').includes('bull') : (coin.dailySignal ||'').includes('bear');
     const _ssWkOk  = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
-    if (_ssH4Ok && _ssDayOk && _ssWkOk) { _scanSqScore += 3; _scanSqFactors.push('✅ 4H+日線+週線三框架同向 +3'); }
-    else if (_ssH4Ok && _ssDayOk)        { _scanSqScore += 2; _scanSqFactors.push('✅ 4H+日線同向 +2'); }
-    else if (_ssH4Ok || _ssDayOk)        { _scanSqScore += 1; _scanSqFactors.push(_ssH4Ok ? '⚠️ 4H同向 +1' : '⚠️ 日線同向 +1'); }
-    else                                  { _scanSqFactors.push('❌ 大框架無確認'); }
-    // 1H 同向 +1
-    const _ssH1Ok = isLong ? (coin.h1Signal||'').includes('bull') : (coin.h1Signal||'').includes('bear');
+    const _ssH1Ok  = isLong ? (coin.h1Signal    ||'').includes('bull') : (coin.h1Signal    ||'').includes('bear');
+    if (_ssDayOk)      { _scanSqScore += 1; _scanSqFactors.push('✅ 日線同向 +1'); }
+    else if (isLong ? (coin.dailySignal||'').includes('bear') : (coin.dailySignal||'').includes('bull'))
+                       { _scanSqScore -= 1; _scanSqFactors.push('❌ 日線逆向 -1'); }
+    else               { _scanSqFactors.push('⬜ 日線中性'); }
+    if (_ssWkOk)       { _scanSqScore += 1; _scanSqFactors.push('✅ 週線同向 +1'); }
+    else if (isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'))
+                       { _scanSqScore -= 1; _scanSqFactors.push('❌ 週線逆向 -1'); }
+    else               { _scanSqFactors.push('⬜ 週線中性'); }
     if (_ssH1Ok) { _scanSqScore += 1; _scanSqFactors.push('✅ 1H 同向 +1'); }
+    else         { _scanSqFactors.push('⬜ 1H 中性/逆向'); }
     // MACD +1
     if (_macdAligned) { _scanSqScore += 1; _scanSqFactors.push('✅ MACD 同向 +1'); }
 
@@ -9697,14 +9699,14 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，等級門檻與 buildTradeSetup + 持倉監控完全一致（加入5週期因子後最高約 28 分）
+    // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（4H+15m 改硬性條件後 max ≈ 27 分）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 22 ? 'SSS'
-                       : _scanSqScore >= 19 ? 'SS'
-                       : _scanSqScore >= 17 ? 'S'
-                       : _scanSqScore >= 10 ? 'A'
-                       : _scanSqScore >= 7  ? 'B'
-                       : _scanSqScore >= 4  ? 'C' : 'D';
+    const _scanSqGrade = _scanSqScore >= 20 ? 'SSS'
+                       : _scanSqScore >= 17 ? 'SS'
+                       : _scanSqScore >= 15 ? 'S'
+                       : _scanSqScore >= 9  ? 'A'
+                       : _scanSqScore >= 6  ? 'B'
+                       : _scanSqScore >= 3  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
     // 若長線單 SQ 未達 S 級但達 A 級，降格為短線單繼續建單
@@ -9826,17 +9828,20 @@ async function recordSignalsFromScan(data) {
 
     let _sqRC = 0;  // recheck score
 
-    // ① 多框架同向（4H+日線+週線）— max +3
-    const _rcH4Ok  = _sqIsLong ? (_sqCoin.h4Signal    ||'').includes('bull') : (_sqCoin.h4Signal    ||'').includes('bear');
+    // ① 其餘時框同向（1H / 日線 / 週線）— 4H+15m 為進場硬性條件，監控階段改以反向扣分
+    const _rcH4Rev  = _sqIsLong ? (_sqCoin.h4Signal    ||'').includes('bear') : (_sqCoin.h4Signal    ||'').includes('bull');
+    const _rc15mSig = _sqCoin.signal15m || '';
+    const _rc15mRev = _sqIsLong ? _rc15mSig.includes('bear') : _rc15mSig.includes('bull');
+    if (_rcH4Rev)  _sqRC -= 1; // 4H 反向 -1
+    if (_rc15mRev) _sqRC -= 1; // 15m 反向 -1
     const _rcDyOk  = _sqIsLong ? (_sqCoin.dailySignal ||'').includes('bull') : (_sqCoin.dailySignal ||'').includes('bear');
+    const _rcDyOpp = _sqIsLong ? (_sqCoin.dailySignal ||'').includes('bear') : (_sqCoin.dailySignal ||'').includes('bull');
     const _rcWkOk  = _sqIsLong ? (_sqCoin.weeklySignal||'').includes('bull') : (_sqCoin.weeklySignal||'').includes('bear');
-    if (_rcH4Ok && _rcDyOk && _rcWkOk) _sqRC += 3;
-    else if (_rcH4Ok && _rcDyOk)        _sqRC += 2;
-    else if (_rcH4Ok || _rcDyOk)        _sqRC += 1;
-
-    // ① 延伸：1H 同向 +1
-    const _rcH1Ok = _sqIsLong ? (_sqCoin.h1Signal||'').includes('bull') : (_sqCoin.h1Signal||'').includes('bear');
-    if (_rcH1Ok) _sqRC += 1;
+    const _rcWkOpp = _sqIsLong ? (_sqCoin.weeklySignal||'').includes('bear') : (_sqCoin.weeklySignal||'').includes('bull');
+    const _rcH1Ok  = _sqIsLong ? (_sqCoin.h1Signal    ||'').includes('bull') : (_sqCoin.h1Signal    ||'').includes('bear');
+    if (_rcDyOk)  _sqRC += 1; else if (_rcDyOpp) _sqRC -= 1;
+    if (_rcWkOk)  _sqRC += 1; else if (_rcWkOpp) _sqRC -= 1;
+    if (_rcH1Ok)  _sqRC += 1;
 
     // ① 延伸：MACD 同向 +1
     const _rcMacd = parseFloat(_sqCoin.macdHist) || 0;
@@ -10003,14 +10008,14 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（加入5週期因子後最高約 28 分）
+    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（4H+15m 改硬性條件後 max ≈ 27 分）
     _sqRC = Math.max(0, _sqRC);
-    const _rcGrade = _sqRC >= 22 ? 'SSS'
-                   : _sqRC >= 19 ? 'SS'
-                   : _sqRC >= 17 ? 'S'
-                   : _sqRC >= 10 ? 'A'
-                   : _sqRC >= 7  ? 'B'
-                   : _sqRC >= 4  ? 'C' : 'D';
+    const _rcGrade = _sqRC >= 20 ? 'SSS'
+                   : _sqRC >= 17 ? 'SS'
+                   : _sqRC >= 15 ? 'S'
+                   : _sqRC >= 9  ? 'A'
+                   : _sqRC >= 6  ? 'B'
+                   : _sqRC >= 3  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
     // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
@@ -14582,13 +14587,19 @@ async function checkAndSendAlerts(data) {
     if (!notifSetup.sqGrade) {
       try {
         let _qSq = 0;
-        // ① 多框架同向（4H+日+週+1H+MACD）
-        const _qH4 = isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear');
-        const _qDy = isLong ? (coin.dailySignal||'').includes('bull') : (coin.dailySignal||'').includes('bear');
-        const _qWk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
-        if (_qH4 && _qDy && _qWk) _qSq += 3; else if (_qH4 && _qDy) _qSq += 2; else if (_qH4 || _qDy) _qSq += 1;
-        if (isLong ? (coin.h1Signal||'').includes('bull') : (coin.h1Signal||'').includes('bear')) _qSq += 1;
-        if (isLong ? (parseFloat(coin.macdHist)||0) > 0 : (parseFloat(coin.macdHist)||0) < 0) _qSq += 1;
+        // ① 硬性條件 4H+15m（不符合不計分），其餘時框同向加分
+        const _qH4  = isLong ? (coin.h4Signal ||'').includes('bull') : (coin.h4Signal ||'').includes('bear');
+        const _q15m = (() => { const s = coin.signal15m || (isLong ? ((coin.score||50)>=55?'bull':'') : ((coin.score||50)<=45?'bear':'')); return isLong ? s.includes('bull') : s.includes('bear'); })();
+        if (_qH4 && _q15m) { // 硬性條件通過才計入 SQ
+          const _qDy = isLong ? (coin.dailySignal||'').includes('bull') : (coin.dailySignal||'').includes('bear');
+          const _qDyOp = isLong ? (coin.dailySignal||'').includes('bear') : (coin.dailySignal||'').includes('bull');
+          const _qWk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
+          const _qWkOp = isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull');
+          if (_qDy) _qSq += 1; else if (_qDyOp) _qSq -= 1;
+          if (_qWk) _qSq += 1; else if (_qWkOp) _qSq -= 1;
+          if (isLong ? (coin.h1Signal||'').includes('bull') : (coin.h1Signal||'').includes('bear')) _qSq += 1;
+          if (isLong ? (parseFloat(coin.macdHist)||0) > 0 : (parseFloat(coin.macdHist)||0) < 0) _qSq += 1;
+        }
         // ②③ AI 週/日偏向（從 notifSetup 已計算的偏向讀取）
         if (_macroCache) {
           try {
@@ -14636,7 +14647,7 @@ async function checkAndSendAlerts(data) {
         try { const _qIctC=_tradeSetupCache[coin.symbol];if(_qIctC){let _qIct=0;if(_qIctC.orderBlock?.priceInOB||_qIctC.orderBlock4h?.priceInOB)_qIct++;if((_qIctC.fvg&&!_qIctC.fvg.filled)||(_qIctC.fvg4h&&!_qIctC.fvg4h.filled))_qIct++;_qSq+=Math.min(2,_qIct);const _qPat=_qIctC.chartPat;if(_qPat){_qSq+=Math.min(2,Math.max(0,_qPat.score||0));if((_qPat.opposing?.length||0)>0)_qSq-=Math.min(2,_qPat.opposing.length);}} } catch(_e){}
 
         _qSq = Math.max(0, _qSq);
-        const _qGrade = _qSq>=22?'SSS':_qSq>=19?'SS':_qSq>=17?'S':_qSq>=10?'A':_qSq>=7?'B':_qSq>=4?'C':'D';
+        const _qGrade = _qSq>=20?'SSS':_qSq>=17?'SS':_qSq>=15?'S':_qSq>=9?'A':_qSq>=6?'B':_qSq>=3?'C':'D';
         notifSetup.sqGrade      = _qGrade;
         notifSetup.sqScore      = _qSq;
         notifSetup.sqGradeLabel = {SSS:'神級訊號',SS:'完美訊號',S:'頂級訊號',A:'優質訊號',B:'良好訊號',C:'一般訊號',D:'訊號偏弱'}[_qGrade]||'';
