@@ -14557,7 +14557,22 @@ async function checkAndSendAlerts(data) {
           notifSetup.macroReasons       = macroReasons;
           notifSetup.capitalFlowPenalty = cfPen;
           notifSetup.capitalFlowReasons = cfReasons;
-          notifSetup.conf = Math.max(0, notifSetup.conf - macroPen - aiTrendPen - cfPen);
+          // 重新計算 learnPenalty（快取可能過期）
+          try {
+            const _rsi = parseFloat(coin.rsi) || 50, _adx = parseFloat(coin.adx) || 20;
+            const _lrN = applyLearnAdjustment(dir, _rsi, _adx, {
+              slType: 'atr', skipAdxRule: true,
+              macdHist: parseFloat(coin.macdHist) || 0,
+              volWeak: (coin.volumeStrength||'') === '低' || String(coin.volumeStrength||'').includes('弱'),
+              h4Aligned: isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear'),
+              weeklyAgainst: isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
+              h1Aligned: isLong ? !!(coin.h1Signal||'').includes('bull') : !!(coin.h1Signal||'').includes('bear'),
+            });
+            notifSetup.learnPenalty = _lrN.penalty || 0;
+          } catch(_lrE) {}
+          // 風控分固定用 learnPenalty 計算（宏觀/AI/資金流由 SQ 評分處理，不重複扣入 conf）
+          // 這樣確保 conf 與 computeSimpleSetup / updateOpenTrades / Telegram 明細完全一致
+          notifSetup.conf = Math.max(0, Math.round(100 - Math.min(50, notifSetup.learnPenalty || 0)));
         } catch (e) { /* macro enrichment failed, keep simple conf */ }
       }
     }
