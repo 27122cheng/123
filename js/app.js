@@ -14695,10 +14695,6 @@ async function checkAndSendAlerts(data) {
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
     if (notifConf < 60) continue;
 
-    // ③ 風險評估 < 高風險（riskScore < 60）
-    const _riskScoreGate = notifSetup.riskScore ?? 0;
-    if (_riskScoreGate >= 60) continue;
-
     // 所有條件驗證通過 → 先建立持倉掛單（pendingNotify=true）
     // Telegram 通知由 updateOpenTrades 在確認掛單存活後統一發送，確保建單在前、通知在後
     try {
