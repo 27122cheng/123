@@ -1206,9 +1206,10 @@ function buildPendingPositionSetup(t, currentPrice) {
   // 風控分（100分制，直接取 t.conf；fallback 用 learnPenalty 扣分重算）
   const _pLearnDrag = Math.min(45, t.learnPenalty || 0);
   const _pRiskPen = t.riskPenalty || 0;
-  const _pConf = t.conf != null ? t.conf
-    : (t.learnPenalty != null ? Math.max(0, Math.round(100 - _pLearnDrag - _pRiskPen))
-    : Math.min(90, t.score || 60));
+  // 以儲存的扣分明細重算風控分，確保顯示數字與明細一致
+  const _pConf = t.learnPenalty != null
+    ? Math.max(0, Math.round(100 - _pLearnDrag - _pRiskPen))
+    : (t.conf != null ? t.conf : Math.min(90, t.score || 60));
   const _confBreakdown = (t.learnPenalty != null) ? `
   <div class="conf-breakdown" style="margin-top:10px;padding:9px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;font-size:0.73rem;line-height:1.9">
     <div style="font-weight:700;color:var(--text2);margin-bottom:4px">🛡️ 風控分項明細</div>
@@ -4385,6 +4386,23 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ex.ltTPReason = ltTPReason || null;
     }
     saveTradeLog(tlog);
+    // 若既有掛單從未推送 Telegram（建立時推送失敗），補發一次
+    if (!ex.telegramSent && !ex.pendingNotify) {
+      try {
+        const _ns = loadSettings();
+        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+          const _exTgSetup = Object.assign({}, ex, _tradeSetupCache[coin.symbol] || {}, {
+            sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel,
+          });
+          sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
+            buildTelegramText(coin, direction, _exTgSetup, _macroCache,
+              window.location.origin + window.location.pathname));
+          const _btsTlog = loadTradeLog();
+          const _btsExIdx = _btsTlog.findIndex(t => t.id === ex.id);
+          if (_btsExIdx >= 0) { _btsTlog[_btsExIdx].telegramSent = true; saveTradeLog(_btsTlog); }
+        }
+      } catch(_btsExTgE) {}
+    }
     // 同步更新持倉頁面（若目前在持倉頁）確保等級與信心分與詳情一致
     try { if (typeof renderPositionsPage === 'function') renderPositionsPage(); } catch(_rpe) {}
   } else {
@@ -8704,7 +8722,7 @@ async function renderCoinDetail(symbol) {
   setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
   setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
 
-  // 10因子 AI 風險評估（宏觀資料就緒後渲染，確保準確度）
+  // 14因子 AI 風險評估（宏觀資料就緒後渲染，確保準確度）
   const _frEl = document.getElementById('full-risk-body');
   if (_frEl) {
     try {
@@ -8715,7 +8733,7 @@ async function renderCoinDetail(symbol) {
       _frEl.innerHTML = buildFullRiskCard(_frLong, '📈 做多') + buildFullRiskCard(_frShort, '📉 做空');
     } catch(_fe) {
       console.warn('[full-risk]', _fe);
-      _frEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:8px">10因子評估暫時無法載入</div>';
+      _frEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:8px">14因子評估暫時無法載入</div>';
     }
   }
 }
@@ -8953,7 +8971,7 @@ function buildFullRiskCard(fr, label) {
     : '';
   return '<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
-    + '<span style="font-size:0.8rem;font-weight:600;color:var(--text2)">' + label + ' · 10因子評估</span>'
+    + '<span style="font-size:0.8rem;font-weight:600;color:var(--text2)">' + label + ' · 14因子評估</span>'
     + '<span style="font-size:0.78rem;font-weight:700;color:' + barColor + ';background:' + barColor + '22;padding:2px 8px;border-radius:20px">' + fr.level + '（' + fr.score + '/100）</span>'
     + '</div>'
     + '<div style="background:var(--bg);border-radius:4px;height:6px;margin-bottom:10px;overflow:hidden">'
@@ -9435,7 +9453,7 @@ async function recordSignalsFromScan(data) {
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
     if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
 
-    // 完整風險評估（10 因子）
+    // 完整風險評估（14 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
     try {
       _scanRisk = computeFullRisk(coin, setup, isLong);
@@ -14497,7 +14515,21 @@ async function checkAndSendAlerts(data) {
       const _existTrade = _tlog.find(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
       if (_existTrade) {
-        // 已有建單（open/pending）→ 完全跳過，不發任何通知
+        // 若掛單從未成功推送 Telegram（建立時推送失敗），補發一次
+        if (!_existTrade.telegramSent && !_existTrade.pendingNotify) {
+          try {
+            const _ns = loadSettings();
+            if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+              const _rsTgSetup = Object.assign({}, _existTrade, _existTrade._notifyRisk || {});
+              sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
+                buildTelegramText(coin, dir, _rsTgSetup, _macroCache,
+                  window.location.origin + window.location.pathname));
+              const _rsTlog = loadTradeLog();
+              const _rsIdx = _rsTlog.findIndex(t => t.id === _existTrade.id);
+              if (_rsIdx >= 0) { _rsTlog[_rsIdx].telegramSent = true; saveTradeLog(_rsTlog); }
+            }
+          } catch(_rse) {}
+        }
         next[coin.symbol] = { dir, sentAt: now };
         continue;
       }
@@ -14626,8 +14658,8 @@ async function checkAndSendAlerts(data) {
     }
 
     // ── 快速 SQ 評分（使用掃描快取 + 同步因子，盡量與 recordSignalsFromScan 一致）──
-    // 避免通知顯示「? 級」且防止建單後被 SQ 監控立即取消
-    if (!notifSetup.sqGrade) {
+    // 每次都重新計算，避免快取中的舊等級（S→A 條件改變後）導致長線單建立後立即降格
+    {
       try {
         let _qSq = 0;
         // ① 硬性條件 4H+15m（不符合不計分），其餘時框同向加分
