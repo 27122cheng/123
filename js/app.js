@@ -10955,7 +10955,26 @@ function updateOpenTrades(data) {
       for (const _pnt of _pendingNotify) {
         const _pntCoin = data?.find(d => d.symbol === _pnt.symbol) || { symbol: _pnt.symbol, price: _pnt.entryPrice };
 
-        // 交易已在建單前通過 SQ≥A、風控分≥60、風險<60 三道門檻，此處直接推送通知
+        // 發通知前重算風控分，防止「建單→立即取消」的情況：
+        // checkAndSendAlerts 建單時 learnPenalty/risk 可能較低，發通知時重算若已不足 60 分則靜默取消
+        try {
+          const _pntFR = computeFullRisk(_pntCoin, _pnt, _pnt.direction === 'long');
+          const _pntRP = _pntFR.score >= 75 ? 20 : _pntFR.score >= 60 ? 12 : _pntFR.score >= 28 ? 5 : 0;
+          const _pntLP = _pnt.learnPenalty || 0;
+          const _pntFC = Math.max(0, 100 - Math.min(50, _pntLP) - _pntRP);
+          _pnt.riskScore   = _pntFR.score;
+          _pnt.riskLevel   = _pntFR.level;
+          _pnt.riskPenalty = _pntRP;
+          _pnt.conf        = _pntFC;
+          if (_pntFC < 60) {
+            _pnt.pendingNotify = false;
+            toDeleteIds.add(_pnt.id);
+            changed = true;
+            continue;
+          }
+        } catch (_pntRE) {}
+
+        // 交易通過最新風控分≥60 驗證，推送通知
         // Telegram 通知
         if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
           try {
