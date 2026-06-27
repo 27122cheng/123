@@ -11001,6 +11001,11 @@ function updateOpenTrades(data) {
         _pnt.pendingNotify  = false;
         _pnt.telegramSent   = true;  // 標記已通知，後續取消才能正確發送取消 Telegram
         delete _pnt._notifyRisk;
+        try {
+          const _pntLabel = _pnt.canScaleIn ? '💎長線單' : '📡短線單';
+          const _pntDir   = _pnt.direction === 'long' ? '▲做多' : '▼做空';
+          if (typeof showToast === 'function') showToast(`${_pntLabel}：${_pnt.symbol} ${_pntDir} 風控分 ${_pnt.conf || 0} 分，已加入持倉`, 'success');
+        } catch(_pntTE) {}
         changed = true;
       }
     } catch(_pne) {}
@@ -14747,7 +14752,7 @@ async function checkAndSendAlerts(data) {
         saveTradeLog(_tlog2);
         const _tlabel = _isLongTermEntry ? '長線單' : '短線單';
         const _ticon  = _isLongTermEntry ? '💎' : '📡';
-        try { if (typeof showToast === 'function') showToast(`${_ticon} ${_tlabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 信心 ${notifSetup.conf}%，已加入持倉`, 'success'); } catch(_te) {}
+        // toast 延遲至 updateOpenTrades pendingNotify 通過風控分重算後再顯示
       }
     } catch(_te) { console.warn('[checkAndSendAlerts] trade create failed', _te); }
 
