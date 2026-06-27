@@ -9719,7 +9719,7 @@ async function recordSignalsFromScan(data) {
     if (canScaleIn && !['SSS','SS','S'].includes(_scanSqGrade)) {
       if (!['SSS','SS','S','A'].includes(_scanSqGrade)) continue; // 短線也不達標 → 跳過
       canScaleIn = false; // 降格為短線單
-      _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（17分），已降格為短線單`);
+      _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（15分），已降格為短線單`);
     } else if (!canScaleIn && !['SSS','SS','S','A'].includes(_scanSqGrade)) {
       continue; // 短線單也不達標
     }
@@ -9819,7 +9819,7 @@ async function recordSignalsFromScan(data) {
   }
 
   // ── 訊號品質持續監控：掛單未進場前每次掃描用完整 21 因子重新評估，低於 A 級自動取消 ──
-  // 使用與 buildTradeSetup 相同的等級門檻（SSS≥22/SS≥19/S≥15/A≥10/B≥6/C≥3/D<3）
+  // 等級門檻：SSS≥20 / SS≥17 / S≥15 / A≥9 / B≥6 / C≥3 / D<3（與建單評分完全一致）
   // ICT結構和圖形確認需要異步 MTF Kline，其餘 ~18 個因子均可從掃描快取即時取得
   const _sqCancelIds = new Set();
   for (const trade of tlog) {
@@ -10139,7 +10139,9 @@ async function backgroundRefineNewTrades() {
       const ltRaw  = ltBias === 'long' ? ltBull : ltBias === 'short' ? ltBear : 0;
       const ltConf = ltBias !== 'neutral' ? Math.round(Math.min(95, 55 + ltRaw * 8)) : 0;
       // 長線單升級：五週期（15m+1H+4H+日+週）同向 + 長線信心 ≥ 85%
-      const canScaleIn = !!(m15OkBg && h1OkBg && h4OkBg && d1OkBg && w1OkBg && ltConf >= 85);
+      // 額外限制：建單時 SQ 須已達 S 級，否則監控迴圈因 SQ=A 不足長線門檻會立即降格
+      const _bgSqOkForLT = ['SSS','SS','S'].includes(trade.sqGrade || 'D');
+      const canScaleIn = !!(_bgSqOkForLT && m15OkBg && h1OkBg && h4OkBg && d1OkBg && w1OkBg && ltConf >= 85);
 
       const tlogEdit = loadTradeLog();
       const idx = tlogEdit.findIndex(t => t.id === trade.id);
