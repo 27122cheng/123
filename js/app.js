@@ -1941,13 +1941,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const bbPenNow    = existingActive.bbPenalty || 0;
       let rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
       let freshConf  = Math.max(0, 100 - Math.min(45, learnPenNow) - (existingActive.riskPenalty || 0));
-      if (Math.abs((existingActive.conf || 0) - freshConf) >= 1 && !existingActive.entryTime) {
+      if ((Math.abs((existingActive.conf || 0) - freshConf) >= 1 || (existingActive.learnPenalty || 0) !== learnPenNow) && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
         if (editIdx >= 0) {
-          tlogEdit[editIdx].conf    = freshConf;
-          tlogEdit[editIdx].rawConf = rawConfNow;
-          existingActive.conf       = freshConf;
+          tlogEdit[editIdx].conf         = freshConf;
+          tlogEdit[editIdx].rawConf      = rawConfNow;
+          tlogEdit[editIdx].learnPenalty = learnPenNow;
+          existingActive.conf            = freshConf;
+          existingActive.learnPenalty    = learnPenNow;
           saveTradeLog(tlogEdit);
         }
       }
@@ -10078,7 +10080,9 @@ async function recordSignalsFromScan(data) {
       // SQ 通過 → 繼續監控 ② 風控分 ③ 風險評估
       if (!_sqCancelIds.has(trade.id)) {
         // ② 風控分（止損風控 + 風險評估扣分）< 60 → 取消
-        const _rcLearnPen = trade.learnPenalty || 0;
+        // 優先使用快取中的新鮮 learnPenalty（由 buildTradeSetup 更新），避免建單時的舊值影響計算
+        const _rcCachedLp = _tradeSetupCache[_sqCoin.symbol]?.learnPenalty;
+        const _rcLearnPen = _rcCachedLp != null ? _rcCachedLp : (trade.learnPenalty || 0);
         let _rcRiskPen = 0;
         try {
           // 傳入 pre-risk conf（還原風險扣分前的風控分），避免循環依賴
@@ -10100,6 +10104,16 @@ async function recordSignalsFromScan(data) {
           changed = true;
           try { sendCancelTelegramNotification(trade, _confCancel); } catch(_n) {}
           try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 風控分 ${_rcConf}分 < 60，自動取消掛單`, 'warning'); } catch(_t) {}
+        }
+        if (!_sqCancelIds.has(trade.id)) {
+          if (Math.abs((trade.conf || 0) - _rcConf) >= 1) {
+            trade.conf = _rcConf;
+            changed = true;
+          }
+          if (_rcCachedLp != null && (trade.learnPenalty || 0) !== _rcCachedLp) {
+            trade.learnPenalty = _rcCachedLp;
+            changed = true;
+          }
         }
       }
       if (!_sqCancelIds.has(trade.id) && (trade.sqGrade !== _rcGrade || trade.sqScore !== _sqRC)) {
