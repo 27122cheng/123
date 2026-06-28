@@ -9838,7 +9838,9 @@ async function recordSignalsFromScan(data) {
       const _scanNs = loadSettings();
       if (_scanNs.notifTelegram && _scanNs.tgToken && _scanNs.tgChatId) {
         const _scanTgSetup = Object.assign({}, newTrade, setup,
-          { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs });
+          { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs,
+            conf: newTrade.conf, riskPenalty: _scanRiskPen,
+            canScaleIn, isLongTerm: canScaleIn }); // 以建單後值覆蓋 setup，避免 SQ 降格後 isLongTerm 顯示錯標題
         sendTelegramMessage(_scanNs.tgToken, _scanNs.tgChatId,
           buildTelegramText(coin, direction, _scanTgSetup, _macroCache,
             typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
@@ -10413,8 +10415,10 @@ async function backgroundMonitorLongTermStatus() {
       const _monLtBias = computeLongTermBias(mtfData);
       const _monLtRaw  = _monLtBias === 'long' ? _ltBull : _monLtBias === 'short' ? _ltBear : 0;
       const _monLtConf = _monLtBias !== 'neutral' ? Math.round(Math.min(95, 55 + _monLtRaw * 8)) : 0;
-      // 五週期同向（15m+1H+4H+日+週）+ 長線信心 ≥ 85%
-      const canScaleInNow = !!(m15Ok && h1Ok && h4Ok && d1Ok && w1Ok && _monLtConf >= 85);
+      // 五週期同向（15m+1H+4H+日+週）+ 長線信心 ≥ 85% + SQ ≥ S 級
+      // SQ = A 不允許升格為長線，避免升格後立即被 SQ 監控降格
+      const canScaleInNow = !!(m15Ok && h1Ok && h4Ok && d1Ok && w1Ok && _monLtConf >= 85
+        && ['SSS','SS','S'].includes(trade.sqGrade || 'D'));
 
       const tlogEdit = loadTradeLog();
       const idx = tlogEdit.findIndex(t => t.id === trade.id);
@@ -14750,10 +14754,10 @@ async function checkAndSendAlerts(data) {
     const _sqPassGate = ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
     if (!_sqPassGate) continue;
 
-    // ② 風控分 ≥ 60（扣完所有罰分後）
-    const notifConf = notifSetup.conf
-      ?? loadTradeLog().find(t => t.symbol === coin.symbol && t.direction === dir && t.status === 'open')?.conf
-      ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
+    // ② 風控分 ≥ 60（止損風控 + 風險評估扣完後的最終值）
+    const _notifRPen = calcRiskPenalty(notifSetup.riskScore || 0);
+    const notifConf = Math.max(0,
+      (notifSetup.conf ?? Math.min(90, isLong ? coin.score : 100 - coin.score)) - _notifRPen);
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
     if (notifConf < 60) continue;
@@ -14779,7 +14783,8 @@ async function checkAndSendAlerts(data) {
           rsi: parseFloat(coin.rsi) || 50,
           adx: parseFloat(coin.adx) || 20,
           score: coin.score, trend: coin.trend,
-          conf: notifSetup.conf, rawConf: notifSetup.rawConf,
+          conf: notifConf, rawConf: notifSetup.rawConf,
+          riskPenalty:    _notifRPen,
           hardAdxPenalty: notifSetup.hardAdxPenalty || 0,
           learnPenalty:   notifSetup.learnPenalty   || 0,
           macroPenalty:   notifSetup.macroOpposePenalty || notifSetup.macroPenalty || 0,
