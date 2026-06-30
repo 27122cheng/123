@@ -9205,8 +9205,8 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     if (!sig) return '⚪ —';
     const bull = sig.includes('bull');
     const bear = sig.includes('bear');
-    if (isLong_) return bull ? '✅ 偏多' : bear ? '❌ 偏空' : '⚪ 中性';
-    else         return bear ? '✅ 偏空' : bull ? '❌ 偏多' : '⚪ 中性';
+    if (isLong_) return bull ? '<b>✅ 偏多</b>' : bear ? '<b>❌ 偏空</b>' : '⚪ 中性';
+    else         return bear ? '<b>✅ 偏空</b>' : bull ? '<b>❌ 偏多</b>' : '⚪ 中性';
   };
   const _15mSig = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
   const _dirLines = [];
@@ -9217,8 +9217,8 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   _dirLines.push(`   15m：${_sigCheck(_15mSig, isLong)}`);
 
   // ── 本週/日 AI 預測 ──
-  const _wLine = wBiasLabel ? `📈 本週預測：${_esc(wBiasLabel)}（信心 ${wBiasConf}%）` : '';
-  const _tLine = tBiasLabel ? `📅 今日預測：${_esc(tBiasLabel)}（信心 ${tBiasConf}%）` : '';
+  const _wLine = wBiasLabel ? `📈 本週預測：<b>${_esc(wBiasLabel)}</b>（信心 ${wBiasConf}%）` : '';
+  const _tLine = tBiasLabel ? `📅 今日預測：<b>${_esc(tBiasLabel)}</b>（信心 ${tBiasConf}%）` : '';
   const _biasBlock = [_wLine, _tLine].filter(Boolean).join('\n');
 
   // ── 價格 ──
@@ -9337,7 +9337,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   // ── 組合輸出（新格式）──
   // 順序：方向+幣種 → 時間 → KZ → 品質 → 風控分 → 價格 → [加倉] → 方向確認 → 本週/日預測 → 扣分項 → [風險] → [反轉]
   return `${_hdr}\n` +
-    `${_dirLabel}：<b>${coin.symbol}</b>\n` +
+    `<b>${_dirLabel}</b>：<b>${coin.symbol}</b>\n` +
     `⏰ ${_ts}\n` +
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
@@ -11075,7 +11075,7 @@ async function sendTP1Notifications(hits) {
       const fmt = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
       const msg =
         `🎯 <b>止盈一已達到！止損已自動保本</b>\n\n` +
-        `💎 <b>${trade.symbol}</b>  ${trade.direction === 'long' ? '▲ 做多' : '▼ 做空'}\n\n` +
+        `💎 <b>${trade.symbol}</b>  <b>${trade.direction === 'long' ? '▲ 做多' : '▼ 做空'}</b>\n\n` +
         `✅ 止盈一：<b>$${fmt(trade.tp1)}</b>\n` +
         `📍 進場價：$${fmt(trade.entry)}\n` +
         `💰 現價：$${fmt(cur)}\n` +
@@ -11221,7 +11221,7 @@ function sendCancelTelegramNotification(trade, reason) {
   const reasonLabel = isDowngrade ? `📋 <b>降級原因</b>` : `📋 <b>取消原因</b>`;
   const msg =
     `${titleLine}\n\n` +
-    `${dirLabel}：<b>${trade.symbol}</b>\n` +
+    `<b>${dirLabel}</b>：<b>${trade.symbol}</b>\n` +
     `${confLine}\n\n` +
     `${reasonLabel}\n${reasonsBlock}\n\n` +
     `⏰ ${ts}\n` +
@@ -11242,7 +11242,7 @@ function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
   const siteUrl = window.location.origin + window.location.pathname;
   const msg =
     `⚡ <b>未進場已飛越${hitLevel}！</b>\n\n` +
-    `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
+    `💎 <b>${trade.symbol}</b>  <b>${dir}</b>\n\n` +
     `📍 原掛單進場：$${fmt(trade.entry)}\n` +
     `🎯 ${hitLevel}：$${fmt(hitPrice)}\n` +
     `💰 現價：$${fmt(isLong ? hitPrice : hitPrice)}\n\n` +
@@ -11265,7 +11265,7 @@ function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = n
   const ltTarget = trade.ltTP || scaleIn.tp2 || scaleIn.tp1;
   const msg =
     `📈 <b>加倉確認通知 #${scaleIn.seqNum}</b>\n\n` +
-    `💎 <b>${trade.symbol}</b>  ${dir}\n\n` +
+    `💎 <b>${trade.symbol}</b>  <b>${dir}</b>\n\n` +
     `📍 加倉進場位：<b>$${fmt(scaleIn.entryPrice || scaleIn.entryLevel)}</b>\n` +
     `${slLine}` +
     `🏁 長線最終目標：<b>$${fmt(ltTarget)}</b>\n\n` +
@@ -11398,7 +11398,7 @@ function buildDailyBriefingMsg(fg, mkt) {
       else               { args.push(`• BTC 主導 ${btcDom}%，均衡格局`); }
     }
     const bias = bullPts > bearPts + 1 ? '▲ 偏多' : bearPts > bullPts + 1 ? '▼ 偏空' : '◆ 中性偏多';
-    return `${bias}\n${args.join('\n') || '• 數據更新中'}`;
+    return `<b>${bias}</b>\n${args.join('\n') || '• 數據更新中'}`;
   })();
 
   // 宏觀 AI 預測摘要（每季固定重點，每月人工更新）
@@ -11424,7 +11424,7 @@ function buildDailyBriefingMsg(fg, mkt) {
           const actualVal = getEconActualValue(ev.name, `${dkY}-${dkM}-${dkD}`);
           const { dirLabel: aDir, dirReason: aReason } = actualVal ? _econDirText(ev, actualVal) : {};
           const actualLine  = actualVal ? `   📌 <b>公布值：${esc(actualVal)}</b>` : '   📌 公布值：尚未取得';
-          const dirLine2    = aDir ? `   ${aDir}` : '';
+          const dirLine2    = aDir ? `   <b>${aDir}</b>` : '';
           const reasonLine2 = aReason ? `   💬 ${esc(aReason)}` : '';
           return `${impactTag} <b>${esc(ev.name)}</b>（${timeStr} 已公布）\n${actualLine}${dirLine2 ? '\n'+dirLine2 : ''}${reasonLine2 ? '\n'+reasonLine2 : ''}`;
         }
@@ -11433,7 +11433,7 @@ function buildDailyBriefingMsg(fg, mkt) {
           ? `   🤖 AI 預測值：${esc(ev.aiPred)}（信心 ${ev.aiConf}%）`
           : '';
         const aiDirLine = ev.aiDir
-          ? `   📊 預測方向：${aDirLabel}`
+          ? `   📊 預測方向：<b>${aDirLabel}</b>`
           : '';
         const aiReason  = ev.aiDirReason
           ? `   📌 ${esc(ev.aiDirReason)}`
@@ -11447,7 +11447,7 @@ function buildDailyBriefingMsg(fg, mkt) {
   try {
     const wb = computeWeeklyAIBias(fg, mkt);
     const topFactors = (wb.factors || []).slice(0, 4).map(f => `   • ${f}`).join('\n');
-    weeklyAISection = `${wb.biasLabel}（信心 ${wb.conf}%）${topFactors ? '\n' + topFactors : ''}\n   ⚠️ ${wb.riskNote || ''}`;
+    weeklyAISection = `<b>${wb.biasLabel}</b>（信心 ${wb.conf}%）${topFactors ? '\n' + topFactors : ''}\n   ⚠️ ${wb.riskNote || ''}`;
   } catch (e) { weeklyAISection = '（計算失敗）'; }
 
   // ── 今日 AI 多空預測（文字版）──
@@ -11455,7 +11455,7 @@ function buildDailyBriefingMsg(fg, mkt) {
   try {
     const tb = computeTodayAIBias(fg, mkt);
     const topReasons = (tb.reasons || []).slice(0, 4).map(r => `   • ${r}`).join('\n');
-    todayAISection = `${tb.biasLabel}（信心 ${tb.conf}%）${topReasons ? '\n' + topReasons : ''}\n   ⚠️ ${tb.riskNote || ''}`;
+    todayAISection = `<b>${tb.biasLabel}</b>（信心 ${tb.conf}%）${topReasons ? '\n' + topReasons : ''}\n   ⚠️ ${tb.riskNote || ''}`;
     // 數據翻轉風險
     const nowMs = Date.now();
     const flips = (tb.highEvs || []).filter(ev => {
@@ -11713,8 +11713,8 @@ function sendEconEventAlert(ev, s) {
     ? (_chgSnap > 2 ? '，近24h市場強勢上漲' : _chgSnap < -2 ? '，近24h市場疲弱下跌' : '') : '';
   const _altCtx = _domSnap != null && _domSnap < 45 ? '（目前山寨季格局，山寨反應可能更劇烈）' : '';
   const _aiDirCtx = ev.aiDir
-    ? (ev.aiDir === 'bull' ? '，AI預測偏多，若數據符合預測方向可順勢跟進'
-       : ev.aiDir === 'bear' ? '，AI預測偏空，若數據符合預測方向可考慮防守或空單'
+    ? (ev.aiDir === 'bull' ? '，<b>AI預測偏多</b>，若數據符合預測方向可順勢跟進'
+       : ev.aiDir === 'bear' ? '，<b>AI預測偏空</b>，若數據符合預測方向可考慮防守或空單'
        : '') : '';
 
   const tradeNote = openTrades.length
@@ -11722,10 +11722,10 @@ function sendEconEventAlert(ev, s) {
     : '\n✅ 目前無持倉，數據後方向確認再進場機會較佳';
 
   const aDirLabel = (ev.aiDir === 'bull') ? '▲ 偏多' : (ev.aiDir === 'bear') ? '▼ 偏空' : '◆ 中性';
+  const dirLine = ev.aiDir ? `📊 預測方向：<b>${aDirLabel}</b>\n` : '';
   const aiSection = ev.aiPred
     ? `\n🤖 <b>AI 預測</b>\n` +
-      `• 預測值：${ev.aiPred}（信心 ${ev.aiConf || '--'}%）\n` +
-      `• 預測方向：${aDirLabel}\n` +
+      `• 預測值：<b>${ev.aiPred}</b>（信心 ${ev.aiConf || '--'}%）\n` +
       (ev.aiDirReason ? `• 原因：${ev.aiDirReason}\n` : '')
     : '';
 
@@ -11733,9 +11733,10 @@ function sendEconEventAlert(ev, s) {
     `${impactEmoji} <b>重要數據即將公布（約1小時後）</b>\n\n` +
     `📊 <b>${ev.name}</b>\n` +
     `⏰ 台灣時間：<b>${twTime}</b>\n` +
-    `📝 說明：${ev.description}\n\n` +
-    `📈 若數據優於預期：${ev.bullIf}\n` +
-    `📉 若數據差於預期：${ev.bearIf}` +
+    `📝 說明：${ev.description}\n` +
+    dirLine + `\n` +
+    `📈 若數據優於預期：<b>${ev.bullIf}</b>\n` +
+    `📉 若數據差於預期：<b>${ev.bearIf}</b>` +
     aiSection +
     `\n🎯 <b>盤面影響分析</b>\n` +
     `• 數據公布前 30 分鐘通常出現方向性試探${_fgCtx}\n` +
@@ -11872,15 +11873,15 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
         const _match = (ev.aiDir === 'bull' && reactionPct > 0.4) || (ev.aiDir === 'bear' && reactionPct < -0.4);
         const _aiLabel = ev.aiDir === 'bull' ? '偏多' : ev.aiDir === 'bear' ? '偏空' : '中性';
         const _actLabel = reactionPct > 0.4 ? '偏多' : reactionPct < -0.4 ? '偏空' : '中性';
-        return `${_match ? '✅' : '❌'} AI 預測（${_aiLabel}）vs 實際（${_actLabel}）：${_match ? '方向吻合，可信度提升' : '方向不符，本次預測誤差，系統將學習修正'}`;
+        return `${_match ? '✅' : '❌'} AI 預測（${_aiLabel}）vs 實際（${_actLabel}）：${_match ? '<b>方向吻合</b>，可信度提升' : '<b>方向不符</b>，本次預測誤差，系統將學習修正'}`;
       })()
     : '';
 
   // 操作建議
   const tradeRec = reactionPct > 1.5
-    ? '📌 操作建議：方向確認偏多，等首根 15m 確認K棒收線後可考慮順多，止損設在近期低點'
+    ? '📌 操作建議：<b>方向確認偏多</b>，等首根 15m 確認K棒收線後可考慮順多，止損設在近期低點'
     : reactionPct < -1.5
-    ? '📌 操作建議：方向確認偏空，等首根 15m 確認K棒收線後可考慮空單或清多減倉，止損設在近期高點'
+    ? '📌 操作建議：<b>方向確認偏空</b>，等首根 15m 確認K棒收線後可考慮空單或清多減倉，止損設在近期高點'
     : Math.abs(reactionPct) < 0.4
     ? '📌 操作建議：市場仍在消化數據，暫時觀望，等待 1 小時後方向更明確再行動'
     : '📌 操作建議：方向尚未明確確立，建議半倉試探或繼續觀望，等趨勢延續信號再加碼';
@@ -11897,12 +11898,12 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
 
   const actualSection = actualPublished
     ? `📌 <b>實際公布值：${actualPublished}</b>\n` +
-      (_actualDirLabel ? `${_actualDirLabel}\n` : '') +
+      (_actualDirLabel ? `<b>${_actualDirLabel}</b>\n` : '') +
       (_actualDirReason ? `💬 ${_actualDirReason}\n` : '')
     : '';
 
   const valueRef = ev.aiPred
-    ? `🤖 AI 預測值（事前）：${ev.aiPred}（信心 ${ev.aiConf || '--'}%）\n`
+    ? `🤖 AI 預測值（事前）：<b>${ev.aiPred}</b>（信心 ${ev.aiConf || '--'}%）\n`
     : '';
 
   const supportLines = [fgLine, domLine, _aiMatchLine].filter(Boolean).join('\n');
@@ -11917,8 +11918,8 @@ function sendPostEventAnalysis(ev, s, snap, fgNow, mktNow) {
     (supportLines ? supportLines + '\n' : '') +
     `\n🤖 <b>AI 分析</b>\n${ev.aiMarketImpact || '請依市場實際反應方向操作，等首根確認K棒收線後再決策。'}\n\n` +
     tradeRec + '\n\n' +
-    (ev.bullIf ? `📈 偏多情境：${ev.bullIf}\n` : '') +
-    (ev.bearIf ? `📉 偏空情境：${ev.bearIf}` : '');
+    (ev.bullIf ? `📈 偏多情境：<b>${ev.bullIf}</b>\n` : '') +
+    (ev.bearIf ? `📉 偏空情境：<b>${ev.bearIf}</b>` : '');
 
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
