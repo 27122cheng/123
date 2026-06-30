@@ -9660,18 +9660,6 @@ async function recordSignalsFromScan(data) {
     else if (_sqRRScan >= 1.3) { _scanSqFactors.push(`⚠️ R/R ${_sqRRScan.toFixed(1)}:1（可接受）`); }
     else { _scanSqScore -= 1; _scanSqFactors.push(`❌ R/R ${_sqRRScan.toFixed(1)}:1 不足 -1`); }
 
-    // ⑭ 風控分數 +2/+1/-1
-    if (_scanRisk.score <= 20)      { _scanSqScore += 2; _scanSqFactors.push(`✅ 風控優良（${_scanRisk.score}分）+2`); }
-    else if (_scanRisk.score <= 40) { _scanSqScore += 1; _scanSqFactors.push(`✅ 風控良好（${_scanRisk.score}分）+1`); }
-    else if (_scanRisk.score <= 54) { _scanSqFactors.push(`⚠️ 風控中等（${_scanRisk.score}分）`); }
-    else                             { _scanSqScore -= 1; _scanSqFactors.push(`❌ 風控偏高（${_scanRisk.score}分）-1`); }
-
-    // ⑮ 止損學習懲罰 -1
-    try {
-      const _ssLearn = applyLearnAdjustment(direction, parseFloat(coin.rsi)||50, _ssAdx, { slType:'atr', skipAdxRule:true });
-      if ((_ssLearn.penalty || 0) >= 20) { _scanSqScore -= 1; _scanSqFactors.push('❌ 止損AI警告（歷史高懲罰）-1'); }
-    } catch(_e) {}
-
     // ⑰ AI新聞 ±1
     try {
       const _ssIns = aiGenerateMarketInsights();
@@ -9976,21 +9964,10 @@ async function recordSignalsFromScan(data) {
       }
     }
 
-    // ⑭ 風控分數 +2/+1/-1（即時計算：門檻寬鬆（≤20/≤40/≥55），可偵測風控真正惡化）
-    try {
-      if (_rcSetup) {
-        const _rcRisk = computeFullRisk(_sqCoin, _rcSetup, _sqIsLong);
-        if (_rcRisk.score <= 20)      _sqRC += 2;
-        else if (_rcRisk.score <= 40) _sqRC += 1;
-        else if (_rcRisk.score >= 55) _sqRC -= 1;
-      }
-    } catch(_e) {}
-
-    // ⑮ 止損學習懲罰 -1（嚴重時；結果同步至 trade.learnPenalty 供持倉頁面即時顯示）
+    // ⑮ 止損學習懲罰（僅用於 conf 門檻同步，不調整 SQ 分）
     let _rcLearn = null;
     try {
       _rcLearn = applyLearnAdjustment(trade.direction, parseFloat(_sqCoin.rsi)||50, _rcAdx, { slType:'atr', skipAdxRule:true });
-      if ((_rcLearn.penalty || 0) >= 20) _sqRC -= 1;
     } catch(_e) {}
 
     // ⑰ AI新聞情緒 ±1
@@ -14739,9 +14716,8 @@ async function checkAndSendAlerts(data) {
         if ((notifSetup.techPenalty||0)===0) _qSq+=1; else if ((notifSetup.techPenalty||0)>=12) _qSq-=1;
         const _qRR = parseFloat(notifSetup.rr1)||0;
         if (_qRR>=2.0) _qSq+=1; else if (_qRR<1.3) _qSq-=1;
-        // ⑭ 風控分 ⑮ 止損學習
-        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);if(!notifSetup.riskScore){notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level;}if(_qRisk.score<=20)_qSq+=2;else if(_qRisk.score<=40)_qSq+=1;else if(_qRisk.score>=55)_qSq-=1; } catch(_e){}
-        if ((notifSetup.learnPenalty||0)>=20) _qSq-=1;
+        // ⑭⑮ 風控分/止損學習（僅供 conf 門檻使用，不調整 SQ 分）
+        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);if(!notifSetup.riskScore){notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level;} } catch(_e){}
         // ⑰ 新聞情緒 ⑱ 爆倉牆 ⑲ 數據事件 ⑳ 資金流
         try { const _qIns=aiGenerateMarketInsights();const _qBr=_qIns.filter(i=>i.sentiment==='bearish'||i.sentiment==='bear').length;const _qBl=_qIns.filter(i=>i.sentiment==='bullish'||i.sentiment==='bull').length;if(_qBr+_qBl>0){if(isLong?_qBl>_qBr:_qBr>_qBl)_qSq+=1;else if(isLong?_qBr>_qBl:_qBl>_qBr)_qSq-=1;} } catch(_e){}
         try { const _qLiq=_liquidationCache[coin.symbol];const _qP=parseFloat(coin.price)||0;if(_qLiq&&_qP>0){const _qW=isLong?(_qLiq.shortLiqs||[]).find(l=>l.price>_qP&&l.price<=_qP*1.12):(_qLiq.longLiqs||[]).find(l=>l.price<_qP&&l.price>=_qP*0.88);if(_qW)_qSq+=1;} } catch(_e){}
