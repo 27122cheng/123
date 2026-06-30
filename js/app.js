@@ -9986,9 +9986,10 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // ⑮ 止損學習懲罰 -1（嚴重時）
+    // ⑮ 止損學習懲罰 -1（嚴重時；結果同步至 trade.learnPenalty 供持倉頁面即時顯示）
+    let _rcLearn = null;
     try {
-      const _rcLearn = applyLearnAdjustment(trade.direction, parseFloat(_sqCoin.rsi)||50, _rcAdx, { slType:'atr', skipAdxRule:true });
+      _rcLearn = applyLearnAdjustment(trade.direction, parseFloat(_sqCoin.rsi)||50, _rcAdx, { slType:'atr', skipAdxRule:true });
       if ((_rcLearn.penalty || 0) >= 20) _sqRC -= 1;
     } catch(_e) {}
 
@@ -10090,9 +10091,10 @@ async function recordSignalsFromScan(data) {
       // SQ 通過 → 繼續監控 ② 風控分 ③ 風險評估
       if (!_sqCancelIds.has(trade.id)) {
         // ② 風控分（止損風控 + 風險評估扣分）< 60 → 取消
-        // 優先使用快取中的新鮮 learnPenalty（由 buildTradeSetup 更新），避免建單時的舊值影響計算
+        // 優先使用 ⑮ 的即時 learnPenalty（與 buildTradeSetup 同邏輯），確保持倉頁面顯示最新值
         const _rcCachedLp = _tradeSetupCache[_sqCoin.symbol]?.learnPenalty;
-        const _rcLearnPen = _rcCachedLp != null ? _rcCachedLp : (trade.learnPenalty || 0);
+        const _rcLearnPen = _rcLearn != null ? _rcLearn.penalty
+          : (_rcCachedLp != null ? _rcCachedLp : (trade.learnPenalty || 0));
         let _rcRiskPen = 0;
         try {
           // 傳入 pre-risk conf（還原風險扣分前的風控分），避免循環依賴
@@ -10120,8 +10122,9 @@ async function recordSignalsFromScan(data) {
             trade.conf = _rcConf;
             changed = true;
           }
-          if (_rcCachedLp != null && (trade.learnPenalty || 0) !== _rcCachedLp) {
-            trade.learnPenalty = _rcCachedLp;
+          // learnPenalty 同步（⑮ 即時值 > 快取 > 不更新），確保持倉頁面風控分顯示最新
+          if ((trade.learnPenalty || 0) !== _rcLearnPen) {
+            trade.learnPenalty = _rcLearnPen;
             changed = true;
           }
         }
