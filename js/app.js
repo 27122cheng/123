@@ -9957,18 +9957,14 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // ⑫ 技術面逆風 ±1（使用建單時儲存的 techPenalty，避免重算 computeSimpleSetup 導致即建即取消）
-    {
-      const _rcTechPen = trade.techPenalty != null
-        ? trade.techPenalty
-        : (_tradeSetupCache[_sqCoin.symbol]?.techPenalty ?? null);
-      if (_rcTechPen != null) {
-        if (_rcTechPen === 0) _sqRC += 1;
-        else if (_rcTechPen >= 12) _sqRC -= 1;
-      }
+    // ⑫ 技術面逆風 ±1（即時計算：RSI/MACD 指標改變時可真實偵測技術面惡化）
+    const _rcSetup = (() => { try { return computeSimpleSetup(_sqCoin, _sqIsLong); } catch(_e) { return null; } })();
+    if (_rcSetup) {
+      if (_rcSetup.techPenalty === 0) _sqRC += 1;
+      else if (_rcSetup.techPenalty >= 12) _sqRC -= 1;
     }
 
-    // ⑬ R/R ±1（從建單時固定的進場/止損/止盈計算，不受即時報價影響）
+    // ⑬ R/R ±1（使用建單時固定的 entry/sl/tp1：R/R 是掛單固有屬性，不因即時報價微動而改變）
     {
       const _rcEntry = parseFloat(trade.entry) || 0;
       const _rcSl    = parseFloat(trade.sl)    || 0;
@@ -9980,16 +9976,15 @@ async function recordSignalsFromScan(data) {
       }
     }
 
-    // ⑭ 風控分數 +2/+1/-1（使用建單時儲存的 riskScore，避免重算導致即建即取消）
-    {
-      const _rcRiskScore = trade.riskScore != null ? trade.riskScore
-        : (trade._notifyRisk?.riskScore != null ? trade._notifyRisk.riskScore : null);
-      if (_rcRiskScore != null) {
-        if (_rcRiskScore <= 20)      _sqRC += 2;
-        else if (_rcRiskScore <= 40) _sqRC += 1;
-        else if (_rcRiskScore >= 55) _sqRC -= 1;
+    // ⑭ 風控分數 +2/+1/-1（即時計算：門檻寬鬆（≤20/≤40/≥55），可偵測風控真正惡化）
+    try {
+      if (_rcSetup) {
+        const _rcRisk = computeFullRisk(_sqCoin, _rcSetup, _sqIsLong);
+        if (_rcRisk.score <= 20)      _sqRC += 2;
+        else if (_rcRisk.score <= 40) _sqRC += 1;
+        else if (_rcRisk.score >= 55) _sqRC -= 1;
       }
-    }
+    } catch(_e) {}
 
     // ⑮ 止損學習懲罰 -1（嚴重時）
     try {
