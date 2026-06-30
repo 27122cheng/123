@@ -9776,6 +9776,7 @@ async function recordSignalsFromScan(data) {
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
       conf: Math.max(0, (setup.conf || 0) - (_scanRiskPen || 0)), rawConf: setup.rawConf,
+      riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
       learnPenalty: setup.learnPenalty || 0,
@@ -9956,27 +9957,39 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // ⑫ 技術面逆風 ±1
-    const _rcSetup = (() => { try { return computeSimpleSetup(_sqCoin, _sqIsLong); } catch(_e) { return null; } })();
-    if (_rcSetup) {
-      if (_rcSetup.techPenalty === 0) _sqRC += 1;
-      else if (_rcSetup.techPenalty >= 12) _sqRC -= 1;
-
-      // ⑬ R/R ±1
-      const _rcRR = parseFloat(_rcSetup.rr1) || 0;
-      if (_rcRR >= 2.0) _sqRC += 1;
-      else if (_rcRR < 1.3) _sqRC -= 1;
+    // ⑫ 技術面逆風 ±1（使用建單時儲存的 techPenalty，避免重算 computeSimpleSetup 導致即建即取消）
+    {
+      const _rcTechPen = trade.techPenalty != null
+        ? trade.techPenalty
+        : (_tradeSetupCache[_sqCoin.symbol]?.techPenalty ?? null);
+      if (_rcTechPen != null) {
+        if (_rcTechPen === 0) _sqRC += 1;
+        else if (_rcTechPen >= 12) _sqRC -= 1;
+      }
     }
 
-    // ⑭ 風控分數 +2/+1/-1
-    try {
-      if (_rcSetup) {
-        const _rcRisk = computeFullRisk(_sqCoin, _rcSetup, _sqIsLong);
-        if (_rcRisk.score <= 20)      _sqRC += 2;
-        else if (_rcRisk.score <= 40) _sqRC += 1;
-        else if (_rcRisk.score >= 55) _sqRC -= 1;
+    // ⑬ R/R ±1（從建單時固定的進場/止損/止盈計算，不受即時報價影響）
+    {
+      const _rcEntry = parseFloat(trade.entry) || 0;
+      const _rcSl    = parseFloat(trade.sl)    || 0;
+      const _rcTp1   = parseFloat(trade.tp1)   || 0;
+      if (_rcEntry > 0 && _rcSl > 0 && _rcTp1 > 0) {
+        const _rcRR = Math.abs(_rcTp1 - _rcEntry) / Math.abs(_rcEntry - _rcSl);
+        if (_rcRR >= 2.0) _sqRC += 1;
+        else if (_rcRR < 1.3) _sqRC -= 1;
       }
-    } catch(_e) {}
+    }
+
+    // ⑭ 風控分數 +2/+1/-1（使用建單時儲存的 riskScore，避免重算導致即建即取消）
+    {
+      const _rcRiskScore = trade.riskScore != null ? trade.riskScore
+        : (trade._notifyRisk?.riskScore != null ? trade._notifyRisk.riskScore : null);
+      if (_rcRiskScore != null) {
+        if (_rcRiskScore <= 20)      _sqRC += 2;
+        else if (_rcRiskScore <= 40) _sqRC += 1;
+        else if (_rcRiskScore >= 55) _sqRC -= 1;
+      }
+    }
 
     // ⑮ 止損學習懲罰 -1（嚴重時）
     try {
