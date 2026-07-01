@@ -14656,10 +14656,19 @@ async function checkAndSendAlerts(data) {
             });
             notifSetup.learnPenalty = _lrN.penalty || 0;
           } catch(_lrE) {}
+          // 用還未扣風控分的 conf 計算 computeFullRisk（與 SQ Monitor 的 _rcPreRiskConf 邏輯完全一致）
+          // SQ monitor: _rcPreRiskConf = trade.conf + riskPenalty（還原成扣前）→ 傳入 computeFullRisk
+          // 這裡直接用 100 - learnPenalty 作為「扣前 conf」，避免因子1因 conf 值不同而產生不同風險分
+          const _preRiskConf = Math.max(0, 100 - Math.min(45, notifSetup.learnPenalty || 0));
+          try {
+            const _chkFreshRisk = computeFullRisk(coin, { ...notifSetup, conf: _preRiskConf }, isLong);
+            notifSetup.riskScore = _chkFreshRisk.score;
+            notifSetup.riskLevel = _chkFreshRisk.level;
+          } catch(_chkRE) {}
           // 風控分 = 100 - 止損風控 - 風險評估扣分（比例制）
           const _chkRiskPen = calcRiskPenalty(notifSetup.riskScore || 0);
           notifSetup.riskPenalty = _chkRiskPen;
-          notifSetup.conf = Math.max(0, Math.round(100 - Math.min(45, notifSetup.learnPenalty || 0)) - _chkRiskPen);
+          notifSetup.conf = _preRiskConf;
         } catch (e) { /* macro enrichment failed, keep simple conf */ }
       }
     }
@@ -14718,7 +14727,7 @@ async function checkAndSendAlerts(data) {
         const _qRR = parseFloat(notifSetup.rr1)||0;
         if (_qRR>=2.0) _qSq+=1; else if (_qRR<1.3) _qSq-=1;
         // ⑭⑮ 風控分/止損學習（僅供 conf 門檻使用，不調整 SQ 分）
-        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);if(!notifSetup.riskScore){notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level;} } catch(_e){}
+        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level; } catch(_e){}
         // ⑰ 新聞情緒 ⑱ 爆倉牆 ⑲ 數據事件 ⑳ 資金流
         try { const _qIns=aiGenerateMarketInsights();const _qBr=_qIns.filter(i=>i.sentiment==='bearish'||i.sentiment==='bear').length;const _qBl=_qIns.filter(i=>i.sentiment==='bullish'||i.sentiment==='bull').length;if(_qBr+_qBl>0){if(isLong?_qBl>_qBr:_qBr>_qBl)_qSq+=1;else if(isLong?_qBr>_qBl:_qBl>_qBr)_qSq-=1;} } catch(_e){}
         try { const _qLiq=_liquidationCache[coin.symbol];const _qP=parseFloat(coin.price)||0;if(_qLiq&&_qP>0){const _qW=isLong?(_qLiq.shortLiqs||[]).find(l=>l.price>_qP&&l.price<=_qP*1.12):(_qLiq.longLiqs||[]).find(l=>l.price<_qP&&l.price>=_qP*0.88);if(_qW)_qSq+=1;} } catch(_e){}
