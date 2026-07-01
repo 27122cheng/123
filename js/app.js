@@ -14727,7 +14727,8 @@ async function checkAndSendAlerts(data) {
         const _qRR = parseFloat(notifSetup.rr1)||0;
         if (_qRR>=2.0) _qSq+=1; else if (_qRR<1.3) _qSq-=1;
         // ⑭⑮ 風控分/止損學習（僅供 conf 門檻使用，不調整 SQ 分）
-        try { const _qRisk=computeFullRisk(coin,notifSetup,isLong);notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level; } catch(_e){}
+        // 傳入 PRE-risk conf（100 - learnPenalty），確保與 buildTradeSetup 及 SQ monitor 計算邏輯一致
+        try { const _qPRConf=Math.max(0,100-Math.min(45,notifSetup.learnPenalty||0));const _qRisk=computeFullRisk(coin,{...notifSetup,conf:_qPRConf},isLong);notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level; } catch(_e){}
         // ⑰ 新聞情緒 ⑱ 爆倉牆 ⑲ 數據事件 ⑳ 資金流
         try { const _qIns=aiGenerateMarketInsights();const _qBr=_qIns.filter(i=>i.sentiment==='bearish'||i.sentiment==='bear').length;const _qBl=_qIns.filter(i=>i.sentiment==='bullish'||i.sentiment==='bull').length;if(_qBr+_qBl>0){if(isLong?_qBl>_qBr:_qBr>_qBl)_qSq+=1;else if(isLong?_qBr>_qBl:_qBl>_qBr)_qSq-=1;} } catch(_e){}
         try { const _qLiq=_liquidationCache[coin.symbol];const _qP=parseFloat(coin.price)||0;if(_qLiq&&_qP>0){const _qW=isLong?(_qLiq.shortLiqs||[]).find(l=>l.price>_qP&&l.price<=_qP*1.12):(_qLiq.longLiqs||[]).find(l=>l.price<_qP&&l.price>=_qP*0.88);if(_qW)_qSq+=1;} } catch(_e){}
@@ -14752,9 +14753,10 @@ async function checkAndSendAlerts(data) {
     if (!_sqPassGate) continue;
 
     // ② 風控分 ≥ 60（止損風控 + 風險評估扣完後的最終值）
+    // 重建 PRE-risk conf（100 - learnPenalty），避免快取儲存的 conf 已是 POST-risk 導致雙重扣分
+    const _notifPreRiskConf = Math.max(0, 100 - Math.min(45, notifSetup.learnPenalty || 0));
     const _notifRPen = calcRiskPenalty(notifSetup.riskScore || 0);
-    const notifConf = Math.max(0,
-      (notifSetup.conf ?? Math.min(90, isLong ? coin.score : 100 - coin.score)) - _notifRPen);
+    const notifConf = Math.max(0, _notifPreRiskConf - _notifRPen);
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
     if (notifConf < 60) continue;
