@@ -9200,6 +9200,21 @@ function btcVolGuardBlocks(symbol) {
   return !String(symbol || '').startsWith('BTC');  // BTC 本身的訊號不受限
 }
 
+/* ── 真實 ATR14（Binance kline 陣列格式：k[2]=high k[3]=low k[4]=close）──
+   取代 computeSimpleSetup 內以 ADX 估算的波動率，讓止損/止盈貼近實際波動。 */
+function calcATR14FromKlines(klines) {
+  if (!Array.isArray(klines) || klines.length < 15) return 0;
+  const trs = [];
+  for (let i = Math.max(1, klines.length - 14); i < klines.length; i++) {
+    const h  = parseFloat(klines[i][2]);
+    const l  = parseFloat(klines[i][3]);
+    const pc = parseFloat(klines[i - 1][4]);
+    if (!(h > 0 && l > 0 && pc > 0)) continue;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  return trs.length >= 10 ? trs.reduce((s, v) => s + v, 0) / trs.length : 0;
+}
+
 /* ── 取消冷卻記錄（取代 cancelled 狀態的 trade，以便從持倉中刪除）*/
 const CANCEL_COOLDOWN_KEY = 'csp_cancel_cooldowns';
 function loadCancelCooldowns() { try { return JSON.parse(localStorage.getItem(CANCEL_COOLDOWN_KEY) || '[]'); } catch(e) { return []; } }
@@ -9498,6 +9513,8 @@ async function recordSignalsFromScan(data) {
   const _scanGates = getAdaptiveGates();
   // ── BTC 急波動保護：更新價格追蹤（每次掃描皆記錄）──
   updateBtcVolGuard(data);
+  // ── BTC 24h 漲跌幅（供 ㉓ 相對強弱因子使用，建單與監控迴圈共用）──
+  const _btcChg24 = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.change24h);
 
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 邏輯與 buildTradeSetup 記錄時完全一致
@@ -9526,7 +9543,7 @@ async function recordSignalsFromScan(data) {
     if (!isLong && (tBias === 'bull' || tBias === 'strong_bull')) continue;
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
-    const setup = computeSimpleSetup(coin, isLong);
+    let setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
     // 風控分最低門檻（100 分制，與幣種詳情頁一致；未達每日配額時自適應放寬）
@@ -9594,9 +9611,10 @@ async function recordSignalsFromScan(data) {
           }
         }
         // ICT 結構 + 圖形確認（需要多週期 K 線）→ 寫入 _tradeSetupCache 供 SQ ⑥⑯ 使用
+        // 注意：fetchMTFKlines 回傳欄位為 raw（僅 1h/4h 保留），非 rawCandles
         if (_sfMTF) {
-          const _sfR1h = _sfMTF['1h']?.rawCandles;
-          const _sfR4h = _sfMTF['4h']?.rawCandles;
+          const _sfR1h = _sfMTF['1h']?.raw;
+          const _sfR4h = _sfMTF['4h']?.raw;
           let _sfOB = null, _sfFVG = null, _sfOB4h = null, _sfFVG4h = null, _sfPat = null;
           try {
             if (_sfR1h?.length >= 5 && typeof detectOrderBlocks   === 'function') _sfOB   = detectOrderBlocks(_sfR1h, isLong);
@@ -9612,9 +9630,25 @@ async function recordSignalsFromScan(data) {
             chartPat: _sfPat,
             killZone: typeof computeKillZone === 'function' ? computeKillZone() : null,
           });
+          // 真實 ATR14（1h K 線）→ 供 computeSimpleSetup 取代 ADX 估算值，止損/止盈更貼近實際波動
+          const _sfAtr = calcATR14FromKlines(_sfR1h);
+          if (_sfAtr > 0) Object.assign(_tradeSetupCache[coin.symbol], { atrReal: _sfAtr, atrRealTs: Date.now() });
         }
         _scanFetchCache[coin.symbol] = { ts: _sfNow };
       } catch(_fe) { /* API 失敗時繼續評分，缺項因子不得分 */ }
+    }
+
+    // ── 真實 ATR 剛入快取且與估算值差異 >15% → 用真實波動率重建 setup 並覆核 R/R ──
+    {
+      const _atrReal = _tradeSetupCache[coin.symbol]?.atrReal || 0;
+      if (_atrReal > 0 && (setup.atr || 0) > 0 && Math.abs(_atrReal - setup.atr) / setup.atr > 0.15) {
+        const _setup2 = computeSimpleSetup(coin, isLong);
+        if (_setup2 && !_setup2.hardBlocked && !_setup2.rrBlocked && (parseFloat(_setup2.rr1) || 0) >= 1.3) {
+          setup = _setup2;
+        } else {
+          continue; // 真實波動率下 R/R 不足或被封鎖 → 放棄此訊號
+        }
+      }
     }
 
     // MACD 方向（僅供 SQ 評分使用）
@@ -9701,6 +9735,25 @@ async function recordSignalsFromScan(data) {
       if (isLong ? _ssTkr >= 1.08 : _ssTkr <= 0.92) { _scanSqScore += 1; _scanSqFactors.push(`✅ 訂單流同向（Taker ${_ssTkr.toFixed(2)}）+1`); }
       else if (isLong ? _ssTkr < 0.88 : _ssTkr > 1.12) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 訂單流逆向（Taker ${_ssTkr.toFixed(2)}）-1`); }
       else { _scanSqFactors.push(`⬜ 訂單流中性（Taker ${_ssTkr.toFixed(2)}）`); }
+    } catch(_e) {}
+
+    // ㉒ 資金費率 ±1（倉位擁擠度：費率極端偏正=多頭擁擠、極端偏負=軋空燃料）
+    try {
+      const _ssFr = coin.derivData?.fundingRate;
+      if (_ssFr != null && !isNaN(_ssFr) && Math.abs(_ssFr) >= 0.0005) {
+        const _ssFrCrowdLong = _ssFr > 0;  // 正費率 = 多頭付費 = 多頭擁擠
+        if (isLong ? !_ssFrCrowdLong : _ssFrCrowdLong) { _scanSqScore += 1; _scanSqFactors.push(`✅ 資金費率反向擁擠（${(_ssFr*100).toFixed(3)}%）有利 +1`); }
+        else { _scanSqScore -= 1; _scanSqFactors.push(`❌ 資金費率同向擁擠（${(_ssFr*100).toFixed(3)}%）-1`); }
+      }
+    } catch(_e) {}
+
+    // ㉓ 相對強弱 vs BTC ±1（只做多強於 BTC 的幣、只做空弱於 BTC 的幣）
+    try {
+      if (coin.symbol !== 'BTC/USDT' && !isNaN(_btcChg24)) {
+        const _ssRel = (parseFloat(coin.change24h) || 0) - _btcChg24;
+        if (isLong ? _ssRel >= 1.5 : _ssRel <= -1.5) { _scanSqScore += 1; _scanSqFactors.push(`✅ 相對強弱同向（vs BTC ${_ssRel >= 0 ? '+' : ''}${_ssRel.toFixed(1)}%）+1`); }
+        else if (isLong ? _ssRel <= -1.5 : _ssRel >= 1.5) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 相對強弱逆向（vs BTC ${_ssRel >= 0 ? '+' : ''}${_ssRel.toFixed(1)}%）-1`); }
+      }
     } catch(_e) {}
 
     // ⑨ 巨鯨籌碼 ±1
@@ -10000,6 +10053,24 @@ async function recordSignalsFromScan(data) {
       const _rcTkr = _sqCoin.derivData?.takerBuySell ?? 1;
       if (_sqIsLong ? _rcTkr >= 1.08 : _rcTkr <= 0.92) _sqRC += 1;
       else if (_sqIsLong ? _rcTkr < 0.88 : _rcTkr > 1.12) _sqRC -= 1;
+    } catch(_e) {}
+
+    // ㉒ 資金費率 ±1（與建單評分一致）
+    try {
+      const _rcFr = _sqCoin.derivData?.fundingRate;
+      if (_rcFr != null && !isNaN(_rcFr) && Math.abs(_rcFr) >= 0.0005) {
+        const _rcFrCrowdLong = _rcFr > 0;
+        if (_sqIsLong ? !_rcFrCrowdLong : _rcFrCrowdLong) _sqRC += 1; else _sqRC -= 1;
+      }
+    } catch(_e) {}
+
+    // ㉓ 相對強弱 vs BTC ±1（與建單評分一致）
+    try {
+      if (_sqCoin.symbol !== 'BTC/USDT' && !isNaN(_btcChg24)) {
+        const _rcRel = (parseFloat(_sqCoin.change24h) || 0) - _btcChg24;
+        if (_sqIsLong ? _rcRel >= 1.5 : _rcRel <= -1.5) _sqRC += 1;
+        else if (_sqIsLong ? _rcRel <= -1.5 : _rcRel >= 1.5) _sqRC -= 1;
+      }
     } catch(_e) {}
 
     // ⑨ 巨鯨籌碼 ±1（from whaleData）
@@ -14713,6 +14784,8 @@ async function checkAndSendAlerts(data) {
   const now     = Date.now();
   // 每日配額自適應門檻（與 recordSignalsFromScan 同一標準）
   const _alertGates = getAdaptiveGates();
+  // BTC 24h 漲跌幅（供 ㉓ 相對強弱因子使用）
+  const _alertBtcChg24 = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.change24h);
 
   for (const coin of data) {
     const isLong  = coin.score >= bullThr && (coin.trend === '強勢看漲' || coin.trend === '看漲');
@@ -14934,6 +15007,9 @@ async function checkAndSendAlerts(data) {
         try { const _qBB=coin.bb; if(_qBB){if(isLong?_qBB.walkingBull:_qBB.walkingBear)_qSq+=1;else if(isLong?_qBB.walkingBear:_qBB.walkingBull)_qSq-=1;} } catch(_e){}
         // ⑧ 訂單流 Taker ⑨ 巨鯨
         try { const _qTkr=coin.derivData?.takerBuySell??1;if(isLong?_qTkr>=1.08:_qTkr<=0.92)_qSq+=1;else if(isLong?_qTkr<0.88:_qTkr>1.12)_qSq-=1; } catch(_e){}
+        // ㉒ 資金費率 ㉓ 相對強弱 vs BTC（與建單評分一致）
+        try { const _qFr=coin.derivData?.fundingRate;if(_qFr!=null&&!isNaN(_qFr)&&Math.abs(_qFr)>=0.0005){const _qCl=_qFr>0;if(isLong?!_qCl:_qCl)_qSq+=1;else _qSq-=1;} } catch(_e){}
+        try { if(coin.symbol!=='BTC/USDT'&&!isNaN(_alertBtcChg24)){const _qRel=(parseFloat(coin.change24h)||0)-_alertBtcChg24;if(isLong?_qRel>=1.5:_qRel<=-1.5)_qSq+=1;else if(isLong?_qRel<=-1.5:_qRel>=1.5)_qSq-=1;} } catch(_e){}
         try { const _qWhl=coin.whaleData;if(_qWhl){if(isLong?(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=2):(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=2))_qSq+=1;else if(isLong?(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=3):(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=3))_qSq-=1;} } catch(_e){}
         // ⑫⑬ 技術面 + R/R
         if ((notifSetup.techPenalty||0)===0) _qSq+=1; else if ((notifSetup.techPenalty||0)>=12) _qSq-=1;
@@ -15192,8 +15268,12 @@ function computeSimpleSetup(coin, isLong) {
   const direction = isLong ? 'long' : 'short';
 
   // ── ATR 估算（ADX 調整波動率）──
-  const atrPct = adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009;
-  const atr    = price * atrPct;
+  // ATR：優先使用掃描快取的真實 ATR14（1h K 線，15 分鐘內有效），無快取時以 ADX 估算
+  const _atrCache = (typeof _tradeSetupCache !== 'undefined') ? _tradeSetupCache[coin.symbol] : null;
+  const _atrReal  = (_atrCache?.atrReal > 0 && Date.now() - (_atrCache.atrRealTs || 0) < 15 * 60 * 1000)
+    ? _atrCache.atrReal : 0;
+  const atr    = _atrReal > 0 ? _atrReal : price * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
+  const atrPct = atr / price;
 
   // ── Kill Zone：高品質時段收緊進場容忍度 ──
   const _kzNow  = computeKillZone();
