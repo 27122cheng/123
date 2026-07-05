@@ -9143,16 +9143,61 @@ function countSignalsToday() {
       (t.timestamp || 0) >= d0.getTime() && t.tradeType !== 'range').length;
   } catch(_e) { return 0; }
 }
+/* 放寬單自動熔斷：放寬門檻建的單累積 ≥12 筆完結後，勝率 < 45% → 自動停用放寬，
+   回到嚴格門檻（45% 約為 R/R 1.3 下的損益兩平勝率）。資料好轉（勝率回升）會自動解除。 */
+function relaxedCohortUnderperforms() {
+  try {
+    const closed = loadTradeLog().filter(t =>
+      t.status === 'closed' && (t.sqGate ?? 9) < 9);
+    if (closed.length < 12) return false;
+    const wins = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
+    return (wins / closed.length * 100) < 45;
+  } catch(_e) { return false; }
+}
 function getAdaptiveGates() {
   const strict = { minConf: 60, minSq: 9, relaxed: false, label: '' };
   try {
     const n = countSignalsToday();
     if (n >= DAILY_SIGNAL_TARGET) return strict;
+    if (relaxedCohortUnderperforms()) return strict;  // 放寬單歷史勝率不佳 → 熔斷
     const h = new Date().getHours();  // 本地時間
     if (h >= 18) return { minConf: 55, minSq: 7, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬（SQ≥7、風控分≥55）` };
     if (h >= 12) return { minConf: 58, minSq: 8, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥8、風控分≥58）` };
     return strict;
   } catch(_e) { return strict; }
+}
+
+/* ── BTC 急波動保護 ──────────────────────────────────────────────
+   BTC 5 分鐘內波動 ≥1.5% 時，暫停山寨幣新單 15 分鐘（BTC 本身不受限）。
+   山寨訊號在 BTC 急波動期間最容易被掃損，此守門僅擋「新建單」，不影響既有持倉監控。 */
+const _btcPriceHist = [];   // {ts, p}，保留 20 分鐘
+let _btcVolGuardUntil = 0;
+function updateBtcVolGuard(data) {
+  try {
+    const btc = data?.find(d => d.symbol === 'BTC/USDT');
+    const p = parseFloat(btc?.price) || 0;
+    if (!p) return;
+    const now = Date.now();
+    _btcPriceHist.push({ ts: now, p });
+    while (_btcPriceHist.length && now - _btcPriceHist[0].ts > 20 * 60 * 1000) _btcPriceHist.shift();
+    const win = _btcPriceHist.filter(h => now - h.ts <= 5 * 60 * 1000);
+    if (win.length < 2) return;
+    const hi = Math.max(...win.map(h => h.p));
+    const lo = Math.min(...win.map(h => h.p));
+    const movePct = lo > 0 ? (hi - lo) / lo * 100 : 0;
+    if (movePct >= 1.5) {
+      const wasInactive = now > _btcVolGuardUntil;
+      _btcVolGuardUntil = now + 15 * 60 * 1000;
+      if (wasInactive) {
+        console.log(`[btc-vol-guard] BTC 5分鐘波動 ${movePct.toFixed(2)}%，暫停山寨幣新單 15 分鐘`);
+        try { if (typeof showToast === 'function') showToast(`⚡ BTC 5分鐘急波動 ${movePct.toFixed(1)}%，山寨幣新單暫停 15 分鐘`, 'warning'); } catch(_t) {}
+      }
+    }
+  } catch(_e) {}
+}
+function btcVolGuardBlocks(symbol) {
+  if (Date.now() > _btcVolGuardUntil) return false;
+  return !String(symbol || '').startsWith('BTC');  // BTC 本身的訊號不受限
 }
 
 /* ── 取消冷卻記錄（取代 cancelled 狀態的 trade，以便從持倉中刪除）*/
@@ -9451,6 +9496,8 @@ async function recordSignalsFromScan(data) {
 
   // ── 每日配額自適應門檻（今日訊號 < 3 時於午後起小幅放寬軟門檻）──
   const _scanGates = getAdaptiveGates();
+  // ── BTC 急波動保護：更新價格追蹤（每次掃描皆記錄）──
+  updateBtcVolGuard(data);
 
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 邏輯與 buildTradeSetup 記錄時完全一致
@@ -9470,6 +9517,9 @@ async function recordSignalsFromScan(data) {
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
     if (hasOpen) continue;
     if (inCooldown(tlog, coin.symbol, direction)) continue;
+
+    // BTC 急波動保護：暫停山寨幣新單
+    if (btcVolGuardBlocks(coin.symbol)) continue;
 
     // 今日 AI 反向 → 無論信心度一律封鎖；週預測信心<70 僅作參考
     if (isLong  && (tBias === 'bear' || tBias === 'strong_bear')) continue;
@@ -13630,6 +13680,74 @@ function filterPositionCards(query) {
   }
 }
 
+/* ── 分組勝率統計（回饋閉環：驗證各類訊號實際表現，供調參依據）── */
+function buildWinRateBreakdown(closed) {
+  if (!closed.length) return '';
+  const seg = (name, arr) => {
+    const wins = arr.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
+    const netR = arr.reduce((s, t) => s + (parseFloat(t.pnlR) || 0), 0);
+    return { name, n: arr.length, wr: arr.length ? wins / arr.length * 100 : 0, netR };
+  };
+  const groups = [
+    { title: '建單門檻', rows: [
+      seg('嚴格門檻單（SQ≥9）', closed.filter(t => (t.sqGate ?? 9) >= 9)),
+      seg('放寬門檻單（SQ<9）', closed.filter(t => (t.sqGate ?? 9) < 9)),
+    ]},
+    { title: '方向', rows: [
+      seg('做多', closed.filter(t => t.direction === 'long')),
+      seg('做空', closed.filter(t => t.direction === 'short')),
+    ]},
+    { title: '類型', rows: [
+      seg('長線單', closed.filter(t => t.canScaleIn === true || t.isLongTerm === true)),
+      seg('短線單', closed.filter(t => !(t.canScaleIn === true || t.isLongTerm === true))),
+    ]},
+    { title: 'SQ 等級', rows: [
+      seg('S 級以上', closed.filter(t => ['SSS','SS','S'].includes(t.sqGrade))),
+      seg('A 級',     closed.filter(t => t.sqGrade === 'A')),
+      seg('B 級以下', closed.filter(t => t.sqGrade && !['SSS','SS','S','A'].includes(t.sqGrade))),
+    ]},
+    { title: '進場時段', rows: [
+      seg('倫敦盤', closed.filter(t => t.entryKillZone === 'london')),
+      seg('紐約盤', closed.filter(t => t.entryKillZone === 'ny')),
+      seg('亞洲盤', closed.filter(t => t.entryKillZone === 'asia')),
+      seg('其他時段', closed.filter(t => t.entryKillZone === 'other')),
+    ]},
+  ];
+  const rowsHtml = groups.map(g => {
+    const rows = g.rows.filter(r => r.n > 0);
+    if (!rows.length) return '';
+    return rows.map((r, i) => {
+      const wrColor = r.wr >= 50 ? 'var(--bull)' : r.wr >= 40 ? '#f59e0b' : 'var(--bear)';
+      const rColor  = r.netR > 0 ? 'var(--bull)' : r.netR < 0 ? 'var(--bear)' : 'var(--text3)';
+      return `<tr>
+        <td style="color:var(--text3);font-size:0.72rem">${i === 0 ? g.title : ''}</td>
+        <td>${r.name}</td>
+        <td style="text-align:right">${r.n}</td>
+        <td style="text-align:right;font-weight:700;color:${wrColor}">${r.wr.toFixed(1)}%</td>
+        <td style="text-align:right;font-weight:600;color:${rColor}">${r.netR > 0 ? '+' : ''}${r.netR.toFixed(2)} R</td>
+      </tr>`;
+    }).join('');
+  }).join('');
+  const relaxedNote = relaxedCohortUnderperforms()
+    ? `<div style="margin-top:6px;font-size:0.72rem;color:#f59e0b">⚠️ 放寬門檻單勝率低於 45%（樣本≥12），自適應放寬已自動熔斷，恢復嚴格門檻建單</div>`
+    : '';
+  return `<details class="tl-breakdown" style="margin:10px 0;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 14px">
+    <summary style="cursor:pointer;font-size:0.82rem;font-weight:600;color:var(--text2)">📊 分組勝率分析（點擊展開）</summary>
+    <div style="overflow-x:auto;margin-top:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+        <thead><tr style="color:var(--text3);font-size:0.72rem;text-align:left">
+          <th style="padding:4px 6px"></th><th style="padding:4px 6px">組別</th>
+          <th style="padding:4px 6px;text-align:right">筆數</th>
+          <th style="padding:4px 6px;text-align:right">勝率</th>
+          <th style="padding:4px 6px;text-align:right">累計 R</th>
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    ${relaxedNote}
+  </details>`;
+}
+
 /* ── 交易記錄頁面渲染 ─────────────────────────────────────────── */
 let _tlFilter = 'all';
 
@@ -13795,6 +13913,8 @@ function renderTradeLogPage() {
       <span style="color:var(--text3);font-size:0.7rem">（網站更新/清除記錄均不影響）</span>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-ghost" onclick="exportFullBackup()" style="font-size:0.8rem">💾 完整備份</button>
+      <button class="btn-ghost" onclick="importFullBackup()" style="font-size:0.8rem">📂 還原備份</button>
       <button class="btn-ghost" onclick="exportAIMemory()" style="font-size:0.8rem">📤 匯出 AI 記憶</button>
       <button class="btn-ghost" onclick="importAIMemory()" style="font-size:0.8rem">📥 匯入 AI 記憶</button>
       <button class="tl-clear-btn" onclick="clearTradeLog()">清除記錄</button>
@@ -13809,6 +13929,7 @@ function renderTradeLogPage() {
       </div>
     </div>
     ${statsHtml}
+    ${buildWinRateBreakdown(closed)}
     ${filterHtml}
     ${tableHtml}
     ${learnHtml}
@@ -13829,6 +13950,56 @@ function clearTradeLog() {
   invalidateLearnCache();
   renderTradeLogPage();
   showToast('交易記錄已清除（AI 記憶已保留）', 'info');
+}
+
+/* ── 完整備份匯出 / 匯入 ─────────────────────────────────────────
+   涵蓋所有 csp_* 鍵（交易紀錄、設定、AI 記憶、冷卻狀態…）+ AI 預測學習資料。
+   防止清除瀏覽器資料時遺失交易歷史與學習引擎記憶，也可用於跨裝置搬移。 */
+const _BACKUP_EXTRA_KEYS = ['ai_bias_learning'];
+function exportFullBackup() {
+  try {
+    const backup = { _type: 'csp_full_backup', _version: 1, _exportedAt: new Date().toISOString(), data: {} };
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('csp_') || _BACKUP_EXTRA_KEYS.includes(k))) {
+        backup.data[k] = localStorage.getItem(k);
+      }
+    }
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `csp_full_backup_${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`完整備份已匯出（${Object.keys(backup.data).length} 個項目）`, 'success');
+  } catch(_e) { showToast('備份匯出失敗：' + _e.message, 'error'); }
+}
+function importFullBackup() {
+  const input = document.createElement('input');
+  input.type  = 'file';
+  input.accept = '.json';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const backup = JSON.parse(ev.target.result);
+        if (backup._type !== 'csp_full_backup' || !backup.data) throw new Error('不是有效的完整備份檔');
+        const count = Object.keys(backup.data).length;
+        if (!confirm(`確定要還原備份嗎？（${backup._exportedAt?.slice(0,10) || '未知日期'}，${count} 個項目）\n\n⚠️ 將覆蓋現有的交易紀錄、設定與 AI 記憶。`)) return;
+        for (const [k, v] of Object.entries(backup.data)) {
+          if (typeof v === 'string') localStorage.setItem(k, v);
+        }
+        try { invalidateLearnCache(); } catch(_i) {}
+        showToast(`備份已還原（${count} 個項目），頁面將重新載入`, 'success');
+        setTimeout(() => location.reload(), 1200);
+      } catch(_pe) { showToast('備份還原失敗：' + _pe.message, 'error'); }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
 }
 
 /* ── AI 記憶匯出 / 匯入 ─────────────────────────────────────────── */
@@ -14580,6 +14751,9 @@ async function checkAndSendAlerts(data) {
         continue;
       }
     } catch(_e) {}
+
+    // BTC 急波動保護：暫停山寨幣新單（放在既有掛單處理之後，不影響 Telegram 補發）
+    if (btcVolGuardBlocks(coin.symbol)) continue;
 
     // 準備 setup（優先用快取，fallback 補上 macro+AI 扣分的完整版本）
     let notifSetup = _tradeSetupCache[coin.symbol] || null;
