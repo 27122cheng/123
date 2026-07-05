@@ -9128,6 +9128,33 @@ const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內
 function loadTradeLog() { try { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); } catch(e) { return []; } }
 function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
 
+/* ── 每日訊號配額自適應門檻 ──────────────────────────────────
+   目標：每天至少 3 個高勝率訊號。
+   已達標 → 維持嚴格門檻（SQ ≥ 9/A 級、風控分 ≥ 60）；
+   未達標 → 隨當日時間推進小幅放寬「軟門檻」，讓最接近達標的優質候選通過。
+   硬性條件永不放寬：4H+15m 同向、AI 硬封鎖、R/R ≥ 1.3、今日 AI 反向封鎖、趨勢反向預檢。
+   建單時把使用的門檻存在 trade 上（confGate/sqGate），SQ 監控用同一門檻覆核，
+   避免「寬鬆建單、嚴格取消」的建了又取消問題。 */
+const DAILY_SIGNAL_TARGET = 3;
+function countSignalsToday() {
+  try {
+    const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+    return loadTradeLog().filter(t =>
+      (t.timestamp || 0) >= d0.getTime() && t.tradeType !== 'range').length;
+  } catch(_e) { return 0; }
+}
+function getAdaptiveGates() {
+  const strict = { minConf: 60, minSq: 9, relaxed: false, label: '' };
+  try {
+    const n = countSignalsToday();
+    if (n >= DAILY_SIGNAL_TARGET) return strict;
+    const h = new Date().getHours();  // 本地時間
+    if (h >= 18) return { minConf: 55, minSq: 7, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬（SQ≥7、風控分≥55）` };
+    if (h >= 12) return { minConf: 58, minSq: 8, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥8、風控分≥58）` };
+    return strict;
+  } catch(_e) { return strict; }
+}
+
 /* ── 取消冷卻記錄（取代 cancelled 狀態的 trade，以便從持倉中刪除）*/
 const CANCEL_COOLDOWN_KEY = 'csp_cancel_cooldowns';
 function loadCancelCooldowns() { try { return JSON.parse(localStorage.getItem(CANCEL_COOLDOWN_KEY) || '[]'); } catch(e) { return []; } }
@@ -9422,9 +9449,12 @@ async function recordSignalsFromScan(data) {
   const _wNeutral = !wBias.includes('bull') && !wBias.includes('bear') || wbRangeMode;
   const _tNeutral = !tBias.includes('bull') && !tBias.includes('bear') || tbRangeMode;
 
+  // ── 每日配額自適應門檻（今日訊號 < 3 時於午後起小幅放寬軟門檻）──
+  const _scanGates = getAdaptiveGates();
+
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 邏輯與 buildTradeSetup 記錄時完全一致
-  // 條件：幣種有明確方向（score ≠ 50）+ 無活躍倉位 + 無冷卻 + 風控分 ≥ 50% + SQ 評分 B+
+  // 條件：幣種有明確方向（score ≠ 50）+ 無活躍倉位 + 無冷卻 + 風控分達門檻 + SQ 達門檻
   // 長線升級：日線 + 週線均同向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
@@ -9449,8 +9479,8 @@ async function recordSignalsFromScan(data) {
     const setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
-    // 風控分最低門檻（100 分制，與幣種詳情頁一致）
-    if ((setup.conf || 0) < 60) continue;
+    // 風控分最低門檻（100 分制，與幣種詳情頁一致；未達每日配額時自適應放寬）
+    if ((setup.conf || 0) < _scanGates.minConf) continue;
     // 週預測信心≥70 且強衝突（週強多+日強空 或 週強空+日強多）→ 硬封鎖；信心<70 僅作參考
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
     if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
@@ -9465,9 +9495,9 @@ async function recordSignalsFromScan(data) {
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
     } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
-    // 風險評估扣分（比例制）：扣後風控分低於 60 → 跳過
+    // 風險評估扣分（比例制）：扣後風控分低於門檻 → 跳過
     const _scanRiskPen = calcRiskPenalty(_scanRisk.score);
-    if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < 60) continue;
+    if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < _scanGates.minConf) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     let canScaleIn = setup.isLongTerm === true;
@@ -9731,15 +9761,16 @@ async function recordSignalsFromScan(data) {
                        : _scanSqScore >= 6  ? 'B'
                        : _scanSqScore >= 3  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
-    // 長線單 S 以上；短線單 A 以上（與 buildTradeSetup + SQ 監控完全一致）
-    // 若長線單 SQ 未達 S 級但達 A 級，降格為短線單繼續建單
+    // 長線單 S 以上；短線單以自適應 SQ 門檻判斷（預設 9/A 級，未達每日配額時放寬）
+    // 若長線單 SQ 未達 S 級但達短線門檻，降格為短線單繼續建單
     if (canScaleIn && !['SSS','SS','S'].includes(_scanSqGrade)) {
-      if (!['SSS','SS','S','A'].includes(_scanSqGrade)) continue; // 短線也不達標 → 跳過
+      if (_scanSqScore < _scanGates.minSq) continue; // 短線也不達標 → 跳過
       canScaleIn = false; // 降格為短線單
       _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（15分），已降格為短線單`);
-    } else if (!canScaleIn && !['SSS','SS','S','A'].includes(_scanSqGrade)) {
+    } else if (!canScaleIn && _scanSqScore < _scanGates.minSq) {
       continue; // 短線單也不達標
     }
+    if (_scanGates.relaxed) _scanSqFactors.push(`ℹ️ ${_scanGates.label}`);
 
     // 短線單趨勢預檢：若趨勢已反向，建單後 updateOpenTrades 的 trendReversed 會立即取消，
     // 預先攔截，避免同秒建立後馬上取消（與 updateOpenTrades trendReversed 判斷完全一致）
@@ -9804,6 +9835,7 @@ async function recordSignalsFromScan(data) {
       longTermBias: null, canScaleIn,
       scaleIns: [], peakPrice: null,
       sqGrade: _scanSqGrade, sqScore: _scanSqScore, sqGradeLabel: _scanSqLabel, sqFactors: _scanSqFactors,
+      confGate: _scanGates.minConf, sqGate: _scanGates.minSq,  // 建單時的門檻，SQ 監控覆核用同一標準
     };
     // 若現價已超過進場位 0.3%，標記為等待回踩
     const _scanCurPrice = parseFloat(coin.price) || 0;
@@ -9821,7 +9853,7 @@ async function recordSignalsFromScan(data) {
     changed = true;
     const _tLabel = canScaleIn ? '長線單' : '短線單';
     const _tIcon  = canScaleIn ? '💎' : '📡';
-    try { if (typeof showToast === 'function') showToast(`${_tIcon} ${_tLabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 風控分 ${setup.conf} 分，已加入持倉`, 'success'); } catch(_te) {}
+    try { if (typeof showToast === 'function') showToast(`${_tIcon} ${_tLabel}：${coin.symbol} ${isLong ? '▲做多' : '▼做空'} 風控分 ${newTrade.conf} 分，已加入持倉`, 'success'); } catch(_te) {}
     // 建單即時發送 Telegram（條件在掃描時已完整驗證，不需延遲）
     try {
       const _scanNs = loadSettings();
@@ -10042,11 +10074,13 @@ async function recordSignalsFromScan(data) {
                    : _sqRC >= 3  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
-    // 長線單門檻 S；短線單門檻 A（與 buildTradeSetup 一致）
-    // 長線單 SQ 降至 A 級（≥A <S）→ 降級為短線單繼續持有；< A 才取消
-    const _rcMinGrades = trade.canScaleIn ? ['SSS','SS','S'] : ['SSS','SS','S','A'];
-    if (!_rcMinGrades.includes(_rcGrade)) {
-      if (trade.canScaleIn && _rcGrade === 'A') {
+    // 長線單門檻 S（15分）；短線單門檻 = 建單時存的 sqGate（預設 9/A 級）− 1 分緩衝
+    // 緩衝目的：臨界分數的正常波動不應反覆觸發建立→取消
+    // 長線單 SQ 降至短線門檻以上但 < S → 降級為短線單繼續持有；低於短線門檻才取消
+    const _rcSqGate = Math.max(3, (trade.sqGate ?? 9) - 1);
+    const _rcSqPass = trade.canScaleIn ? _sqRC >= 15 : _sqRC >= _rcSqGate;
+    if (!_rcSqPass) {
+      if (trade.canScaleIn && _sqRC >= _rcSqGate) {
         // 長線 → 短線降級
         trade.canScaleIn = false;
         trade.sqGrade = _rcGrade; trade.sqScore = _sqRC;
@@ -10054,9 +10088,9 @@ async function recordSignalsFromScan(data) {
         changed = true;
         const _downgradeReason = `訊號品質降至 ${_rcGrade} 級（${_sqRC}分），由長線單降級為短線單繼續監控`;
         try { sendCancelTelegramNotification(trade, _downgradeReason); } catch(_n) {}
-        try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} SQ 降至 A 級，長線單降格為短線單`, 'warning'); } catch(_t) {}
+        try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} SQ 降至 ${_rcGrade} 級，長線單降格為短線單`, 'warning'); } catch(_t) {}
       } else {
-        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S' : 'A'} 級要求，自動取消掛單`;
+        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（15分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`;
         addCancelCooldown(trade, _sqCancelReason);
         _sqCancelIds.add(trade.id);
         changed = true;
@@ -10074,8 +10108,8 @@ async function recordSignalsFromScan(data) {
           : (_rcCachedLp != null ? _rcCachedLp : (trade.learnPenalty || 0));
         let _rcRiskPen = 0;
         try {
-          // 傳入 pre-risk conf（還原風險扣分前的風控分），避免循環依賴
-          const _rcPreRiskConf = Math.min(100, (trade.conf || 60) + (trade.riskPenalty || 0));
+          // 傳入 pre-risk conf（100 - 止損風控，與建單三路徑完全同一公式），避免循環依賴
+          const _rcPreRiskConf = Math.max(0, 100 - Math.min(45, _rcLearnPen));
           const _rcRisk = computeFullRisk(_sqCoin, { ...trade, conf: _rcPreRiskConf }, _sqIsLong);
           _rcRiskPen = calcRiskPenalty(_rcRisk.score);
           // 更新 trade 上的風險記錄（供 Telegram 明細使用）
@@ -10085,14 +10119,16 @@ async function recordSignalsFromScan(data) {
           trade.riskPenalty = _rcRiskPen;
         } catch(_rcRiskE) {}
         const _rcConf = Math.max(0, 100 - Math.min(45, _rcLearnPen) - _rcRiskPen);
-        if (_rcConf < 60) {
+        // 取消門檻 = 建單門檻（confGate，預設 60）− 2 分緩衝：臨界分數的正常波動不觸發取消
+        const _rcConfGate = Math.max(0, (trade.confGate ?? 60) - 2);
+        if (_rcConf < _rcConfGate) {
           const _riskDesc = _rcRiskPen > 0 ? `，風險評估扣分 -${_rcRiskPen}（${trade.riskLevel || ''} ${trade.riskScore || 0}/100）` : '';
-          const _confCancel = `風控分降至 ${_rcConf} 分（止損風控 -${_rcLearnPen}${_riskDesc}），低於 60 分門檻，自動取消掛單`;
+          const _confCancel = `風控分降至 ${_rcConf} 分（止損風控 -${_rcLearnPen}${_riskDesc}），低於 ${_rcConfGate} 分門檻，自動取消掛單`;
           addCancelCooldown(trade, _confCancel);
           _sqCancelIds.add(trade.id);
           changed = true;
           try { sendCancelTelegramNotification(trade, _confCancel); } catch(_n) {}
-          try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 風控分 ${_rcConf}分 < 60，自動取消掛單`, 'warning'); } catch(_t) {}
+          try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} 風控分 ${_rcConf}分 < ${_rcConfGate}，自動取消掛單`, 'warning'); } catch(_t) {}
         }
         if (!_sqCancelIds.has(trade.id)) {
           if (Math.abs((trade.conf || 0) - _rcConf) >= 1) {
@@ -10993,18 +11029,19 @@ function updateOpenTrades(data) {
         const _pntCoin = data?.find(d => d.symbol === _pnt.symbol) || { symbol: _pnt.symbol, price: _pnt.entryPrice };
 
         // 發通知前重算風控分，防止「建單→立即取消」的情況：
-        // checkAndSendAlerts 建單時 learnPenalty/risk 可能較低，發通知時重算若已不足 60 分則靜默取消
+        // checkAndSendAlerts 建單時 learnPenalty/risk 可能較低，發通知時重算若已低於建單門檻則靜默取消
         try {
-          const _pntPreRiskConf = Math.min(100, (_pnt.conf || 60) + (_pnt.riskPenalty || 0));
+          const _pntLP = _pnt.learnPenalty || 0;
+          // pre-risk conf 用與建單三路徑完全同一公式（100 - 止損風控）重建
+          const _pntPreRiskConf = Math.max(0, 100 - Math.min(45, _pntLP));
           const _pntFR = computeFullRisk(_pntCoin, { ..._pnt, conf: _pntPreRiskConf }, _pnt.direction === 'long');
           const _pntRP = calcRiskPenalty(_pntFR.score);
-          const _pntLP = _pnt.learnPenalty || 0;
-          const _pntFC = Math.max(0, 100 - Math.min(45, _pntLP) - _pntRP);
+          const _pntFC = Math.max(0, _pntPreRiskConf - _pntRP);
           _pnt.riskScore   = _pntFR.score;
           _pnt.riskLevel   = _pntFR.level;
           _pnt.riskPenalty = _pntRP;
           _pnt.conf        = _pntFC;
-          if (_pntFC < 60) {
+          if (_pntFC < (_pnt.confGate ?? 60)) {
             _pnt.pendingNotify = false;
             toDeleteIds.add(_pnt.id);
             changed = true;
@@ -11012,7 +11049,7 @@ function updateOpenTrades(data) {
           }
         } catch (_pntRE) {}
 
-        // 交易通過最新風控分≥60 驗證，推送通知
+        // 交易通過最新風控分驗證，推送通知
         // Telegram 通知
         if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
           try {
@@ -14503,6 +14540,8 @@ async function checkAndSendAlerts(data) {
   const prev    = JSON.parse(localStorage.getItem(SIGNAL_CACHE_KEY) || '{}');
   const next    = { ...prev }; // 保留舊記錄，只更新有訊號的幣
   const now     = Date.now();
+  // 每日配額自適應門檻（與 recordSignalsFromScan 同一標準）
+  const _alertGates = getAdaptiveGates();
 
   for (const coin of data) {
     const isLong  = coin.score >= bullThr && (coin.trend === '強勢看漲' || coin.trend === '看漲');
@@ -14748,18 +14787,20 @@ async function checkAndSendAlerts(data) {
     // AI 風控攔截 或 方向=觀望 或 R/R 不足 → 完全不通知
     if (notifSetup.hardBlocked || notifSetup.direction === 'wait' || notifSetup.rrBlocked) continue;
 
-    // ① SQ 21因子 ≥ A 級（訊號品質門檻，最先判斷）
-    const _sqPassGate = ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
+    // ① SQ 21因子達門檻（預設 9/A 級，未達每日配額時自適應放寬；訊號品質門檻，最先判斷）
+    const _sqPassGate = (notifSetup.sqScore != null)
+      ? notifSetup.sqScore >= _alertGates.minSq
+      : ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
     if (!_sqPassGate) continue;
 
-    // ② 風控分 ≥ 60（止損風控 + 風險評估扣完後的最終值）
+    // ② 風控分達門檻（止損風控 + 風險評估扣完後的最終值；預設 60，未達每日配額時自適應放寬）
     // 重建 PRE-risk conf（100 - learnPenalty），避免快取儲存的 conf 已是 POST-risk 導致雙重扣分
     const _notifPreRiskConf = Math.max(0, 100 - Math.min(45, notifSetup.learnPenalty || 0));
     const _notifRPen = calcRiskPenalty(notifSetup.riskScore || 0);
     const notifConf = Math.max(0, _notifPreRiskConf - _notifRPen);
     const rawConfVal = notifSetup.rawConf
       ?? Math.min(90, isLong ? coin.score : 100 - coin.score);
-    if (notifConf < 60) continue;
+    if (notifConf < _alertGates.minConf) continue;
 
     // 所有條件驗證通過 → 先建立持倉掛單（pendingNotify=true）
     // Telegram 通知由 updateOpenTrades 在確認掛單存活後統一發送，確保建單在前、通知在後
@@ -14799,6 +14840,7 @@ async function checkAndSendAlerts(data) {
           scaleIns: [], peakPrice: null,
           sqGrade: notifSetup.sqGrade || null, sqScore: notifSetup.sqScore ?? null,
           sqGradeLabel: notifSetup.sqGradeLabel || null,
+          confGate: _alertGates.minConf, sqGate: _alertGates.minSq,  // 建單門檻，SQ 監控覆核用同一標準
           telegramSent: false,
           pendingNotify: true,
           _notifyRisk: {
