@@ -4924,6 +4924,34 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   </div>
   `; })()}
 
+  <!-- ═══ VWAP 位置分析 ═══ -->
+  ${(() => {
+    const _vwFP = (typeof _footprintCache !== 'undefined') ? _footprintCache[coin.symbol] : null;
+    const _vw = _vwFP?.vwap;
+    if (!(_vw > 0 && price > 0)) return '';
+    const _vwDev = (price - _vw) / _vw;
+    const _vwAbove = _vwDev >= 0;
+    const _vwExt = isLong ? _vwDev > 0.025 : _vwDev < -0.025;   // 順方向過度延伸
+    const _vwCtrl = isLong ? _vwAbove : !_vwAbove;              // 日內多空掌控與進場方向一致
+    const _vwColor = _vwExt ? '#f59e0b' : _vwCtrl ? '#22c55e' : '#ef4444';
+    const _vwLabel = _vwExt ? '過度延伸' : _vwCtrl ? (isLong ? '多頭掌控' : '空頭掌控') : (isLong ? '空頭掌控' : '多頭掌控');
+    const _vwDesc = _vwExt
+      ? `價格偏離 VWAP ${(Math.abs(_vwDev)*100).toFixed(2)}%，均值回歸風險高，建議等回踩 VWAP $${fmtPrice(_vw)} 再進場`
+      : _vwCtrl
+        ? `價格在 VWAP ${_vwAbove ? '上' : '下'}方 ${(Math.abs(_vwDev)*100).toFixed(2)}%，日內${isLong ? '買' : '賣'}方掌控，與進場方向一致`
+        : `價格在 VWAP ${_vwAbove ? '上' : '下'}方，日內${_vwAbove ? '買' : '賣'}方掌控，與${isLong ? '做多' : '做空'}方向相反，謹慎進場`;
+    return `<div style="margin:10px 0;padding:12px 16px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-left:3px solid ${_vwColor};border-radius:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <span style="font-size:0.78rem;font-weight:600;color:var(--text2);letter-spacing:.5px">⚖️ VWAP 位置分析</span>
+        <span style="font-size:0.72rem;font-weight:700;color:${_vwColor};background:${_vwColor}22;padding:2px 8px;border-radius:20px">${_vwLabel}</span>
+      </div>
+      <div style="font-size:0.76rem;color:var(--text2);line-height:1.7">
+        VWAP <strong>$${fmtPrice(_vw)}</strong>　現價偏離 <strong style="color:${_vwColor}">${_vwDev >= 0 ? '+' : ''}${(_vwDev*100).toFixed(2)}%</strong>
+        <div style="color:var(--text3);font-size:0.72rem;margin-top:3px">${_vwDesc}</div>
+      </div>
+    </div>`;
+  })()}
+
   <!-- ═══ AI 風險評估 ═══ -->
   <div class="setup-risk-card" style="margin:10px 0;padding:14px 16px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-left:3px solid ${_risk.levelColor};border-radius:10px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
@@ -5343,6 +5371,21 @@ function buildMarketOutlook(fg, global) {
     const _e50Pct  = Math.round(_e50Bull / _bmoCoins.length * 100);
     if (_e50Pct >= 65) { bullPts += 0.5; bullArgs.push(`${_e50Pct}% 幣種在 EMA50 上方，中期趨勢整體偏多`); }
     else if (_e50Pct <= 35) { bearPts += 0.5; bearArgs.push(`${_e50Pct}% 幣種在 EMA50 上方，中期趨勢整體偏弱`); }
+    // VWAP 上方比例（日內多空掌控寬度）
+    try {
+      const _vwSample = _bmoCoins.filter(c => {
+        const v = (typeof _footprintCache !== 'undefined') ? _footprintCache[c.symbol]?.vwap : null;
+        return v > 0 && (parseFloat(c.price) || 0) > 0;
+      });
+      if (_vwSample.length >= 3) {
+        const _vwBull = _vwSample.filter(c => parseFloat(c.price) > _footprintCache[c.symbol].vwap).length;
+        const _vwPct  = Math.round(_vwBull / _vwSample.length * 100);
+        if (_vwPct >= 70)      { bullPts++;      bullArgs.push(`${_vwPct}% 幣種在 VWAP 上方（樣本 ${_vwSample.length}），日內買方全面掌控`); }
+        else if (_vwPct >= 55) { bullPts += 0.5; bullArgs.push(`${_vwPct}% 幣種在 VWAP 上方，日內買方略佔優`); }
+        else if (_vwPct <= 30) { bearPts++;      bearArgs.push(`僅 ${_vwPct}% 幣種在 VWAP 上方（樣本 ${_vwSample.length}），日內賣方全面掌控`); }
+        else if (_vwPct <= 45) { bearPts += 0.5; bearArgs.push(`僅 ${_vwPct}% 幣種在 VWAP 上方，日內賣方略佔優`); }
+      }
+    } catch(_e) {}
     // 聚合資金費率（衍生品市場情緒）
     const _frCoins = _bmoCoins.filter(c => c.derivData?.fundingRate != null);
     if (_frCoins.length >= 3) {
@@ -8724,7 +8767,7 @@ async function renderCoinDetail(symbol) {
   setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
   setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
 
-  // 14因子 AI 風險評估（宏觀資料就緒後渲染，確保準確度）
+  // 15因子 AI 風險評估（宏觀資料就緒後渲染，確保準確度）
   const _frEl = document.getElementById('full-risk-body');
   if (_frEl) {
     try {
@@ -8735,7 +8778,7 @@ async function renderCoinDetail(symbol) {
       _frEl.innerHTML = buildFullRiskCard(_frLong, '📈 做多') + buildFullRiskCard(_frShort, '📉 做空');
     } catch(_fe) {
       console.warn('[full-risk]', _fe);
-      _frEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:8px">14因子評估暫時無法載入</div>';
+      _frEl.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:8px">15因子評估暫時無法載入</div>';
     }
   }
 }
@@ -8806,7 +8849,7 @@ function loadTradingViewChart(symbol, interval) {
         hide_side_toolbar:   false,
         withdateranges:      true,
         save_image:          false,
-        studies: ['RSI@tv-basicstudies', 'MACD@tv-basicstudies'],
+        studies: ['RSI@tv-basicstudies', 'MACD@tv-basicstudies', 'VWAP@tv-basicstudies'],
         overrides: {
           'paneProperties.background':                '#0d1017',
           'paneProperties.backgroundType':            'solid',
@@ -8838,7 +8881,7 @@ function renderFallbackChart(container, symbol, interval) {
   const src = `https://s.tradingview.com/widgetembed/?symbol=BINANCE%3A${base}USDT` +
     `&interval=${ivl}&theme=dark&style=1&locale=zh_TW` +
     `&hidesidetoolbar=0&hidetoptoolbar=0&saveimage=0&withdateranges=1` +
-    `&studies=RSI%40tv-basicstudies%2CMACD%40tv-basicstudies`;
+    `&studies=RSI%40tv-basicstudies%2CMACD%40tv-basicstudies%2CVWAP%40tv-basicstudies`;
   container.innerHTML = `
     <iframe src="${src}"
       style="width:100%;height:700px;border:none;border-radius:8px"
@@ -8973,7 +9016,7 @@ function buildFullRiskCard(fr, label) {
     : '';
   return '<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
-    + '<span style="font-size:0.8rem;font-weight:600;color:var(--text2)">' + label + ' · 14因子評估</span>'
+    + '<span style="font-size:0.8rem;font-weight:600;color:var(--text2)">' + label + ' · 15因子評估</span>'
     + '<span style="font-size:0.78rem;font-weight:700;color:' + barColor + ';background:' + barColor + '22;padding:2px 8px;border-radius:20px">' + fr.level + '（' + fr.score + '/100）</span>'
     + '</div>'
     + '<div style="background:var(--bg);border-radius:4px;height:6px;margin-bottom:10px;overflow:hidden">'
@@ -9756,6 +9799,24 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
+    // ㉔ VWAP 位置 ±1（日內多空掌控 + 過度延伸懲罰）
+    try {
+      const _ssVw = _footprintCache[coin.symbol]?.vwap;
+      const _ssVwP = parseFloat(coin.price) || 0;
+      if (_ssVw > 0 && _ssVwP > 0) {
+        const _ssVwDev = (_ssVwP - _ssVw) / _ssVw;
+        if (isLong) {
+          if (_ssVwDev >= 0 && _ssVwDev <= 0.02) { _scanSqScore += 1; _scanSqFactors.push(`✅ VWAP 上方 ${(_ssVwDev*100).toFixed(2)}%（買方掌控未過度延伸）+1`); }
+          else if (_ssVwDev > 0.025) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 偏離 VWAP +${(_ssVwDev*100).toFixed(2)}%（過度延伸，追高風險）-1`); }
+          else if (_ssVwDev < -0.005) { _scanSqScore -= 1; _scanSqFactors.push(`❌ VWAP 下方 ${(Math.abs(_ssVwDev)*100).toFixed(2)}%（日內賣方掌控）-1`); }
+        } else {
+          if (_ssVwDev <= 0 && _ssVwDev >= -0.02) { _scanSqScore += 1; _scanSqFactors.push(`✅ VWAP 下方 ${(Math.abs(_ssVwDev)*100).toFixed(2)}%（賣方掌控未過度延伸）+1`); }
+          else if (_ssVwDev < -0.025) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 偏離 VWAP ${(_ssVwDev*100).toFixed(2)}%（過度延伸，追空風險）-1`); }
+          else if (_ssVwDev > 0.005) { _scanSqScore -= 1; _scanSqFactors.push(`❌ VWAP 上方 ${(_ssVwDev*100).toFixed(2)}%（日內買方掌控）-1`); }
+        }
+      }
+    } catch(_e) {}
+
     // ⑨ 巨鯨籌碼 ±1
     try {
       const _ssWhl = coin.whaleData;
@@ -10070,6 +10131,22 @@ async function recordSignalsFromScan(data) {
         const _rcRel = (parseFloat(_sqCoin.change24h) || 0) - _btcChg24;
         if (_sqIsLong ? _rcRel >= 1.5 : _rcRel <= -1.5) _sqRC += 1;
         else if (_sqIsLong ? _rcRel <= -1.5 : _rcRel >= 1.5) _sqRC -= 1;
+      }
+    } catch(_e) {}
+
+    // ㉔ VWAP 位置 ±1（與建單評分一致）
+    try {
+      const _rcVw = _footprintCache[_sqCoin.symbol]?.vwap;
+      const _rcVwP = parseFloat(_sqCoin.price) || 0;
+      if (_rcVw > 0 && _rcVwP > 0) {
+        const _rcVwDev = (_rcVwP - _rcVw) / _rcVw;
+        if (_sqIsLong) {
+          if (_rcVwDev >= 0 && _rcVwDev <= 0.02) _sqRC += 1;
+          else if (_rcVwDev > 0.025 || _rcVwDev < -0.005) _sqRC -= 1;
+        } else {
+          if (_rcVwDev <= 0 && _rcVwDev >= -0.02) _sqRC += 1;
+          else if (_rcVwDev < -0.025 || _rcVwDev > 0.005) _sqRC -= 1;
+        }
       }
     } catch(_e) {}
 
@@ -15007,9 +15084,10 @@ async function checkAndSendAlerts(data) {
         try { const _qBB=coin.bb; if(_qBB){if(isLong?_qBB.walkingBull:_qBB.walkingBear)_qSq+=1;else if(isLong?_qBB.walkingBear:_qBB.walkingBull)_qSq-=1;} } catch(_e){}
         // ⑧ 訂單流 Taker ⑨ 巨鯨
         try { const _qTkr=coin.derivData?.takerBuySell??1;if(isLong?_qTkr>=1.08:_qTkr<=0.92)_qSq+=1;else if(isLong?_qTkr<0.88:_qTkr>1.12)_qSq-=1; } catch(_e){}
-        // ㉒ 資金費率 ㉓ 相對強弱 vs BTC（與建單評分一致）
+        // ㉒ 資金費率 ㉓ 相對強弱 vs BTC ㉔ VWAP 位置（與建單評分一致）
         try { const _qFr=coin.derivData?.fundingRate;if(_qFr!=null&&!isNaN(_qFr)&&Math.abs(_qFr)>=0.0005){const _qCl=_qFr>0;if(isLong?!_qCl:_qCl)_qSq+=1;else _qSq-=1;} } catch(_e){}
         try { if(coin.symbol!=='BTC/USDT'&&!isNaN(_alertBtcChg24)){const _qRel=(parseFloat(coin.change24h)||0)-_alertBtcChg24;if(isLong?_qRel>=1.5:_qRel<=-1.5)_qSq+=1;else if(isLong?_qRel<=-1.5:_qRel>=1.5)_qSq-=1;} } catch(_e){}
+        try { const _qVw=_footprintCache[coin.symbol]?.vwap;const _qVwP=parseFloat(coin.price)||0;if(_qVw>0&&_qVwP>0){const _qVwD=(_qVwP-_qVw)/_qVw;if(isLong){if(_qVwD>=0&&_qVwD<=0.02)_qSq+=1;else if(_qVwD>0.025||_qVwD<-0.005)_qSq-=1;}else{if(_qVwD<=0&&_qVwD>=-0.02)_qSq+=1;else if(_qVwD<-0.025||_qVwD>0.005)_qSq-=1;}} } catch(_e){}
         try { const _qWhl=coin.whaleData;if(_qWhl){if(isLong?(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=2):(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=2))_qSq+=1;else if(isLong?(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=3):(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=3))_qSq-=1;} } catch(_e){}
         // ⑫⑬ 技術面 + R/R
         if ((notifSetup.techPenalty||0)===0) _qSq+=1; else if ((notifSetup.techPenalty||0)>=12) _qSq-=1;
@@ -15249,6 +15327,19 @@ function computeFullRisk(coin, params, isLong) {
       score += 7; factors.push('MACD 動能偏多（柱狀體正值）'); recs.push('MACD 尚未轉空，空頭進場時機需再確認');
     }
   }
+
+  // 15. VWAP 過度延伸（順方向偏離 VWAP > 2.5% → 均值回歸風險）
+  try {
+    const _vwR = (typeof _footprintCache !== 'undefined') ? _footprintCache[coin.symbol]?.vwap : null;
+    if (_vwR > 0 && _priceR > 1) {
+      const _vwDevR = (_priceR - _vwR) / _vwR;
+      if ((isLong && _vwDevR > 0.025) || (!isLong && _vwDevR < -0.025)) {
+        score += 8;
+        factors.push(`價格偏離 VWAP ${(Math.abs(_vwDevR)*100).toFixed(1)}%（過度延伸）`);
+        recs.push(`價格遠離 VWAP，均值回歸風險高，可等回踩 VWAP 再進場`);
+      }
+    }
+  } catch(_e) {}
 
   score = Math.min(100, score);
   const level      = score >= 75 ? '極高風險' : score >= 60 ? '高風險' : score >= 28 ? '中風險' : '低風險';
