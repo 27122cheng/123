@@ -860,7 +860,7 @@ function _buildHWRBannerFromTrade(t) {
     const sg   = t.sqGrade || '';
     const sc   = t.sqScore ?? '—';
     const conf = t.conf != null ? t.conf
-      : Math.max(0, 100 - Math.min(45, t.learnPenalty || 0) - (t.riskPenalty || 0));
+      : Math.max(0, 100 - calcLearnDrag(t.learnPenalty || 0) - (t.riskPenalty || 0));
     const adx  = t.adx || 20;
     const _W = [], _P = [];
 
@@ -869,8 +869,8 @@ function _buildHWRBannerFromTrade(t) {
     else if (sg === 'SS') _P.push('訊號品質 SS 級（完美）');
     else if (sg === 'S')  _P.push('訊號品質 S 級（頂級）');
     else if (sg === 'A')  _P.push('訊號品質 A 級（優質）');
-    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（21因子評分 ${sc} 分）`, source:'AI 訊號品質' });
-    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（21因子評分 ${sc} 分）`, source:'AI 訊號品質' });
+    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（24因子評分 ${sc} 分）`, source:'AI 訊號品質' });
+    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（24因子評分 ${sc} 分）`, source:'AI 訊號品質' });
 
     // ② 風控分（100分制）
     if (conf >= 80)      _P.push(`風控分 ${conf} 分（強勢）`);
@@ -879,8 +879,8 @@ function _buildHWRBannerFromTrade(t) {
 
     // ③ AI 止損風控
     const lp = t.learnPenalty || 0;
-    if (lp >= 20)      _W.push({ level:'danger',  text:`AI 止損風控觸發（扣 -${Math.min(45,lp)} 分）`, source:'AI 止損風控' });
-    else if (lp >= 5)  _W.push({ level:'caution', text:`AI 止損風控警告（扣 -${Math.min(45,lp)} 分）`, source:'AI 止損風控' });
+    if (lp >= 20)      _W.push({ level:'danger',  text:`AI 止損風控觸發（扣 -${calcLearnDrag(lp)} 分）`, source:'AI 止損風控' });
+    else if (lp >= 5)  _W.push({ level:'caution', text:`AI 止損風控警告（扣 -${calcLearnDrag(lp)} 分）`, source:'AI 止損風控' });
     else               _P.push('AI 止損風控通過');
 
     // ④ AI 趨勢（由 SQ 因子處理，此處僅顯示狀態）
@@ -937,7 +937,7 @@ function _buildHWRBannerFromTrade(t) {
   } catch(_e) { return ''; }
 }
 
-/* ── SQ 21因子面板（持倉 / 等待進場 共用）────────────────────── */
+/* ── SQ 24因子面板（持倉 / 等待進場 共用）────────────────────── */
 function buildSQPanelFromTrade(t) {
   try {
     const factors = t.sqFactors;
@@ -984,8 +984,8 @@ function buildOpenPositionSetup(t, currentPrice) {
   // 最終風控分：優先用 learnPenalty 重算（確保與風控分明細一致）
   const conf     = t.conf != null ? t.conf
     : (t.learnPenalty != null
-      ? Math.max(0, Math.round(100 - Math.min(45, t.learnPenalty) - (t.riskPenalty || 0)))
-      : Math.max(0, 100 - Math.min(45, t.learnPenalty || 0) - (t.riskPenalty || 0)));
+      ? Math.max(0, Math.round(100 - calcLearnDrag(t.learnPenalty) - (t.riskPenalty || 0)))
+      : Math.max(0, 100 - calcLearnDrag(t.learnPenalty || 0) - (t.riskPenalty || 0)));
   const confClr  = conf >= 75 ? 'var(--bull)' : conf >= 60 ? '#ff6d00' : 'var(--text3)';
   const ltBias  = t.longTermBias;
   const isLong_ = t.direction === 'long';
@@ -996,7 +996,7 @@ function buildOpenPositionSetup(t, currentPrice) {
   const _openGradeColors = { S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' };
   const _openGradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
   const _openGradeLabels = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
-  const _openEffConf = t.conf != null ? t.conf : Math.max(0, 100 - Math.min(45, t.learnPenalty || 0) - (t.riskPenalty || 0));
+  const _openEffConf = t.conf != null ? t.conf : Math.max(0, 100 - calcLearnDrag(t.learnPenalty || 0) - (t.riskPenalty || 0));
   const _openEffGrade = t.sqGrade || (_openEffConf >= 82 ? 'A' : _openEffConf >= 74 ? 'B' : _openEffConf >= 65 ? 'C' : 'D');
   const _openEffLabel = t.sqGradeLabel || _openGradeLabels[_openEffGrade] || '';
   const _openSqTag = (() => {
@@ -1194,7 +1194,7 @@ function buildPendingPositionSetup(t, currentPrice) {
   const _gradeEmojis = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' };
   const _gradeLabels = { S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
   // 若 sqGrade 缺失（舊版交易），從風控分反推等級（僅止損/風控扣分）
-  const _effConf = t.conf != null ? t.conf : Math.max(0, 100 - Math.min(45, t.learnPenalty || 0) - (t.riskPenalty || 0));
+  const _effConf = t.conf != null ? t.conf : Math.max(0, 100 - calcLearnDrag(t.learnPenalty || 0) - (t.riskPenalty || 0));
   const _effGrade = t.sqGrade || (_effConf >= 82 ? 'A' : _effConf >= 74 ? 'B' : _effConf >= 65 ? 'C' : 'D');
   const _effLabel = t.sqGradeLabel || _gradeLabels[_effGrade] || '';
   const _sqTag = (() => {
@@ -1204,7 +1204,7 @@ function buildPendingPositionSetup(t, currentPrice) {
   })();
 
   // 風控分（100分制，直接取 t.conf；fallback 用 learnPenalty 扣分重算）
-  const _pLearnDrag = Math.min(45, t.learnPenalty || 0);
+  const _pLearnDrag = calcLearnDrag(t.learnPenalty || 0);
   const _pRiskPen = t.riskPenalty || 0;
   // 以儲存的扣分明細重算風控分，確保顯示數字與明細一致
   const _pConf = t.learnPenalty != null
@@ -1940,7 +1940,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       const bbPenNow    = existingActive.bbPenalty || 0;
       let rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      let freshConf  = Math.max(0, 100 - Math.min(45, learnPenNow) - (existingActive.riskPenalty || 0));
+      let freshConf  = Math.max(0, 100 - calcLearnDrag(learnPenNow) - (existingActive.riskPenalty || 0));
       if ((Math.abs((existingActive.conf || 0) - freshConf) >= 1 || (existingActive.learnPenalty || 0) !== learnPenNow) && !existingActive.entryTime) {
         const tlogEdit = loadTradeLog();
         const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
@@ -2006,7 +2006,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       // 已進場：顯示進場時鎖定的風控分，不再動態重算（進場後市況變化不影響已開倉決策）
       if (existingActive.entryTime) {
         const _learnPen = existingActive.learnPenalty != null ? existingActive.learnPenalty : null;
-        const _lockDrag = _learnPen != null ? Math.min(45, _learnPen) : 0;
+        const _lockDrag = _learnPen != null ? calcLearnDrag(_learnPen) : 0;
         const _lockedConf = _learnPen != null
           ? Math.max(0, Math.round(100 - _lockDrag))
           : (existingActive.conf || 0);
@@ -2026,7 +2026,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price) + lockedConfPanel;
       }
 
-      const _learnDragNow = Math.min(45, learnPenNow);
+      const _learnDragNow = calcLearnDrag(learnPenNow);
       const _riskPenNow = existingActive.riskPenalty || 0;
       const confPanelHtml = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
         <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:8px">📊 風控分評估（動態更新）</div>
@@ -2050,7 +2050,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           ${learnResultNow.hardBlocked
             ? learnResultNow.blockReasons.slice(0, 2).map(r => `<div style="color:var(--bear)">🚫 ${r}</div>`).join('')
             : learnPenNow > 0
-              ? learnResultNow.warnings.map(w => `<div style="color:#f59e0b">⚠️ AI風控：${w}</div>`).join('') || `<div style="color:#f59e0b">⚠️ AI 風控：歷史規則觸發，扣 -${Math.min(45,learnPenNow)} 分</div>`
+              ? learnResultNow.warnings.map(w => `<div style="color:#f59e0b">⚠️ AI風控：${w}</div>`).join('') || `<div style="color:#f59e0b">⚠️ AI 風控：歷史規則觸發，扣 -${calcLearnDrag(learnPenNow)} 分</div>`
               : `<div style="color:#22c55e">✓ AI 風控：無歷史止損規則觸發</div>`}
           ${cfPenNow > 0
             ? cfEventsNow.map(ev => {
@@ -3664,7 +3664,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // ── 風控分（100 分扣分制）──
   // 先扣止損風控，再扣風險評估，最終風控分才是入場門檻依據
-  const _cLearnDrag = Math.min(45, learnPenalty);
+  const _cLearnDrag = calcLearnDrag(learnPenalty);
   let conf = Math.max(0, Math.round(100 - _cLearnDrag));
   const baseConf  = Math.max(0, rawConf - hardAdxPenalty);
   const macroConf = Math.max(0, baseConf - macroOpposePenalty - aiTrendPenalty - techPenalty - chipsPenalty);
@@ -3751,9 +3751,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_sqH1Ok)  { _sqScore += 1; _sqFactors.push('✅ 1H 走勢同向 +1'); }
     else if (_sqH1Op)                { _sqFactors.push('❌ 1H 走勢逆向'); }
     else                             { _sqFactors.push('⬜ 1H 走勢中性'); }
-    if (_sqD1Ok)  { _sqScore += 1; _sqFactors.push('✅ 日線走勢同向 +1'); }
-    else if (_sqD1Op) { _sqScore -= 1; _sqFactors.push('❌ 日線走勢逆向 -1'); }
-    else                             { _sqFactors.push('⬜ 日線走勢中性'); }
+    // 日線僅長線單計分：短線單不看日線（避免短線單因日線不同向被扣分/取消）
+    if (canScaleIn) {
+      if (_sqD1Ok)      { _sqScore += 1; _sqFactors.push('✅ 日線走勢同向 +1'); }
+      else if (_sqD1Op) { _sqScore -= 1; _sqFactors.push('❌ 日線走勢逆向 -1'); }
+      else              { _sqFactors.push('⬜ 日線走勢中性'); }
+    } else              { _sqFactors.push('⬜ 日線不計分（短線單，僅長線需日線同向）'); }
     if (_sqWk1Ok) { _sqScore += 1; _sqFactors.push('✅ 週線走勢同向 +1'); }
     else if (_sqWk1Op){ _sqScore -= 1; _sqFactors.push('❌ 週線走勢逆向 -1'); }
     else                             { _sqFactors.push('⬜ 週線走勢中性'); }
@@ -3883,23 +3886,22 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (_sqRR1 >= 1.3) { _sqFactors.push(`⚠️ R/R ${_sqRR1.toFixed(1)}:1（可接受）`); }
   else                    { _sqScore -= 1; _sqFactors.push(`❌ R/R ${_sqRR1.toFixed(1)}:1 盈虧比不足 -1`); }
 
-  // ⑬ 風控評估 + 止損AI建議 — max +2，高風險/警告時扣分
-  if (_risk.score <= 20)      { _sqScore += 2; _sqFactors.push(`✅ 風控優良（${_risk.score}分）+2`); }
-  else if (_risk.score <= 40) { _sqScore += 1; _sqFactors.push(`✅ 風控良好（${_risk.score}分）+1`); }
+  // ⑬ 風控評估 + 止損AI建議 — 僅顯示參考，不調整 SQ 分
+  // （風控/止損已透過風控分扣分處理：高風險只扣風控分，與掃描三路徑的 SQ 評分原則一致）
+  if (_risk.score <= 20)      { _sqFactors.push(`✅ 風控優良（${_risk.score}分）`); }
+  else if (_risk.score <= 40) { _sqFactors.push(`✅ 風控良好（${_risk.score}分）`); }
   else if (_risk.score <= 54) { _sqFactors.push(`⚠️ 風控中等（${_risk.score}分）`); }
-  else                        { _sqScore -= 1; _sqFactors.push(`❌ 風控偏高（${_risk.score}分）-1`); }
+  else                        { _sqFactors.push(`❌ 風控偏高（${_risk.score}分，已於風控分扣分）`); }
   if (_risk.factors?.length) _risk.factors.slice(0, 2).forEach(f => _sqFactors.push(`　▸ ${f}`));
   if (_risk.recs?.length) {
     _sqFactors.push(`💡 止損AI建議：${_risk.recs[0]}`);
   }
-  // 有實際扣分記錄的項目 → 扣 SQ 分；零扣分建議 → 僅參考顯示
+  // 止損記錄警告 → 僅參考顯示，不扣 SQ 分（已由止損風控扣分處理）
   {
     const _sqPenChecks = _sqDefChecks.filter(c => !c.pass && (c.penalty || 0) > 0);
     const _sqRefOnly   = _sqDefChecks.filter(c => !c.pass && (c.penalty || 0) === 0 && c.type !== 'sugg_ref');
     if (_sqPenChecks.length) {
-      const _sqFlPen = Math.min(3, _sqPenChecks.length);
-      _sqScore -= _sqFlPen;
-      _sqFactors.push(`❌ 止損記錄警告（${_sqPenChecks.length} 項有扣分）-${_sqFlPen}`);
+      _sqFactors.push(`⚠️ 止損記錄警告（${_sqPenChecks.length} 項，已於止損風控扣分）`);
       _sqPenChecks.slice(0, 2).forEach(c => _sqFactors.push(`　▸ 📉 ${c.label}（扣 ${c.penalty} 分）`));
     }
     if (_sqRefOnly.length) {
@@ -4039,7 +4041,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
-  // ── SQ 21因子完整面板（幣種詳情 / 觀望 / 持倉均可注入）──
+  // ── SQ 24因子完整面板（幣種詳情 / 觀望 / 持倉均可注入）──
   const _sqPanelHtml = (() => { try {
     const _sqPos  = _sqFactors.filter(f => f.startsWith('✅'));
     const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
@@ -4456,6 +4458,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         rsi: parseFloat(coin.rsi) || 50,
         adx: parseFloat(coin.adx) || 20,
         score: coin.score, trend: coin.trend, conf, rawConf,
+        rr1: rr1str, rr2: rr2str,  // SQ 監控 computeFullRisk 需要，缺失會被誤判 R/R 過低
+        riskScore: _risk.score, riskLevel: _risk.level, riskPenalty: _riskPenBTS,
+        confGate: 60, sqGate: canScaleIn ? 15 : 9,  // 詳情頁建單使用嚴格門檻
         hardAdxPenalty, learnPenalty, macroPenalty: macroOpposePenalty, aiTrendPenalty, techPenalty, chipsPenalty,
         entryReason: entryReasons.join('，'), entryReasons: [...entryReasons],
         slReason, tp1Reason, tp2Reason,
@@ -4604,8 +4609,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else if (_sqGrade === 'SS') _hwrP.push('訊號品質 SS 級（完美）');
     else if (_sqGrade === 'S')  _hwrP.push('訊號品質 S 級（頂級）');
     else if (_sqGrade === 'A')  _hwrP.push('訊號品質 A 級（優質）');
-    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，21因子評分 ${_sqScore} 分）`, source:'AI 訊號品質' });
-    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（21因子評分 ${_sqScore} 分），勝率基礎偏弱`, source:'AI 訊號品質' });
+    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，24因子評分 ${_sqScore} 分）`, source:'AI 訊號品質' });
+    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（24因子評分 ${_sqScore} 分），勝率基礎偏弱`, source:'AI 訊號品質' });
 
     // ② 風控分
     if (conf >= 80)      _hwrP.push(`風控分 ${conf} 分（高）`);
@@ -5019,7 +5024,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.74rem;background:rgba(255,255,255,.03);border-radius:8px;padding:7px 10px;margin-bottom:10px">
         <span style="color:var(--text3);font-size:0.7rem">滿分</span>
         <span style="font-weight:700;color:#22c55e">100 分</span>
-        ${learnPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">止損風控 -${Math.min(45, learnPenalty)}</span>` : ''}
+        ${learnPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">止損風控 -${calcLearnDrag(learnPenalty)}</span>` : ''}
         <span style="color:var(--text3)">→</span>
         <span style="color:var(--text3);font-size:0.7rem">風控分</span>
         <span style="font-weight:700;font-size:0.85rem;color:${l2Status === 'block' ? '#ef4444' : cColor(finalConf)}">${l2Status === 'block' ? '❌ 封鎖' : finalConf + ' 分'}</span>
@@ -9246,7 +9251,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260706a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260706b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9337,10 +9342,10 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqLabelMap = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
   const _sqLabelTG = setup.sqGradeLabel || _sqLabelMap[_sqGradeTG] || '—';
   const _sqEmoji   = { SSS:'👑', SS:'💎', S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
-  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（21因子評分 ${_sqScoreTG} 分）`;
+  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（24因子評分 ${_sqScoreTG} 分）`;
 
   // ── 風控分扣分明細（止損風控 + 風險評估扣分，在 _riskScore 已知後補充）──
-  const _learnPenTg = Math.min(45, setup.learnPenalty || 0);
+  const _learnPenTg = calcLearnDrag(setup.learnPenalty || 0);
   const _penLines = [];
   if (_learnPenTg > 0) {
     _penLines.push(`   止損風控扣分 -${_learnPenTg} 分`);
@@ -9619,7 +9624,7 @@ async function recordSignalsFromScan(data) {
     // ── 雙重風險評估：再以「SQ 監控視角」同形參數重算一次，取較高者 ──
     // 兩個評估都算完才得出最終風控分，杜絕「建單顯示中風險、監控重算變高風險」的建後即取消
     try {
-      const _scanPreConf = Math.max(0, 100 - Math.min(45, setup.learnPenalty || 0));
+      const _scanPreConf = Math.max(0, 100 - calcLearnDrag(setup.learnPenalty || 0));
       const _scanRiskMon = computeFullRisk(coin, {
         conf:           _scanPreConf,
         macroPenalty:   setup.macroPenalty   || 0,
@@ -9746,10 +9751,13 @@ async function recordSignalsFromScan(data) {
     // 其餘時框同向加分（1H / 日線 / 週線）— max +3
     const _ssWkOk  = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
     const _ssH1Ok  = isLong ? (coin.h1Signal    ||'').includes('bull') : (coin.h1Signal    ||'').includes('bear');
-    if (_ssDayOk)      { _scanSqScore += 1; _scanSqFactors.push('✅ 日線同向 +1'); }
-    else if (isLong ? (coin.dailySignal||'').includes('bear') : (coin.dailySignal||'').includes('bull'))
-                       { _scanSqScore -= 1; _scanSqFactors.push('❌ 日線逆向 -1'); }
-    else               { _scanSqFactors.push('⬜ 日線中性'); }
+    // 日線僅長線單計分：短線單不看日線（避免短線單因日線不同向被扣分/取消）
+    if (canScaleIn) {
+      if (_ssDayOk)      { _scanSqScore += 1; _scanSqFactors.push('✅ 日線同向 +1'); }
+      else if (isLong ? (coin.dailySignal||'').includes('bear') : (coin.dailySignal||'').includes('bull'))
+                         { _scanSqScore -= 1; _scanSqFactors.push('❌ 日線逆向 -1'); }
+      else               { _scanSqFactors.push('⬜ 日線中性'); }
+    } else               { _scanSqFactors.push('⬜ 日線不計分（短線單，僅長線需日線同向）'); }
     if (_ssWkOk)       { _scanSqScore += 1; _scanSqFactors.push('✅ 週線同向 +1'); }
     else if (isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'))
                        { _scanSqScore -= 1; _scanSqFactors.push('❌ 週線逆向 -1'); }
@@ -10096,7 +10104,8 @@ async function recordSignalsFromScan(data) {
     const _rcWkOk  = _sqIsLong ? (_sqCoin.weeklySignal||'').includes('bull') : (_sqCoin.weeklySignal||'').includes('bear');
     const _rcWkOpp = _sqIsLong ? (_sqCoin.weeklySignal||'').includes('bear') : (_sqCoin.weeklySignal||'').includes('bull');
     const _rcH1Ok  = _sqIsLong ? (_sqCoin.h1Signal    ||'').includes('bull') : (_sqCoin.h1Signal    ||'').includes('bear');
-    if (_rcDyOk)  _sqRC += 1; else if (_rcDyOpp) _sqRC -= 1;
+    // 日線僅長線單計分：短線單不看日線（避免短線掛單因日線不同向被監控降級/取消）
+    if (trade.canScaleIn) { if (_rcDyOk)  _sqRC += 1; else if (_rcDyOpp) _sqRC -= 1; }
     if (_rcWkOk)  _sqRC += 1; else if (_rcWkOpp) _sqRC -= 1;
     if (_rcH1Ok)  _sqRC += 1;
 
@@ -10355,7 +10364,7 @@ async function recordSignalsFromScan(data) {
         let _rcRiskPen = 0;
         try {
           // 傳入 pre-risk conf（100 - 止損風控，與建單三路徑完全同一公式），避免循環依賴
-          const _rcPreRiskConf = Math.max(0, 100 - Math.min(45, _rcLearnPen));
+          const _rcPreRiskConf = Math.max(0, 100 - calcLearnDrag(_rcLearnPen));
           // rr1 補值：舊掛單未存 rr1 時由 entry/sl/tp1 現算，避免 undefined 被誤判 R/R 過低 +18 風險分
           const _rcRiskRR = parseFloat(trade.rr1) || (() => {
             const _e = parseFloat(trade.entry) || 0, _s = parseFloat(trade.sl) || 0, _t = parseFloat(trade.tp1) || 0;
@@ -10369,7 +10378,7 @@ async function recordSignalsFromScan(data) {
           }
           trade.riskPenalty = _rcRiskPen;
         } catch(_rcRiskE) {}
-        const _rcConf = Math.max(0, 100 - Math.min(45, _rcLearnPen) - _rcRiskPen);
+        const _rcConf = Math.max(0, 100 - calcLearnDrag(_rcLearnPen) - _rcRiskPen);
         // 取消門檻 = 建單門檻（confGate，預設 60）− 2 分緩衝：臨界分數的正常波動不觸發取消
         const _rcConfGate = Math.max(0, (trade.confGate ?? 60) - 2);
         if (_rcConf < _rcConfGate) {
@@ -10973,7 +10982,7 @@ function updateOpenTrades(data) {
           _cfP = Math.min(10, _cfP);
         } catch(_e) {}
         // 風控分：純粹止損風控扣分（ADX/技術/籌碼/宏觀由 SQ 因子處理）
-        const _cLearnDrag = Math.min(45, _learnPen);
+        const _cLearnDrag = calcLearnDrag(_learnPen);
         freshConf = Math.max(0, Math.round(100 - _cLearnDrag));
         const _rawFreshConf = freshConf;
         // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
@@ -10990,7 +10999,7 @@ function updateOpenTrades(data) {
       } catch(_e) {}
     } else {
       // 無宏觀快取時：純止損風控扣分（100 分制）
-      const _cLD = Math.min(45, _learnPen);
+      const _cLD = calcLearnDrag(_learnPen);
       freshConf = Math.max(0, Math.round(100 - _cLD));
       if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
       if (freshConf < 60 && !trade.entryTime) {
@@ -11284,7 +11293,7 @@ function updateOpenTrades(data) {
         try {
           const _pntLP = _pnt.learnPenalty || 0;
           // pre-risk conf 用與建單三路徑完全同一公式（100 - 止損風控）重建
-          const _pntPreRiskConf = Math.max(0, 100 - Math.min(45, _pntLP));
+          const _pntPreRiskConf = Math.max(0, 100 - calcLearnDrag(_pntLP));
           // rr1 補值（頂層 > _notifyRisk > entry/sl/tp1 現算），避免 undefined 誤判 R/R 過低
           const _pntRR = parseFloat(_pnt.rr1) || parseFloat(_pnt._notifyRisk?.rr1) || (() => {
             const _e = parseFloat(_pnt.entry) || 0, _s = parseFloat(_pnt.sl) || 0, _t = parseFloat(_pnt.tp1) || 0;
@@ -13631,7 +13640,7 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">🛡️ AI 風控分</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf} 分</span>
-            ${(t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${Math.min(45,t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
+            ${(t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${calcLearnDrag(t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
           </div>
         </div>
         ` : `
@@ -13647,7 +13656,7 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">🛡️ AI 風控分</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf} 分</span>
-            ${(t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${Math.min(45,t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
+            ${(t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${calcLearnDrag(t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
           </div>
         </div>
         `}
@@ -15080,7 +15089,7 @@ async function checkAndSendAlerts(data) {
           // 用還未扣風控分的 conf 計算 computeFullRisk（與 SQ Monitor 的 _rcPreRiskConf 邏輯完全一致）
           // SQ monitor: _rcPreRiskConf = trade.conf + riskPenalty（還原成扣前）→ 傳入 computeFullRisk
           // 這裡直接用 100 - learnPenalty 作為「扣前 conf」，避免因子1因 conf 值不同而產生不同風險分
-          const _preRiskConf = Math.max(0, 100 - Math.min(45, notifSetup.learnPenalty || 0));
+          const _preRiskConf = Math.max(0, 100 - calcLearnDrag(notifSetup.learnPenalty || 0));
           try {
             const _chkFreshRisk = computeFullRisk(coin, { ...notifSetup, conf: _preRiskConf }, isLong);
             notifSetup.riskScore = _chkFreshRisk.score;
@@ -15107,7 +15116,8 @@ async function checkAndSendAlerts(data) {
           const _qDyOp = isLong ? (coin.dailySignal||'').includes('bear') : (coin.dailySignal||'').includes('bull');
           const _qWk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
           const _qWkOp = isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull');
-          if (_qDy) _qSq += 1; else if (_qDyOp) _qSq -= 1;
+          // 日線僅長線單計分（短線單不看日線）
+          if (notifSetup.isLongTerm === true) { if (_qDy) _qSq += 1; else if (_qDyOp) _qSq -= 1; }
           if (_qWk) _qSq += 1; else if (_qWkOp) _qSq -= 1;
           if (isLong ? (coin.h1Signal||'').includes('bull') : (coin.h1Signal||'').includes('bear')) _qSq += 1;
           if (isLong ? (parseFloat(coin.macdHist)||0) > 0 : (parseFloat(coin.macdHist)||0) < 0) _qSq += 1;
@@ -15154,7 +15164,7 @@ async function checkAndSendAlerts(data) {
         // ⑭⑮ 風控分/止損學習（僅供 conf 門檻使用，不調整 SQ 分）
         // 雙重風險評估：快取視角 + 監控視角（鍵名對齊 trade 儲存格式，含 macroOpposePenalty→macroPenalty 映射）取較高者
         try {
-          const _qPRConf=Math.max(0,100-Math.min(45,notifSetup.learnPenalty||0));
+          const _qPRConf=Math.max(0,100-calcLearnDrag(notifSetup.learnPenalty||0));
           const _qRiskA=computeFullRisk(coin,{...notifSetup,conf:_qPRConf},isLong);
           const _qRiskB=computeFullRisk(coin,{
             conf:_qPRConf,
@@ -15188,7 +15198,7 @@ async function checkAndSendAlerts(data) {
     // AI 風控攔截 或 方向=觀望 或 R/R 不足 → 完全不通知
     if (notifSetup.hardBlocked || notifSetup.direction === 'wait' || notifSetup.rrBlocked) continue;
 
-    // ① SQ 21因子達門檻（預設 9/A 級，未達每日配額時自適應放寬；訊號品質門檻，最先判斷）
+    // ① SQ 24因子達門檻（預設 9/A 級，未達每日配額時自適應放寬；訊號品質門檻，最先判斷）
     const _sqPassGate = (notifSetup.sqScore != null)
       ? notifSetup.sqScore >= _alertGates.minSq
       : ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
@@ -15196,7 +15206,7 @@ async function checkAndSendAlerts(data) {
 
     // ② 風控分達門檻（止損風控 + 風險評估扣完後的最終值；預設 60，未達每日配額時自適應放寬）
     // 重建 PRE-risk conf（100 - learnPenalty），避免快取儲存的 conf 已是 POST-risk 導致雙重扣分
-    const _notifPreRiskConf = Math.max(0, 100 - Math.min(45, notifSetup.learnPenalty || 0));
+    const _notifPreRiskConf = Math.max(0, 100 - calcLearnDrag(notifSetup.learnPenalty || 0));
     const _notifRPen = calcRiskPenalty(notifSetup.riskScore || 0);
     const notifConf = Math.max(0, _notifPreRiskConf - _notifRPen);
     const rawConfVal = notifSetup.rawConf
@@ -15272,12 +15282,18 @@ async function checkAndSendAlerts(data) {
   }
 }
 
+/* 風險評估扣分（比例制，2026-07 調降版）：高風險只扣風控分、不硬性擋單。
+   低風險 <30 不扣；中風險 30-59 → 1~8；高風險 60-74 → 9~15；極高風險 75+ → 15~22 */
 function calcRiskPenalty(score) {
-  if (score < 28) return 0;
-  if (score < 60) return Math.max(1, Math.round((score - 27) / 32 * 9));
-  if (score < 75) return Math.max(10, Math.round(10 + (score - 59) / 15 * 7));
-  return Math.min(25, Math.round(18 + (score - 74) / 26 * 7));
+  if (score < 30) return 0;
+  if (score < 60) return Math.max(1, Math.round((score - 29) / 30 * 8));
+  if (score < 75) return Math.max(9, Math.round(9 + (score - 59) / 15 * 6));
+  return Math.min(22, Math.round(15 + (score - 74) / 26 * 7));
 }
+
+/* 止損風控扣分（統一入口，2026-07 調降版）：懲罰 × 0.85、上限 40（原為原值直取、上限 45）。
+   所有計算風控分的路徑（建單/監控/詳情頁/Telegram）一律經此函數，確保扣分一致。 */
+function calcLearnDrag(p) { return Math.min(40, Math.round((p || 0) * 0.85)); }
 
 function computeFullRisk(coin, params, isLong) {
   const conf               = params.conf               ?? 60;
@@ -15861,7 +15877,7 @@ function computeSimpleSetup(coin, isLong) {
   } catch(_e) {}
 
   // 風控分：純粹止損風控扣分（ADX/技術/籌碼/宏觀由 SQ 因子處理）
-  const _ssLearnDrag = Math.min(45, learnPenalty);
+  const _ssLearnDrag = calcLearnDrag(learnPenalty);
   const conf = Math.max(0, Math.round(100 - _ssLearnDrag));
 
   // ── 根據 scan 資料欄位動態生成進場理由 ──
