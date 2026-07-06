@@ -9243,6 +9243,22 @@ function btcVolGuardBlocks(symbol) {
   return !String(symbol || '').startsWith('BTC');  // BTC 本身的訊號不受限
 }
 
+/* ── 版本更新偵測 ────────────────────────────────────────────────
+   長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
+   每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
+const APP_VERSION = '20260706a';  // 需與 index.html 的 app.js?v= 參數同步
+let _verNotified = '';
+setInterval(async () => {
+  try {
+    const html = await fetch(window.location.pathname + '?_vchk=' + Date.now(), { cache: 'no-store' }).then(r => r.text());
+    const m = html.match(/app\.js\?v=([\w-]+)/);
+    if (m && m[1] !== APP_VERSION && m[1] !== _verNotified) {
+      _verNotified = m[1];
+      try { if (typeof showToast === 'function') showToast('🔄 偵測到新版本，請重新整理頁面以套用最新交易邏輯', 'warning'); } catch(_t) {}
+    }
+  } catch(_e) {}
+}, 30 * 60 * 1000);
+
 /* ── 真實 ATR14（Binance kline 陣列格式：k[2]=high k[3]=low k[4]=close）──
    取代 computeSimpleSetup 內以 ADX 估算的波動率，讓止損/止盈貼近實際波動。 */
 function calcATR14FromKlines(klines) {
@@ -9959,6 +9975,7 @@ async function recordSignalsFromScan(data) {
       adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
       conf: Math.max(0, (setup.conf || 0) - (_scanRiskPen || 0)), rawConf: setup.rawConf,
+      rr1: setup.rr1, rr2: setup.rr2,  // SQ 監控 computeFullRisk 需要，缺失會被誤判 R/R 過低 +18 風險分
       riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
@@ -10195,9 +10212,23 @@ async function recordSignalsFromScan(data) {
     }
 
     // ⑮ 止損學習懲罰（僅用於 conf 門檻同步，不調整 SQ 分）
+    // 傳入與 computeSimpleSetup 完全相同的完整參數，確保監控與建單的止損風控扣分一致
     let _rcLearn = null;
     try {
-      _rcLearn = applyLearnAdjustment(trade.direction, parseFloat(_sqCoin.rsi)||50, _rcAdx, { slType:'atr', skipAdxRule:true });
+      const _rcLBase = _sqIsLong ? (parseFloat(_sqCoin.score) || 55) : Math.max(10, 100 - (parseFloat(_sqCoin.score) || 50));
+      _rcLearn = applyLearnAdjustment(trade.direction, parseFloat(_sqCoin.rsi)||50, _rcAdx, {
+        slType:        'atr',
+        skipAdxRule:   true,
+        macdHist:      parseFloat(_sqCoin.macdHist) || 0,
+        volWeak:       (_sqCoin.volumeStrength || '') === '低' || String(_sqCoin.volumeStrength||'').includes('弱'),
+        h4Aligned:     _sqIsLong ? (_sqCoin.h4Signal || '').includes('bull') : (_sqCoin.h4Signal || '').includes('bear'),
+        scoreStrength: _rcLBase >= 75 ? 'strong' : _rcLBase >= 65 ? 'medium' : 'weak',
+        killZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
+        weeklyAgainst: _sqIsLong ? (_sqCoin.weeklySignal||'').includes('bear') : (_sqCoin.weeklySignal||'').includes('bull'),
+        h1Aligned:     _sqIsLong ? !!(_sqCoin.h1Signal||'').includes('bull') : !!(_sqCoin.h1Signal||'').includes('bear'),
+        bbWalkingBear: !!(_sqCoin.bb?.walkingBear),
+        bbWalkingBull: !!(_sqCoin.bb?.walkingBull),
+      });
     } catch(_e) {}
 
     // ⑰ AI新聞情緒 ±1
@@ -10308,7 +10339,12 @@ async function recordSignalsFromScan(data) {
         try {
           // 傳入 pre-risk conf（100 - 止損風控，與建單三路徑完全同一公式），避免循環依賴
           const _rcPreRiskConf = Math.max(0, 100 - Math.min(45, _rcLearnPen));
-          const _rcRisk = computeFullRisk(_sqCoin, { ...trade, conf: _rcPreRiskConf }, _sqIsLong);
+          // rr1 補值：舊掛單未存 rr1 時由 entry/sl/tp1 現算，避免 undefined 被誤判 R/R 過低 +18 風險分
+          const _rcRiskRR = parseFloat(trade.rr1) || (() => {
+            const _e = parseFloat(trade.entry) || 0, _s = parseFloat(trade.sl) || 0, _t = parseFloat(trade.tp1) || 0;
+            return (_e > 0 && _s > 0 && _t > 0 && Math.abs(_e - _s) > 0) ? +(Math.abs(_t - _e) / Math.abs(_e - _s)).toFixed(2) : 0;
+          })();
+          const _rcRisk = computeFullRisk(_sqCoin, { ...trade, conf: _rcPreRiskConf, rr1: _rcRiskRR }, _sqIsLong);
           _rcRiskPen = calcRiskPenalty(_rcRisk.score);
           // 更新 trade 上的風險記錄（供 Telegram 明細使用）
           if (trade.riskScore !== _rcRisk.score || trade.riskLevel !== _rcRisk.level) {
@@ -11232,7 +11268,12 @@ function updateOpenTrades(data) {
           const _pntLP = _pnt.learnPenalty || 0;
           // pre-risk conf 用與建單三路徑完全同一公式（100 - 止損風控）重建
           const _pntPreRiskConf = Math.max(0, 100 - Math.min(45, _pntLP));
-          const _pntFR = computeFullRisk(_pntCoin, { ..._pnt, conf: _pntPreRiskConf }, _pnt.direction === 'long');
+          // rr1 補值（頂層 > _notifyRisk > entry/sl/tp1 現算），避免 undefined 誤判 R/R 過低
+          const _pntRR = parseFloat(_pnt.rr1) || parseFloat(_pnt._notifyRisk?.rr1) || (() => {
+            const _e = parseFloat(_pnt.entry) || 0, _s = parseFloat(_pnt.sl) || 0, _t = parseFloat(_pnt.tp1) || 0;
+            return (_e > 0 && _s > 0 && _t > 0 && Math.abs(_e - _s) > 0) ? +(Math.abs(_t - _e) / Math.abs(_e - _s)).toFixed(2) : 0;
+          })();
+          const _pntFR = computeFullRisk(_pntCoin, { ..._pnt, conf: _pntPreRiskConf, rr1: _pntRR }, _pnt.direction === 'long');
           const _pntRP = calcRiskPenalty(_pntFR.score);
           const _pntFC = Math.max(0, _pntPreRiskConf - _pntRP);
           _pnt.riskScore   = _pntFR.score;
@@ -15168,6 +15209,7 @@ async function checkAndSendAlerts(data) {
           scaleIns: [], peakPrice: null,
           sqGrade: notifSetup.sqGrade || null, sqScore: notifSetup.sqScore ?? null,
           sqGradeLabel: notifSetup.sqGradeLabel || null,
+          rr1: notifSetup.rr1, rr2: notifSetup.rr2,  // SQ 監控 computeFullRisk 需要頂層 rr1
           confGate: _alertGates.minConf, sqGate: _alertGates.minSq,  // 建單門檻，SQ 監控覆核用同一標準
           telegramSent: false,
           pendingNotify: true,
