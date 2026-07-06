@@ -9611,16 +9611,33 @@ async function recordSignalsFromScan(data) {
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
     if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
 
-    // 完整風險評估（14 因子）
+    // 完整風險評估（15 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
     try {
       _scanRisk = computeFullRisk(coin, setup, isLong);
+    } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
+    // ── 雙重風險評估：再以「SQ 監控視角」同形參數重算一次，取較高者 ──
+    // 兩個評估都算完才得出最終風控分，杜絕「建單顯示中風險、監控重算變高風險」的建後即取消
+    try {
+      const _scanPreConf = Math.max(0, 100 - Math.min(45, setup.learnPenalty || 0));
+      const _scanRiskMon = computeFullRisk(coin, {
+        conf:           _scanPreConf,
+        macroPenalty:   setup.macroPenalty   || 0,
+        aiTrendPenalty: setup.aiTrendPenalty || 0,
+        learnPenalty:   setup.learnPenalty   || 0,
+        techPenalty:    setup.techPenalty    || 0,
+        chipsPenalty:   setup.chipsPenalty   || 0,
+        rr1:            setup.rr1,
+      }, isLong);
+      if (_scanRiskMon.score > _scanRisk.score) _scanRisk = _scanRiskMon;
+    } catch(_e) {}
+    try {
       if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
       Object.assign(_tradeSetupCache[coin.symbol], {
         riskScore: _scanRisk.score, riskLevel: _scanRisk.level,
         riskFactors: _scanRisk.factors, riskRecs: _scanRisk.recs,
       });
-    } catch(_re) { console.warn('[risk]', coin.symbol, _re); }
+    } catch(_e) {}
     // 風險評估扣分（比例制）：扣後風控分低於門檻 → 跳過
     const _scanRiskPen = calcRiskPenalty(_scanRisk.score);
     if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < _scanGates.minConf) continue;
@@ -15135,8 +15152,23 @@ async function checkAndSendAlerts(data) {
         const _qRR = parseFloat(notifSetup.rr1)||0;
         if (_qRR>=2.0) _qSq+=1; else if (_qRR<1.3) _qSq-=1;
         // ⑭⑮ 風控分/止損學習（僅供 conf 門檻使用，不調整 SQ 分）
-        // 傳入 PRE-risk conf（100 - learnPenalty），確保與 buildTradeSetup 及 SQ monitor 計算邏輯一致
-        try { const _qPRConf=Math.max(0,100-Math.min(45,notifSetup.learnPenalty||0));const _qRisk=computeFullRisk(coin,{...notifSetup,conf:_qPRConf},isLong);notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level; } catch(_e){}
+        // 雙重風險評估：快取視角 + 監控視角（鍵名對齊 trade 儲存格式，含 macroOpposePenalty→macroPenalty 映射）取較高者
+        try {
+          const _qPRConf=Math.max(0,100-Math.min(45,notifSetup.learnPenalty||0));
+          const _qRiskA=computeFullRisk(coin,{...notifSetup,conf:_qPRConf},isLong);
+          const _qRiskB=computeFullRisk(coin,{
+            conf:_qPRConf,
+            macroPenalty:notifSetup.macroOpposePenalty||notifSetup.macroPenalty||0,
+            aiTrendPenalty:notifSetup.aiTrendPenalty||0,
+            learnPenalty:notifSetup.learnPenalty||0,
+            techPenalty:notifSetup.techPenalty||0,
+            chipsPenalty:notifSetup.chipsPenalty||0,
+            rr1:notifSetup.rr1,
+            sqGrade:notifSetup.sqGrade,
+          },isLong);
+          const _qRisk=_qRiskB.score>_qRiskA.score?_qRiskB:_qRiskA;
+          notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level;
+        } catch(_e){}
         // ⑰ 新聞情緒 ⑱ 爆倉牆 ⑲ 數據事件 ⑳ 資金流
         try { const _qIns=aiGenerateMarketInsights();const _qBr=_qIns.filter(i=>i.sentiment==='bearish'||i.sentiment==='bear').length;const _qBl=_qIns.filter(i=>i.sentiment==='bullish'||i.sentiment==='bull').length;if(_qBr+_qBl>0){if(isLong?_qBl>_qBr:_qBr>_qBl)_qSq+=1;else if(isLong?_qBr>_qBl:_qBl>_qBr)_qSq-=1;} } catch(_e){}
         try { const _qLiq=_liquidationCache[coin.symbol];const _qP=parseFloat(coin.price)||0;if(_qLiq&&_qP>0){const _qW=isLong?(_qLiq.shortLiqs||[]).find(l=>l.price>_qP&&l.price<=_qP*1.12):(_qLiq.longLiqs||[]).find(l=>l.price<_qP&&l.price>=_qP*0.88);if(_qW)_qSq+=1;} } catch(_e){}
