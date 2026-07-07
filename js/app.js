@@ -9386,7 +9386,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260708a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260708b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9728,6 +9728,10 @@ async function recordSignalsFromScan(data) {
     if (coin.score === 50) continue;
     const isLong    = coin.score > 50;
     const direction = isLong ? 'long' : 'short';
+
+    // 宏觀資料未就緒 → 不建新單：null 時所有宏觀封鎖都會放行，
+    // 等快取補上後 updateOpenTrades 的宏觀反向取消會立刻打掉這些單（建了就取消）
+    if (!_macroCache) break;
 
     // 強烈宏觀硬封鎖（與 buildTradeSetup macroBlockedForRecord 完全一致）
     if (isLong  && blockLong)  continue;
@@ -10993,6 +10997,7 @@ function updateOpenTrades(data) {
       for (const trade of tlog) {
         if (trade.status !== 'pending' || trade.entryTime) continue;
         if (trade.tradeType === 'range') continue;
+        if (trade.provenStrategy) continue;  // 驗證策略單：讓策略自然跑完，不受宏觀方向取消
         const cancelLong  = trade.direction === 'long'  && (bothClearBear || macroClearBear);
         const cancelShort = trade.direction === 'short' && (bothClearBull || macroClearBull);
         if (cancelLong || cancelShort) {
@@ -11013,6 +11018,7 @@ function updateOpenTrades(data) {
   // ── 風控分崩跌取消：動態計算 freshConf，低於 50% 時自動撤單（所有類型含震盪單）──
   for (const trade of tlog) {
     if (trade.status !== 'pending' || trade.entryTime) continue;
+    if (trade.provenStrategy) continue;  // 驗證策略單：免風控分覆核，讓策略自然跑完
     const baseConf   = trade.rawConf || trade.conf || 100;
     const _adxPen    = trade.hardAdxPenalty || 0;
 
@@ -11021,10 +11027,25 @@ function updateOpenTrades(data) {
     const _curRsi = parseFloat(_fCoin?.rsi) || parseFloat(trade.rsi) || 50;
     const _curAdx = parseFloat(_fCoin?.adx) || parseFloat(trade.adx) || 20;
 
-    // 重新執行學習規則扣分（反映最新止損紀錄，不使用建單時的靜態值）
+    // 重新執行學習規則扣分（傳入與 computeSimpleSetup 完全相同的完整參數，
+    // 確保與建單/SQ 監控的止損風控扣分一致，避免此處算出更高懲罰而誤觸 <50 取消）
     let _learnPen = trade.learnPenalty || 0;
     try {
-      const _lrFresh = applyLearnAdjustment(trade.direction, _curRsi, _curAdx, { slType: 'atr', skipAdxRule: true });
+      const _flIsL = trade.direction === 'long';
+      const _flBase = _flIsL ? (parseFloat(_fCoin?.score) || 55) : Math.max(10, 100 - (parseFloat(_fCoin?.score) || 50));
+      const _lrFresh = applyLearnAdjustment(trade.direction, _curRsi, _curAdx, {
+        slType:        'atr',
+        skipAdxRule:   true,
+        macdHist:      parseFloat(_fCoin?.macdHist) || 0,
+        volWeak:       (_fCoin?.volumeStrength || '') === '低' || String(_fCoin?.volumeStrength || '').includes('弱'),
+        h4Aligned:     _flIsL ? (_fCoin?.h4Signal || '').includes('bull') : (_fCoin?.h4Signal || '').includes('bear'),
+        scoreStrength: _flBase >= 75 ? 'strong' : _flBase >= 65 ? 'medium' : 'weak',
+        killZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
+        weeklyAgainst: _flIsL ? (_fCoin?.weeklySignal || '').includes('bear') : (_fCoin?.weeklySignal || '').includes('bull'),
+        h1Aligned:     _flIsL ? !!(_fCoin?.h1Signal || '').includes('bull') : !!(_fCoin?.h1Signal || '').includes('bear'),
+        bbWalkingBear: !!(_fCoin?.bb?.walkingBear),
+        bbWalkingBull: !!(_fCoin?.bb?.walkingBull),
+      });
       _learnPen = _lrFresh.penalty || 0;
     } catch(_le) { /* 保留靜態值 */ }
 
@@ -15496,6 +15517,20 @@ async function checkAndSendAlerts(data) {
   const _alertGates = getAdaptiveGates();
   // BTC 24h 漲跌幅（供 ㉓ 相對強弱因子使用）
   const _alertBtcChg24 = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.change24h);
+  // ── 宏觀方向硬封鎖（與 updateOpenTrades 的「宏觀方向反轉取消」條件完全一致）──
+  // 之前此路徑沒有宏觀封鎖 → 建單後下一刻被「宏觀大方向強烈看空，取消逆勢多單」秒取消
+  let _alertBlockLong = false, _alertBlockShort = false;
+  if (_macroCache) {
+    try {
+      const _abWb  = computeWeeklyAIBias(_macroCache.fg, _macroCache);
+      const _abTb  = computeTodayAIBias(_macroCache.fg, _macroCache);
+      const _abNet = computeMacroNetDir(_macroCache.fg, _macroCache);
+      _alertBlockLong  = _abNet === 'strong_bear'
+        || ((_abWb.bias === 'bear' || _abWb.bias === 'strong_bear') && (_abTb.bias === 'bear' || _abTb.bias === 'strong_bear'));
+      _alertBlockShort = _abNet === 'strong_bull'
+        || ((_abWb.bias === 'bull' || _abWb.bias === 'strong_bull') && (_abTb.bias === 'bull' || _abTb.bias === 'strong_bull'));
+    } catch(_e) {}
+  }
 
   for (const coin of data) {
     const isLong  = coin.score >= bullThr && (coin.trend === '強勢看漲' || coin.trend === '看漲');
@@ -15537,6 +15572,11 @@ async function checkAndSendAlerts(data) {
 
     // BTC 急波動保護：暫停山寨幣新單（放在既有掛單處理之後，不影響 Telegram 補發）
     if (btcVolGuardBlocks(coin.symbol)) continue;
+
+    // 宏觀資料未就緒 → 不建新單（無法驗證取消端會檢查的宏觀條件，避免建單後補上快取即被取消）
+    if (!_macroCache) continue;
+    // 宏觀方向硬封鎖（與取消端同一條件，杜絕「建單→宏觀反向秒取消」）
+    if (isLong ? _alertBlockLong : _alertBlockShort) continue;
 
     // 準備 setup（優先用快取，fallback 補上 macro+AI 扣分的完整版本）
     let notifSetup = _tradeSetupCache[coin.symbol] || null;
