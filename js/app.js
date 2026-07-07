@@ -9386,7 +9386,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260708c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260708d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10984,181 +10984,12 @@ function updateOpenTrades(data) {
   // 宏觀惡化時 SQ 監控與風控分監控會自然把分數拉低到門檻以下並取消，
   // 獨立的宏觀硬取消屬三重覆處理，且曾造成「建單後被宏觀反向秒取消」。
 
-  // ── 風控分崩跌取消：動態計算 freshConf，低於 50% 時自動撤單（所有類型含震盪單）──
-  for (const trade of tlog) {
-    if (trade.status !== 'pending' || trade.entryTime) continue;
-    if (trade.provenStrategy) continue;  // 驗證策略單：免風控分覆核，讓策略自然跑完
-    const baseConf   = trade.rawConf || trade.conf || 100;
-    const _adxPen    = trade.hardAdxPenalty || 0;
-
-    // 取得最新幣種資料（RSI/ADX 供學習規則重算用）
-    const _fCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
-    const _curRsi = parseFloat(_fCoin?.rsi) || parseFloat(trade.rsi) || 50;
-    const _curAdx = parseFloat(_fCoin?.adx) || parseFloat(trade.adx) || 20;
-
-    // 重新執行學習規則扣分（傳入與 computeSimpleSetup 完全相同的完整參數，
-    // 確保與建單/SQ 監控的止損風控扣分一致，避免此處算出更高懲罰而誤觸 <50 取消）
-    let _learnPen = trade.learnPenalty || 0;
-    try {
-      const _flIsL = trade.direction === 'long';
-      const _flBase = _flIsL ? (parseFloat(_fCoin?.score) || 55) : Math.max(10, 100 - (parseFloat(_fCoin?.score) || 50));
-      const _lrFresh = applyLearnAdjustment(trade.direction, _curRsi, _curAdx, {
-        slType:        'atr',
-        skipAdxRule:   true,
-        macdHist:      parseFloat(_fCoin?.macdHist) || 0,
-        volWeak:       (_fCoin?.volumeStrength || '') === '低' || String(_fCoin?.volumeStrength || '').includes('弱'),
-        h4Aligned:     _flIsL ? (_fCoin?.h4Signal || '').includes('bull') : (_fCoin?.h4Signal || '').includes('bear'),
-        scoreStrength: _flBase >= 75 ? 'strong' : _flBase >= 65 ? 'medium' : 'weak',
-        killZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
-        weeklyAgainst: _flIsL ? (_fCoin?.weeklySignal || '').includes('bear') : (_fCoin?.weeklySignal || '').includes('bull'),
-        h1Aligned:     _flIsL ? !!(_fCoin?.h1Signal || '').includes('bull') : !!(_fCoin?.h1Signal || '').includes('bear'),
-        bbWalkingBear: !!(_fCoin?.bb?.walkingBear),
-        bbWalkingBull: !!(_fCoin?.bb?.walkingBull),
-      });
-      _learnPen = _lrFresh.penalty || 0;
-    } catch(_le) { /* 保留靜態值 */ }
-
-    const _isL = trade.direction === 'long';
-    let freshConf = baseConf;
-    if (_macroCache) {
-      try {
-        const _fg  = _macroCache.fg, _gm = _macroCache;
-        const _fgV = parseInt(_fg?.value || '50');
-        const _chg = _gm?.marketCapChange || 0;
-        const _dom = _gm?.btcDominance   || 50;
-        let _agt = 0;
-        if (_isL) {
-          if (_chg < -2) _agt++;
-          if (_dom > 58) _agt++;
-          if (_fgV < 30) _agt++;
-          if (_fgV > 75) _agt += 0.5;
-        } else {
-          if (_chg > 2)  _agt++;
-          if (_dom < 44) _agt++;
-          if (_fgV > 70) _agt++;
-          if (_fgV < 25) _agt += 0.5;
-        }
-        let _macP = _agt >= 3 ? 22 : _agt >= 2 ? 15 : _agt >= 1 ? 8 : 0;
-        // ADX 不列入 freshConf：建單時 ADX 是靜態品質過濾，不應在每次刷新時重複扣分
-        const _fBigDir = computeMacroNetDir(_fg, _gm);  // 提前計算，供 AI 趨勢扣分判斷使用
-        const _fBdAg = (_isL && _fBigDir.includes('bear')) || (!_isL && _fBigDir.includes('bull'));
-        const _fMacroAligned = (!_isL && _fBigDir.includes('bear')) || (_isL && _fBigDir.includes('bull'));
-        const _wb  = computeWeeklyAIBias(_fg, _gm);
-        const _tb  = computeTodayAIBias(_fg, _gm);
-        const _wOp   = _isL ? _wb.bias.includes('bear') : _wb.bias.includes('bull');
-        const _tOp   = _isL ? _tb.bias.includes('bear') : _tb.bias.includes('bull');
-        const _wNeut = _wb.bias === 'neutral';
-        const _tNeut = _tb.bias === 'neutral';
-        // 宏觀大方向與交易方向一致時，AI事件預測逆向不扣分（宏觀優先）
-        const _aiP = _fMacroAligned ? 0 :
-          ((_wOp ? (_wb.bias.includes('strong') ? 10 : 6) : _wNeut ? 3 : 0) + (_tOp ? 7 : _tNeut ? 2 : 0));
-        // 大方向分歧補扣
-        if (_fBdAg) {
-          const _fBdMin = (_fBigDir === 'slight_bear' || _fBigDir === 'slight_bull') ? 4 : 9;
-          if (_macP < _fBdMin) _macP = _fBdMin;
-        }
-        // 動態技術面 + 籌碼面扣分（依最新掃描數據重算）
-        let _techP = 0, _chipsP = 0;
-        if (_fCoin) {
-          if (_isL) {
-            if (_curRsi > 78)      _techP += 8;
-            else if (_curRsi > 70) _techP += 5;
-          } else {
-            if (_curRsi < 22)      _techP += 8;
-            else if (_curRsi < 30) _techP += 5;
-          }
-          const _fMacd = parseFloat(_fCoin.macdHist) || 0;
-          if (_isL  && _fMacd < 0) _techP += 4;
-          if (!_isL && _fMacd > 0) _techP += 4;
-          const _fVol = _fCoin.volumeStrength || '';
-          if (_fVol === '低' || _fVol.includes('弱')) _techP += 4;
-          _techP = Math.min(18, _techP);
-          const _fDrv = _fCoin.derivData;
-          if (_fDrv) {
-            const _fTkr = _fDrv.takerBuySell ?? 1;
-            if (_isL  && _fTkr < 0.80)       _chipsP += 6;
-            else if (_isL  && _fTkr < 0.88)  _chipsP += 4;
-            else if (!_isL && _fTkr > 1.20)  _chipsP += 6;
-            else if (!_isL && _fTkr > 1.12)  _chipsP += 4;
-          }
-          const _fWhl = _fCoin.whaleData;
-          if (_fWhl) {
-            if (_isL  && _fWhl.bias === 'bear' && (_fWhl.bigSellCount || 0) >= 3) _chipsP += 5;
-            if (!_isL && _fWhl.bias === 'bull' && (_fWhl.bigBuyCount  || 0) >= 3) _chipsP += 5;
-          }
-          _chipsP = Math.min(12, _chipsP);
-        }
-        // 4H+日線逆向動態扣分（與 buildTradeSetup techPenalty 的方向扣分一致：4H +4，日線 +5）
-        let _dirP = 0;
-        if (_fCoin) {
-          const _fH4Sig = (_fCoin.h4Signal    || '');
-          const _fDySig = (_fCoin.dailySignal || '');
-          if (_isL) {
-            if (_fH4Sig.includes('bear')) _dirP += 4;
-            if (_fDySig.includes('bear') && !_fDySig.includes('neutral')) _dirP += 5;
-          } else {
-            if (_fH4Sig.includes('bull')) _dirP += 4;
-            if (_fDySig.includes('bull') && !_fDySig.includes('neutral')) _dirP += 5;
-          }
-          _dirP = Math.min(12, _dirP);
-        }
-        // 資金流動事件動態扣分（與 buildTradeSetup macroOpposePenalty 的資金流扣分一致：high 5，normal 3，中性 2，cap 10）
-        let _cfP = 0;
-        try {
-          const _cfB = getCapitalFlowBias();
-          for (const ev of _cfB.events) {
-            if (_isL  && ev.bear > 0) _cfP += ev.bear >= 1.2 ? 5 : 3;
-            else if (!_isL && ev.bull > 0) _cfP += ev.bull >= 1.2 ? 5 : 3;
-            else if (ev.bull === 0 && ev.bear === 0) _cfP += 2;
-          }
-          _cfP = Math.min(10, _cfP);
-        } catch(_e) {}
-        // 風控分：純粹止損風控扣分（ADX/技術/籌碼/宏觀由 SQ 因子處理）
-        const _cLearnDrag = calcLearnDrag(_learnPen);
-        freshConf = Math.max(0, Math.round(100 - _cLearnDrag));
-        const _rawFreshConf = freshConf;
-        // 同步持倉頁面顯示：將 trade.conf 更新為即時計算值，無需點入幣種詳情
-        if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-        // 風控分跌破取消門檻 → 自動取消掃描粗估單
-        if (freshConf < 60 && !trade.entryTime) {
-          const _confReason = `風控分跌至 ${freshConf} 分，低於門檻 60 分（止損風控扣分累積）`;
-          addCancelCooldown(trade, _confReason);
-          toDeleteIds.add(trade.id);
-          cancelledSymbols.add(trade.symbol);
-          changed = true;
-          sendCancelTelegramNotification(trade, _confReason);
-        }
-      } catch(_e) {}
-    } else {
-      // 無宏觀快取時：純止損風控扣分（100 分制）
-      const _cLD = calcLearnDrag(_learnPen);
-      freshConf = Math.max(0, Math.round(100 - _cLD));
-      if (trade.conf !== freshConf) { trade.conf = freshConf; changed = true; }
-      if (freshConf < 60 && !trade.entryTime) {
-        const _confReason = `風控分跌至 ${freshConf} 分，低於門檻 60 分（止損風控扣分累積）`;
-        addCancelCooldown(trade, _confReason);
-        toDeleteIds.add(trade.id);
-        cancelledSymbols.add(trade.symbol);
-        changed = true;
-        sendCancelTelegramNotification(trade, _confReason);
-      }
-    }
-    // 風險評估升至高風險（≥60）→ 取消未入場掛單（獨立於風控分，任何時候高風險均取消）
-    if (!toDeleteIds.has(trade.id) && !trade.entryTime && _fCoin) {
-      try {
-        const _frSetup = computeSimpleSetup(_fCoin, _isL);
-        const _frRisk  = computeFullRisk(_fCoin, _frSetup, _isL);
-        if (_frRisk.score >= 60) {
-          const _frReason = `AI 風險評估升至${_frRisk.level}（${_frRisk.score}/100）：${(_frRisk.factors || []).slice(0, 2).join('、')}`;
-          addCancelCooldown(trade, _frReason);
-          toDeleteIds.add(trade.id);
-          cancelledSymbols.add(trade.symbol);
-          changed = true;
-          sendCancelTelegramNotification(trade, _frReason);
-        }
-      } catch(_frErr) { console.warn('[risk-cancel]', trade.symbol, _frErr); }
-    }
-  }
+  // ── 風控分崩跌取消 + 風險評估升級取消：已移除（2026-07）──
+  // 此舊迴圈與 recordSignalsFromScan 的 SQ 監控重複，且存在三個不一致：
+  // 1. 風控分公式漏扣風險評估（100 - 止損風控，算出 70 分並回寫，與監控的 63 分打架）
+  // 2. 「風險評估 ≥60 硬取消」違反「高風險只扣風控分」原則（風險已透過 calcRiskPenalty 扣分）
+  // 3. 風險重算參數與建單雙重評估不同（55/100 建單 → 63/100 取消）
+  // 掛單監控統一由 SQ 監控負責：完整參數止損風控 + 雙重風險評估 + 門檻含緩衝。
 
   for (const trade of tlog) {
     if (trade.status === 'pending') {
