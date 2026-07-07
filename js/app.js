@@ -9386,7 +9386,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260708b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260708c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10978,42 +10978,11 @@ function updateOpenTrades(data) {
     changed = true;
   }
 
-  // ── 宏觀方向反轉：取消方向衝突的未入場掛單 ──
-  // 條件 A：本週 + 今日 AI 均明確反向（嚴格雙確認）
-  // 條件 B：綜合宏觀方向極端反向（strong_bear/strong_bull）才取消，mild bear 由信心扣分處理
-  // 震盪單（tradeType='range'）不依賴方向，豁免
-  if (_macroCache) {
-    try {
-      const wb2 = computeWeeklyAIBias(_macroCache.fg, _macroCache);
-      const tb2 = computeTodayAIBias(_macroCache.fg, _macroCache);
-      const bothClearBear = (wb2.bias === 'bear' || wb2.bias === 'strong_bear')
-                         && (tb2.bias === 'bear' || tb2.bias === 'strong_bear');
-      const bothClearBull = (wb2.bias === 'bull' || wb2.bias === 'strong_bull')
-                         && (tb2.bias === 'bull' || tb2.bias === 'strong_bull');
-      // 條件 B：只有極端大方向（strong）才直接取消，mild bear 由 freshConf 扣分處理
-      const macroNetDir2 = computeMacroNetDir(_macroCache.fg, _macroCache);
-      const macroClearBear = macroNetDir2 === 'strong_bear';
-      const macroClearBull = macroNetDir2 === 'strong_bull';
-      for (const trade of tlog) {
-        if (trade.status !== 'pending' || trade.entryTime) continue;
-        if (trade.tradeType === 'range') continue;
-        if (trade.provenStrategy) continue;  // 驗證策略單：讓策略自然跑完，不受宏觀方向取消
-        const cancelLong  = trade.direction === 'long'  && (bothClearBear || macroClearBear);
-        const cancelShort = trade.direction === 'short' && (bothClearBull || macroClearBull);
-        if (cancelLong || cancelShort) {
-          const macroLabel = { strong_bear:'強烈看空', bear:'偏空', strong_bull:'強烈看多', bull:'偏多' }[macroNetDir2] || macroNetDir2;
-          const reason = (cancelLong && macroClearBear) || (cancelShort && macroClearBull)
-            ? `宏觀大方向${macroLabel}，取消逆勢${trade.direction === 'long' ? '多' : '空'}單掛單`
-            : '本週 + 今日 AI 均明確反向，取消未入場掛單';
-          addCancelCooldown(trade, reason);
-          toDeleteIds.add(trade.id);
-          changed = true;
-          cancelledSymbols.add(trade.symbol);
-          sendCancelTelegramNotification(trade, reason);
-        }
-      }
-    } catch(e) {}
-  }
+  // ── 宏觀方向反轉取消：已移除（2026-07）──
+  // 宏觀已在 SQ 因子（② 本週AI ③ 今日AI ④ 宏觀環境，合計最多 -4 分）與
+  // 風險評估（f3 宏觀逆風，最多 +22 風險分 → 扣風控分）中完整計分。
+  // 宏觀惡化時 SQ 監控與風控分監控會自然把分數拉低到門檻以下並取消，
+  // 獨立的宏觀硬取消屬三重覆處理，且曾造成「建單後被宏觀反向秒取消」。
 
   // ── 風控分崩跌取消：動態計算 freshConf，低於 50% 時自動撤單（所有類型含震盪單）──
   for (const trade of tlog) {
@@ -15517,18 +15486,18 @@ async function checkAndSendAlerts(data) {
   const _alertGates = getAdaptiveGates();
   // BTC 24h 漲跌幅（供 ㉓ 相對強弱因子使用）
   const _alertBtcChg24 = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.change24h);
-  // ── 宏觀方向硬封鎖（與 updateOpenTrades 的「宏觀方向反轉取消」條件完全一致）──
-  // 之前此路徑沒有宏觀封鎖 → 建單後下一刻被「宏觀大方向強烈看空，取消逆勢多單」秒取消
+  // ── 建單方向過濾（與 recordSignalsFromScan 完全一致：僅極端 strong 封鎖 + 今日 AI 反向）──
+  // 一般宏觀逆風不硬封鎖：已由 SQ 因子（②③④，最多 -4 分）與風險評估（f3）扣分處理
   let _alertBlockLong = false, _alertBlockShort = false;
   if (_macroCache) {
     try {
       const _abWb  = computeWeeklyAIBias(_macroCache.fg, _macroCache);
       const _abTb  = computeTodayAIBias(_macroCache.fg, _macroCache);
       const _abNet = computeMacroNetDir(_macroCache.fg, _macroCache);
-      _alertBlockLong  = _abNet === 'strong_bear'
-        || ((_abWb.bias === 'bear' || _abWb.bias === 'strong_bear') && (_abTb.bias === 'bear' || _abTb.bias === 'strong_bear'));
-      _alertBlockShort = _abNet === 'strong_bull'
-        || ((_abWb.bias === 'bull' || _abWb.bias === 'strong_bull') && (_abTb.bias === 'bull' || _abTb.bias === 'strong_bull'));
+      _alertBlockLong  = _abNet === 'strong_bear' || _abWb.bias === 'strong_bear'
+        || _abTb.bias === 'bear' || _abTb.bias === 'strong_bear';
+      _alertBlockShort = _abNet === 'strong_bull' || _abWb.bias === 'strong_bull'
+        || _abTb.bias === 'bull' || _abTb.bias === 'strong_bull';
     } catch(_e) {}
   }
 
