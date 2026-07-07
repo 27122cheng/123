@@ -1954,25 +1954,20 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       const bbPenNow    = existingActive.bbPenalty || 0;
       let rawConfNow = existingActive.rawConf || Math.max(existingActive.conf || 60, Math.min(90, existingActive.score || 60));
-      let freshConf  = Math.max(0, 100 - calcLearnDrag(learnPenNow) - (existingActive.riskPenalty || 0));
-      if ((Math.abs((existingActive.conf || 0) - freshConf) >= 1 || (existingActive.learnPenalty || 0) !== learnPenNow) && !existingActive.entryTime) {
-        const tlogEdit = loadTradeLog();
-        const editIdx  = tlogEdit.findIndex(t => t.id === existingActive.id);
-        if (editIdx >= 0) {
-          tlogEdit[editIdx].conf         = freshConf;
-          tlogEdit[editIdx].rawConf      = rawConfNow;
-          tlogEdit[editIdx].learnPenalty = learnPenNow;
-          existingActive.conf            = freshConf;
-          existingActive.learnPenalty    = learnPenNow;
-          saveTradeLog(tlogEdit);
-        }
-      }
+      // ── 單一事實來源：風控分以掛單「儲存值」為準（SQ 監控每次掃描已用完整參數刷新）──
+      // 詳情頁不再用自己重算的 learnPenalty 覆寫，避免與監控互相覆蓋造成
+      // 「持倉卡 74 分 / 詳情頁 62 分」兩個數字打架；此處僅顯示，寫入者只有監控迴圈。
+      const learnPenShow = existingActive.learnPenalty != null ? existingActive.learnPenalty : learnPenNow;
+      let freshConf = existingActive.conf != null
+        ? existingActive.conf
+        : Math.max(0, 100 - calcLearnDrag(learnPenShow) - (existingActive.riskPenalty || 0));
 
       // 同步更新快取：確保 generateAIAnalysis 讀到的值與 confPanelHtml 顯示一致
+      // learnPenalty 用掛單儲存值（單一事實來源），避免快取回頭影響監控端計算
       _tradeSetupCache[coin.symbol] = Object.assign(
         _tradeSetupCache[coin.symbol] || {},
         {
-          learnPenalty:        learnPenNow,
+          learnPenalty:        learnPenShow,
           hardAdxPenalty:      hardAdxNow,
           macroOpposePenalty:  macroPenNow,
           aiTrendPenalty:      aiTrendPenNow,
@@ -2015,7 +2010,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
       // ── 信心扣分明細面板（附加在持倉/掛單卡片下方）──
       const _cc = v => v >= 85 ? '#22c55e' : v >= 80 ? '#4ade80' : v >= 75 ? '#f59e0b' : '#ef4444';
-      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenNow + cfPenNow + techPenNow + chipsPenNow + dirPenNow + bbPenNow;
+      const totalPenNow = hardAdxNow + macroPenNow + aiTrendPenNow + learnPenShow + cfPenNow + techPenNow + chipsPenNow + dirPenNow + bbPenNow;
 
       // 已進場：顯示進場時鎖定的風控分，不再動態重算（進場後市況變化不影響已開倉決策）
       if (existingActive.entryTime) {
@@ -2040,7 +2035,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         if (existingActive.status === 'pending') return buildPendingPositionSetup(existingActive, price) + lockedConfPanel;
       }
 
-      const _learnDragNow = calcLearnDrag(learnPenNow);
+      const _learnDragNow = calcLearnDrag(learnPenShow);
       const _riskPenNow = existingActive.riskPenalty || 0;
       const confPanelHtml = `<div style="margin-top:12px;padding:10px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:10px">
         <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:8px">📊 風控分評估（動態更新）</div>
@@ -9391,7 +9386,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260707c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260708a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9482,7 +9477,11 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqLabelMap = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' };
   const _sqLabelTG = setup.sqGradeLabel || _sqLabelMap[_sqGradeTG] || '—';
   const _sqEmoji   = { SSS:'👑', SS:'💎', S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
-  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（24因子評分 ${_sqScoreTG} 分）`;
+  // 配額寬鬆模式標示：建單門檻低於標準（SQ<9/A 級）時明確說明，避免 B 級訊號看似異常
+  const _sqRelaxTG = (setup.sqGate != null && setup.sqGate < 9)
+    ? `\n⚠️ <b>配額寬鬆模式建單</b>：今日訊號未達 3 個，門檻暫調 SQ≥${setup.sqGate}、風控分≥${setup.confGate ?? 60}（寬鬆單表現不佳會自動熔斷）`
+    : '';
+  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（24因子評分 ${_sqScoreTG} 分）${_sqRelaxTG}`;
 
   // ── 風控分扣分明細（止損風控 + 風險評估扣分，在 _riskScore 已知後補充）──
   const _learnPenTg = calcLearnDrag(setup.learnPenalty || 0);
