@@ -275,6 +275,12 @@ function startRefreshCycle() {
       } catch(_re) {}
     }
     try { recordSignalsFromScan(data); } catch(e) { console.error('[refresh] recordSignalsFromScan 錯誤:', e); }
+    // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
+    try { recordLabOpportunities(data); } catch(e) { console.error('[refresh] lab record 錯誤:', e); }
+    try { updateLabOpportunities(data); } catch(e) { console.error('[refresh] lab update 錯誤:', e); }
+    try { recordProvenStrategyTrades(data); } catch(e) { console.error('[refresh] proven 錯誤:', e); }
+    try { maybeAuditPenaltyFactors(); } catch(e) {}
+    try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
     try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
     // 自動掃描長線/短線狀態變化（異步，不阻塞主掃描；每幣種 30 分鐘最多一次）
     backgroundMonitorLongTermStatus().catch(e => console.warn('[ltMonitor] 掃描錯誤:', e));
@@ -335,6 +341,11 @@ async function manualRefresh() {
     } catch(_re2) {}
   }
   try { recordSignalsFromScan(data); } catch(e) { console.error('[manualRefresh] recordSignalsFromScan 錯誤:', e); }
+  // AI 機會實驗室 + 驗證策略晉升（手動刷新同步執行）
+  try { recordLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab record 錯誤:', e); }
+  try { updateLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab update 錯誤:', e); }
+  try { recordProvenStrategyTrades(data); } catch(e) {}
+  try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
   try { checkPostDataReversal(data); } catch(e) { console.error('[manualRefresh] checkPostDataReversal 錯誤:', e); }
   try {
     if (state.currentPage === 'positions') renderPositionsPage();
@@ -493,6 +504,8 @@ function navigateTo(page, coinSymbol) {
       if (state.data && state.data.length) {
         try { recordSignalsFromScan(state.data); } catch(e) {}
         try { updateOpenTrades(state.data); } catch(e) {}
+        try { recordLabOpportunities(state.data); } catch(e) {}
+        try { updateLabOpportunities(state.data); } catch(e) {}
       }
       try { renderPositionsPage(); } catch(e) {}
     }, 10000);
@@ -9378,7 +9391,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260707b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260707c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
