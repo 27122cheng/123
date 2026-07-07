@@ -5726,6 +5726,10 @@ function buildMarketOutlook(fg, global) {
             ? `宏觀指標略偏空，但訊號強度不足，建議謹慎操作，優先觀望，以技術面訊號輔助判斷方向。`
           : `各項宏觀指標分歧，市場目前無明確多空方向。建議以技術面為主、宏觀為輔，等待關鍵突破確認後再操作。`
         }</div>
+        ${(bullArgs.length || bearArgs.length) ? `<div style="font-size:0.72rem;color:var(--text3);margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.07);line-height:1.7">
+          ${bullArgs.length ? `<div>🟢 多方最強論據：${bullArgs[0]}</div>` : ''}
+          ${bearArgs.length ? `<div>🔴 空方最強論據：${bearArgs[0]}</div>` : ''}
+        </div>` : ''}
       </div>
       <div class="macro-ai-pred-list">
         ${_predHtml}
@@ -6025,6 +6029,18 @@ function computeWeeklyAIBias(fg, globalMkt) {
     } else { factorVotes.msqW = 0; }
   }
 
+  // ⑬ 資金費率聚合（衍生品倉位擁擠度，逆向指標：極端正=多頭過熱、極端負=軋空燃料）
+  try {
+    const _wFrCoins = ((typeof state !== 'undefined' && state.data) ? state.data : []).filter(c => c.derivData?.fundingRate != null);
+    if (_wFrCoins.length >= 3) {
+      const _wAvgFr = _wFrCoins.reduce((s, c) => s + c.derivData.fundingRate, 0) / _wFrCoins.length;
+      if (_wAvgFr > 0.003)       { macroBear += 1.2; factors.push(`資金費率均值 ${(_wAvgFr*100).toFixed(3)}%（偏高），多頭槓桿擁擠，本週回調擠壓風險升高`); }
+      else if (_wAvgFr > 0.001)  { macroBull += 0.5; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（健康偏多），多頭持倉主導但未過熱`); }
+      else if (_wAvgFr < -0.003) { macroBull += 1.2; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（極端負值），空頭擁擠，本週軋空反彈動能蓄積`); }
+      else if (_wAvgFr < -0.001) { macroBull += 0.8; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（負值），空頭付費過熱，有利多頭反彈`); }
+    }
+  } catch(_e) {}
+
   // ⑤ 本週重大事件風險
   const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
   const highRisk   = weekEvents.length >= 2;
@@ -6046,7 +6062,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const confColor  = conf >= 60 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
 
   const _wTopFacts = factors.slice(0, 2).map(f => f.split('，')[0]).join('；');
-  const aiOpinion = bias === 'strong_bull'
+  const _wBaseOpinion = bias === 'strong_bull'
     ? `綜合市場情緒、週線技術面、籌碼流向及巨鯨動向，AI 研判本週市場多頭動能強勁，整體結構有利做多，高風險數據公布前注意倉位管理。`
     : bias === 'bull'
     ? `整合多維度市場數據（情緒/技術/籌碼/主力），AI 研判本週整體偏多，多方力道佔優，可考慮逢回測佈局多單，注意大方向風險。`
@@ -6055,6 +6071,8 @@ function computeWeeklyAIBias(fg, globalMkt) {
     : bias === 'bear'
     ? `整合多維度數據，AI 研判本週整體偏空，空方壓力較大，建議減少多頭曝險，等待市場企穩訊號後再操作。`
     : `各項指標分歧，AI 研判本週市場缺乏明確方向，多空力量相當，建議以觀望為主，等待突破訊號確立後再操作。`;
+  // 附上本次判斷的關鍵依據（前兩大因子），讓結論可追溯而非空泛套話
+  const aiOpinion = _wTopFacts ? `${_wBaseOpinion}關鍵依據：${_wTopFacts}。` : _wBaseOpinion;
 
   const result = { bias, biasLabel, biasColor, conf, confColor, factors, riskNote, highRisk, weekEvents, rangeMode: bias === 'neutral', aiOpinion };
 
@@ -6355,6 +6373,18 @@ function computeTodayAIBias(fg, globalMkt) {
     }
   }
 
+  // ⑬ 資金費率聚合（衍生品倉位擁擠度，逆向指標，與週預測同邏輯）
+  try {
+    const _tFrCoins = ((typeof state !== 'undefined' && state.data) ? state.data : []).filter(c => c.derivData?.fundingRate != null);
+    if (_tFrCoins.length >= 3) {
+      const _tAvgFr = _tFrCoins.reduce((s, c) => s + c.derivData.fundingRate, 0) / _tFrCoins.length;
+      if (_tAvgFr > 0.003)       { bear += 1;   reasons.push(`資金費率均值 ${(_tAvgFr*100).toFixed(3)}%（偏高），多頭槓桿擁擠，今日回調擠壓風險`); }
+      else if (_tAvgFr > 0.001)  { bull += 0.5; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（健康偏多），多頭持倉主導未過熱`); }
+      else if (_tAvgFr < -0.003) { bull += 1;   reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（極端負值），空頭擁擠，今日軋空反彈機會`); }
+      else if (_tAvgFr < -0.001) { bull += 0.7; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（負值），空頭付費過熱，有利反彈`); }
+    }
+  } catch(_e) {}
+
   // ⑤ 今日高影響數據事件 + 政策訊息（最關鍵因素，加強預測精度）
   const todayEvs = getTodayEconEvents();
   const highEvs  = todayEvs.filter(ev => ev.impact === 'high');
@@ -6407,11 +6437,14 @@ function computeTodayAIBias(fg, globalMkt) {
     _saveBiasLearning(learn);
   } catch(e) {}
 
-  const aiOpinion = (bias === 'bull' || bias === 'slight_bull')
+  const _tBaseOpinion = (bias === 'bull' || bias === 'slight_bull')
     ? `整合今日情緒、技術面、籌碼及動能數據，AI 研判今日市場${bias === 'bull' ? '明確偏多' : '小幅偏多'}，買方力道佔優，可關注做多機會。`
     : (bias === 'bear' || bias === 'slight_bear')
     ? `整合今日多維數據，AI 研判今日市場${bias === 'bear' ? '明確偏空' : '小幅偏空'}，賣方壓力較大，建議謹慎操作，控制多頭倉位。`
     : `今日多項指標中性，AI 研判市場無明確方向，建議觀望，等待日線/4H訊號確立後再操作。`;
+  // 附上今日判斷的關鍵依據（前兩大因子），讓結論可追溯而非空泛套話
+  const _tTopFacts = reasons.slice(0, 2).map(r => r.replace(/^[⚠️🚨✅❌\s]+/, '').split('，')[0]).join('；');
+  const aiOpinion = _tTopFacts ? `${_tBaseOpinion}關鍵依據：${_tTopFacts}。` : _tBaseOpinion;
 
   return { bias, biasLabel, biasColor, conf, confColor, reasons, highEvs, riskNote, rangeMode: bias === 'neutral' || bias === 'slight_bull' || bias === 'slight_bear', aiOpinion };
 }
@@ -6419,12 +6452,8 @@ function computeTodayAIBias(fg, globalMkt) {
 function buildTodayAIBiasHtml(fg, globalMkt) {
   const _td = computeTodayAIBias(fg, globalMkt);
   const { biasLabel, biasColor, conf, confColor, reasons, riskNote } = _td;
-  // 每次從 bias 重新生成（確保不依賴快取欄位）
-  const aiOpinion = (_td.bias === 'bull' || _td.bias === 'slight_bull')
-    ? `整合今日情緒、技術面、籌碼及動能數據，AI 研判今日市場${_td.bias === 'bull' ? '明確偏多' : '小幅偏多'}，買方力道佔優，可關注做多機會。`
-    : (_td.bias === 'bear' || _td.bias === 'slight_bear')
-    ? `整合今日多維數據，AI 研判今日市場${_td.bias === 'bear' ? '明確偏空' : '小幅偏空'}，賣方壓力較大，建議謹慎操作，控制多頭倉位。`
-    : `今日多項指標中性，AI 研判市場無明確方向，建議觀望，等待日線/4H訊號確立後再操作。`;
+  // 使用 computeTodayAIBias 生成的意見（含關鍵依據），不在此重複生成套話版本
+  const aiOpinion = _td.aiOpinion || '';
   const reasonsHtml = reasons.slice(0, 5).map(r => {
     const isBull = /偏多|看漲|積極|多頭|活躍/.test(r);
     const isBear = /偏空|看跌|流出|空頭|承壓|受壓|賣壓/.test(r);
@@ -7786,6 +7815,29 @@ function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale
     points.push({ icon: derivIcon, color: 'var(--blue)', label: '合約', text: derivText });
   }
 
+  // 4b. 相對強弱 vs BTC + VWAP 位置（日內強弱定位）
+  try {
+    const _ssBtc = (typeof state !== 'undefined' && state.data) ? state.data.find(d => d.symbol === 'BTC/USDT') : null;
+    const _ssBtcChg = parseFloat(_ssBtc?.change24h);
+    const _ssRsParts = [];
+    let _ssRsBull = 0, _ssRsBear = 0;
+    if (coin.symbol !== 'BTC/USDT' && !isNaN(_ssBtcChg)) {
+      const _ssRel = (parseFloat(coin.change24h) || 0) - _ssBtcChg;
+      _ssRsParts.push(`24h vs BTC <strong style="color:${_ssRel >= 1.5 ? 'var(--bull)' : _ssRel <= -1.5 ? 'var(--bear)' : 'var(--text2)'}">${_ssRel >= 0 ? '+' : ''}${_ssRel.toFixed(1)}%</strong>${_ssRel >= 1.5 ? '（強於大盤）' : _ssRel <= -1.5 ? '（弱於大盤）' : ''}`);
+      if (_ssRel >= 1.5) _ssRsBull++; else if (_ssRel <= -1.5) _ssRsBear++;
+    }
+    const _ssVw = _footprintCache[coin.symbol]?.vwap;
+    const _ssVwP = parseFloat(coin.price) || 0;
+    if (_ssVw > 0 && _ssVwP > 0) {
+      const _ssDev = (_ssVwP - _ssVw) / _ssVw * 100;
+      _ssRsParts.push(`VWAP ${_ssDev >= 0 ? '上方' : '下方'} <strong style="color:${Math.abs(_ssDev) > 2.5 ? '#f59e0b' : _ssDev >= 0 ? 'var(--bull)' : 'var(--bear)'}">${Math.abs(_ssDev).toFixed(2)}%</strong>${Math.abs(_ssDev) > 2.5 ? '（過度延伸，回歸風險）' : _ssDev >= 0 ? '（日內買方掌控）' : '（日內賣方掌控）'}`);
+      if (Math.abs(_ssDev) <= 2.5) { if (_ssDev >= 0) _ssRsBull++; else _ssRsBear++; }
+    }
+    if (_ssRsParts.length) {
+      points.push({ icon: _ssRsBull > _ssRsBear ? '🟢' : _ssRsBear > _ssRsBull ? '🔴' : '⚪', color: '#22d3ee', label: '強弱', text: _ssRsParts.join('　') });
+    }
+  } catch(_e) {}
+
   // 5. 市場情緒（F&G）
   if (fearGreed) {
     const v  = parseInt(fearGreed.value);
@@ -8283,6 +8335,53 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     p4 = `🔄 <strong>操作建議</strong>：市場震盪（ADX ${adx}），建議降低倉位，等待帶量突破關鍵${h1Swing ? `高點（${fmtPrice(h1Swing)}）或低點（${fmtPrice(h1Low)}）` : 'K棒高低點'}後再行跟進。${riskTag ? ` 風險評估：${riskTag}。` : ''}`;
   }
 
+  // ── 實測波動提示（真實 ATR）：附加於操作建議，止損距離有數據依據 ──
+  try {
+    const _atrCAI = _tradeSetupCache[coin.symbol];
+    if (_atrCAI?.atrReal > 0 && Date.now() - (_atrCAI.atrRealTs || 0) < 15 * 60 * 1000) {
+      const _atrPctAI = _atrCAI.atrReal / (parseFloat(coin.price) || 1) * 100;
+      p4 += ` 📏 實測 1h 波動（ATR14）約 <strong>${_atrPctAI.toFixed(2)}%</strong>，止損至少預留 1.3×ATR（約 ${(1.3 * _atrPctAI).toFixed(2)}%），避免被正常波動掃出。`;
+    }
+  } catch(_e) {}
+
+  // ── 衍生品定位 + 相對強弱段落（資金費率 / Taker / vs BTC / VWAP）──
+  let pDeriv = '';
+  try {
+    const _dvParts = [];
+    const _dvFr = coin.derivData?.fundingRate;
+    if (_dvFr != null && !isNaN(_dvFr)) {
+      if (_dvFr > 0.0005)       _dvParts.push(`資金費率 <strong style="color:#ef4444">${(_dvFr*100).toFixed(4)}%</strong> 偏高，多頭槓桿擁擠，追多需防回調擠壓`);
+      else if (_dvFr < -0.0005) _dvParts.push(`資金費率 <strong style="color:#22c55e">${(_dvFr*100).toFixed(4)}%</strong> 為負，空頭付費倉位擁擠，具軋空反彈燃料`);
+      else                      _dvParts.push(`資金費率 ${(_dvFr*100).toFixed(4)}% 中性，槓桿倉位無明顯擁擠`);
+    }
+    const _dvTkr = coin.derivData?.takerBuySell;
+    if (_dvTkr != null && !isNaN(_dvTkr)) {
+      if (_dvTkr >= 1.08)      _dvParts.push(`Taker 買賣比 <strong style="color:#22c55e">${_dvTkr.toFixed(2)}</strong>，主動買盤積極`);
+      else if (_dvTkr <= 0.92) _dvParts.push(`Taker 買賣比 <strong style="color:#ef4444">${_dvTkr.toFixed(2)}</strong>，主動賣壓沉重`);
+    }
+    if (coin.symbol !== 'BTC/USDT') {
+      const _dvBtc = (typeof state !== 'undefined' && state.data) ? state.data.find(d => d.symbol === 'BTC/USDT') : null;
+      const _dvBtcChg = parseFloat(_dvBtc?.change24h);
+      if (!isNaN(_dvBtcChg)) {
+        const _dvRel = (parseFloat(coin.change24h) || 0) - _dvBtcChg;
+        if (_dvRel >= 1.5)       _dvParts.push(`24h 相對 BTC <strong style="color:#22c55e">+${_dvRel.toFixed(1)}%</strong>，資金主動流入的強勢標的，多單優選`);
+        else if (_dvRel <= -1.5) _dvParts.push(`24h 相對 BTC <strong style="color:#ef4444">${_dvRel.toFixed(1)}%</strong>，明顯弱於大盤，做多勝率先天偏低、弱勢反而利空單`);
+      }
+    }
+    const _dvVw = _footprintCache[coin.symbol]?.vwap;
+    const _dvP  = parseFloat(coin.price) || 0;
+    if (_dvVw > 0 && _dvP > 0) {
+      const _dvDev = (_dvP - _dvVw) / _dvVw * 100;
+      if (Math.abs(_dvDev) > 2.5) _dvParts.push(`價格偏離 VWAP <strong style="color:#f59e0b">${_dvDev > 0 ? '+' : ''}${_dvDev.toFixed(2)}%</strong>，過度延伸，均值回歸風險高、等回踩再進`);
+      else _dvParts.push(`價格於 VWAP ${_dvDev >= 0 ? '上' : '下'}方 ${Math.abs(_dvDev).toFixed(2)}%，日內${_dvDev >= 0 ? '買' : '賣'}方掌控`);
+    }
+    if (_dvParts.length >= 2) {
+      pDeriv = `<div style="background:rgba(34,211,238,.05);border-left:3px solid rgba(34,211,238,.35);padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
+        <strong style="color:#22d3ee">⚖️ 衍生品定位與相對強弱</strong>：${_dvParts.join('；')}。
+      </div>`;
+    }
+  } catch(_dve) {}
+
   // ── 風險評估整合段落（只在有 buildTradeSetup 快取時顯示）──
   let p6 = '';
   if (riskScore !== null && riskFactors.length > 0) {
@@ -8384,6 +8483,23 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
       if (_ttWhale) {
         const _ttWLabel = _ttWhale.bias === 'bull' ? '巨鯨大幅淨買入' : _ttWhale.bias === 'bear' ? '巨鯨大幅淨賣出' : '巨鯨動向中性';
         _ttParts.push(_ttWLabel);
+      }
+      // 資金費率定位（機構視角：反向擁擠 = 順勢燃料）
+      const _ttFr = coin.derivData?.fundingRate;
+      if (_ttFr != null && !isNaN(_ttFr) && Math.abs(_ttFr) >= 0.0005) {
+        const _ttFrCrowdLong = _ttFr > 0;
+        _ttParts.push((_isLong ? !_ttFrCrowdLong : _ttFrCrowdLong)
+          ? `資金費率 ${(_ttFr*100).toFixed(3)}% 反向擁擠，對手方倉位為進場方向提供擠壓燃料`
+          : `資金費率 ${(_ttFr*100).toFixed(3)}% 同向擁擠，槓桿結構不利，留意反向擠壓`);
+      }
+      // VWAP 執行位（機構掛單基準）
+      const _ttVw = _ttFP?.vwap;
+      if (_ttVw > 0 && _ttPrice > 0) {
+        const _ttVwDev = (_ttPrice - _ttVw) / _ttVw;
+        if ((_isLong && _ttVwDev >= 0 && _ttVwDev <= 0.02) || (!_isLong && _ttVwDev <= 0 && _ttVwDev >= -0.02))
+          _ttParts.push(`價格位於 VWAP ${_isLong ? '上' : '下'}方 ${(Math.abs(_ttVwDev)*100).toFixed(2)}%，機構執行基準確認${_isLong ? '買' : '賣'}方掌控`);
+        else if ((_isLong && _ttVwDev > 0.025) || (!_isLong && _ttVwDev < -0.025))
+          _ttParts.push(`價格偏離 VWAP ${(Math.abs(_ttVwDev)*100).toFixed(2)}%，機構視角屬追價區，多等回踩 VWAP $${fmtPrice(_ttVw)} 再執行`);
       }
       if (_ttParts.length >= 2) {
         pTopTrader = `<div style="background:rgba(251,191,36,.05);border:1px solid rgba(251,191,36,.2);border-radius:8px;padding:10px 13px;margin-top:6px">
@@ -8508,6 +8624,7 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
     ${p3 ? `<div class="ai-para">${p3}</div>` : ''}
     <div class="ai-para">${p4}</div>
     ${pFP  ? `<div class="ai-para">${pFP}</div>`  : ''}
+    ${pDeriv ? `<div class="ai-para">${pDeriv}</div>` : ''}
     ${pLiq ? `<div class="ai-para">${pLiq}</div>` : ''}
     ${pTopTrader ? `<div class="ai-para">${pTopTrader}</div>` : ''}
     ${pICT ? `<div class="ai-para">${pICT}</div>` : ''}
@@ -9251,7 +9368,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260706b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260706c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
