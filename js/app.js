@@ -485,6 +485,7 @@ function navigateTo(page, coinSymbol) {
     renderReversalCards();
   }
   if (page === 'settings') populateSettingsPage();
+  if (page === 'lab') { try { renderLabPage(); } catch(e) {} }
   if (page === 'positions') {
     renderPositionsPage();
     if (_positionsScanTimer) clearInterval(_positionsScanTimer);
@@ -9283,6 +9284,10 @@ function triggerRescan() {
     recordSignalsFromScan(data);
     updateOpenTrades(data);
     checkAndSendAlerts(data);
+    // AI 機會實驗室：紙上追蹤（獨立於正式交易，不設風控門檻）
+    try { recordLabOpportunities(data); } catch(e) {}
+    try { updateLabOpportunities(data); } catch(e) {}
+    if (state.currentPage === 'lab') { try { renderLabPage(); } catch(e) {} }
   });
 }
 
@@ -9368,7 +9373,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260706c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260707a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -14078,6 +14083,233 @@ function buildWinRateBreakdown(closed) {
     </div>
     ${relaxedNote}
   </details>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   AI 機會實驗室（紙上交易追蹤）
+   目的：收集「AI 分析覺得不錯、但不一定通過風控分門檻」的交易機會，
+   像持倉一樣持續監控到 SL/TP，統計哪種圖形/分析方式勝率與獲利最大化。
+   完全獨立於正式交易記錄（不影響 AI 學習引擎與勝率統計）。
+   ═══════════════════════════════════════════════════════════════ */
+const AI_LAB_KEY = 'csp_ai_lab';
+function loadAILab() { try { return JSON.parse(localStorage.getItem(AI_LAB_KEY) || '[]'); } catch(e) { return []; } }
+function saveAILab(list) { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list)); }
+
+/* 收集機會：硬性條件僅 4H+15m 同向（訊號基準），不看風控分/風險評估。
+   標籤 = 命中的分析維度；至少 2 個維度同向才視為「AI 覺得不錯」。 */
+function recordLabOpportunities(data) {
+  if (!Array.isArray(data) || !data.length) return;
+  const lab = loadAILab();
+  const now = Date.now();
+  const btcChg = parseFloat(data.find(d => d.symbol === 'BTC/USDT')?.change24h);
+  let changed = false;
+
+  for (const coin of data) {
+    if (!coin || coin.score === 50) continue;
+    const isLong = coin.score > 50;
+    const dir = isLong ? 'long' : 'short';
+
+    // 同幣種+方向：已有追蹤中，或 2 小時內剛完結 → 跳過
+    const dup = lab.some(o => o.symbol === coin.symbol && o.direction === dir &&
+      (o.status === 'pending' || o.status === 'open' ||
+       (o.exitTime && now - o.exitTime < 2 * 60 * 60 * 1000) ||
+       (now - (o.timestamp || 0) < 2 * 60 * 60 * 1000)));
+    if (dup) continue;
+
+    // 硬性條件：4H + 15m 同向（與正式訊號同一基準，讓實驗結果可對比）
+    const h4Ok = isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear');
+    const s15 = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
+    const ok15 = isLong ? s15.includes('bull') : s15.includes('bear');
+    if (!h4Ok || !ok15) continue;
+
+    // ── 分析維度標籤（僅用掃描資料與既有快取，零額外 API）──
+    const tags = [];
+    const cache = _tradeSetupCache[coin.symbol] || {};
+    const fp = _footprintCache[coin.symbol];
+    const price = parseFloat(coin.price) || 0;
+    try {
+      if (cache.orderBlock?.priceInOB || cache.orderBlock4h?.priceInOB) tags.push('ICT-OrderBlock');
+      if ((cache.fvg && !cache.fvg.filled) || (cache.fvg4h && !cache.fvg4h.filled)) tags.push('ICT-FVG');
+      (cache.chartPat?.aligned || []).slice(0, 2).forEach(p => tags.push(`圖形-${p.name || p}`));
+      if (fp) {
+        if (isLong ? fp.deltaDir === 'bull' : fp.deltaDir === 'bear') tags.push('足跡Delta同向');
+        if (fp.absorption) tags.push('主力吸籌');
+        if (fp.vwap > 0 && price > 0) {
+          const vd = (price - fp.vwap) / fp.vwap;
+          if (isLong ? (vd >= 0 && vd <= 0.02) : (vd <= 0 && vd >= -0.02)) tags.push('VWAP掌控');
+        }
+      }
+      const liq = _liquidationCache[coin.symbol];
+      if (liq && price > 0) {
+        const wall = isLong
+          ? (liq.shortLiqs||[]).find(l => l.price > price && l.price <= price * 1.12)
+          : (liq.longLiqs ||[]).find(l => l.price < price && l.price >= price * 0.88);
+        if (wall) tags.push('爆倉擠壓');
+      }
+      const wh = coin.whaleData;
+      if (wh && (isLong ? (wh.bias === 'bull' && (wh.bigBuyCount||0) >= 2) : (wh.bias === 'bear' && (wh.bigSellCount||0) >= 2))) tags.push('巨鯨同向');
+      const fr = coin.derivData?.fundingRate;
+      if (fr != null && !isNaN(fr) && Math.abs(fr) >= 0.0005 && (isLong ? fr < 0 : fr > 0)) tags.push('資金費率反向擁擠');
+      if (coin.symbol !== 'BTC/USDT' && !isNaN(btcChg)) {
+        const rel = (parseFloat(coin.change24h) || 0) - btcChg;
+        if (isLong ? rel >= 1.5 : rel <= -1.5) tags.push('相對強弱');
+      }
+      if (coin.bb && (isLong ? coin.bb.walkingBull : coin.bb.walkingBear)) tags.push('BB走軌');
+      const macd = parseFloat(coin.macdHist) || 0;
+      if (isLong ? macd > 0 : macd < 0) tags.push('MACD動能');
+      if ((coin.volumeStrength||'').includes('強') || coin.volumeStrength === 'high') tags.push('放量');
+      if ((parseFloat(coin.adx) || 0) >= 28) tags.push('ADX強趨勢');
+      const wkOk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
+      const dyOk = isLong ? (coin.dailySignal ||'').includes('bull') : (coin.dailySignal ||'').includes('bear');
+      const h1Ok = isLong ? (coin.h1Signal   ||'').includes('bull') : (coin.h1Signal   ||'').includes('bear');
+      if (wkOk && dyOk && h1Ok) tags.push('多時框共振');
+      if (coin.patterns && (isLong ? (coin.patterns.bull123 || coin.patterns.bull2B) : (coin.patterns.bear123 || coin.patterns.bear2B))) tags.push('123/2B形態');
+      const kzH = new Date().getUTCHours();
+      if ((kzH >= 7 && kzH < 11) || (kzH >= 13 && kzH < 17)) tags.push('KillZone時段');
+    } catch(_e) {}
+
+    if (tags.length < 2) continue;  // 至少 2 個分析維度同向
+
+    // 進場模型：與正式建單同一 setup 計算，但不做任何風控/風險門檻
+    let setup = null;
+    try { setup = computeSimpleSetup(coin, isLong); } catch(_e) {}
+    if (!setup || !(setup.entry > 0) || !(setup.sl > 0) || !(setup.tp1 > 0)) continue;
+
+    lab.unshift({
+      id: `lab-${coin.symbol}-${now}`,
+      symbol: coin.symbol, direction: dir, timestamp: now,
+      entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2 || null,
+      rr1: parseFloat(setup.rr1) || 0,
+      tags,
+      // 參考記錄（不作門檻）：當時的風控分/風險分，供事後對照
+      refConf: setup.conf ?? null, refLearnPen: setup.learnPenalty ?? null,
+      status: 'pending', outcome: null, pnlR: null,
+      entryTime: null, exitTime: null, peakR: 0,
+    });
+    changed = true;
+  }
+  if (changed) {
+    if (lab.length > 400) lab.splice(400);
+    saveAILab(lab);
+  }
+}
+
+/* 監控：進場觸發 → SL/TP 追蹤 → 結果落地。不做任何風控取消（實驗室宗旨：讓機會自然跑完）。 */
+function updateLabOpportunities(data) {
+  if (!Array.isArray(data) || !data.length) return;
+  const lab = loadAILab();
+  const now = Date.now();
+  let changed = false;
+  for (const o of lab) {
+    if (o.status !== 'pending' && o.status !== 'open') continue;
+    const coin = data.find(d => d.symbol === o.symbol);
+    const cur = parseFloat(coin?.price) || 0;
+    if (!cur) continue;
+    const isLong = o.direction === 'long';
+    const riskDist = Math.abs(o.entry - o.sl) || 1e-9;
+
+    if (o.status === 'pending') {
+      // 48 小時未觸發進場 → 過期（不計入統計）
+      if (now - o.timestamp > 48 * 60 * 60 * 1000) { o.status = 'expired'; changed = true; continue; }
+      // 進場前已飛越 TP1 → 機會錯過（不計入統計）
+      if (isLong ? cur >= o.tp1 : cur <= o.tp1) { o.status = 'missed'; changed = true; continue; }
+      // 觸及進場位 → 開倉
+      if (isLong ? cur <= o.entry : cur >= o.entry) { o.status = 'open'; o.entryTime = now; changed = true; }
+      continue;
+    }
+
+    // open：更新最大有利波幅（R）
+    const curR = (isLong ? (cur - o.entry) : (o.entry - cur)) / riskDist;
+    if (curR > (o.peakR || 0)) { o.peakR = +curR.toFixed(2); changed = true; }
+    // SL / TP 判定（SL 優先：同 tick 兩者皆觸發時保守計）
+    if (isLong ? cur <= o.sl : cur >= o.sl) {
+      o.status = 'closed'; o.outcome = 'sl'; o.pnlR = -1; o.exitTime = now; changed = true;
+    } else if (isLong ? cur >= o.tp1 : cur <= o.tp1) {
+      o.status = 'closed'; o.outcome = 'tp1'; o.pnlR = +( (isLong ? (o.tp1 - o.entry) : (o.entry - o.tp1)) / riskDist ).toFixed(2); o.exitTime = now; changed = true;
+    } else if (now - (o.entryTime || o.timestamp) > 7 * 24 * 60 * 60 * 1000) {
+      // 7 天未觸 SL/TP → 以現價結算
+      o.status = 'closed'; o.outcome = 'timeout'; o.pnlR = +curR.toFixed(2); o.exitTime = now; changed = true;
+    }
+  }
+  if (changed) saveAILab(lab);
+}
+
+/* 統計 + 頁面渲染：按標籤分組的勝率/累計R，回答「哪種分析方式最會賺」 */
+function renderLabPage() {
+  const el = document.getElementById('lab-content');
+  if (!el) return;
+  const lab = loadAILab();
+  const closed  = lab.filter(o => o.status === 'closed');
+  const active  = lab.filter(o => o.status === 'pending' || o.status === 'open');
+  const wins    = closed.filter(o => (o.pnlR || 0) > 0);
+  const totalR  = closed.reduce((s, o) => s + (o.pnlR || 0), 0);
+  const winRate = closed.length ? (wins.length / closed.length * 100) : 0;
+
+  // 按標籤聚合
+  const tagStats = {};
+  for (const o of closed) {
+    for (const t of (o.tags || [])) {
+      if (!tagStats[t]) tagStats[t] = { n: 0, w: 0, r: 0 };
+      tagStats[t].n++;
+      if ((o.pnlR || 0) > 0) tagStats[t].w++;
+      tagStats[t].r += (o.pnlR || 0);
+    }
+  }
+  const tagRows = Object.entries(tagStats)
+    .map(([t, s]) => ({ tag: t, n: s.n, wr: s.w / s.n * 100, r: s.r, avgR: s.r / s.n }))
+    .sort((a, b) => b.r - a.r);
+
+  const _wrC = wr => wr >= 55 ? 'var(--bull)' : wr >= 45 ? '#f59e0b' : 'var(--bear)';
+  const _rC  = r  => r > 0 ? 'var(--bull)' : r < 0 ? 'var(--bear)' : 'var(--text3)';
+  const tagTableHtml = tagRows.length ? `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:8px">🧪 分析方式績效排行（已完結 ${closed.length} 筆）</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.78rem">
+        <thead><tr style="color:var(--text3);text-align:left;font-size:0.72rem">
+          <th style="padding:4px 6px">分析方式</th><th style="padding:4px 6px;text-align:right">樣本</th>
+          <th style="padding:4px 6px;text-align:right">勝率</th><th style="padding:4px 6px;text-align:right">累計 R</th>
+          <th style="padding:4px 6px;text-align:right">平均 R</th></tr></thead>
+        <tbody>${tagRows.map(r => `<tr>
+          <td style="padding:4px 6px;font-weight:600">${r.tag}${r.n >= 10 ? ' <span style="font-size:0.65rem;color:#22d3ee">✓可信</span>' : ''}</td>
+          <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.n}</td>
+          <td style="padding:4px 6px;text-align:right;font-weight:700;color:${_wrC(r.wr)}">${r.wr.toFixed(0)}%</td>
+          <td style="padding:4px 6px;text-align:right;font-weight:700;color:${_rC(r.r)}">${r.r > 0 ? '+' : ''}${r.r.toFixed(2)}</td>
+          <td style="padding:4px 6px;text-align:right;color:${_rC(r.avgR)}">${r.avgR > 0 ? '+' : ''}${r.avgR.toFixed(2)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">樣本 ≥10 筆才具參考性；同一機會可命中多個標籤，統計互有重疊</div>
+    </div>` : `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px;color:var(--text3);font-size:0.8rem">尚無完結樣本 — 機會完結（觸及止盈/止損）後這裡會出現各分析方式的績效排行</div>`;
+
+  const listRows = lab.slice(0, 60).map(o => {
+    const stIcon = { pending:'⏳', open:'📈', closed: (o.pnlR||0) > 0 ? '✅' : '❌', expired:'⌛', missed:'🚀' }[o.status] || '';
+    const stText = { pending:'等待進場', open:'追蹤中', closed: o.outcome === 'tp1' ? `止盈 +${o.pnlR}R` : o.outcome === 'sl' ? '止損 -1R' : `到期 ${o.pnlR > 0 ? '+' : ''}${o.pnlR}R`, expired:'未觸發過期', missed:'飛越錯過' }[o.status] || '';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid rgba(255,255,255,.05);font-size:0.76rem;flex-wrap:wrap">
+      <span>${stIcon}</span>
+      <strong style="min-width:88px">${o.symbol}</strong>
+      <span style="color:${o.direction === 'long' ? 'var(--bull)' : 'var(--bear)'};font-weight:700">${o.direction === 'long' ? '▲多' : '▼空'}</span>
+      <span style="color:var(--text3)">${stText}</span>
+      ${o.peakR > 0 ? `<span style="color:#22d3ee;font-size:0.68rem">峰值 +${o.peakR}R</span>` : ''}
+      <span style="flex:1"></span>
+      <span style="display:flex;gap:4px;flex-wrap:wrap">${(o.tags||[]).map(t => `<span style="font-size:0.62rem;background:rgba(34,211,238,.1);color:#22d3ee;border:1px solid rgba(34,211,238,.25);padding:1px 6px;border-radius:10px">${t}</span>`).join('')}</span>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="page-header"><div>
+      <h1 class="page-title">🧪 AI 機會實驗室</h1>
+      <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
+    </div></div>
+    <div class="tl-stats">
+      <div class="tl-stat-card"><div class="tl-stat-val">${active.length}</div><div class="tl-stat-lbl">追蹤中</div></div>
+      <div class="tl-stat-card"><div class="tl-stat-val">${closed.length}</div><div class="tl-stat-lbl">已完結</div></div>
+      <div class="tl-stat-card"><div class="tl-stat-val" style="color:${_wrC(winRate)}">${closed.length ? winRate.toFixed(1) + '%' : '--'}</div><div class="tl-stat-lbl">整體勝率</div></div>
+      <div class="tl-stat-card"><div class="tl-stat-val" style="color:${_rC(totalR)}">${totalR > 0 ? '+' : ''}${totalR.toFixed(1)} R</div><div class="tl-stat-lbl">累計 R</div></div>
+    </div>
+    ${tagTableHtml}
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <div style="font-size:0.85rem;font-weight:700;color:var(--text1);padding:10px 14px;border-bottom:1px solid var(--border)">📋 機會清單（最近 60 筆）</div>
+      ${listRows || '<div style="padding:16px;color:var(--text3);font-size:0.8rem">掃描進行中，發現符合 2 個以上分析維度同向的機會後會自動收錄</div>'}
+    </div>`;
 }
 
 /* ── 交易記錄頁面渲染 ─────────────────────────────────────────── */
