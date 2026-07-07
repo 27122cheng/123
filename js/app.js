@@ -4461,6 +4461,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         score: coin.score, trend: coin.trend, conf, rawConf,
         rr1: rr1str, rr2: rr2str,  // SQ 監控 computeFullRisk 需要，缺失會被誤判 R/R 過低
         riskScore: _risk.score, riskLevel: _risk.level, riskPenalty: _riskPenBTS,
+        riskKeys: _risk.keys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
         confGate: 60, sqGate: canScaleIn ? 15 : 9,  // 詳情頁建單使用嚴格門檻
         hardAdxPenalty, learnPenalty, macroPenalty: macroOpposePenalty, aiTrendPenalty, techPenalty, chipsPenalty,
         entryReason: entryReasons.join('，'), entryReasons: [...entryReasons],
@@ -9287,6 +9288,10 @@ function triggerRescan() {
     // AI 機會實驗室：紙上追蹤（獨立於正式交易，不設風控門檻）
     try { recordLabOpportunities(data); } catch(e) {}
     try { updateLabOpportunities(data); } catch(e) {}
+    // 驗證策略晉升：實驗室 ≥100 筆樣本且勝率 ≥90% 的分析方式 → 免風控分建正式單
+    try { recordProvenStrategyTrades(data); } catch(e) {}
+    // 扣分條件有效性審查（每 6 小時，無預測力的風險條件自動豁免）
+    try { maybeAuditPenaltyFactors(); } catch(e) {}
     if (state.currentPage === 'lab') { try { renderLabPage(); } catch(e) {} }
   });
 }
@@ -9373,7 +9378,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260707a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260707b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10123,6 +10128,7 @@ async function recordSignalsFromScan(data) {
       score: coin.score, trend: coin.trend,
       conf: Math.max(0, (setup.conf || 0) - (_scanRiskPen || 0)), rawConf: setup.rawConf,
       rr1: setup.rr1, rr2: setup.rr2,  // SQ 監控 computeFullRisk 需要，缺失會被誤判 R/R 過低 +18 風險分
+      riskKeys: _scanRisk.keys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
       riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
@@ -10209,6 +10215,8 @@ async function recordSignalsFromScan(data) {
     if (!_existingTradeIds.has(trade.id)) continue;
     // pendingNotify = true 代表從幣種詳情頁建單、Telegram 尚未發送，同樣跳過
     if (trade.pendingNotify) continue;
+    // 驗證策略單（實驗室 ≥100 筆、勝率 ≥90% 晉升）：免 SQ/風控分覆核，讓策略自然跑完
+    if (trade.provenStrategy) continue;
     const _sqCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
     if (!_sqCoin) continue;
     const _sqIsLong = trade.direction === 'long';
@@ -14095,6 +14103,201 @@ const AI_LAB_KEY = 'csp_ai_lab';
 function loadAILab() { try { return JSON.parse(localStorage.getItem(AI_LAB_KEY) || '[]'); } catch(e) { return []; } }
 function saveAILab(list) { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list)); }
 
+/* ── 風控扣分條件有效性審查（AI 篩選：無預測力的條件自動豁免、不再扣分）──
+   原理：對每個風險因子（f1~f15），比較「條件成立」與「條件未成立」樣本的實際勝率。
+   樣本 ≥30 且成立時勝率不低於未成立時 → 該條件對結果無預測力 → 豁免（不扣分）。
+   若之後數據劣化（成立時勝率低於未成立 5 個百分點以上）→ 自動恢復扣分。 */
+const RISK_MUTE_KEY = 'csp_risk_mute';
+let _riskMuteCache = null, _riskMuteCacheTs = 0;
+function _getRiskMuteSet() {
+  const now = Date.now();
+  if (_riskMuteCache && now - _riskMuteCacheTs < 60 * 1000) return _riskMuteCache;
+  try { _riskMuteCache = new Set(Object.keys(JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'))); }
+  catch(_e) { _riskMuteCache = new Set(); }
+  _riskMuteCacheTs = now;
+  return _riskMuteCache;
+}
+const RISK_KEY_LABELS = {
+  f1_conf: '信心偏低', f2_adx: 'ADX 趨勢弱', f3_macro: '宏觀逆風', f4_ai: 'AI 趨勢逆向',
+  f5_learn: 'AI 風控記憶（止損歷史）', f6_rr: 'R/R 偏低', f7_events: '高衝擊數據將公布',
+  f8_range: '區間震盪模式', f9_bigtrend: '大週期未對齊', f10_tech: '技術/籌碼逆風',
+  f11_whale: '巨鯨方向逆向', f12_sq: '訊號品質低', f13_vol: '成交量萎縮',
+  f14_macd: 'MACD 動能逆向', f15_vwap: 'VWAP 過度延伸',
+};
+function auditPenaltyFactors() {
+  // 證據池：正式已完結交易 + 實驗室已完結機會（皆需建單時記錄的 riskKeys）
+  const real = loadTradeLog().filter(t => t.status === 'closed' && Array.isArray(t.riskKeys));
+  const labC = loadAILab().filter(o => o.status === 'closed' && Array.isArray(o.riskKeys));
+  const all = [
+    ...real.map(t => ({ keys: t.riskKeys, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
+    ...labC.map(o => ({ keys: o.riskKeys, win: (o.pnlR || 0) > 0 })),
+  ];
+  let mute = {};
+  try { mute = JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'); } catch(_e) {}
+  const report = [];
+  for (const key of Object.keys(RISK_KEY_LABELS)) {
+    const withF   = all.filter(s => s.keys.includes(key));
+    const without = all.filter(s => !s.keys.includes(key));
+    if (!withF.length) { if (mute[key]) report.push({ key, label: RISK_KEY_LABELS[key], n: 0, muted: true }); continue; }
+    const wrW = withF.filter(s => s.win).length / withF.length * 100;
+    const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
+    const entry = { key, label: RISK_KEY_LABELS[key], n: withF.length, wrWith: wrW, wrWithout: wrO, muted: !!mute[key] };
+    if (withF.length >= 30 && wrW >= wrO && !mute[key]) {
+      // 條件成立時勝率不輸未成立時 → 無預測力 → 豁免
+      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), wrWithout: +wrO.toFixed(1) };
+      entry.muted = true;
+      console.log(`[risk-audit] 豁免「${RISK_KEY_LABELS[key]}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 未成立 ${wrO.toFixed(1)}%（樣本 ${withF.length}）`);
+    } else if (mute[key] && withF.length >= 30 && wrW < wrO - 5) {
+      // 數據劣化 → 恢復扣分
+      delete mute[key];
+      entry.muted = false;
+      console.log(`[risk-audit] 恢復扣分「${RISK_KEY_LABELS[key]}」：成立時勝率 ${wrW.toFixed(1)}% 明顯低於未成立 ${wrO.toFixed(1)}%`);
+    }
+    report.push(entry);
+  }
+  try { localStorage.setItem(RISK_MUTE_KEY, JSON.stringify(mute)); _riskMuteCache = null; } catch(_e) {}
+  return report;
+}
+let _lastFactorAuditTs = 0;
+function maybeAuditPenaltyFactors() {
+  const now = Date.now();
+  if (now - _lastFactorAuditTs < 6 * 60 * 60 * 1000) return;  // 6 小時審查一次
+  _lastFactorAuditTs = now;
+  try { auditPenaltyFactors(); } catch(_e) {}
+}
+
+/* ── 驗證策略白名單：實驗室某分析方式 ≥100 筆完結樣本且勝率 ≥90% → 晉升正式系統 ── */
+function getProvenLabTags() {
+  const closed = loadAILab().filter(o => o.status === 'closed');
+  const stats = {};
+  for (const o of closed) for (const t of (o.tags || [])) {
+    stats[t] = stats[t] || { n: 0, w: 0 };
+    stats[t].n++;
+    if ((o.pnlR || 0) > 0) stats[t].w++;
+  }
+  return Object.entries(stats)
+    .filter(([, s]) => s.n >= 100 && s.w / s.n >= 0.90)
+    .map(([t]) => t);
+}
+
+/* 驗證策略建單：命中白名單標籤的訊號直接建正式單，免風控分/SQ 門檻。
+   保留：持倉去重、冷卻、BTC 急波動保護、4H+15m 硬性條件（與實驗室驗證條件完全一致，
+   確保正式運行複製的是被驗證過的同一套進場情境）。 */
+function recordProvenStrategyTrades(data) {
+  const proven = getProvenLabTags();
+  if (!proven.length || !Array.isArray(data) || !data.length) return;
+  const tlog = loadTradeLog();
+  const btcChg = parseFloat(data.find(d => d.symbol === 'BTC/USDT')?.change24h);
+  let changed = false;
+  for (const coin of data) {
+    if (!coin || coin.score === 50) continue;
+    const isLong = coin.score > 50;
+    const dir = isLong ? 'long' : 'short';
+    if (tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
+    if (inCooldown(tlog, coin.symbol, dir)) continue;
+    if (btcVolGuardBlocks(coin.symbol)) continue;
+    const h4Ok = isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear');
+    const s15 = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
+    if (!h4Ok || !(isLong ? s15.includes('bull') : s15.includes('bear'))) continue;
+    const tags = computeLabTags(coin, isLong, btcChg);
+    const hits = tags.filter(t => proven.includes(t));
+    if (!hits.length || tags.length < 2) continue;
+    let setup = null;
+    try { setup = computeSimpleSetup(coin, isLong); } catch(_e) {}
+    if (!setup || !(setup.entry > 0) || !(setup.sl > 0) || !(setup.tp1 > 0)) continue;
+    let risk = { score: 0, level: '低風險', keys: [] };
+    try { risk = computeFullRisk(coin, setup, isLong); } catch(_e) {}
+    const nt = {
+      id: `${coin.symbol}-${Date.now()}`,
+      symbol: coin.symbol, direction: dir, timestamp: Date.now(),
+      entryPrice: parseFloat(coin.price) || 0,
+      entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
+      entryReason: `⭐ 驗證策略（${hits.join('、')}）：實驗室 ≥100 筆樣本、勝率 ≥90%，免風控分建單`,
+      slReason: setup.slReason, tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
+      rsi: parseFloat(coin.rsi) || 50, adx: parseFloat(coin.adx) || 20,
+      score: coin.score, trend: coin.trend,
+      conf: setup.conf ?? null, rawConf: setup.rawConf,
+      rr1: setup.rr1, rr2: setup.rr2,
+      riskScore: risk.score, riskLevel: risk.level, riskKeys: risk.keys || [], riskPenalty: 0,
+      learnPenalty: setup.learnPenalty || 0,
+      status: 'pending', outcome: null, tp1Hit: false,
+      entryTime: null, exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+      refined: true,                 // 免趨勢/評分自動取消，讓策略自然跑完（與實驗室驗證環境一致）
+      provenStrategy: hits,          // SQ 監控/風控分監控看到此欄位即跳過覆核
+      confGate: 0, sqGate: 0,
+      tradeType: 'directional', longTermBias: null, canScaleIn: false,
+      scaleIns: [], peakPrice: null,
+      sqGrade: 'A', sqScore: null, sqGradeLabel: '驗證策略',
+      sqFactors: [`⭐ 驗證策略命中：${hits.join('、')}`, `📊 全部標籤：${tags.join('、')}`],
+    };
+    tlog.unshift(nt);
+    saveTradeLog(tlog);
+    changed = true;
+    try { if (typeof showToast === 'function') showToast(`⭐ 驗證策略：${coin.symbol} ${isLong ? '▲做多' : '▼做空'}（${hits.join('、')}），免風控分建單`, 'success'); } catch(_t) {}
+    try {
+      const s = loadSettings();
+      if (s.notifTelegram && s.tgToken && s.tgChatId) {
+        sendTelegramMessage(s.tgToken, s.tgChatId,
+          buildTelegramText(coin, dir, Object.assign({}, nt, setup, { conf: nt.conf }), _macroCache,
+            typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '',
+            { headerOverride: '⭐ <b>加密掃描 Pro — 驗證策略信號</b>' }));
+        nt.telegramSent = true;
+        saveTradeLog(tlog);
+      }
+    } catch(_te) {}
+  }
+  return changed;
+}
+
+/* 分析維度標籤（實驗室收錄與驗證策略建單共用）：命中的分析方式清單 */
+function computeLabTags(coin, isLong, btcChg) {
+  const tags = [];
+  const cache = _tradeSetupCache[coin.symbol] || {};
+  const fp = _footprintCache[coin.symbol];
+  const price = parseFloat(coin.price) || 0;
+  try {
+    if (cache.orderBlock?.priceInOB || cache.orderBlock4h?.priceInOB) tags.push('ICT-OrderBlock');
+    if ((cache.fvg && !cache.fvg.filled) || (cache.fvg4h && !cache.fvg4h.filled)) tags.push('ICT-FVG');
+    (cache.chartPat?.aligned || []).slice(0, 2).forEach(p => tags.push(`圖形-${p.name || p}`));
+    if (fp) {
+      if (isLong ? fp.deltaDir === 'bull' : fp.deltaDir === 'bear') tags.push('足跡Delta同向');
+      if (fp.absorption) tags.push('主力吸籌');
+      if (fp.vwap > 0 && price > 0) {
+        const vd = (price - fp.vwap) / fp.vwap;
+        if (isLong ? (vd >= 0 && vd <= 0.02) : (vd <= 0 && vd >= -0.02)) tags.push('VWAP掌控');
+      }
+    }
+    const liq = _liquidationCache[coin.symbol];
+    if (liq && price > 0) {
+      const wall = isLong
+        ? (liq.shortLiqs||[]).find(l => l.price > price && l.price <= price * 1.12)
+        : (liq.longLiqs ||[]).find(l => l.price < price && l.price >= price * 0.88);
+      if (wall) tags.push('爆倉擠壓');
+    }
+    const wh = coin.whaleData;
+    if (wh && (isLong ? (wh.bias === 'bull' && (wh.bigBuyCount||0) >= 2) : (wh.bias === 'bear' && (wh.bigSellCount||0) >= 2))) tags.push('巨鯨同向');
+    const fr = coin.derivData?.fundingRate;
+    if (fr != null && !isNaN(fr) && Math.abs(fr) >= 0.0005 && (isLong ? fr < 0 : fr > 0)) tags.push('資金費率反向擁擠');
+    if (coin.symbol !== 'BTC/USDT' && !isNaN(btcChg)) {
+      const rel = (parseFloat(coin.change24h) || 0) - btcChg;
+      if (isLong ? rel >= 1.5 : rel <= -1.5) tags.push('相對強弱');
+    }
+    if (coin.bb && (isLong ? coin.bb.walkingBull : coin.bb.walkingBear)) tags.push('BB走軌');
+    const macd = parseFloat(coin.macdHist) || 0;
+    if (isLong ? macd > 0 : macd < 0) tags.push('MACD動能');
+    if ((coin.volumeStrength||'').includes('強') || coin.volumeStrength === 'high') tags.push('放量');
+    if ((parseFloat(coin.adx) || 0) >= 28) tags.push('ADX強趨勢');
+    const wkOk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
+    const dyOk = isLong ? (coin.dailySignal ||'').includes('bull') : (coin.dailySignal ||'').includes('bear');
+    const h1Ok = isLong ? (coin.h1Signal   ||'').includes('bull') : (coin.h1Signal   ||'').includes('bear');
+    if (wkOk && dyOk && h1Ok) tags.push('多時框共振');
+    if (coin.patterns && (isLong ? (coin.patterns.bull123 || coin.patterns.bull2B) : (coin.patterns.bear123 || coin.patterns.bear2B))) tags.push('123/2B形態');
+    const kzH = new Date().getUTCHours();
+    if ((kzH >= 7 && kzH < 11) || (kzH >= 13 && kzH < 17)) tags.push('KillZone時段');
+  } catch(_e) {}
+  return tags;
+}
+
 /* 收集機會：硬性條件僅 4H+15m 同向（訊號基準），不看風控分/風險評估。
    標籤 = 命中的分析維度；至少 2 個維度同向才視為「AI 覺得不錯」。 */
 function recordLabOpportunities(data) {
@@ -14122,51 +14325,8 @@ function recordLabOpportunities(data) {
     const ok15 = isLong ? s15.includes('bull') : s15.includes('bear');
     if (!h4Ok || !ok15) continue;
 
-    // ── 分析維度標籤（僅用掃描資料與既有快取，零額外 API）──
-    const tags = [];
-    const cache = _tradeSetupCache[coin.symbol] || {};
-    const fp = _footprintCache[coin.symbol];
-    const price = parseFloat(coin.price) || 0;
-    try {
-      if (cache.orderBlock?.priceInOB || cache.orderBlock4h?.priceInOB) tags.push('ICT-OrderBlock');
-      if ((cache.fvg && !cache.fvg.filled) || (cache.fvg4h && !cache.fvg4h.filled)) tags.push('ICT-FVG');
-      (cache.chartPat?.aligned || []).slice(0, 2).forEach(p => tags.push(`圖形-${p.name || p}`));
-      if (fp) {
-        if (isLong ? fp.deltaDir === 'bull' : fp.deltaDir === 'bear') tags.push('足跡Delta同向');
-        if (fp.absorption) tags.push('主力吸籌');
-        if (fp.vwap > 0 && price > 0) {
-          const vd = (price - fp.vwap) / fp.vwap;
-          if (isLong ? (vd >= 0 && vd <= 0.02) : (vd <= 0 && vd >= -0.02)) tags.push('VWAP掌控');
-        }
-      }
-      const liq = _liquidationCache[coin.symbol];
-      if (liq && price > 0) {
-        const wall = isLong
-          ? (liq.shortLiqs||[]).find(l => l.price > price && l.price <= price * 1.12)
-          : (liq.longLiqs ||[]).find(l => l.price < price && l.price >= price * 0.88);
-        if (wall) tags.push('爆倉擠壓');
-      }
-      const wh = coin.whaleData;
-      if (wh && (isLong ? (wh.bias === 'bull' && (wh.bigBuyCount||0) >= 2) : (wh.bias === 'bear' && (wh.bigSellCount||0) >= 2))) tags.push('巨鯨同向');
-      const fr = coin.derivData?.fundingRate;
-      if (fr != null && !isNaN(fr) && Math.abs(fr) >= 0.0005 && (isLong ? fr < 0 : fr > 0)) tags.push('資金費率反向擁擠');
-      if (coin.symbol !== 'BTC/USDT' && !isNaN(btcChg)) {
-        const rel = (parseFloat(coin.change24h) || 0) - btcChg;
-        if (isLong ? rel >= 1.5 : rel <= -1.5) tags.push('相對強弱');
-      }
-      if (coin.bb && (isLong ? coin.bb.walkingBull : coin.bb.walkingBear)) tags.push('BB走軌');
-      const macd = parseFloat(coin.macdHist) || 0;
-      if (isLong ? macd > 0 : macd < 0) tags.push('MACD動能');
-      if ((coin.volumeStrength||'').includes('強') || coin.volumeStrength === 'high') tags.push('放量');
-      if ((parseFloat(coin.adx) || 0) >= 28) tags.push('ADX強趨勢');
-      const wkOk = isLong ? (coin.weeklySignal||'').includes('bull') : (coin.weeklySignal||'').includes('bear');
-      const dyOk = isLong ? (coin.dailySignal ||'').includes('bull') : (coin.dailySignal ||'').includes('bear');
-      const h1Ok = isLong ? (coin.h1Signal   ||'').includes('bull') : (coin.h1Signal   ||'').includes('bear');
-      if (wkOk && dyOk && h1Ok) tags.push('多時框共振');
-      if (coin.patterns && (isLong ? (coin.patterns.bull123 || coin.patterns.bull2B) : (coin.patterns.bear123 || coin.patterns.bear2B))) tags.push('123/2B形態');
-      const kzH = new Date().getUTCHours();
-      if ((kzH >= 7 && kzH < 11) || (kzH >= 13 && kzH < 17)) tags.push('KillZone時段');
-    } catch(_e) {}
+    // ── 分析維度標籤（共用函數，僅用掃描資料與既有快取，零額外 API）──
+    const tags = computeLabTags(coin, isLong, btcChg);
 
     if (tags.length < 2) continue;  // 至少 2 個分析維度同向
 
@@ -14175,12 +14335,17 @@ function recordLabOpportunities(data) {
     try { setup = computeSimpleSetup(coin, isLong); } catch(_e) {}
     if (!setup || !(setup.entry > 0) || !(setup.sl > 0) || !(setup.tp1 > 0)) continue;
 
+    // 風險因子 keys：記錄建單時哪些扣分條件成立（供扣分條件有效性審查）
+    let _labRiskKeys = [];
+    try { _labRiskKeys = computeFullRisk(coin, setup, isLong).keys || []; } catch(_e) {}
+
     lab.unshift({
       id: `lab-${coin.symbol}-${now}`,
       symbol: coin.symbol, direction: dir, timestamp: now,
       entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2 || null,
       rr1: parseFloat(setup.rr1) || 0,
       tags,
+      riskKeys: _labRiskKeys,
       // 參考記錄（不作門檻）：當時的風控分/風險分，供事後對照
       refConf: setup.conf ?? null, refLearnPen: setup.learnPenalty ?? null,
       status: 'pending', outcome: null, pnlR: null,
@@ -14294,11 +14459,51 @@ function renderLabPage() {
     </div>`;
   }).join('');
 
+  // ── 驗證策略白名單面板（≥100 筆且勝率 ≥90% → 已晉升正式系統）──
+  const provenTags = getProvenLabTags();
+  const provenHtml = `
+    <div style="background:${provenTags.length ? 'rgba(251,191,36,.06)' : 'var(--card)'};border:1px solid ${provenTags.length ? 'rgba(251,191,36,.3)' : 'var(--border)'};border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥100 筆樣本且勝率 ≥90% 自動晉升正式系統，免風控分建單）</div>
+      ${provenTags.length
+        ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${provenTags.map(t => `<span style="font-size:0.74rem;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.4);padding:3px 10px;border-radius:14px;font-weight:700">⭐ ${t}</span>`).join('')}</div>
+           <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">命中白名單標籤的訊號會直接建立正式掛單（標記 ⭐ 驗證策略），不經風控分/SQ 門檻，監控中亦不覆核取消</div>`
+        : `<div style="font-size:0.74rem;color:var(--text3)">尚無達標策略 — 任一分析方式累積 100 筆完結樣本且勝率 ≥90% 後自動晉升</div>`}
+    </div>`;
+
+  // ── 扣分條件有效性審查面板 ──
+  let auditHtml = '';
+  try {
+    const audit = auditPenaltyFactors() || [];
+    const auditShown = audit.filter(a => a.n > 0);
+    if (auditShown.length) {
+      auditHtml = `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:8px">🔬 風控扣分條件有效性審查（AI 自動篩選）</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+          <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+            <th style="padding:4px 6px">扣分條件</th><th style="padding:4px 6px;text-align:right">樣本</th>
+            <th style="padding:4px 6px;text-align:right">成立時勝率</th><th style="padding:4px 6px;text-align:right">未成立勝率</th>
+            <th style="padding:4px 6px;text-align:right">狀態</th></tr></thead>
+          <tbody>${auditShown.map(a => `<tr>
+            <td style="padding:4px 6px">${a.label}</td>
+            <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.n}</td>
+            <td style="padding:4px 6px;text-align:right">${a.wrWith != null ? a.wrWith.toFixed(0) + '%' : '--'}</td>
+            <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.wrWithout != null ? a.wrWithout.toFixed(0) + '%' : '--'}</td>
+            <td style="padding:4px 6px;text-align:right;font-weight:700;color:${a.muted ? '#22d3ee' : '#f59e0b'}">${a.muted ? '♻️ 已豁免' : '扣分中'}</td>
+          </tr>`).join('')}</tbody>
+        </table></div>
+        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">樣本 ≥30 且「條件成立時勝率」不低於「未成立時」→ 該條件無預測力，自動豁免不扣分；數據劣化會自動恢復扣分。樣本來源：正式交易 + 實驗室完結記錄。</div>
+      </div>`;
+    }
+  } catch(_ae) {}
+
   el.innerHTML = `
     <div class="page-header"><div>
       <h1 class="page-title">🧪 AI 機會實驗室</h1>
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
+    ${provenHtml}
+    ${auditHtml}
     <div class="tl-stats">
       <div class="tl-stat-card"><div class="tl-stat-val">${active.length}</div><div class="tl-stat-lbl">追蹤中</div></div>
       <div class="tl-stat-card"><div class="tl-stat-val">${closed.length}</div><div class="tl-stat-lbl">已完結</div></div>
@@ -15526,7 +15731,7 @@ async function checkAndSendAlerts(data) {
             sqGrade:notifSetup.sqGrade,
           },isLong);
           const _qRisk=_qRiskB.score>_qRiskA.score?_qRiskB:_qRiskA;
-          notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level;
+          notifSetup.riskScore=_qRisk.score;notifSetup.riskLevel=_qRisk.level;notifSetup.riskKeys=_qRisk.keys||[];
         } catch(_e){}
         // ⑰ 新聞情緒 ⑱ 爆倉牆 ⑲ 數據事件 ⑳ 資金流
         try { const _qIns=aiGenerateMarketInsights();const _qBr=_qIns.filter(i=>i.sentiment==='bearish'||i.sentiment==='bear').length;const _qBl=_qIns.filter(i=>i.sentiment==='bullish'||i.sentiment==='bull').length;if(_qBr+_qBl>0){if(isLong?_qBl>_qBr:_qBr>_qBl)_qSq+=1;else if(isLong?_qBr>_qBl:_qBl>_qBr)_qSq-=1;} } catch(_e){}
@@ -15601,6 +15806,7 @@ async function checkAndSendAlerts(data) {
           sqGrade: notifSetup.sqGrade || null, sqScore: notifSetup.sqScore ?? null,
           sqGradeLabel: notifSetup.sqGradeLabel || null,
           rr1: notifSetup.rr1, rr2: notifSetup.rr2,  // SQ 監控 computeFullRisk 需要頂層 rr1
+          riskKeys: notifSetup.riskKeys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
           confGate: _alertGates.minConf, sqGate: _alertGates.minSq,  // 建單門檻，SQ 監控覆核用同一標準
           telegramSent: false,
           pendingNotify: true,
@@ -15684,87 +15890,84 @@ function computeFullRisk(coin, params, isLong) {
   }
 
   let score = 0;
-  const factors = [], recs = [];
+  const factors = [], recs = [], keys = [];
+  const _muted = _getRiskMuteSet();
+  // addF：條件成立即記錄 key（供有效性審查追蹤）；被 AI 審查豁免的條件僅顯示、不扣分
+  const addF = (key, pts, factorText, recText) => {
+    keys.push(key);
+    if (_muted.has(key)) { factors.push(`♻️ ${factorText}（AI 審查豁免，不扣分）`); return; }
+    score += pts;
+    factors.push(factorText);
+    if (recText) recs.push(recText);
+  };
 
   // 1. 風控分
-  if (conf < 65)      { score += 20; factors.push(`信心偏低（${conf}%）`); recs.push('考慮縮小倉位至正常的 40-50%'); }
-  else if (conf < 72) { score += 10; factors.push(`信心中等（${conf}%）`); recs.push('建議倉位不超過正常的 70%'); }
+  if (conf < 65)      addF('f1_conf', 20, `信心偏低（${conf}%）`, '考慮縮小倉位至正常的 40-50%');
+  else if (conf < 72) addF('f1_conf', 10, `信心中等（${conf}%）`, '建議倉位不超過正常的 70%');
 
   // 2. ADX 趨勢強度
   const _adx = parseFloat(coin.adx) || 0;
-  if (_adx < 18)      { score += 28; factors.push(`ADX ${_adx.toFixed(1)} 極弱，無趨勢`); recs.push('ADX 過低，趨勢不明確，強烈建議觀望'); }
-  else if (_adx < 22) { score += 18; factors.push(`ADX ${_adx.toFixed(1)} 偏弱`); recs.push('趨勢動能不足，易被洗出，適合小倉試單'); }
-  else if (_adx < 25) { score += 8;  factors.push(`ADX ${_adx.toFixed(1)} 略低`); }
+  if (_adx < 18)      addF('f2_adx', 28, `ADX ${_adx.toFixed(1)} 極弱，無趨勢`, 'ADX 過低，趨勢不明確，強烈建議觀望');
+  else if (_adx < 22) addF('f2_adx', 18, `ADX ${_adx.toFixed(1)} 偏弱`, '趨勢動能不足，易被洗出，適合小倉試單');
+  else if (_adx < 25) addF('f2_adx', 8,  `ADX ${_adx.toFixed(1)} 略低`);
 
   // 3. 宏觀逆風
-  if (macroOpposePenalty > 15)     { score += 22; factors.push('宏觀強逆風'); recs.push('宏觀方向明顯相反，可考慮降低倉位'); }
-  else if (macroOpposePenalty > 8) { score += 12; factors.push('宏觀中等逆風'); recs.push('宏觀有逆風，可縮小倉位並設止損'); }
-  else if (macroOpposePenalty > 3) { score += 5;  factors.push('宏觀輕微逆風'); }
+  if (macroOpposePenalty > 15)     addF('f3_macro', 22, '宏觀強逆風', '宏觀方向明顯相反，可考慮降低倉位');
+  else if (macroOpposePenalty > 8) addF('f3_macro', 12, '宏觀中等逆風', '宏觀有逆風，可縮小倉位並設止損');
+  else if (macroOpposePenalty > 3) addF('f3_macro', 5,  '宏觀輕微逆風');
 
   // 4. AI 趨勢預測逆向
-  if (aiTrendPenalty > 10)     { score += 15; factors.push('AI 趨勢預測逆向'); recs.push('AI 週/日預測與進場方向相反，可謹慎操作'); }
-  else if (aiTrendPenalty > 4) { score += 7;  factors.push('AI 趨勢預測輕微逆向'); }
+  if (aiTrendPenalty > 10)     addF('f4_ai', 15, 'AI 趨勢預測逆向', 'AI 週/日預測與進場方向相反，可謹慎操作');
+  else if (aiTrendPenalty > 4) addF('f4_ai', 7,  'AI 趨勢預測輕微逆向');
 
   // 5. AI 風控歷史記憶
-  if (learnPenalty > 10)    { score += 18; factors.push('AI 風控記憶觸發'); recs.push('此幣種歷史止損模式頻繁，可等更好進場點'); }
-  else if (learnPenalty > 5){ score += 9;  factors.push('AI 風控記憶輕微觸發'); recs.push('歷史有止損記錄，可降低倉位比例'); }
+  if (learnPenalty > 10)     addF('f5_learn', 18, 'AI 風控記憶觸發', '此幣種歷史止損模式頻繁，可等更好進場點');
+  else if (learnPenalty > 5) addF('f5_learn', 9,  'AI 風控記憶輕微觸發', '歷史有止損記錄，可降低倉位比例');
 
   // 6. R/R 比率
-  if (rr1 < 1.2)      { score += 18; factors.push(`R/R 過低（${rr1}:1）`); recs.push('R/R 不足 1.2:1，風險報酬偏低，可評估是否進場'); }
-  else if (rr1 < 1.5) { score += 8;  factors.push(`R/R 偏低（${rr1}:1）`); recs.push('R/R 略低，止損設定要精確'); }
+  if (rr1 < 1.2)      addF('f6_rr', 18, `R/R 過低（${rr1}:1）`, 'R/R 不足 1.2:1，風險報酬偏低，可評估是否進場');
+  else if (rr1 < 1.5) addF('f6_rr', 8,  `R/R 偏低（${rr1}:1）`, 'R/R 略低，止損設定要精確');
 
   // 7. 即將發布的高影響經濟數據
-  if (flipRisks.length >= 3)      { score += 20; factors.push(`${flipRisks.length} 個高衝擊數據即將發布`); recs.push(`${flipRisks.map(r=>r.name).join('、')} 即將公布，可能造成波動，注意風控`); }
-  else if (flipRisks.length >= 1) { score += 10; factors.push(`${flipRisks.length} 個高衝擊數據（${flipRisks.map(r=>r.name).join('、')}）`); recs.push('數據公布前後波動大，設好止損'); }
+  if (flipRisks.length >= 3)      addF('f7_events', 20, `${flipRisks.length} 個高衝擊數據即將發布`, `${flipRisks.map(r=>r.name).join('、')} 即將公布，可能造成波動，注意風控`);
+  else if (flipRisks.length >= 1) addF('f7_events', 10, `${flipRisks.length} 個高衝擊數據（${flipRisks.map(r=>r.name).join('、')}）`, '數據公布前後波動大，設好止損');
 
   // 8. 區間模式
-  if (isRangeMode) { score += 10; factors.push('目前為區間震盪模式'); recs.push('區間模式可縮短持倉時間，遇壓力/支撐快速獲利了結'); }
+  if (isRangeMode) addF('f8_range', 10, '目前為區間震盪模式', '區間模式可縮短持倉時間，遇壓力/支撐快速獲利了結');
 
   // 9. 4H+日線趨勢對齊
-  if (bigTrendBlocked) { score += 15; factors.push('4H+日線趨勢未對齊'); recs.push('大週期趨勢未確認，可謹慎持倉、避免重倉'); }
+  if (bigTrendBlocked) addF('f9_bigtrend', 15, '4H+日線趨勢未對齊', '大週期趨勢未確認，可謹慎持倉、避免重倉');
 
   // 10. 技術面/籌碼面
   const _tcSum = techPenalty + chipsPenalty;
-  if (_tcSum > 12)    { score += 10; factors.push('技術/籌碼逆風'); }
-  else if (_tcSum > 5){ score += 5;  factors.push('輕微技術/籌碼逆風'); }
+  if (_tcSum > 12)     addF('f10_tech', 10, '技術/籌碼逆風');
+  else if (_tcSum > 5) addF('f10_tech', 5,  '輕微技術/籌碼逆風');
 
   // 11. 巨鯨方向逆向
   const _whaleBiasR = coin.whaleData?.bias;
-  if (_whaleBiasR) {
-    if ((isLong && _whaleBiasR === 'bear') || (!isLong && _whaleBiasR === 'bull')) {
-      score += 12;
-      factors.push(`巨鯨方向逆向（主力${isLong ? '賣出' : '買入'}）`);
-      recs.push('主力資金方向與進場方向相反，考慮等巨鯨轉向或縮小倉位');
-    }
+  if (_whaleBiasR && ((isLong && _whaleBiasR === 'bear') || (!isLong && _whaleBiasR === 'bull'))) {
+    addF('f11_whale', 12, `巨鯨方向逆向（主力${isLong ? '賣出' : '買入'}）`, '主力資金方向與進場方向相反，考慮等巨鯨轉向或縮小倉位');
   }
 
   // 12. AI 訊號品質
   const _sqGradeR = params.sqGrade;
-  if (_sqGradeR === 'D') {
-    score += 12; factors.push('AI 訊號品質 D 級');
-    recs.push('多時框確認不足，訊號偏弱，建議等更強訊號再進場');
-  } else if (_sqGradeR === 'C') {
-    score += 6; factors.push('AI 訊號品質 C 級');
-    recs.push('訊號品質偏低，可縮小倉位或等待更明確信號');
-  }
+  if (_sqGradeR === 'D')      addF('f12_sq', 12, 'AI 訊號品質 D 級', '多時框確認不足，訊號偏弱，建議等更強訊號再進場');
+  else if (_sqGradeR === 'C') addF('f12_sq', 6,  'AI 訊號品質 C 級', '訊號品質偏低，可縮小倉位或等待更明確信號');
 
   // 13. 成交量萎縮（成交量不足時趨勢可靠性下降）
   const _volStrR = (coin.volumeStrength || '');
   if (_volStrR.includes('極低') || (_volStrR.includes('低') && _volStrR.includes('萎'))) {
-    score += 8; factors.push('成交量極度萎縮，趨勢可靠性低'); recs.push('量能極低，避免追高殺低，等待放量確認');
+    addF('f13_vol', 8, '成交量極度萎縮，趨勢可靠性低', '量能極低，避免追高殺低，等待放量確認');
   } else if (_volStrR.includes('低') || _volStrR.includes('弱')) {
-    score += 4; factors.push('成交量偏低'); recs.push('量能不足，進場倉位適度控制');
+    addF('f13_vol', 4, '成交量偏低', '量能不足，進場倉位適度控制');
   }
 
   // 14. MACD 動能逆向（僅在 techPenalty 未覆蓋或不顯著時補充）
   const _macdHR = parseFloat(coin.macdHist) || 0;
   const _priceR = parseFloat(coin.price) || 1;
   if ((params.techPenalty || 0) < 5) {
-    if (isLong && _macdHR < -_priceR * 0.001) {
-      score += 7; factors.push('MACD 動能偏空（柱狀體負值）'); recs.push('MACD 尚未轉多，多頭進場時機需再確認');
-    } else if (!isLong && _macdHR > _priceR * 0.001) {
-      score += 7; factors.push('MACD 動能偏多（柱狀體正值）'); recs.push('MACD 尚未轉空，空頭進場時機需再確認');
-    }
+    if (isLong && _macdHR < -_priceR * 0.001)       addF('f14_macd', 7, 'MACD 動能偏空（柱狀體負值）', 'MACD 尚未轉多，多頭進場時機需再確認');
+    else if (!isLong && _macdHR > _priceR * 0.001)  addF('f14_macd', 7, 'MACD 動能偏多（柱狀體正值）', 'MACD 尚未轉空，空頭進場時機需再確認');
   }
 
   // 15. VWAP 過度延伸（順方向偏離 VWAP > 2.5% → 均值回歸風險）
@@ -15773,9 +15976,7 @@ function computeFullRisk(coin, params, isLong) {
     if (_vwR > 0 && _priceR > 1) {
       const _vwDevR = (_priceR - _vwR) / _vwR;
       if ((isLong && _vwDevR > 0.025) || (!isLong && _vwDevR < -0.025)) {
-        score += 8;
-        factors.push(`價格偏離 VWAP ${(Math.abs(_vwDevR)*100).toFixed(1)}%（過度延伸）`);
-        recs.push(`價格遠離 VWAP，均值回歸風險高，可等回踩 VWAP 再進場`);
+        addF('f15_vwap', 8, `價格偏離 VWAP ${(Math.abs(_vwDevR)*100).toFixed(1)}%（過度延伸）`, '價格遠離 VWAP，均值回歸風險高，可等回踩 VWAP 再進場');
       }
     }
   } catch(_e) {}
@@ -15785,7 +15986,7 @@ function computeFullRisk(coin, params, isLong) {
   const levelColor = score >= 75 ? '#ef4444'  : score >= 60 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
   if (factors.length === 0) { factors.push('各項指標正常，無明顯風險'); recs.push('可按計劃正常倉位進場'); }
   if (recs.length === 0) recs.push('各項指標良好，按計劃執行');
-  return { score, level, levelColor, factors, recs };
+  return { score, level, levelColor, factors, recs, keys };
 }
 
 function computeSimpleSetup(coin, isLong) {
