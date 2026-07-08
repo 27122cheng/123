@@ -9386,7 +9386,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260708d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260708e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -12359,6 +12359,13 @@ function checkPostDataReversal(data) {
   const alertKey  = 'csp_sl_adjust_alert';
   const sentAlerts = JSON.parse(localStorage.getItem(alertKey) || '{}');
   const now = Date.now();
+  // 清理非活躍交易的舊通報記錄，避免 localStorage 無限膨脹
+  try {
+    const _openIdList = openTrades.map(t => t.id);
+    for (const k of Object.keys(sentAlerts)) {
+      if (!_openIdList.some(id => k.startsWith(id))) delete sentAlerts[k];
+    }
+  } catch(_e) {}
 
   for (const trade of openTrades) {
     const coin = data.find(d => d.symbol === trade.symbol);
@@ -12369,9 +12376,12 @@ function checkPostDataReversal(data) {
     if (!cur || !entry || !sl) continue;
     const isLong = trade.direction === 'long';
 
-    // ATR 估算（依 ADX 水平推算波動率）
+    // ATR：優先用掃描快取的真實 ATR14（15 分鐘內有效），否則依 ADX 估算
     const adx = parseFloat(coin.adx) || 20;
-    const atr = cur * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
+    const _atrC = _tradeSetupCache[trade.symbol];
+    const atr = (_atrC?.atrReal > 0 && now - (_atrC.atrRealTs || 0) < 15 * 60 * 1000)
+      ? _atrC.atrReal
+      : cur * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
     const risk = Math.abs(entry - sl) || atr;
 
     // 浮動盈虧（R）
@@ -12396,8 +12406,14 @@ function checkPostDataReversal(data) {
       suggestNewSl = isLong
         ? Math.max(minFloor, cur - atr * _ai.finalMult)
         : Math.min(minFloor, cur + atr * _ai.finalMult);
-      const slImprovement = isLong ? suggestNewSl - sl : sl - suggestNewSl;
-      if (slImprovement < atr) { suggestNewSl = null; }
+      // ── 單向棘輪：追蹤止損只能朝獲利方向收緊，永不回退 ──
+      // 與「上一次建議位」（初始為原止損）比較：多單只上移、空單只下移；
+      // 改善不足 0.5 ATR 不重發，且兩次建議至少間隔 15 分鐘，
+      // 避免建議位跟著價格波動來回跳動 + 每分鐘重複洗版
+      const _prevTrail = trade.trailSl != null ? trade.trailSl : sl;
+      const slImprovement = isLong ? suggestNewSl - _prevTrail : _prevTrail - suggestNewSl;
+      const _trailCooldownOk = now - (trade.trailAlertTs || 0) >= 15 * 60 * 1000;
+      if (slImprovement < atr * 0.5 || !_trailCooldownOk) { suggestNewSl = null; }
       else {
         alertType  = 'trail';
         alertTitle = `🚀 AI 偵測：盈利 ${currentPnlR.toFixed(1)}R，建議追蹤止損`;
@@ -12455,6 +12471,21 @@ function checkPostDataReversal(data) {
       `${analysisBlock}` +
       `🔗 <a href="${window.location.origin + window.location.pathname}">查看 ${trade.symbol.replace('/USDT','')} 詳細分析 →</a>`;
     sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+
+    // 棘輪狀態落地：記錄本次建議位與時間，下次建議必須在此基礎上再收緊 ≥0.5 ATR 且間隔 ≥15 分鐘
+    if (alertType === 'trail') {
+      try {
+        const _tl2 = loadTradeLog();
+        const _ti2 = _tl2.findIndex(t => t.id === trade.id);
+        if (_ti2 >= 0) {
+          _tl2[_ti2].trailSl = suggestNewSl;
+          _tl2[_ti2].trailAlertTs = now;
+          trade.trailSl = suggestNewSl;
+          trade.trailAlertTs = now;
+          saveTradeLog(_tl2);
+        }
+      } catch(_e) {}
+    }
   }
 }
 
