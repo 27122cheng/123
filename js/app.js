@@ -883,8 +883,8 @@ function _buildHWRBannerFromTrade(t) {
     else if (sg === 'SS') _P.push('訊號品質 SS 級（完美）');
     else if (sg === 'S')  _P.push('訊號品質 S 級（頂級）');
     else if (sg === 'A')  _P.push('訊號品質 A 級（優質）');
-    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（24因子評分 ${sc} 分）`, source:'AI 訊號品質' });
-    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（24因子評分 ${sc} 分）`, source:'AI 訊號品質' });
+    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（25因子評分 ${sc} 分）`, source:'AI 訊號品質' });
+    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（25因子評分 ${sc} 分）`, source:'AI 訊號品質' });
 
     // ② 風控分（100分制）
     if (conf >= 80)      _P.push(`風控分 ${conf} 分（強勢）`);
@@ -951,7 +951,7 @@ function _buildHWRBannerFromTrade(t) {
   } catch(_e) { return ''; }
 }
 
-/* ── SQ 24因子面板（持倉 / 等待進場 共用）────────────────────── */
+/* ── SQ 25因子面板（持倉 / 等待進場 共用）────────────────────── */
 function buildSQPanelFromTrade(t) {
   try {
     const factors = t.sqFactors;
@@ -4039,6 +4039,48 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   } catch(_sqMSE) {}
 
+  // ㉒ 資金費率 ±1（與掃描路徑一致：反向擁擠有利、同向擁擠不利）
+  try {
+    const _sqFr = coin.derivData?.fundingRate ?? deriv?.fundingRate;
+    if (_sqFr != null && !isNaN(_sqFr) && Math.abs(_sqFr) >= 0.0005) {
+      const _sqFrCl = _sqFr > 0;
+      if (isLong ? !_sqFrCl : _sqFrCl) { _sqScore += 1; _sqFactors.push(`✅ ㉒資金費率反向擁擠（${(_sqFr*100).toFixed(3)}%）+1`); }
+      else { _sqScore -= 1; _sqFactors.push(`❌ ㉒資金費率同向擁擠（${(_sqFr*100).toFixed(3)}%）-1`); }
+    }
+  } catch(_e) {}
+  // ㉓ 相對強弱 vs BTC ±1（與掃描路徑一致）
+  try {
+    if (coin.symbol !== 'BTC/USDT' && typeof state !== 'undefined' && state.data) {
+      const _sqBtcChg = parseFloat(state.data.find(d => d.symbol === 'BTC/USDT')?.change24h);
+      if (!isNaN(_sqBtcChg)) {
+        const _sqRel = (parseFloat(coin.change24h) || 0) - _sqBtcChg;
+        if (isLong ? _sqRel >= 1.5 : _sqRel <= -1.5) { _sqScore += 1; _sqFactors.push(`✅ ㉓相對強弱同向（vs BTC ${_sqRel >= 0 ? '+' : ''}${_sqRel.toFixed(1)}%）+1`); }
+        else if (isLong ? _sqRel <= -1.5 : _sqRel >= 1.5) { _sqScore -= 1; _sqFactors.push(`❌ ㉓相對強弱逆向（vs BTC ${_sqRel >= 0 ? '+' : ''}${_sqRel.toFixed(1)}%）-1`); }
+      }
+    }
+  } catch(_e) {}
+  // ㉔ VWAP 位置 ±1（與掃描路徑一致）
+  try {
+    const _sqVwV = _footprintCache[coin.symbol]?.vwap;
+    const _sqVwP = parseFloat(coin.price) || 0;
+    if (_sqVwV > 0 && _sqVwP > 0) {
+      const _sqVwD = (_sqVwP - _sqVwV) / _sqVwV;
+      if (isLong) {
+        if (_sqVwD >= 0 && _sqVwD <= 0.02) { _sqScore += 1; _sqFactors.push(`✅ ㉔VWAP 上方 ${(_sqVwD*100).toFixed(2)}%（買方掌控）+1`); }
+        else if (_sqVwD > 0.025 || _sqVwD < -0.005) { _sqScore -= 1; _sqFactors.push(`❌ ㉔VWAP ${_sqVwD > 0 ? '過度延伸' : '下方賣方掌控'}（${(_sqVwD*100).toFixed(2)}%）-1`); }
+      } else {
+        if (_sqVwD <= 0 && _sqVwD >= -0.02) { _sqScore += 1; _sqFactors.push(`✅ ㉔VWAP 下方 ${(Math.abs(_sqVwD)*100).toFixed(2)}%（賣方掌控）+1`); }
+        else if (_sqVwD < -0.025 || _sqVwD > 0.005) { _sqScore -= 1; _sqFactors.push(`❌ ㉔VWAP ${_sqVwD < 0 ? '過度延伸' : '上方買方掌控'}（${(_sqVwD*100).toFixed(2)}%）-1`); }
+      }
+    }
+  } catch(_e) {}
+  // ㉕ OI 未平倉量趨勢 ±1（新錢同向 = 真趨勢；回補/平倉推動 = 假動作）
+  try {
+    const _sqOI = oiAlignment(coin.symbol, isLong);
+    if (_sqOI.state === 'favorable')      { _sqScore += 1; _sqFactors.push(`✅ ㉕OI ${OI_REGIME_LABEL[_sqOI.trend.regime]} +1`); }
+    else if (_sqOI.state === 'unfavorable') { _sqScore -= 1; _sqFactors.push(`❌ ㉕OI ${OI_REGIME_LABEL[_sqOI.trend.regime]} -1`); }
+  } catch(_e) {}
+
   // 分數 floor 為 0，等級校準（4H+15m 改硬性條件後 max ≈ 27 分，門檻對應下調 2 分）
   _sqScore = Math.max(0, _sqScore);
   const _sqGrade = _sqScore >= 20 ? 'SSS'
@@ -4050,7 +4092,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
-  // ── SQ 24因子完整面板（幣種詳情 / 觀望 / 持倉均可注入）──
+  // ── SQ 25因子完整面板（幣種詳情 / 觀望 / 持倉均可注入）──
   const _sqPanelHtml = (() => { try {
     const _sqPos  = _sqFactors.filter(f => f.startsWith('✅'));
     const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
@@ -4619,8 +4661,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else if (_sqGrade === 'SS') _hwrP.push('訊號品質 SS 級（完美）');
     else if (_sqGrade === 'S')  _hwrP.push('訊號品質 S 級（頂級）');
     else if (_sqGrade === 'A')  _hwrP.push('訊號品質 A 級（優質）');
-    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，24因子評分 ${_sqScore} 分）`, source:'AI 訊號品質' });
-    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（24因子評分 ${_sqScore} 分），勝率基礎偏弱`, source:'AI 訊號品質' });
+    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，25因子評分 ${_sqScore} 分）`, source:'AI 訊號品質' });
+    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（25因子評分 ${_sqScore} 分），勝率基礎偏弱`, source:'AI 訊號品質' });
 
     // ② 風控分
     if (conf >= 80)      _hwrP.push(`風控分 ${conf} 分（高）`);
@@ -5401,6 +5443,23 @@ function buildMarketOutlook(fg, global) {
         else if (_vwPct <= 45) { bearPts += 0.5; bearArgs.push(`僅 ${_vwPct}% 幣種在 VWAP 上方，日內賣方略佔優`); }
       }
     } catch(_e) {}
+    // OI 未平倉量聚合（新錢方向 = 行情真偽的機構級讀數）
+    try {
+      let _bmoOIScore = 0, _bmoOIN = 0;
+      for (const _bmoSym of Object.keys(_oiHist)) {
+        const _bmoT = getOITrend(_bmoSym);
+        if (!_bmoT || _bmoT.regime === 'flat') continue;
+        _bmoOIN++;
+        if (_bmoT.regime === 'new_long') _bmoOIScore += 1;
+        else if (_bmoT.regime === 'new_short') _bmoOIScore -= 1;
+        else if (_bmoT.regime === 'short_cover') _bmoOIScore -= 0.3;
+        else if (_bmoT.regime === 'long_liq') _bmoOIScore += 0.3;
+      }
+      if (_bmoOIN >= 5) {
+        if (_bmoOIScore >= 3)       { bullPts++;      bullArgs.push(`OI 聚合（${_bmoOIN} 個合約）以新多進場為主，上行由新錢驅動，非空頭回補假象`); }
+        else if (_bmoOIScore <= -3) { bearPts++;      bearArgs.push(`OI 聚合（${_bmoOIN} 個合約）以新空進場為主，空方新錢持續加碼`); }
+      }
+    } catch(_e) {}
     // 聚合資金費率（衍生品市場情緒）
     const _frCoins = _bmoCoins.filter(c => c.derivData?.fundingRate != null);
     if (_frCoins.length >= 3) {
@@ -6051,6 +6110,24 @@ function computeWeeklyAIBias(fg, globalMkt) {
     }
   } catch(_e) {}
 
+  // ⑭ OI 未平倉量聚合（新錢方向：新多/新空進場 = 真趨勢；回補/平倉推動 = 假動作）
+  try {
+    let _wOIScore = 0, _wOIN = 0;
+    for (const _wSym of Object.keys(_oiHist)) {
+      const _wT = getOITrend(_wSym);
+      if (!_wT || _wT.regime === 'flat') continue;
+      _wOIN++;
+      if (_wT.regime === 'new_long') _wOIScore += 1;
+      else if (_wT.regime === 'new_short') _wOIScore -= 1;
+      else if (_wT.regime === 'short_cover') _wOIScore -= 0.3;
+      else if (_wT.regime === 'long_liq') _wOIScore += 0.3;
+    }
+    if (_wOIN >= 5) {
+      if (_wOIScore >= 3)       { macroBull += 0.8; factors.push(`OI 聚合：${_wOIN} 個合約以新多進場為主，新錢驅動上行（真趨勢特徵）`); }
+      else if (_wOIScore <= -3) { macroBear += 0.8; factors.push(`OI 聚合：${_wOIN} 個合約以新空進場為主，空方新錢驅動下行`); }
+    }
+  } catch(_e) {}
+
   // ⑤ 本週重大事件風險
   const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
   const highRisk   = weekEvents.length >= 2;
@@ -6392,6 +6469,24 @@ function computeTodayAIBias(fg, globalMkt) {
       else if (_tAvgFr > 0.001)  { bull += 0.5; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（健康偏多），多頭持倉主導未過熱`); }
       else if (_tAvgFr < -0.003) { bull += 1;   reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（極端負值），空頭擁擠，今日軋空反彈機會`); }
       else if (_tAvgFr < -0.001) { bull += 0.7; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（負值），空頭付費過熱，有利反彈`); }
+    }
+  } catch(_e) {}
+
+  // ⑭ OI 未平倉量聚合（與週預測同邏輯：新錢方向決定行情真偽）
+  try {
+    let _tOIScore = 0, _tOIN = 0;
+    for (const _tSym of Object.keys(_oiHist)) {
+      const _tT = getOITrend(_tSym);
+      if (!_tT || _tT.regime === 'flat') continue;
+      _tOIN++;
+      if (_tT.regime === 'new_long') _tOIScore += 1;
+      else if (_tT.regime === 'new_short') _tOIScore -= 1;
+      else if (_tT.regime === 'short_cover') _tOIScore -= 0.3;
+      else if (_tT.regime === 'long_liq') _tOIScore += 0.3;
+    }
+    if (_tOIN >= 5) {
+      if (_tOIScore >= 3)       { bull += 0.8; reasons.push(`OI 聚合：${_tOIN} 個合約以新多進場為主，今日新錢驅動上行`); }
+      else if (_tOIScore <= -3) { bear += 0.8; reasons.push(`OI 聚合：${_tOIN} 個合約以新空進場為主，今日空方新錢主導`); }
     }
   } catch(_e) {}
 
@@ -7819,6 +7914,14 @@ function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale
     derivText += `資金費率 <strong style="color:${fr < -0.002 ? 'var(--bull)' : fr > 0.002 ? 'var(--bear)' : 'var(--text2)'}">${(fr*100).toFixed(4)}%</strong>`;
     if (tl != null) derivText += `　頂級交易員多頭 <strong style="color:${tl > 0.55 ? 'var(--bull)' : tl < 0.45 ? 'var(--bear)' : 'var(--text2)'}">${(tl*100).toFixed(1)}%</strong>`;
     if (ts != null) derivText += `　Taker 買賣比 <strong style="color:${ts > 1.1 ? 'var(--bull)' : ts < 0.9 ? 'var(--bear)' : 'var(--text2)'}">${ts.toFixed(2)}</strong>`;
+    // OI 未平倉量趨勢（四象限判讀）
+    try {
+      const _ssOIT = getOITrend(coin.symbol);
+      if (_ssOIT && _ssOIT.regime !== 'flat') {
+        const _ssOIGood = _ssOIT.regime === 'new_long' || _ssOIT.regime === 'new_short';
+        derivText += `　OI <strong style="color:${_ssOIGood ? 'var(--bull)' : '#f59e0b'}">${OI_REGIME_LABEL[_ssOIT.regime].split('（')[0]}</strong>（${_ssOIT.oiChg > 0 ? '+' : ''}${_ssOIT.oiChg}%）`;
+      }
+    } catch(_e) {}
     const derivBull = (fr < -0.002 ? 1 : 0) + (tl > 0.55 ? 1 : 0) + (ts > 1.1 ? 1 : 0);
     const derivBear = (fr > 0.002 ? 1 : 0) + (tl < 0.45 ? 1 : 0) + (ts < 0.9 ? 1 : 0);
     const derivIcon = derivBull > derivBear ? '🟢' : derivBear > derivBull ? '🔴' : '⚪';
@@ -8384,6 +8487,12 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
       const _dvDev = (_dvP - _dvVw) / _dvVw * 100;
       if (Math.abs(_dvDev) > 2.5) _dvParts.push(`價格偏離 VWAP <strong style="color:#f59e0b">${_dvDev > 0 ? '+' : ''}${_dvDev.toFixed(2)}%</strong>，過度延伸，均值回歸風險高、等回踩再進`);
       else _dvParts.push(`價格於 VWAP ${_dvDev >= 0 ? '上' : '下'}方 ${Math.abs(_dvDev).toFixed(2)}%，日內${_dvDev >= 0 ? '買' : '賣'}方掌控`);
+    }
+    // OI 未平倉量趨勢（假突破鑑別器）
+    const _dvOI = getOITrend(coin.symbol);
+    if (_dvOI && _dvOI.regime !== 'flat') {
+      const _dvOIGood = _dvOI.regime === 'new_long' || _dvOI.regime === 'new_short';
+      _dvParts.push(`OI <strong style="color:${_dvOIGood ? '#22c55e' : '#f59e0b'}">${OI_REGIME_LABEL[_dvOI.regime]}</strong>（90分鐘 ${_dvOI.oiChg > 0 ? '+' : ''}${_dvOI.oiChg}%）${_dvOIGood ? '，新錢驅動的行情延續性較佳' : '，行情由平倉盤推動、延續性存疑'}`);
     }
     if (_dvParts.length >= 2) {
       pDeriv = `<div style="background:rgba(34,211,238,.05);border-left:3px solid rgba(34,211,238,.35);padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
@@ -9440,10 +9549,63 @@ function btcVolGuardBlocks(symbol) {
   return !String(symbol || '').startsWith('BTC');  // BTC 本身的訊號不受限
 }
 
+/* ── OI（未平倉量）趨勢追蹤 ──────────────────────────────────────
+   價量+倉位的四象限判讀（假突破的關鍵鑑別器）：
+   價漲+OI增 = 新多進場（真趨勢）    價漲+OI減 = 空頭回補（假突破嫌疑）
+   價跌+OI增 = 新空進場（真跌勢）    價跌+OI減 = 多頭平倉（跌勢衰竭）
+   來源：掃描時 derivData.openInterest 快照，維護 2 小時滾動歷史。 */
+const _oiHist = {};  // symbol -> [{ts, oi, p}]
+function updateOIHistory(data) {
+  const now = Date.now();
+  try {
+    for (const c of (data || [])) {
+      const oi = c?.derivData?.openInterest;
+      const p  = parseFloat(c?.price) || 0;
+      if (!(oi > 0) || !(p > 0)) continue;
+      const h = _oiHist[c.symbol] || (_oiHist[c.symbol] = []);
+      if (h.length && now - h[h.length - 1].ts < 55 * 1000) continue;  // 同一分鐘不重複記點
+      h.push({ ts: now, oi, p });
+      while (h.length && now - h[0].ts > 2 * 60 * 60 * 1000) h.shift();
+    }
+  } catch(_e) {}
+}
+function getOITrend(symbol) {
+  const h = _oiHist[symbol];
+  if (!h || h.length < 2) return null;
+  const now = Date.now();
+  // 基準點：90 分鐘內最舊的一筆；與最新點間隔需 ≥10 分鐘才判定
+  const base = h.find(x => now - x.ts <= 90 * 60 * 1000) || h[0];
+  const last = h[h.length - 1];
+  if (last.ts - base.ts < 10 * 60 * 1000) return null;
+  if (!(base.oi > 0) || !(base.p > 0)) return null;
+  const oiChg = (last.oi - base.oi) / base.oi * 100;
+  const pChg  = (last.p  - base.p)  / base.p  * 100;
+  if (Math.abs(oiChg) < 0.5) return { regime: 'flat', oiChg: +oiChg.toFixed(2), pChg: +pChg.toFixed(2) };
+  const regime = pChg >= 0
+    ? (oiChg > 0 ? 'new_long' : 'short_cover')
+    : (oiChg > 0 ? 'new_short' : 'long_liq');
+  return { regime, oiChg: +oiChg.toFixed(2), pChg: +pChg.toFixed(2) };
+}
+const OI_REGIME_LABEL = {
+  new_long:    '新多進場（價漲+OI增，真趨勢）',
+  short_cover: '空頭回補（價漲+OI減，假突破嫌疑）',
+  new_short:   '新空進場（價跌+OI增，真跌勢）',
+  long_liq:    '多頭平倉（價跌+OI減，跌勢衰竭）',
+  flat:        'OI 持平（倉位無明顯變化）',
+};
+/* 進場方向的 OI 判定：favorable=順向新錢；unfavorable=順向假動作（回補/平倉推動的行情） */
+function oiAlignment(symbol, isLong) {
+  const t = getOITrend(symbol);
+  if (!t || t.regime === 'flat') return { state: 'none', trend: t };
+  const fav = isLong ? t.regime === 'new_long' : t.regime === 'new_short';
+  const unf = isLong ? t.regime === 'short_cover' : t.regime === 'long_liq';
+  return { state: fav ? 'favorable' : unf ? 'unfavorable' : 'neutral', trend: t };
+}
+
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260709a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260709b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9538,7 +9700,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqRelaxTG = (setup.sqGate != null && setup.sqGate < 9)
     ? `\n⚠️ <b>配額寬鬆模式建單</b>：今日訊號未達 3 個，門檻暫調 SQ≥${setup.sqGate}、風控分≥${setup.confGate ?? 60}（寬鬆單表現不佳會自動熔斷）`
     : '';
-  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（24因子評分 ${_sqScoreTG} 分）${_sqRelaxTG}`;
+  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（25因子評分 ${_sqScoreTG} 分）${_sqRelaxTG}`;
 
   // ── 風控分扣分明細（止損風控 + 風險評估扣分，在 _riskScore 已知後補充）──
   const _learnPenTg = calcLearnDrag(setup.learnPenalty || 0);
@@ -9773,6 +9935,8 @@ async function recordSignalsFromScan(data) {
   const _scanGates = getAdaptiveGates();
   // ── BTC 急波動保護：更新價格追蹤（每次掃描皆記錄）──
   updateBtcVolGuard(data);
+  // ── OI 未平倉量歷史追蹤（供 ㉕ OI 趨勢因子 / 風險 f16 / 各分析使用）──
+  updateOIHistory(data);
   // ── BTC 24h 漲跌幅（供 ㉓ 相對強弱因子使用，建單與監控迴圈共用）──
   const _btcChg24 = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.change24h);
 
@@ -10056,6 +10220,13 @@ async function recordSignalsFromScan(data) {
           else if (_ssVwDev > 0.005) { _scanSqScore -= 1; _scanSqFactors.push(`❌ VWAP 上方 ${(_ssVwDev*100).toFixed(2)}%（日內買方掌控）-1`); }
         }
       }
+    } catch(_e) {}
+
+    // ㉕ OI 未平倉量趨勢 ±1（新錢同向 = 真趨勢；回補/平倉推動 = 假動作）
+    try {
+      const _ssOI = oiAlignment(coin.symbol, isLong);
+      if (_ssOI.state === 'favorable')      { _scanSqScore += 1; _scanSqFactors.push(`✅ OI ${OI_REGIME_LABEL[_ssOI.trend.regime]}（${_ssOI.trend.oiChg > 0 ? '+' : ''}${_ssOI.trend.oiChg}%）+1`); }
+      else if (_ssOI.state === 'unfavorable') { _scanSqScore -= 1; _scanSqFactors.push(`❌ OI ${OI_REGIME_LABEL[_ssOI.trend.regime]}（${_ssOI.trend.oiChg > 0 ? '+' : ''}${_ssOI.trend.oiChg}%）-1`); }
     } catch(_e) {}
 
     // ⑨ 巨鯨籌碼 ±1
@@ -10398,6 +10569,13 @@ async function recordSignalsFromScan(data) {
           else if (_rcVwDev < -0.025 || _rcVwDev > 0.005) _sqRC -= 1;
         }
       }
+    } catch(_e) {}
+
+    // ㉕ OI 未平倉量趨勢 ±1（與建單評分一致）
+    try {
+      const _rcOI = oiAlignment(_sqCoin.symbol, _sqIsLong);
+      if (_rcOI.state === 'favorable') _sqRC += 1;
+      else if (_rcOI.state === 'unfavorable') _sqRC -= 1;
     } catch(_e) {}
 
     // ⑨ 巨鯨籌碼 ±1（from whaleData）
@@ -14054,7 +14232,7 @@ const RISK_KEY_LABELS = {
   f5_learn: 'AI 風控記憶（止損歷史）', f6_rr: 'R/R 偏低', f7_events: '高衝擊數據將公布',
   f8_range: '區間震盪模式', f9_bigtrend: '大週期未對齊', f10_tech: '技術/籌碼逆風',
   f11_whale: '巨鯨方向逆向', f12_sq: '訊號品質低', f13_vol: '成交量萎縮',
-  f14_macd: 'MACD 動能逆向', f15_vwap: 'VWAP 過度延伸',
+  f14_macd: 'MACD 動能逆向', f15_vwap: 'VWAP 過度延伸', f16_oi: 'OI 假動作（回補/平倉推動）',
 };
 function auditPenaltyFactors() {
   // 證據池：正式已完結交易 + 實驗室已完結機會（皆需建單時記錄的 riskKeys）
@@ -14212,6 +14390,8 @@ function computeLabTags(coin, isLong, btcChg) {
     if (wh && (isLong ? (wh.bias === 'bull' && (wh.bigBuyCount||0) >= 2) : (wh.bias === 'bear' && (wh.bigSellCount||0) >= 2))) tags.push('巨鯨同向');
     const fr = coin.derivData?.fundingRate;
     if (fr != null && !isNaN(fr) && Math.abs(fr) >= 0.0005 && (isLong ? fr < 0 : fr > 0)) tags.push('資金費率反向擁擠');
+    const _oiAl = oiAlignment(coin.symbol, isLong);
+    if (_oiAl.state === 'favorable') tags.push('OI新錢同向');
     if (coin.symbol !== 'BTC/USDT' && !isNaN(btcChg)) {
       const rel = (parseFloat(coin.change24h) || 0) - btcChg;
       if (isLong ? rel >= 1.5 : rel <= -1.5) tags.push('相對強弱');
@@ -15671,6 +15851,8 @@ async function checkAndSendAlerts(data) {
         try { const _qFr=coin.derivData?.fundingRate;if(_qFr!=null&&!isNaN(_qFr)&&Math.abs(_qFr)>=0.0005){const _qCl=_qFr>0;if(isLong?!_qCl:_qCl)_qSq+=1;else _qSq-=1;} } catch(_e){}
         try { if(coin.symbol!=='BTC/USDT'&&!isNaN(_alertBtcChg24)){const _qRel=(parseFloat(coin.change24h)||0)-_alertBtcChg24;if(isLong?_qRel>=1.5:_qRel<=-1.5)_qSq+=1;else if(isLong?_qRel<=-1.5:_qRel>=1.5)_qSq-=1;} } catch(_e){}
         try { const _qVw=_footprintCache[coin.symbol]?.vwap;const _qVwP=parseFloat(coin.price)||0;if(_qVw>0&&_qVwP>0){const _qVwD=(_qVwP-_qVw)/_qVw;if(isLong){if(_qVwD>=0&&_qVwD<=0.02)_qSq+=1;else if(_qVwD>0.025||_qVwD<-0.005)_qSq-=1;}else{if(_qVwD<=0&&_qVwD>=-0.02)_qSq+=1;else if(_qVwD<-0.025||_qVwD>0.005)_qSq-=1;}} } catch(_e){}
+        // ㉕ OI 未平倉量趨勢（與建單評分一致）
+        try { const _qOI=oiAlignment(coin.symbol,isLong);if(_qOI.state==='favorable')_qSq+=1;else if(_qOI.state==='unfavorable')_qSq-=1; } catch(_e){}
         try { const _qWhl=coin.whaleData;if(_qWhl){if(isLong?(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=2):(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=2))_qSq+=1;else if(isLong?(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=3):(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=3))_qSq-=1;} } catch(_e){}
         // ⑫⑬ 技術面 + R/R
         if ((notifSetup.techPenalty||0)===0) _qSq+=1; else if ((notifSetup.techPenalty||0)>=12) _qSq-=1;
@@ -15713,7 +15895,7 @@ async function checkAndSendAlerts(data) {
     // AI 風控攔截 或 方向=觀望 或 R/R 不足 → 完全不通知
     if (notifSetup.hardBlocked || notifSetup.direction === 'wait' || notifSetup.rrBlocked) continue;
 
-    // ① SQ 24因子達門檻（預設 9/A 級，未達每日配額時自適應放寬；訊號品質門檻，最先判斷）
+    // ① SQ 25因子達門檻（預設 9/A 級，未達每日配額時自適應放寬；訊號品質門檻，最先判斷）
     const _sqPassGate = (notifSetup.sqScore != null)
       ? notifSetup.sqScore >= _alertGates.minSq
       : ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
@@ -15940,6 +16122,18 @@ function computeFullRisk(coin, params, isLong) {
       const _vwDevR = (_priceR - _vwR) / _vwR;
       if ((isLong && _vwDevR > 0.025) || (!isLong && _vwDevR < -0.025)) {
         addF('f15_vwap', 8, `價格偏離 VWAP ${(Math.abs(_vwDevR)*100).toFixed(1)}%（過度延伸）`, '價格遠離 VWAP，均值回歸風險高，可等回踩 VWAP 再進場');
+      }
+    }
+  } catch(_e) {}
+
+  // 16. OI 假動作風險（順向行情由回補/平倉推動，非新錢進場 → 延續性存疑）
+  try {
+    if (typeof oiAlignment === 'function') {
+      const _oiR = oiAlignment(coin.symbol, isLong);
+      if (_oiR.state === 'unfavorable') {
+        addF('f16_oi', 8, `OI ${OI_REGIME_LABEL[_oiR.trend.regime]}`, isLong
+          ? '上漲由空頭回補推動而非新多進場，突破延續性存疑，可等 OI 轉增再進'
+          : '下跌由多頭平倉推動而非新空進場，跌勢可能衰竭，留意反彈');
       }
     }
   } catch(_e) {}
