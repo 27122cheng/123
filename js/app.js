@@ -9386,6 +9386,27 @@ function getAdaptiveGates() {
   } catch(_e) { return strict; }
 }
 
+/* ── 同方向集中度控管 ────────────────────────────────────────────
+   問題：市場單邊走勢時所有幣種同時觸發同向訊號 → 瘋狂建單 →
+   稍微回調就大面積止損，勝率和回撤瞬間惡化。
+   三道防線（軟門檻之外的倉位層防護，不影響訊號評分本身）：
+   1) 同方向活躍單（pending+open）上限 4 筆 — 硬性集中度上限
+   2) 30 分鐘內同方向已建 ≥2 筆 → 後續要求 SQ ≥12（只放頂級訊號）；≥4 筆一律暫停
+      （強迫建單分散在不同時間點，而不是全擠在同一個局部高/低點）
+   3) 60 分鐘內同方向 ≥3 筆止損 → 該方向熔斷 1 小時（行情反轉時停止送人頭）
+   sqScore 傳 99 可跳過第 2 道的 SQ 加嚴（供驗證策略單使用），上限與熔斷仍適用。 */
+function sameDirGuard(tlog, direction, sqScore) {
+  const now = Date.now();
+  const active = tlog.filter(t => t.direction === direction && (t.status === 'pending' || t.status === 'open')).length;
+  if (active >= 4) return `同方向活躍單已達上限（${active}/4），暫停${direction === 'long' ? '多' : '空'}單建立`;
+  const recentNew = tlog.filter(t => t.direction === direction && now - (t.timestamp || 0) < 30 * 60 * 1000).length;
+  if (recentNew >= 4) return `30 分鐘內同方向已建 ${recentNew} 筆，爆量節流暫停`;
+  if (recentNew >= 2 && (sqScore == null || sqScore < 12)) return `30 分鐘內同方向已建 ${recentNew} 筆，後續僅收 SQ≥12 頂級訊號`;
+  const recentSl = tlog.filter(t => t.direction === direction && t.outcome === 'sl' && now - (t.exitTime || 0) < 60 * 60 * 1000).length;
+  if (recentSl >= 3) return `60 分鐘內同方向已 ${recentSl} 筆止損，方向熔斷 1 小時`;
+  return null;
+}
+
 /* ── BTC 急波動保護 ──────────────────────────────────────────────
    BTC 5 分鐘內波動 ≥1.5% 時，暫停山寨幣新單 15 分鐘（BTC 本身不受限）。
    山寨訊號在 BTC 急波動期間最容易被掃損，此守門僅擋「新建單」，不影響既有持倉監控。 */
@@ -9422,7 +9443,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260708f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260709a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10166,6 +10187,10 @@ async function recordSignalsFromScan(data) {
     // 防競態：async fetch 期間 checkAndSendAlerts 可能已建立同幣種掛單，重新讀取確認
     const _freshTlog = loadTradeLog();
     if (_freshTlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
+
+    // 同方向集中度控管（活躍上限 / 爆量節流 / 連續止損熔斷）
+    const _dirGuardMsg = sameDirGuard(_freshTlog, direction, _scanSqScore);
+    if (_dirGuardMsg) { console.log('[dir-guard]', coin.symbol, _dirGuardMsg); continue; }
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
@@ -14103,6 +14128,8 @@ function recordProvenStrategyTrades(data) {
     if (tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
     if (inCooldown(tlog, coin.symbol, dir)) continue;
     if (btcVolGuardBlocks(coin.symbol)) continue;
+    // 同方向集中度控管：驗證策略單跳過 SQ 加嚴（傳 99），但活躍上限與止損熔斷仍適用
+    if (sameDirGuard(tlog, dir, 99)) continue;
     const h4Ok = isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear');
     const s15 = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
     if (!h4Ok || !(isLong ? s15.includes('bull') : s15.includes('bear'))) continue;
@@ -14638,6 +14665,14 @@ function exportFullBackup() {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (k && (k.startsWith('csp_') || _BACKUP_EXTRA_KEYS.includes(k))) {
+        // 實驗室：只備份已完結樣本（統計/規則所需）；追蹤中、未入場、過期、錯過的不備份
+        if (k === AI_LAB_KEY) {
+          try {
+            const _bkLab = JSON.parse(localStorage.getItem(k) || '[]');
+            backup.data[k] = JSON.stringify(_bkLab.filter(o => o.status === 'closed'));
+            continue;
+          } catch(_e) { /* 解析失敗則原樣備份 */ }
+        }
         backup.data[k] = localStorage.getItem(k);
       }
     }
@@ -15699,7 +15734,9 @@ async function checkAndSendAlerts(data) {
       const _tlog2 = loadTradeLog();
       const _alreadyIn = _tlog2.some(t => t.symbol === coin.symbol && t.direction === dir
         && (t.status === 'open' || t.status === 'pending'));
-      if (!_alreadyIn) {
+      // 同方向集中度控管（與 recordSignalsFromScan 同一標準）
+      const _alertDirGuard = sameDirGuard(_tlog2, dir, notifSetup.sqScore);
+      if (!_alreadyIn && !_alertDirGuard) {
         // 長線單需 SQ ≥ S；SQ = A 時降格為短線單建單，避免建立後立即被 SQ 監控降格
         const _isLongTermEntry = notifSetup.isLongTerm === true && ['SSS','SS','S'].includes(notifSetup.sqGrade);
         const _newTrade = {
