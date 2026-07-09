@@ -9309,7 +9309,43 @@ const TRADE_LOG_KEY     = 'csp_trade_log';
 const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內不重複記錄
 
 function loadTradeLog() { try { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); } catch(e) { return []; } }
-function saveTradeLog(log) { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
+function saveTradeLog(log) {
+  try { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
+  catch(e) {
+    // localStorage 空間不足：裁剪已完結交易的大型文字欄位與筆數後重試，避免整頁卡死
+    try {
+      const slim = log.slice(0, 250).map(t => (t.status === 'closed' || t.status === 'expired')
+        ? Object.assign({}, t, { sqFactors: undefined, entryReasons: undefined, entryReason: (t.entryReason || '').slice(0, 80), riskFactors: undefined, riskRecs: undefined, aiScaleReason: undefined })
+        : t);
+      localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(slim));
+      console.warn('[saveTradeLog] localStorage 已滿，已自動裁剪舊記錄');
+    } catch(e2) { console.error('[saveTradeLog] localStorage 寫入失敗', e2); }
+  }
+}
+
+/* 啟動時儲存空間健檢：寫入探針失敗（空間滿）→ 自動裁剪最占空間的歷史資料，
+   防止「localStorage 滿 → 所有寫入拋錯 → 頁面卡在載入畫面」 */
+(function _lsHealthCheck() {
+  try {
+    localStorage.setItem('csp_ls_probe', 'x'.repeat(4096));
+    localStorage.removeItem('csp_ls_probe');
+  } catch(e) {
+    console.warn('[ls-health] localStorage 空間不足，自動裁剪歷史資料');
+    try {
+      const log = JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]');
+      const slim = log.slice(0, 200).map(t => (t.status === 'closed' || t.status === 'expired')
+        ? Object.assign({}, t, { sqFactors: undefined, entryReasons: undefined, riskFactors: undefined, riskRecs: undefined })
+        : t);
+      localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(slim));
+    } catch(_e) {}
+    try {
+      const lab = JSON.parse(localStorage.getItem('csp_ai_lab') || '[]');
+      localStorage.setItem('csp_ai_lab', JSON.stringify(lab.slice(0, 150)));
+    } catch(_e) {}
+    try { localStorage.removeItem('csp_sl_adjust_alert'); } catch(_e) {}
+    try { localStorage.removeItem('csp_cancel_tg_dedup'); } catch(_e) {}
+  }
+})();
 
 /* ── 每日訊號配額自適應門檻 ──────────────────────────────────
    目標：每天至少 3 個高勝率訊號。
@@ -9386,7 +9422,7 @@ function btcVolGuardBlocks(symbol) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260708e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260708f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -13965,7 +14001,14 @@ function buildWinRateBreakdown(closed) {
    ═══════════════════════════════════════════════════════════════ */
 const AI_LAB_KEY = 'csp_ai_lab';
 function loadAILab() { try { return JSON.parse(localStorage.getItem(AI_LAB_KEY) || '[]'); } catch(e) { return []; } }
-function saveAILab(list) { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list)); }
+function saveAILab(list) {
+  try { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list)); }
+  catch(e) {
+    // 空間不足：砍半保留最新記錄後重試
+    try { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list.slice(0, 150))); }
+    catch(e2) { console.error('[saveAILab] localStorage 寫入失敗', e2); }
+  }
+}
 
 /* ── 風控扣分條件有效性審查（AI 篩選：無預測力的條件自動豁免、不再扣分）──
    原理：對每個風險因子（f1~f15），比較「條件成立」與「條件未成立」樣本的實際勝率。
