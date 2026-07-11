@@ -4081,14 +4081,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else if (_sqOI.state === 'unfavorable') { _sqScore -= 1; _sqFactors.push(`❌ ㉕OI ${OI_REGIME_LABEL[_sqOI.trend.regime]} -1`); }
   } catch(_e) {}
 
-  // 分數 floor 為 0，等級校準（4H+15m 改硬性條件後 max ≈ 27 分，門檻對應下調 2 分）
+  // 分數 floor 為 0，等級校準（25 因子校準，滿分 ≈ 31 分）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 20 ? 'SSS'
-                 : _sqScore >= 17 ? 'SS'
-                 : _sqScore >= 15 ? 'S'
-                 : _sqScore >= 9  ? 'A'
-                 : _sqScore >= 6  ? 'B'
-                 : _sqScore >= 3  ? 'C' : 'D';
+  const _sqGrade = _sqScore >= 23 ? 'SSS'
+                 : _sqScore >= 20 ? 'SS'
+                 : _sqScore >= 17 ? 'S'
+                 : _sqScore >= 10 ? 'A'
+                 : _sqScore >= 7  ? 'B'
+                 : _sqScore >= 4  ? 'C' : 'D';
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
@@ -4308,7 +4308,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     tp1 = _stTp1; tp2 = _stTp2; tp1Reason = _stTp1R; tp2Reason = _stTp2R;
     if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
     else dirLabel = isLong ? '做多' : '做空';
-    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（15分），已降格為短線單`);
+    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（17分），已降格為短線單`);
     // 若之前是長線單 → 更新 tlog + 發送降格通知
     if (_wasLT) try {
       const _tlogDG = loadTradeLog();
@@ -9476,21 +9476,21 @@ function countSignalsToday() {
 function relaxedCohortUnderperforms() {
   try {
     const closed = loadTradeLog().filter(t =>
-      t.status === 'closed' && (t.sqGate ?? 9) < 9);
+      t.status === 'closed' && (t.gateRelaxed === true || (t.sqGate ?? 10) < 9));
     if (closed.length < 12) return false;
     const wins = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
     return (wins / closed.length * 100) < 45;
   } catch(_e) { return false; }
 }
 function getAdaptiveGates() {
-  const strict = { minConf: 60, minSq: 9, relaxed: false, label: '' };
+  const strict = { minConf: 60, minSq: 10, relaxed: false, label: '' };
   try {
     const n = countSignalsToday();
     if (n >= DAILY_SIGNAL_TARGET) return strict;
     if (relaxedCohortUnderperforms()) return strict;  // 放寬單歷史勝率不佳 → 熔斷
     const h = new Date().getHours();  // 本地時間
-    if (h >= 18) return { minConf: 55, minSq: 7, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬（SQ≥7、風控分≥55）` };
-    if (h >= 12) return { minConf: 58, minSq: 8, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥8、風控分≥58）` };
+    if (h >= 18) return { minConf: 55, minSq: 8, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬（SQ≥8、風控分≥55）` };
+    if (h >= 12) return { minConf: 58, minSq: 9, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥9、風控分≥58）` };
     return strict;
   } catch(_e) { return strict; }
 }
@@ -9510,7 +9510,7 @@ function sameDirGuard(tlog, direction, sqScore) {
   if (active >= 4) return `同方向活躍單已達上限（${active}/4），暫停${direction === 'long' ? '多' : '空'}單建立`;
   const recentNew = tlog.filter(t => t.direction === direction && now - (t.timestamp || 0) < 30 * 60 * 1000).length;
   if (recentNew >= 4) return `30 分鐘內同方向已建 ${recentNew} 筆，爆量節流暫停`;
-  if (recentNew >= 2 && (sqScore == null || sqScore < 12)) return `30 分鐘內同方向已建 ${recentNew} 筆，後續僅收 SQ≥12 頂級訊號`;
+  if (recentNew >= 2 && (sqScore == null || sqScore < 13)) return `30 分鐘內同方向已建 ${recentNew} 筆，後續僅收 SQ≥13 頂級訊號`;
   const recentSl = tlog.filter(t => t.direction === direction && t.outcome === 'sl' && now - (t.exitTime || 0) < 60 * 60 * 1000).length;
   if (recentSl >= 3) return `60 分鐘內同方向已 ${recentSl} 筆止損，方向熔斷 1 小時`;
   return null;
@@ -9605,7 +9605,7 @@ function oiAlignment(symbol, isLong) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260709b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260711a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9697,7 +9697,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqLabelTG = setup.sqGradeLabel || _sqLabelMap[_sqGradeTG] || '—';
   const _sqEmoji   = { SSS:'👑', SS:'💎', S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_sqGradeTG] || '📊';
   // 配額寬鬆模式標示：建單門檻低於標準（SQ<9/A 級）時明確說明，避免 B 級訊號看似異常
-  const _sqRelaxTG = (setup.sqGate != null && setup.sqGate < 9)
+  const _sqRelaxTG = (setup.gateRelaxed === true || (setup.sqGate != null && setup.sqGate < 10 && setup.sqGate > 0))
     ? `\n⚠️ <b>配額寬鬆模式建單</b>：今日訊號未達 3 個，門檻暫調 SQ≥${setup.sqGate}、風控分≥${setup.confGate ?? 60}（寬鬆單表現不佳會自動熔斷）`
     : '';
   const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（25因子評分 ${_sqScoreTG} 分）${_sqRelaxTG}`;
@@ -10100,7 +10100,7 @@ async function recordSignalsFromScan(data) {
     const _scanMacd    = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
 
-    // ── 完整版訊號品質評分（4H+15m 硬性條件 + 其餘時框加分，等級門檻 SSS≥20/SS≥17/S≥15/A≥9/B≥6/C≥3/D<3）──
+    // ── 完整版訊號品質評分（4H+15m 硬性條件 + 其餘時框加分，等級門檻 SSS≥23/SS≥20/S≥17/A≥10/B≥7/C≥4/D<4（25 因子校準，滿分 ≈31））──
     let _scanSqScore = 0;
     const _scanSqFactors = [];
 
@@ -10328,21 +10328,21 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（4H+15m 改硬性條件後 max ≈ 27 分）
+    // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（25 因子校準，滿分 ≈ 31 分）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 20 ? 'SSS'
-                       : _scanSqScore >= 17 ? 'SS'
-                       : _scanSqScore >= 15 ? 'S'
-                       : _scanSqScore >= 9  ? 'A'
-                       : _scanSqScore >= 6  ? 'B'
-                       : _scanSqScore >= 3  ? 'C' : 'D';
+    const _scanSqGrade = _scanSqScore >= 23 ? 'SSS'
+                       : _scanSqScore >= 20 ? 'SS'
+                       : _scanSqScore >= 17 ? 'S'
+                       : _scanSqScore >= 10 ? 'A'
+                       : _scanSqScore >= 7  ? 'B'
+                       : _scanSqScore >= 4  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 長線單 S 以上；短線單以自適應 SQ 門檻判斷（預設 9/A 級，未達每日配額時放寬）
     // 若長線單 SQ 未達 S 級但達短線門檻，降格為短線單繼續建單
     if (canScaleIn && !['SSS','SS','S'].includes(_scanSqGrade)) {
       if (_scanSqScore < _scanGates.minSq) continue; // 短線也不達標 → 跳過
       canScaleIn = false; // 降格為短線單
-      _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（15分），已降格為短線單`);
+      _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（17分），已降格為短線單`);
     } else if (!canScaleIn && _scanSqScore < _scanGates.minSq) {
       continue; // 短線單也不達標
     }
@@ -10418,6 +10418,7 @@ async function recordSignalsFromScan(data) {
       scaleIns: [], peakPrice: null,
       sqGrade: _scanSqGrade, sqScore: _scanSqScore, sqGradeLabel: _scanSqLabel, sqFactors: _scanSqFactors,
       confGate: _scanGates.minConf, sqGate: _scanGates.minSq,  // 建單時的門檻，SQ 監控覆核用同一標準
+      gateRelaxed: _scanGates.relaxed || undefined,  // 配額寬鬆模式建單標記（分組統計/熔斷識別用）
     };
     // 若現價已超過進場位 0.3%，標記為等待回踩
     const _scanCurPrice = parseFloat(coin.price) || 0;
@@ -10453,7 +10454,7 @@ async function recordSignalsFromScan(data) {
   }
 
   // ── 訊號品質持續監控：掛單未進場前每次掃描用完整 21 因子重新評估，低於 A 級自動取消 ──
-  // 等級門檻：SSS≥20 / SS≥17 / S≥15 / A≥9 / B≥6 / C≥3 / D<3（與建單評分完全一致）
+  // 等級門檻：SSS≥23 / SS≥20 / S≥17 / A≥10 / B≥7 / C≥4 / D<4（與建單評分完全一致，25 因子校準）
   // ICT結構和圖形確認需要異步 MTF Kline，其餘 ~18 個因子均可從掃描快取即時取得
   const _sqCancelIds = new Set();
   for (const trade of tlog) {
@@ -10528,7 +10529,7 @@ async function recordSignalsFromScan(data) {
     // ⑦ ADX ±1
     const _rcAdx = parseFloat(_sqCoin.adx) || 20;
     if (_rcAdx >= 28) _sqRC += 1;
-    else if (_rcAdx < 20) _sqRC -= 1;
+    else if (_rcAdx < 22) _sqRC -= 1;  // 與建單評分一致（原 <20 不對稱）
 
     // ⑧ 訂單流 Taker ±1（from derivData）
     try {
@@ -10704,21 +10705,21 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（4H+15m 改硬性條件後 max ≈ 27 分）
+    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（25 因子校準，滿分 ≈ 31 分）
     _sqRC = Math.max(0, _sqRC);
-    const _rcGrade = _sqRC >= 20 ? 'SSS'
-                   : _sqRC >= 17 ? 'SS'
-                   : _sqRC >= 15 ? 'S'
-                   : _sqRC >= 9  ? 'A'
-                   : _sqRC >= 6  ? 'B'
-                   : _sqRC >= 3  ? 'C' : 'D';
+    const _rcGrade = _sqRC >= 23 ? 'SSS'
+                   : _sqRC >= 20 ? 'SS'
+                   : _sqRC >= 17 ? 'S'
+                   : _sqRC >= 10 ? 'A'
+                   : _sqRC >= 7  ? 'B'
+                   : _sqRC >= 4  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
 
-    // 長線單門檻 S（15分）；短線單門檻 = 建單時存的 sqGate（預設 9/A 級）− 1 分緩衝
+    // 長線單門檻 S（17分）；短線單門檻 = 建單時存的 sqGate（預設 10/A 級）− 2 分緩衝
     // 緩衝目的：臨界分數的正常波動不應反覆觸發建立→取消
     // 長線單 SQ 降至短線門檻以上但 < S → 降級為短線單繼續持有；低於短線門檻才取消
-    const _rcSqGate = Math.max(3, (trade.sqGate ?? 9) - 1);
-    const _rcSqPass = trade.canScaleIn ? _sqRC >= 15 : _sqRC >= _rcSqGate;
+    const _rcSqGate = Math.max(4, (trade.sqGate ?? 10) - 2);
+    const _rcSqPass = trade.canScaleIn ? _sqRC >= 17 : _sqRC >= _rcSqGate;
     if (!_rcSqPass) {
       if (trade.canScaleIn && _sqRC >= _rcSqGate) {
         // 長線 → 短線降級
@@ -10730,7 +10731,7 @@ async function recordSignalsFromScan(data) {
         try { sendCancelTelegramNotification(trade, _downgradeReason); } catch(_n) {}
         try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} SQ 降至 ${_rcGrade} 級，長線單降格為短線單`, 'warning'); } catch(_t) {}
       } else {
-        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（15分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`;
+        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（17分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`;
         addCancelCooldown(trade, _sqCancelReason);
         _sqCancelIds.add(trade.id);
         changed = true;
@@ -14138,8 +14139,8 @@ function buildWinRateBreakdown(closed) {
   };
   const groups = [
     { title: '建單門檻', rows: [
-      seg('嚴格門檻單（SQ≥9）', closed.filter(t => (t.sqGate ?? 9) >= 9)),
-      seg('放寬門檻單（SQ<9）', closed.filter(t => (t.sqGate ?? 9) < 9)),
+      seg('嚴格門檻單', closed.filter(t => !(t.gateRelaxed === true || (t.sqGate ?? 10) < 9))),
+      seg('放寬門檻單', closed.filter(t => t.gateRelaxed === true || (t.sqGate ?? 10) < 9)),
     ]},
     { title: '方向', rows: [
       seg('做多', closed.filter(t => t.direction === 'long')),
@@ -15885,7 +15886,7 @@ async function checkAndSendAlerts(data) {
         try { const _qIctC=_tradeSetupCache[coin.symbol];if(_qIctC){let _qIct=0;if(_qIctC.orderBlock?.priceInOB||_qIctC.orderBlock4h?.priceInOB)_qIct++;if((_qIctC.fvg&&!_qIctC.fvg.filled)||(_qIctC.fvg4h&&!_qIctC.fvg4h.filled))_qIct++;_qSq+=Math.min(2,_qIct);const _qPat=_qIctC.chartPat;if(_qPat){_qSq+=Math.min(2,Math.max(0,_qPat.score||0));if((_qPat.opposing?.length||0)>0)_qSq-=Math.min(2,_qPat.opposing.length);}} } catch(_e){}
 
         _qSq = Math.max(0, _qSq);
-        const _qGrade = _qSq>=20?'SSS':_qSq>=17?'SS':_qSq>=15?'S':_qSq>=9?'A':_qSq>=6?'B':_qSq>=3?'C':'D';
+        const _qGrade = _qSq>=23?'SSS':_qSq>=20?'SS':_qSq>=17?'S':_qSq>=10?'A':_qSq>=7?'B':_qSq>=4?'C':'D';
         notifSetup.sqGrade      = _qGrade;
         notifSetup.sqScore      = _qSq;
         notifSetup.sqGradeLabel = {SSS:'神級訊號',SS:'完美訊號',S:'頂級訊號',A:'優質訊號',B:'良好訊號',C:'一般訊號',D:'訊號偏弱'}[_qGrade]||'';
@@ -15953,6 +15954,7 @@ async function checkAndSendAlerts(data) {
           rr1: notifSetup.rr1, rr2: notifSetup.rr2,  // SQ 監控 computeFullRisk 需要頂層 rr1
           riskKeys: notifSetup.riskKeys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
           confGate: _alertGates.minConf, sqGate: _alertGates.minSq,  // 建單門檻，SQ 監控覆核用同一標準
+          gateRelaxed: _alertGates.relaxed || undefined,  // 配額寬鬆模式建單標記
           telegramSent: false,
           pendingNotify: true,
           _notifyRisk: {
