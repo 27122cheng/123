@@ -9463,6 +9463,12 @@ function saveTradeLog(log) {
    硬性條件永不放寬：4H+15m 同向、AI 硬封鎖、R/R ≥ 1.3、今日 AI 反向封鎖、趨勢反向預檢。
    建單時把使用的門檻存在 trade 上（confGate/sqGate），SQ 監控用同一門檻覆核，
    避免「寬鬆建單、嚴格取消」的建了又取消問題。 */
+/* 訊號主機判定：多裝置同時開啟時，只有主機建單/監控/發通知（設定頁開關，預設開啟）。
+   各裝置 localStorage 互相獨立，去重無法跨裝置生效——兩台都當主機會重複建單、重複通知。 */
+function isSignalMaster() {
+  try { return loadSettings().signalMaster !== false; } catch(_e) { return true; }
+}
+
 const DAILY_SIGNAL_TARGET = 3;
 function countSignalsToday() {
   try {
@@ -9605,7 +9611,7 @@ function oiAlignment(symbol, isLong) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260711a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260711b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9862,6 +9868,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
 
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
 async function recordSignalsFromScan(data) {
+  if (!isSignalMaster()) return;  // 非訊號主機：不建單、不監控、不發通知
   const tlog = loadTradeLog();
   // 記錄本次掃描開始前已存在的掛單 ID，SQ 監控只處理這些（不重複驗證剛建立的掛單）
   const _existingTradeIds = new Set(tlog.map(t => t.id));
@@ -11192,6 +11199,7 @@ async function backgroundMonitorLongTermStatus() {
 }
 
 function updateOpenTrades(data) {
+  if (!isSignalMaster()) return new Set();  // 非訊號主機：不更新持倉狀態、不發通知
   const tlog = loadTradeLog();
   let changed = false;
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
@@ -12590,6 +12598,7 @@ function analyzeTrailingStopAI(coin, isLong, cur, atr, currentPnlR, entry, risk)
 }
 
 function checkPostDataReversal(data) {
+  if (!isSignalMaster()) return;  // 非訊號主機：不發移動止損建議
   const tlog = loadTradeLog();
   const openTrades = tlog.filter(t => t.status === 'open');
   if (!openTrades.length) return;
@@ -14295,6 +14304,7 @@ function getProvenLabTags() {
    保留：持倉去重、冷卻、BTC 急波動保護、4H+15m 硬性條件（與實驗室驗證條件完全一致，
    確保正式運行複製的是被驗證過的同一套進場情境）。 */
 function recordProvenStrategyTrades(data) {
+  if (!isSignalMaster()) return;  // 非訊號主機：不建單
   const proven = getProvenLabTags();
   if (!proven.length || !Array.isArray(data) || !data.length) return;
   const tlog = loadTradeLog();
@@ -14416,6 +14426,7 @@ function computeLabTags(coin, isLong, btcChg) {
 /* 收集機會：硬性條件僅 4H+15m 同向（訊號基準），不看風控分/風險評估。
    標籤 = 命中的分析維度；至少 2 個維度同向才視為「AI 覺得不錯」。 */
 function recordLabOpportunities(data) {
+  if (!isSignalMaster()) return;  // 非訊號主機：不累積實驗室資料（避免多裝置各自建立分歧樣本）
   if (!Array.isArray(data) || !data.length) return;
   const lab = loadAILab();
   const now = Date.now();
@@ -14476,6 +14487,7 @@ function recordLabOpportunities(data) {
 
 /* 監控：進場觸發 → SL/TP 追蹤 → 結果落地。不做任何風控取消（實驗室宗旨：讓機會自然跑完）。 */
 function updateLabOpportunities(data) {
+  if (!isSignalMaster()) return;
   if (!Array.isArray(data) || !data.length) return;
   const lab = loadAILab();
   const now = Date.now();
@@ -15587,6 +15599,7 @@ function fmtDateTime(ts) {
 const SIGNAL_CACHE_KEY = 'csp_signal_cache';
 
 async function checkAndSendAlerts(data) {
+  if (!isSignalMaster()) return;  // 非訊號主機：不建單、不發通知
   const s = loadSettings();
   if (!s.notifBrowser && !s.notifTelegram) return;
 
@@ -16858,6 +16871,8 @@ function populateSettingsPage() {
   if (tgToken)  tgToken.value  = s.tgToken  || '';
   if (tgChatId) tgChatId.value = s.tgChatId || '';
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
+  const masterToggle = document.getElementById('s-master-toggle');
+  if (masterToggle) masterToggle.checked = s.signalMaster !== false;  // 預設開啟
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
@@ -16876,6 +16891,7 @@ function saveAllSettings() {
     bullThreshold:   parseInt(document.getElementById('s-bull-threshold')?.value) || 60,
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
     notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
+    signalMaster:    document.getElementById('s-master-toggle')?.checked ?? true,
     tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,

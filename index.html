@@ -714,6 +714,18 @@
           <button id="s-notif-browser-btn" class="btn-ghost" onclick="requestBrowserNotifPermission()" style="white-space:nowrap;min-width:90px">點擊啟用</button>
         </div>
 
+        <!-- 訊號主機 -->
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">📡 本裝置為訊號主機</div>
+            <div class="setting-desc">只有主機會建單與發送 Telegram 通知。多台裝置同時開啟時，請只在一台開啟此選項，其餘關閉（否則同一訊號會重複建單、重複通知）</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-master-toggle" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+
         <!-- Telegram -->
         <div class="setting-row vertical" style="gap:10px;margin-top:6px">
           <div style="display:flex;justify-content:space-between;align-items:center">
@@ -812,6 +824,6 @@
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script src="js/indicators.js?v=20260616b"></script>
   <script src="js/api.js?v=20260616c"></script>
-  <script src="js/app.js?v=20260711a"></script>
+  <script src="js/app.js?v=20260711b"></script>
 </body>
 </html>
