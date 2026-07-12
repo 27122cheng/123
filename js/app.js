@@ -1228,7 +1228,7 @@ function buildPendingPositionSetup(t, currentPrice) {
   <div class="conf-breakdown" style="margin-top:10px;padding:9px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:8px;font-size:0.73rem;line-height:1.9">
     <div style="font-weight:700;color:var(--text2);margin-bottom:4px">🛡️ 風控分項明細</div>
     <div>滿分 <strong>100 分</strong></div>
-    ${_pLearnDrag > 0 ? `<div style="color:#f59e0b">↳ 止損風控扣分 <strong>-${_pLearnDrag} 分</strong></div>` : '<div style="color:#22c55e">↳ 止損風控通過（無扣分）</div>'}
+    ${isLearnDragMuted() ? '<div style="color:#22d3ee">↳ ♻️ 止損風控 AI 豁免（審查驗證不需扣分）</div>' : _pLearnDrag > 0 ? `<div style="color:#f59e0b">↳ 止損風控扣分 <strong>-${_pLearnDrag} 分</strong></div>` : '<div style="color:#22c55e">↳ 止損風控通過（無扣分）</div>'}
     ${_pRiskPen > 0 ? `<div style="color:#f97316">↳ 風險評估扣分 <strong>-${_pRiskPen} 分</strong>（${t.riskLevel || ''} ${t.riskScore || 0}/100）</div>` : ''}
     <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px;font-weight:700">= 風控分：<span style="color:${_pConf >= 80 ? '#22c55e' : _pConf >= 60 ? '#f59e0b' : '#ef4444'}">${_pConf} 分</span></div>
   </div>` : '';
@@ -2024,7 +2024,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           <div style="font-size:0.74rem;font-weight:700;color:var(--text2);margin-bottom:6px">🛡️ 風控分項明細（進場時）</div>
           <div style="font-size:0.73rem;line-height:2">
             <div><span style="color:var(--text3)">滿分</span> <strong>100 分</strong></div>
-            ${_lockDrag > 0 ? `<div style="color:#f59e0b">　↳ 止損風控扣分 <strong>-${_lockDrag} 分</strong></div>` : '<div style="color:#22c55e">　↳ 止損風控通過（無扣分）</div>'}
+            ${isLearnDragMuted() ? '<div style="color:#22d3ee">　↳ ♻️ 止損風控 AI 豁免（審查驗證不需扣分）</div>' : _lockDrag > 0 ? `<div style="color:#f59e0b">　↳ 止損風控扣分 <strong>-${_lockDrag} 分</strong></div>` : '<div style="color:#22c55e">　↳ 止損風控通過（無扣分）</div>'}
             <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:4px;padding-top:4px">
               <span style="color:var(--text3)">= 風控分</span> <strong style="color:${_clr};font-size:1rem">${_lockedConf} 分</strong>
               <span style="font-size:0.68rem;color:var(--text3);margin-left:6px">其餘逆風見 SQ 因子</span>
@@ -5076,7 +5076,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;font-size:0.74rem;background:rgba(255,255,255,.03);border-radius:8px;padding:7px 10px;margin-bottom:10px">
         <span style="color:var(--text3);font-size:0.7rem">滿分</span>
         <span style="font-weight:700;color:#22c55e">100 分</span>
-        ${learnPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">止損風控 -${calcLearnDrag(learnPenalty)}</span>` : ''}
+        ${isLearnDragMuted() && learnPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#22d3ee">♻️ 止損風控 AI 豁免</span>` : learnPenalty > 0 ? `<span style="color:var(--text3)">→</span><span style="color:#f59e0b">止損風控 -${calcLearnDrag(learnPenalty)}</span>` : ''}
         <span style="color:var(--text3)">→</span>
         <span style="color:var(--text3);font-size:0.7rem">風控分</span>
         <span style="font-weight:700;font-size:0.85rem;color:${l2Status === 'block' ? '#ef4444' : cColor(finalConf)}">${l2Status === 'block' ? '❌ 封鎖' : finalConf + ' 分'}</span>
@@ -9611,7 +9611,7 @@ function oiAlignment(symbol, isLong) {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260711b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260711c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9711,7 +9711,9 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   // ── 風控分扣分明細（止損風控 + 風險評估扣分，在 _riskScore 已知後補充）──
   const _learnPenTg = calcLearnDrag(setup.learnPenalty || 0);
   const _penLines = [];
-  if (_learnPenTg > 0) {
+  if (isLearnDragMuted() && (setup.learnPenalty || 0) > 0) {
+    _penLines.push(`   ♻️ 止損風控 AI 豁免（審查驗證不需扣分）`);
+  } else if (_learnPenTg > 0) {
     _penLines.push(`   止損風控扣分 -${_learnPenTg} 分`);
   }
 
@@ -13883,7 +13885,7 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">🛡️ AI 風控分</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf} 分</span>
-            ${(t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${calcLearnDrag(t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
+            ${isLearnDragMuted() && (t.learnPenalty||0) > 0 ? '<span style="color:#22d3ee;font-size:0.7rem">♻️ 止損風控 AI 豁免</span>' : (t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${calcLearnDrag(t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
           </div>
         </div>
         ` : `
@@ -13899,7 +13901,7 @@ function renderPositionsPage() {
           <div class="pos-cell-lbl">🛡️ AI 風控分</div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="color:${confClr};font-weight:700;font-size:0.95rem">${conf} 分</span>
-            ${(t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${calcLearnDrag(t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
+            ${isLearnDragMuted() && (t.learnPenalty||0) > 0 ? '<span style="color:#22d3ee;font-size:0.7rem">♻️ 止損風控 AI 豁免</span>' : (t.learnPenalty||0) > 0 ? `<span style="color:#f59e0b;font-size:0.7rem">止損風控 -${calcLearnDrag(t.learnPenalty||0)} 分</span>` : '<span style="color:#22c55e;font-size:0.7rem">風控通過</span>'}
           </div>
         </div>
         `}
@@ -14243,11 +14245,14 @@ const RISK_KEY_LABELS = {
   f8_range: '區間震盪模式', f9_bigtrend: '大週期未對齊', f10_tech: '技術/籌碼逆風',
   f11_whale: '巨鯨方向逆向', f12_sq: '訊號品質低', f13_vol: '成交量萎縮',
   f14_macd: 'MACD 動能逆向', f15_vwap: 'VWAP 過度延伸', f16_oi: 'OI 假動作（回補/平倉推動）',
+  learn_drag: '止損風控扣分（止損建議整體）',
 };
 function auditPenaltyFactors() {
-  // 證據池：正式已完結交易 + 實驗室已完結機會（皆需建單時記錄的 riskKeys）
-  const real = loadTradeLog().filter(t => t.status === 'closed' && Array.isArray(t.riskKeys));
-  const labC = loadAILab().filter(o => o.status === 'closed' && Array.isArray(o.riskKeys));
+  // 證據池：正式已完結交易 + 實驗室已完結機會
+  const realAll = loadTradeLog().filter(t => t.status === 'closed');
+  const labAll  = loadAILab().filter(o => o.status === 'closed');
+  const real = realAll.filter(t => Array.isArray(t.riskKeys));
+  const labC = labAll.filter(o => Array.isArray(o.riskKeys));
   const all = [
     ...real.map(t => ({ keys: t.riskKeys, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
     ...labC.map(o => ({ keys: o.riskKeys, win: (o.pnlR || 0) > 0 })),
@@ -14255,25 +14260,41 @@ function auditPenaltyFactors() {
   let mute = {};
   try { mute = JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'); } catch(_e) {}
   const report = [];
-  for (const key of Object.keys(RISK_KEY_LABELS)) {
-    const withF   = all.filter(s => s.keys.includes(key));
-    const without = all.filter(s => !s.keys.includes(key));
-    if (!withF.length) { if (mute[key]) report.push({ key, label: RISK_KEY_LABELS[key], n: 0, muted: true }); continue; }
+  // 豁免判定（2026-07 調嚴版）：樣本 ≥100 且「條件成立時勝率」≥75% 才豁免——
+  // 代表該條件成立時交易依然高勝率，扣它的分純屬冤枉；勝率跌破 70% 自動恢復扣分
+  const judge = (key, label, withF, wrO) => {
+    if (!withF.length) { if (mute[key]) report.push({ key, label, n: 0, muted: true }); return; }
     const wrW = withF.filter(s => s.win).length / withF.length * 100;
-    const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
-    const entry = { key, label: RISK_KEY_LABELS[key], n: withF.length, wrWith: wrW, wrWithout: wrO, muted: !!mute[key] };
-    if (withF.length >= 30 && wrW >= wrO && !mute[key]) {
-      // 條件成立時勝率不輸未成立時 → 無預測力 → 豁免
-      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), wrWithout: +wrO.toFixed(1) };
+    const entry = { key, label, n: withF.length, wrWith: wrW, wrWithout: wrO, muted: !!mute[key] };
+    if (withF.length >= 100 && wrW >= 75 && !mute[key]) {
+      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1) };
       entry.muted = true;
-      console.log(`[risk-audit] 豁免「${RISK_KEY_LABELS[key]}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 未成立 ${wrO.toFixed(1)}%（樣本 ${withF.length}）`);
-    } else if (mute[key] && withF.length >= 30 && wrW < wrO - 5) {
-      // 數據劣化 → 恢復扣分
+      console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 75%（樣本 ${withF.length} ≥ 100）`);
+    } else if (mute[key] && withF.length >= 100 && wrW < 70) {
       delete mute[key];
       entry.muted = false;
-      console.log(`[risk-audit] 恢復扣分「${RISK_KEY_LABELS[key]}」：成立時勝率 ${wrW.toFixed(1)}% 明顯低於未成立 ${wrO.toFixed(1)}%`);
+      console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率降至 ${wrW.toFixed(1)}% < 70%`);
     }
     report.push(entry);
+  };
+  for (const key of Object.keys(RISK_KEY_LABELS)) {
+    if (key === 'learn_drag') continue;  // 特殊條件另行處理
+    const withF   = all.filter(s => s.keys.includes(key));
+    const without = all.filter(s => !s.keys.includes(key));
+    const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
+    judge(key, RISK_KEY_LABELS[key], withF, wrO);
+  }
+  // 特殊條件：止損風控整體（止損建議扣分，learnPenalty ≥5 視為成立）
+  // 用同一標準檢驗「匯入的止損建議」是否真的需要扣分；豁免後 calcLearnDrag 直接歸零
+  {
+    const learnPool = [
+      ...realAll.map(t => ({ fired: (t.learnPenalty || 0) >= 5, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
+      ...labAll.map(o => ({ fired: (o.refLearnPen || 0) >= 5, win: (o.pnlR || 0) > 0 })),
+    ];
+    const withF = learnPool.filter(s => s.fired);
+    const without = learnPool.filter(s => !s.fired);
+    const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
+    judge('learn_drag', RISK_KEY_LABELS.learn_drag, withF, wrO);
   }
   try { localStorage.setItem(RISK_MUTE_KEY, JSON.stringify(mute)); _riskMuteCache = null; } catch(_e) {}
   return report;
@@ -14619,7 +14640,7 @@ function renderLabPage() {
             <td style="padding:4px 6px;text-align:right;font-weight:700;color:${a.muted ? '#22d3ee' : '#f59e0b'}">${a.muted ? '♻️ 已豁免' : '扣分中'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
-        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">樣本 ≥30 且「條件成立時勝率」不低於「未成立時」→ 該條件無預測力，自動豁免不扣分；數據劣化會自動恢復扣分。樣本來源：正式交易 + 實驗室完結記錄。</div>
+        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">豁免標準：樣本 ≥100 且「條件成立時勝率」≥75%（成立時依然高勝率 = 扣分純屬冤枉）；勝率跌破 70% 自動恢復扣分。樣本來源：正式交易 + 實驗室完結記錄。含「止損風控扣分（止損建議整體）」特殊條件。</div>
       </div>`;
     }
   } catch(_ae) {}
@@ -16008,7 +16029,13 @@ function calcRiskPenalty(score) {
 
 /* 止損風控扣分（統一入口，2026-07 調降版）：懲罰 × 0.85、上限 40（原為原值直取、上限 45）。
    所有計算風控分的路徑（建單/監控/詳情頁/Telegram）一律經此函數，確保扣分一致。 */
-function calcLearnDrag(p) { return Math.min(40, Math.round((p || 0) * 0.85)); }
+function calcLearnDrag(p) {
+  try { if (_getRiskMuteSet().has('learn_drag')) return 0; } catch(_e) {}  // AI 審查豁免：止損建議整體不扣分
+  return Math.min(40, Math.round((p || 0) * 0.85));
+}
+function isLearnDragMuted() {
+  try { return _getRiskMuteSet().has('learn_drag'); } catch(_e) { return false; }
+}
 
 function computeFullRisk(coin, params, isLong) {
   const conf               = params.conf               ?? 60;
