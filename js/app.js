@@ -6549,8 +6549,26 @@ function computeTodayAIBias(fg, globalMkt) {
 
   const score    = bull - bear;
   const absScore = Math.abs(score);
-  const bias = score >= 2 ? 'bull' : score <= -2 ? 'bear'
-             : score > 0 ? 'slight_bull' : score < 0 ? 'slight_bear' : 'neutral';
+  // 死區：|score| < 0.75 一律中性——原本 score>0 即偏多、<0 即偏空，
+  // 分數在 0 附近時任何微小市場變動就翻面，SQ 因子③跟著 ±1 來回擺（同分鐘建單→取消的主因之一）
+  let bias = score >= 2 ? 'bull' : score <= -2 ? 'bear'
+           : score >= 0.75 ? 'slight_bull' : score <= -0.75 ? 'slight_bear' : 'neutral';
+  // 方向黏滯：30 分鐘內多空「翻面」需 |score| ≥ 1.5 才生效（中性↔偏向不受限），
+  // 臨界分數的正常抖動不再造成建單與監控看到相反的今日預測
+  try {
+    const _tbNow = Date.now();
+    if (typeof window !== 'undefined') {
+      const _tbLock = window._todayBiasLock;
+      if (_tbLock && _tbNow - _tbLock.ts < 30 * 60 * 1000) {
+        const _tbFlip = (bias.includes('bull') && _tbLock.bias.includes('bear'))
+                     || (bias.includes('bear') && _tbLock.bias.includes('bull'));
+        if (_tbFlip && Math.abs(score) < 1.5) bias = _tbLock.bias;
+        else window._todayBiasLock = { bias, ts: _tbNow };
+      } else {
+        window._todayBiasLock = { bias, ts: _tbNow };
+      }
+    }
+  } catch(_e) {}
   const biasLabel = { bull:'▲ 偏多', bear:'▼ 偏空', slight_bull:'▲ 小幅偏多', slight_bear:'▼ 小幅偏空', neutral:'◆ 中性觀望' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text3)';
   // 提升日預測區分度：強信號提升 +6，加上高影響事件扣分
@@ -9689,7 +9707,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260712b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260712c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
