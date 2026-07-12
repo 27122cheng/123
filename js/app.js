@@ -9689,7 +9689,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260712a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260712b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -14341,20 +14341,21 @@ function auditPenaltyFactors() {
   let mute = {};
   try { mute = JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'); } catch(_e) {}
   const report = [];
-  // 豁免判定（2026-07 調嚴版）：樣本 ≥100 且「條件成立時勝率」≥75% 才豁免——
-  // 代表該條件成立時交易依然高勝率，扣它的分純屬冤枉；勝率跌破 70% 自動恢復扣分
+  // 豁免判定：樣本 ≥100 且「條件成立時勝率」不低於「未成立時勝率」→ 該條件無預測力 → 豁免
+  //（相對比較：條件成立與否不影響輸贏，扣它的分純屬冤枉好訊號）
+  // 恢復：成立時勝率比未成立低超過 5 個百分點 → 自動恢復扣分
   const judge = (key, label, withF, wrO) => {
     if (!withF.length) { if (mute[key]) report.push({ key, label, n: 0, muted: true }); return; }
     const wrW = withF.filter(s => s.win).length / withF.length * 100;
     const entry = { key, label, n: withF.length, wrWith: wrW, wrWithout: wrO, muted: !!mute[key] };
-    if (withF.length >= 100 && wrW >= 75 && !mute[key]) {
-      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1) };
+    if (withF.length >= 100 && wrW >= wrO && !mute[key]) {
+      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), wrWithout: +wrO.toFixed(1) };
       entry.muted = true;
-      console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 75%（樣本 ${withF.length} ≥ 100）`);
-    } else if (mute[key] && withF.length >= 100 && wrW < 70) {
+      console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 未成立 ${wrO.toFixed(1)}%（樣本 ${withF.length} ≥ 100）`);
+    } else if (mute[key] && withF.length >= 100 && wrW < wrO - 5) {
       delete mute[key];
       entry.muted = false;
-      console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率降至 ${wrW.toFixed(1)}% < 70%`);
+      console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率 ${wrW.toFixed(1)}% 明顯低於未成立 ${wrO.toFixed(1)}%`);
     }
     report.push(entry);
   };
@@ -14721,7 +14722,7 @@ function renderLabPage() {
             <td style="padding:4px 6px;text-align:right;font-weight:700;color:${a.muted ? '#22d3ee' : '#f59e0b'}">${a.muted ? '♻️ 已豁免' : '扣分中'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
-        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">豁免標準：樣本 ≥100 且「條件成立時勝率」≥75%（成立時依然高勝率 = 扣分純屬冤枉）；勝率跌破 70% 自動恢復扣分。樣本來源：正式交易 + 實驗室完結記錄。含「止損風控扣分（止損建議整體）」特殊條件。</div>
+        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">豁免標準：樣本 ≥100 且「條件成立時勝率」不低於「未成立時」→ 該條件無預測力，自動豁免不扣分；成立時勝率低於未成立 5 個百分點以上自動恢復扣分。樣本來源：正式交易 + 實驗室完結記錄。含「止損風控扣分（止損建議整體）」特殊條件。</div>
       </div>`;
     }
   } catch(_ae) {}
