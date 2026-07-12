@@ -5443,6 +5443,17 @@ function buildMarketOutlook(fg, global) {
         else if (_vwPct <= 45) { bearPts += 0.5; bearArgs.push(`僅 ${_vwPct}% 幣種在 VWAP 上方，日內賣方略佔優`); }
       }
     } catch(_e) {}
+    // 資金輪動（BTC 季 / 山寨季）：影響山寨整體勝率環境
+    try {
+      const _bmoRot = getRotationRegime();
+      if (_bmoRot && _bmoRot.regime === 'alt_season') {
+        bullPts += 0.5;
+        bullArgs.push(`資金輪動呈山寨季特徵（BTC.D 2h ${_bmoRot.domChg != null ? (_bmoRot.domChg > 0 ? '+' : '') + _bmoRot.domChg + 'pp' : '—'}、ETH/BTC ${_bmoRot.ebChg != null ? (_bmoRot.ebChg > 0 ? '+' : '') + _bmoRot.ebChg + '%' : '—'}），資金外溢有利山寨多頭`);
+      } else if (_bmoRot && _bmoRot.regime === 'btc_season') {
+        bearPts += 0.5;
+        bearArgs.push(`資金輪動呈 BTC 季特徵（BTC.D 2h ${_bmoRot.domChg != null ? (_bmoRot.domChg > 0 ? '+' : '') + _bmoRot.domChg + 'pp' : '—'}），資金縮回 BTC，山寨普遍失血`);
+      }
+    } catch(_e) {}
     // OI 未平倉量聚合（新錢方向 = 行情真偽的機構級讀數）
     try {
       let _bmoOIScore = 0, _bmoOIN = 0;
@@ -6128,6 +6139,13 @@ function computeWeeklyAIBias(fg, globalMkt) {
     }
   } catch(_e) {}
 
+  // ⑮ 資金輪動（山寨季 = 掃描池整體偏多環境；BTC 季 = 山寨失血）
+  try {
+    const _wRot = getRotationRegime();
+    if (_wRot && _wRot.regime === 'alt_season')      { macroBull += 0.5; factors.push(`資金輪動：山寨季特徵（ETH/BTC ${_wRot.ebChg != null ? (_wRot.ebChg > 0 ? '+' : '') + _wRot.ebChg + '%' : '—'}），資金外溢利山寨`); }
+    else if (_wRot && _wRot.regime === 'btc_season') { macroBear += 0.5; factors.push(`資金輪動：BTC 季特徵（BTC.D ${_wRot.domChg != null ? (_wRot.domChg > 0 ? '+' : '') + _wRot.domChg + 'pp' : '—'}），山寨資金失血`); }
+  } catch(_e) {}
+
   // ⑤ 本週重大事件風險
   const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
   const highRisk   = weekEvents.length >= 2;
@@ -6488,6 +6506,13 @@ function computeTodayAIBias(fg, globalMkt) {
       if (_tOIScore >= 3)       { bull += 0.8; reasons.push(`OI 聚合：${_tOIN} 個合約以新多進場為主，今日新錢驅動上行`); }
       else if (_tOIScore <= -3) { bear += 0.8; reasons.push(`OI 聚合：${_tOIN} 個合約以新空進場為主，今日空方新錢主導`); }
     }
+  } catch(_e) {}
+
+  // ⑮ 資金輪動（與週預測同邏輯）
+  try {
+    const _tRot = getRotationRegime();
+    if (_tRot && _tRot.regime === 'alt_season')      { bull += 0.5; reasons.push(`資金輪動：山寨季特徵，資金外溢至山寨`); }
+    else if (_tRot && _tRot.regime === 'btc_season') { bear += 0.5; reasons.push(`資金輪動：BTC 季特徵，山寨資金失血`); }
   } catch(_e) {}
 
   // ⑤ 今日高影響數據事件 + 政策訊息（最關鍵因素，加強預測精度）
@@ -7946,6 +7971,12 @@ function buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale
       _ssRsParts.push(`VWAP ${_ssDev >= 0 ? '上方' : '下方'} <strong style="color:${Math.abs(_ssDev) > 2.5 ? '#f59e0b' : _ssDev >= 0 ? 'var(--bull)' : 'var(--bear)'}">${Math.abs(_ssDev).toFixed(2)}%</strong>${Math.abs(_ssDev) > 2.5 ? '（過度延伸，回歸風險）' : _ssDev >= 0 ? '（日內買方掌控）' : '（日內賣方掌控）'}`);
       if (Math.abs(_ssDev) <= 2.5) { if (_ssDev >= 0) _ssRsBull++; else _ssRsBear++; }
     }
+    try {
+      const _ssRot = getRotationRegime();
+      if (_ssRot && _ssRot.regime !== 'neutral' && coin.symbol !== 'BTC/USDT') {
+        _ssRsParts.push(`輪動 <strong style="color:${_ssRot.regime === 'alt_season' ? 'var(--bull)' : '#f59e0b'}">${ROT_REGIME_LABEL[_ssRot.regime].split('（')[0]}</strong>`);
+      }
+    } catch(_e) {}
     if (_ssRsParts.length) {
       points.push({ icon: _ssRsBull > _ssRsBear ? '🟢' : _ssRsBear > _ssRsBull ? '🔴' : '⚪', color: '#22d3ee', label: '強弱', text: _ssRsParts.join('　') });
     }
@@ -8487,6 +8518,14 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
       const _dvDev = (_dvP - _dvVw) / _dvVw * 100;
       if (Math.abs(_dvDev) > 2.5) _dvParts.push(`價格偏離 VWAP <strong style="color:#f59e0b">${_dvDev > 0 ? '+' : ''}${_dvDev.toFixed(2)}%</strong>，過度延伸，均值回歸風險高、等回踩再進`);
       else _dvParts.push(`價格於 VWAP ${_dvDev >= 0 ? '上' : '下'}方 ${Math.abs(_dvDev).toFixed(2)}%，日內${_dvDev >= 0 ? '買' : '賣'}方掌控`);
+    }
+    // 資金輪動環境（山寨標的適用）
+    if (coin.symbol !== 'BTC/USDT') {
+      const _dvRot = getRotationRegime();
+      if (_dvRot && _dvRot.regime !== 'neutral') {
+        const _dvRotAlt = _dvRot.regime === 'alt_season';
+        _dvParts.push(`資金輪動 <strong style="color:${_dvRotAlt ? '#22c55e' : '#f59e0b'}">${ROT_REGIME_LABEL[_dvRot.regime]}</strong>${_dvRotAlt ? '，山寨多單環境有利' : '，山寨多單環境不利、資金正流回 BTC'}`);
+      }
     }
     // OI 未平倉量趨勢（假突破鑑別器）
     const _dvOI = getOITrend(coin.symbol);
@@ -9608,10 +9647,49 @@ function oiAlignment(symbol, isLong) {
   return { state: fav ? 'favorable' : unf ? 'unfavorable' : 'neutral', trend: t };
 }
 
+/* ── 資金輪動追蹤（BTC 季 vs 山寨季）─────────────────────────────
+   BTC.D 上升 = 資金縮回 BTC（山寨失血，山寨多單勝率天生差）；
+   BTC.D 下降 + ETH/BTC 走強 = 山寨季（資金外溢，山寨訊號值得積極做）。
+   來源：每次掃描記錄 BTC 主導率 + ETH/BTC 比價，4 小時滾動歷史、2 小時回看。 */
+const _rotHist = [];  // [{ts, dom, ethbtc}]
+function updateRotationHistory(data) {
+  try {
+    const dom = (typeof _macroCache !== 'undefined' && _macroCache) ? parseFloat(_macroCache.btcDominance) : NaN;
+    const btcP = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.price) || 0;
+    const ethP = parseFloat(data?.find(d => d.symbol === 'ETH/USDT')?.price) || 0;
+    const ethbtc = (btcP > 0 && ethP > 0) ? ethP / btcP : NaN;
+    if (isNaN(dom) && isNaN(ethbtc)) return;
+    const now = Date.now();
+    if (_rotHist.length && now - _rotHist[_rotHist.length - 1].ts < 55 * 1000) return;
+    _rotHist.push({ ts: now, dom, ethbtc });
+    while (_rotHist.length && now - _rotHist[0].ts > 4 * 60 * 60 * 1000) _rotHist.shift();
+  } catch(_e) {}
+}
+function getRotationRegime() {
+  if (_rotHist.length < 2) return null;
+  const now = Date.now();
+  const base = _rotHist.find(x => now - x.ts <= 2 * 60 * 60 * 1000) || _rotHist[0];
+  const last = _rotHist[_rotHist.length - 1];
+  if (last.ts - base.ts < 20 * 60 * 1000) return null;  // 樣本間隔 ≥20 分鐘才判定
+  const domChg = (!isNaN(last.dom) && !isNaN(base.dom)) ? last.dom - base.dom : null;               // 百分點
+  const ebChg  = (!isNaN(last.ethbtc) && !isNaN(base.ethbtc) && base.ethbtc > 0)
+    ? (last.ethbtc - base.ethbtc) / base.ethbtc * 100 : null;                                        // %
+  let score = 0;
+  if (domChg != null) { if (domChg <= -0.15) score += 1; else if (domChg >= 0.15) score -= 1; }
+  if (ebChg  != null) { if (ebChg  >=  0.8)  score += 1; else if (ebChg  <= -0.8) score -= 1; }
+  const regime = score >= 1 ? 'alt_season' : score <= -1 ? 'btc_season' : 'neutral';
+  return { regime, domChg: domChg != null ? +domChg.toFixed(2) : null, ebChg: ebChg != null ? +ebChg.toFixed(2) : null };
+}
+const ROT_REGIME_LABEL = {
+  alt_season: '山寨季特徵（資金流向山寨）',
+  btc_season: 'BTC 季特徵（資金縮回 BTC，山寨失血）',
+  neutral:    '輪動中性',
+};
+
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260711c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260712a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9946,6 +10024,8 @@ async function recordSignalsFromScan(data) {
   updateBtcVolGuard(data);
   // ── OI 未平倉量歷史追蹤（供 ㉕ OI 趨勢因子 / 風險 f16 / 各分析使用）──
   updateOIHistory(data);
+  // ── 資金輪動追蹤（BTC.D + ETH/BTC，供 f17 輪動風險 / 各分析使用）──
+  updateRotationHistory(data);
   // ── BTC 24h 漲跌幅（供 ㉓ 相對強弱因子使用，建單與監控迴圈共用）──
   const _btcChg24 = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.change24h);
 
@@ -14245,6 +14325,7 @@ const RISK_KEY_LABELS = {
   f8_range: '區間震盪模式', f9_bigtrend: '大週期未對齊', f10_tech: '技術/籌碼逆風',
   f11_whale: '巨鯨方向逆向', f12_sq: '訊號品質低', f13_vol: '成交量萎縮',
   f14_macd: 'MACD 動能逆向', f15_vwap: 'VWAP 過度延伸', f16_oi: 'OI 假動作（回補/平倉推動）',
+  f17_rot: '資金輪動逆風（BTC季做多山寨）',
   learn_drag: '止損風控扣分（止損建議整體）',
 };
 function auditPenaltyFactors() {
@@ -15089,6 +15170,23 @@ function _rptBuildYearView(yearTrades, year) {
   const totalRColor = totalR > 0 ? 'var(--bull)' : totalR < 0 ? 'var(--bear)' : 'var(--text)';
   const avgRColor   = avgR != null ? (avgR >= 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text)';
 
+  // ── 風險指標：最大回撤（R）/ 最大連敗 / 獲利因子 / 期望值 ──
+  const _rmOrdered = yearTrades.slice().sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+  let _rmCum = 0, _rmPeak = 0, _rmMaxDD = 0, _rmCurLoss = 0, _rmMaxStreak = 0, _rmGrossWin = 0, _rmGrossLoss = 0;
+  for (const t of _rmOrdered) {
+    const r = parseFloat(t.pnlR) || 0;
+    _rmCum += r;
+    if (_rmCum > _rmPeak) _rmPeak = _rmCum;
+    if (_rmPeak - _rmCum > _rmMaxDD) _rmMaxDD = _rmPeak - _rmCum;
+    if (r < 0) { _rmCurLoss++; if (_rmCurLoss > _rmMaxStreak) _rmMaxStreak = _rmCurLoss; _rmGrossLoss += -r; }
+    else { if (r > 0) _rmGrossWin += r; _rmCurLoss = 0; }
+  }
+  const _rmPF = _rmGrossLoss > 0 ? _rmGrossWin / _rmGrossLoss : (_rmGrossWin > 0 ? Infinity : 0);
+  const _rmPFStr = _rmPF === Infinity ? '∞' : _rmPF.toFixed(2);
+  const _rmPFColor = _rmPF >= 1.5 ? 'var(--bull)' : _rmPF >= 1.0 ? '#f59e0b' : 'var(--bear)';
+  const _rmExp = _rmOrdered.length ? _rmCum / _rmOrdered.length : 0;
+  const _rmDDColor = _rmMaxDD <= 5 ? 'var(--bull)' : _rmMaxDD <= 10 ? '#f59e0b' : 'var(--bear)';
+
   if (yearTrades.length === 0)
     return `<div style="text-align:center;padding:80px 20px;color:var(--text3);font-size:0.95rem">${year} 年尚無已結算的交易記錄</div>`;
 
@@ -15119,6 +15217,22 @@ function _rptBuildYearView(yearTrades, year) {
       <div class="rpt-stat-card">
         <div class="rpt-stat-val" style="color:${totalRColor}">${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)} R</div>
         <div class="rpt-stat-lbl">全年總獲利</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:${_rmDDColor}">-${_rmMaxDD.toFixed(1)} R</div>
+        <div class="rpt-stat-lbl">最大回撤</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:${_rmMaxStreak >= 5 ? 'var(--bear)' : _rmMaxStreak >= 3 ? '#f59e0b' : 'var(--bull)'}">${_rmMaxStreak}</div>
+        <div class="rpt-stat-lbl">最大連敗</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:${_rmPFColor}">${_rmPFStr}</div>
+        <div class="rpt-stat-lbl">獲利因子（>1.5 健康）</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:${_rmExp >= 0 ? 'var(--bull)' : 'var(--bear)'}">${_rmExp >= 0 ? '+' : ''}${_rmExp.toFixed(2)} R</div>
+        <div class="rpt-stat-lbl">期望值（每筆）</div>
       </div>
     </div>
 
@@ -16164,6 +16278,18 @@ function computeFullRisk(coin, params, isLong) {
       const _vwDevR = (_priceR - _vwR) / _vwR;
       if ((isLong && _vwDevR > 0.025) || (!isLong && _vwDevR < -0.025)) {
         addF('f15_vwap', 8, `價格偏離 VWAP ${(Math.abs(_vwDevR)*100).toFixed(1)}%（過度延伸）`, '價格遠離 VWAP，均值回歸風險高，可等回踩 VWAP 再進場');
+      }
+    }
+  } catch(_e) {}
+
+  // 17. 資金輪動逆風（BTC 季做多山寨 = 資金失血環境；山寨季做空山寨 = 逆資金流）
+  try {
+    if (typeof getRotationRegime === 'function' && coin.symbol !== 'BTC/USDT') {
+      const _rotR = getRotationRegime();
+      if (_rotR && ((isLong && _rotR.regime === 'btc_season') || (!isLong && _rotR.regime === 'alt_season'))) {
+        addF('f17_rot', 6, `資金輪動逆風（${ROT_REGIME_LABEL[_rotR.regime]}）`, isLong
+          ? 'BTC 主導率上升中，資金縮回 BTC，山寨多單勝率環境不利，可縮小倉位'
+          : '資金外溢至山寨中，山寨空單逆資金流，留意反彈');
       }
     }
   } catch(_e) {}
