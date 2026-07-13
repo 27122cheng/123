@@ -9707,7 +9707,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260712d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260713a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -14359,11 +14359,9 @@ function auditPenaltyFactors() {
   let mute = {};
   try { mute = JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'); } catch(_e) {}
   const report = [];
-  // 兩種豁免用不同標準：
-  //  mode 'abs' 風控分因子（f1~f17，豁免後「不扣風控分」）→ 樣本 ≥100 且「成立時絕對勝率」≥80% 才豁免；
-  //            成立時勝率跌破 75% 自動恢復扣分（嚴格：條件成立卻仍 80% 高勝率，扣它純屬冤枉）
-  //  mode 'rel' 止損建議整體（learn_drag）→ 樣本 ≥100 且「成立時勝率」不低於「未成立時」→ 無預測力豁免；
-  //            成立時勝率低於未成立 5pp 自動恢復（相對比較）
+  // 風控分因子（f1~f17）與止損建議整體（learn_drag）皆用 mode 'abs'：
+  //  樣本 ≥100 且「成立時絕對勝率」≥80% → 豁免不扣分；成立時勝率跌破 75% 自動恢復扣分。
+  //  （條件成立卻仍維持 80% 高勝率 = 扣它純屬冤枉好訊號）
   const judge = (key, label, withF, wrO, mode) => {
     if (!withF.length) { if (mute[key]) report.push({ key, label, n: 0, muted: true }); return; }
     const wrW = withF.filter(s => s.win).length / withF.length * 100;
@@ -14397,7 +14395,7 @@ function auditPenaltyFactors() {
     const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
     judge(key, RISK_KEY_LABELS[key], withF, wrO, 'abs');
   }
-  // 止損建議整體（相對比較標準；豁免後 calcLearnDrag 直接歸零）
+  // 止損建議整體（絕對勝率 ≥80% 標準，與風控分因子相同；豁免後 calcLearnDrag 直接歸零）
   {
     const learnPool = [
       ...realAll.map(t => ({ fired: (t.learnPenalty || 0) >= 5, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
@@ -14406,7 +14404,7 @@ function auditPenaltyFactors() {
     const withF = learnPool.filter(s => s.fired);
     const without = learnPool.filter(s => !s.fired);
     const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
-    judge('learn_drag', RISK_KEY_LABELS.learn_drag, withF, wrO, 'rel');
+    judge('learn_drag', RISK_KEY_LABELS.learn_drag, withF, wrO, 'abs');
   }
   try { localStorage.setItem(RISK_MUTE_KEY, JSON.stringify(mute)); _riskMuteCache = null; } catch(_e) {}
   return report;
@@ -14419,7 +14417,7 @@ function maybeAuditPenaltyFactors() {
   try { auditPenaltyFactors(); } catch(_e) {}
 }
 
-/* ── 驗證策略白名單：實驗室某分析方式 ≥100 筆完結樣本且勝率 ≥90% → 晉升正式系統 ── */
+/* ── 驗證策略白名單：實驗室某分析方式 ≥100 筆完結樣本且勝率 ≥80% → 晉升正式系統 ── */
 function getProvenLabTags() {
   const closed = loadAILab().filter(o => o.status === 'closed');
   const stats = {};
@@ -14429,7 +14427,7 @@ function getProvenLabTags() {
     if ((o.pnlR || 0) > 0) stats[t].w++;
   }
   return Object.entries(stats)
-    .filter(([, s]) => s.n >= 100 && s.w / s.n >= 0.90)
+    .filter(([, s]) => s.n >= 100 && s.w / s.n >= 0.80)
     .map(([t]) => t);
 }
 
@@ -14468,7 +14466,7 @@ function recordProvenStrategyTrades(data) {
       symbol: coin.symbol, direction: dir, timestamp: Date.now(),
       entryPrice: parseFloat(coin.price) || 0,
       entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
-      entryReason: `⭐ 驗證策略（${hits.join('、')}）：實驗室 ≥100 筆樣本、勝率 ≥90%，免風控分建單`,
+      entryReason: `⭐ 驗證策略（${hits.join('、')}）：實驗室 ≥100 筆樣本、勝率 ≥80%，免風控分建單`,
       slReason: setup.slReason, tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
       rsi: parseFloat(coin.rsi) || 50, adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
@@ -14723,11 +14721,11 @@ function renderLabPage() {
   const provenTags = getProvenLabTags();
   const provenHtml = `
     <div style="background:${provenTags.length ? 'rgba(251,191,36,.06)' : 'var(--card)'};border:1px solid ${provenTags.length ? 'rgba(251,191,36,.3)' : 'var(--border)'};border-radius:10px;padding:12px 14px;margin-bottom:12px">
-      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥100 筆樣本且勝率 ≥90% 自動晉升正式系統，免風控分建單）</div>
+      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥100 筆樣本且勝率 ≥80% 自動晉升正式系統，免風控分建單）</div>
       ${provenTags.length
         ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${provenTags.map(t => `<span style="font-size:0.74rem;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.4);padding:3px 10px;border-radius:14px;font-weight:700">⭐ ${t}</span>`).join('')}</div>
            <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">命中白名單標籤的訊號會直接建立正式掛單（標記 ⭐ 驗證策略），不經風控分/SQ 門檻，監控中亦不覆核取消</div>`
-        : `<div style="font-size:0.74rem;color:var(--text3)">尚無達標策略 — 任一分析方式累積 100 筆完結樣本且勝率 ≥90% 後自動晉升</div>`}
+        : `<div style="font-size:0.74rem;color:var(--text3)">尚無達標策略 — 任一分析方式累積 100 筆完結樣本且勝率 ≥80% 後自動晉升</div>`}
     </div>`;
 
   // ── 扣分條件有效性審查面板 ──
@@ -14748,13 +14746,12 @@ function renderLabPage() {
             <td style="padding:4px 6px">${a.label}</td>
             <td style="padding:4px 6px;text-align:right;color:${a.n >= 100 ? 'var(--text2)' : 'var(--text3)'}">${a.n}${a.n >= 100 ? '' : '/100'}</td>
             <td style="padding:4px 6px;text-align:right;font-weight:600">${a.wrWith != null ? a.wrWith.toFixed(0) + '%' : '--'}</td>
-            <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.mode === 'rel' ? `≥未成立(${a.wrWithout != null ? a.wrWithout.toFixed(0) : '--'}%)` : '≥80%'}</td>
+            <td style="padding:4px 6px;text-align:right;color:var(--text3)">≥80%</td>
             <td style="padding:4px 6px;text-align:right;font-weight:700;color:${a.muted ? '#22d3ee' : '#f59e0b'}">${a.muted ? '♻️ 已豁免' : '扣分中'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
         <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">
-          <div>🛡️ <b>風控分因子</b>（f1~f17）：樣本 ≥100 且「成立時絕對勝率」<b>≥80%</b> → 豁免不扣風控分（跌破 75% 自動恢復）。</div>
-          <div>🩹 <b>止損建議整體</b>：樣本 ≥100 且「成立時勝率」不低於「未成立時」→ 無預測力豁免（低於 5pp 自動恢復）。</div>
+          <div>🛡️ <b>風控分因子</b>（f1~f17）／<b>止損建議整體</b>：樣本 ≥100 且「成立時勝率」<b>≥80%</b> → 豁免不扣分（成立時仍 80% 高勝率 = 扣它純屬冤枉）；跌破 75% 自動恢復扣分。</div>
           <div style="margin-top:2px">樣本來源：正式交易 + 實驗室完結記錄。</div>
         </div>
       </div>`;
