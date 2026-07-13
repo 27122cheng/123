@@ -9707,7 +9707,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260713a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260713b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -14363,29 +14363,28 @@ function auditPenaltyFactors() {
   //  樣本 ≥100 且「成立時絕對勝率」≥80% → 豁免不扣分；成立時勝率跌破 75% 自動恢復扣分。
   //  （條件成立卻仍維持 80% 高勝率 = 扣它純屬冤枉好訊號）
   const judge = (key, label, withF, wrO, mode) => {
-    if (!withF.length) { if (mute[key]) report.push({ key, label, n: 0, muted: true }); return; }
-    const wrW = withF.filter(s => s.win).length / withF.length * 100;
-    const entry = { key, label, n: withF.length, wrWith: wrW, wrWithout: wrO, muted: !!mute[key], mode };
-    if (mode === 'abs') {
-      if (withF.length >= 100 && wrW >= 80 && !mute[key]) {
-        mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), mode };
-        entry.muted = true;
-        console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 80%（樣本 ${withF.length} ≥ 100）`);
-      } else if (mute[key] && withF.length >= 100 && wrW < 75) {
-        delete mute[key]; entry.muted = false;
-        console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率降至 ${wrW.toFixed(1)}% < 75%`);
-      }
-    } else {
-      if (withF.length >= 100 && wrW >= wrO && !mute[key]) {
-        mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), wrWithout: +wrO.toFixed(1), mode };
-        entry.muted = true;
-        console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 未成立 ${wrO.toFixed(1)}%（樣本 ${withF.length} ≥ 100）`);
-      } else if (mute[key] && withF.length >= 100 && wrW < wrO - 5) {
-        delete mute[key]; entry.muted = false;
-        console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率 ${wrW.toFixed(1)}% 明顯低於未成立 ${wrO.toFixed(1)}%`);
-      }
+    const wrW = withF.length ? withF.filter(s => s.win).length / withF.length * 100 : 0;
+    const wasMuted = !!mute[key];
+    // 豁免門檻（首次豁免）：樣本 ≥100 且勝率達標；維持門檻（含 5pp 遲滯，避免臨界反覆）稍寬
+    const meetsExempt = mode === 'abs'
+      ? (withF.length >= 100 && wrW >= 80)
+      : (withF.length >= 100 && wrW >= wrO);
+    const meetsStay = mode === 'abs'
+      ? (withF.length >= 100 && wrW >= 75)
+      : (withF.length >= 100 && wrW >= wrO - 5);
+    // 統一重算：已豁免者「必須持續符合維持門檻」才留豁免，否則一律撤銷（含樣本掉回 <100、
+    // 或舊標準遺留的殘留豁免）；未豁免者符合豁免門檻才豁免。
+    let muted = wasMuted;
+    if (wasMuted && !meetsStay) {
+      delete mute[key]; muted = false;
+      console.log(`[risk-audit] 恢復扣分「${label}」：不再符合維持門檻（樣本 ${withF.length}、成立時勝率 ${wrW.toFixed(1)}%）`);
+    } else if (!wasMuted && meetsExempt) {
+      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), mode };
+      muted = true;
+      console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}%${mode === 'abs' ? ' ≥ 80%' : ` ≥ 未成立 ${wrO.toFixed(1)}%`}（樣本 ${withF.length} ≥ 100）`);
     }
-    report.push(entry);
+    if (!withF.length && !muted) return;  // 無樣本且未豁免 → 不顯示
+    report.push({ key, label, n: withF.length, wrWith: wrW, wrWithout: wrO, muted, mode });
   };
   // 風控分因子（絕對勝率 ≥80% 標準）
   for (const key of Object.keys(RISK_KEY_LABELS)) {
