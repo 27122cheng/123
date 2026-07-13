@@ -9,6 +9,7 @@ const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓�
 const _scanFetchCache   = {};  // 掃描器補充抓取快取（5 分鐘 TTL，避免每 15s 重複請求）
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
+let   _labScanTimer    = null;  // 機會實驗室頁自動刷新（停留該頁時每 10 秒）
 let   _bgScanTimer     = null;  // 持續背景掃描（每 30 秒，與頁面無關）
 let   _erScanTimer     = null;  // 極端反轉背景輪掃（台灣時間 00/06/12/18 每6小時更新 BTC/ETH）
 let   _erScanRunning   = false;
@@ -496,7 +497,22 @@ function navigateTo(page, coinSymbol) {
     renderReversalCards();
   }
   if (page === 'settings') populateSettingsPage();
-  if (page === 'lab') { try { renderLabPage(); } catch(e) {} }
+  if (page === 'lab') {
+    try { renderLabPage(); } catch(e) {}
+    // 實驗室自動刷新：停留頁面時每 10 秒同步收錄/監控/審查並重繪
+    if (_labScanTimer) clearInterval(_labScanTimer);
+    _labScanTimer = setInterval(() => {
+      if (state.data && state.data.length) {
+        try { recordLabOpportunities(state.data); } catch(e) {}
+        try { updateLabOpportunities(state.data); } catch(e) {}
+        try { recordProvenStrategyTrades(state.data); } catch(e) {}
+      }
+      try { renderLabPage(); } catch(e) {}
+    }, 10000);
+  } else if (_labScanTimer) {
+    clearInterval(_labScanTimer);
+    _labScanTimer = null;
+  }
   if (page === 'positions') {
     renderPositionsPage();
     if (_positionsScanTimer) clearInterval(_positionsScanTimer);
@@ -9707,7 +9723,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260713b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260713c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
