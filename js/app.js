@@ -9707,7 +9707,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260712c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260712d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -14359,33 +14359,45 @@ function auditPenaltyFactors() {
   let mute = {};
   try { mute = JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'); } catch(_e) {}
   const report = [];
-  // 豁免判定：樣本 ≥100 且「條件成立時勝率」不低於「未成立時勝率」→ 該條件無預測力 → 豁免
-  //（相對比較：條件成立與否不影響輸贏，扣它的分純屬冤枉好訊號）
-  // 恢復：成立時勝率比未成立低超過 5 個百分點 → 自動恢復扣分
-  const judge = (key, label, withF, wrO) => {
+  // 兩種豁免用不同標準：
+  //  mode 'abs' 風控分因子（f1~f17，豁免後「不扣風控分」）→ 樣本 ≥100 且「成立時絕對勝率」≥80% 才豁免；
+  //            成立時勝率跌破 75% 自動恢復扣分（嚴格：條件成立卻仍 80% 高勝率，扣它純屬冤枉）
+  //  mode 'rel' 止損建議整體（learn_drag）→ 樣本 ≥100 且「成立時勝率」不低於「未成立時」→ 無預測力豁免；
+  //            成立時勝率低於未成立 5pp 自動恢復（相對比較）
+  const judge = (key, label, withF, wrO, mode) => {
     if (!withF.length) { if (mute[key]) report.push({ key, label, n: 0, muted: true }); return; }
     const wrW = withF.filter(s => s.win).length / withF.length * 100;
-    const entry = { key, label, n: withF.length, wrWith: wrW, wrWithout: wrO, muted: !!mute[key] };
-    if (withF.length >= 100 && wrW >= wrO && !mute[key]) {
-      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), wrWithout: +wrO.toFixed(1) };
-      entry.muted = true;
-      console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 未成立 ${wrO.toFixed(1)}%（樣本 ${withF.length} ≥ 100）`);
-    } else if (mute[key] && withF.length >= 100 && wrW < wrO - 5) {
-      delete mute[key];
-      entry.muted = false;
-      console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率 ${wrW.toFixed(1)}% 明顯低於未成立 ${wrO.toFixed(1)}%`);
+    const entry = { key, label, n: withF.length, wrWith: wrW, wrWithout: wrO, muted: !!mute[key], mode };
+    if (mode === 'abs') {
+      if (withF.length >= 100 && wrW >= 80 && !mute[key]) {
+        mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), mode };
+        entry.muted = true;
+        console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 80%（樣本 ${withF.length} ≥ 100）`);
+      } else if (mute[key] && withF.length >= 100 && wrW < 75) {
+        delete mute[key]; entry.muted = false;
+        console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率降至 ${wrW.toFixed(1)}% < 75%`);
+      }
+    } else {
+      if (withF.length >= 100 && wrW >= wrO && !mute[key]) {
+        mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), wrWithout: +wrO.toFixed(1), mode };
+        entry.muted = true;
+        console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}% ≥ 未成立 ${wrO.toFixed(1)}%（樣本 ${withF.length} ≥ 100）`);
+      } else if (mute[key] && withF.length >= 100 && wrW < wrO - 5) {
+        delete mute[key]; entry.muted = false;
+        console.log(`[risk-audit] 恢復扣分「${label}」：成立時勝率 ${wrW.toFixed(1)}% 明顯低於未成立 ${wrO.toFixed(1)}%`);
+      }
     }
     report.push(entry);
   };
+  // 風控分因子（絕對勝率 ≥80% 標準）
   for (const key of Object.keys(RISK_KEY_LABELS)) {
     if (key === 'learn_drag') continue;  // 特殊條件另行處理
     const withF   = all.filter(s => s.keys.includes(key));
     const without = all.filter(s => !s.keys.includes(key));
     const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
-    judge(key, RISK_KEY_LABELS[key], withF, wrO);
+    judge(key, RISK_KEY_LABELS[key], withF, wrO, 'abs');
   }
-  // 特殊條件：止損風控整體（止損建議扣分，learnPenalty ≥5 視為成立）
-  // 用同一標準檢驗「匯入的止損建議」是否真的需要扣分；豁免後 calcLearnDrag 直接歸零
+  // 止損建議整體（相對比較標準；豁免後 calcLearnDrag 直接歸零）
   {
     const learnPool = [
       ...realAll.map(t => ({ fired: (t.learnPenalty || 0) >= 5, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
@@ -14394,7 +14406,7 @@ function auditPenaltyFactors() {
     const withF = learnPool.filter(s => s.fired);
     const without = learnPool.filter(s => !s.fired);
     const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
-    judge('learn_drag', RISK_KEY_LABELS.learn_drag, withF, wrO);
+    judge('learn_drag', RISK_KEY_LABELS.learn_drag, withF, wrO, 'rel');
   }
   try { localStorage.setItem(RISK_MUTE_KEY, JSON.stringify(mute)); _riskMuteCache = null; } catch(_e) {}
   return report;
@@ -14730,17 +14742,21 @@ function renderLabPage() {
         <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
           <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
             <th style="padding:4px 6px">扣分條件</th><th style="padding:4px 6px;text-align:right">樣本</th>
-            <th style="padding:4px 6px;text-align:right">成立時勝率</th><th style="padding:4px 6px;text-align:right">未成立勝率</th>
+            <th style="padding:4px 6px;text-align:right">成立時勝率</th><th style="padding:4px 6px;text-align:right">豁免門檻</th>
             <th style="padding:4px 6px;text-align:right">狀態</th></tr></thead>
           <tbody>${auditShown.map(a => `<tr>
             <td style="padding:4px 6px">${a.label}</td>
-            <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.n}</td>
-            <td style="padding:4px 6px;text-align:right">${a.wrWith != null ? a.wrWith.toFixed(0) + '%' : '--'}</td>
-            <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.wrWithout != null ? a.wrWithout.toFixed(0) + '%' : '--'}</td>
+            <td style="padding:4px 6px;text-align:right;color:${a.n >= 100 ? 'var(--text2)' : 'var(--text3)'}">${a.n}${a.n >= 100 ? '' : '/100'}</td>
+            <td style="padding:4px 6px;text-align:right;font-weight:600">${a.wrWith != null ? a.wrWith.toFixed(0) + '%' : '--'}</td>
+            <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.mode === 'rel' ? `≥未成立(${a.wrWithout != null ? a.wrWithout.toFixed(0) : '--'}%)` : '≥80%'}</td>
             <td style="padding:4px 6px;text-align:right;font-weight:700;color:${a.muted ? '#22d3ee' : '#f59e0b'}">${a.muted ? '♻️ 已豁免' : '扣分中'}</td>
           </tr>`).join('')}</tbody>
         </table></div>
-        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">豁免標準：樣本 ≥100 且「條件成立時勝率」不低於「未成立時」→ 該條件無預測力，自動豁免不扣分；成立時勝率低於未成立 5 個百分點以上自動恢復扣分。樣本來源：正式交易 + 實驗室完結記錄。含「止損風控扣分（止損建議整體）」特殊條件。</div>
+        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">
+          <div>🛡️ <b>風控分因子</b>（f1~f17）：樣本 ≥100 且「成立時絕對勝率」<b>≥80%</b> → 豁免不扣風控分（跌破 75% 自動恢復）。</div>
+          <div>🩹 <b>止損建議整體</b>：樣本 ≥100 且「成立時勝率」不低於「未成立時」→ 無預測力豁免（低於 5pp 自動恢復）。</div>
+          <div style="margin-top:2px">樣本來源：正式交易 + 實驗室完結記錄。</div>
+        </div>
       </div>`;
     }
   } catch(_ae) {}
