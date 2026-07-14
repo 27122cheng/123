@@ -278,6 +278,7 @@ function startRefreshCycle() {
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
     try { recordLabOpportunities(data); } catch(e) { console.error('[refresh] lab record 錯誤:', e); }
     try { updateLabOpportunities(data); } catch(e) { console.error('[refresh] lab update 錯誤:', e); }
+    try { updateSLTightnessWatch(data); } catch(e) {}
     try { recordProvenStrategyTrades(data); } catch(e) { console.error('[refresh] proven 錯誤:', e); }
     try { maybeAuditPenaltyFactors(); } catch(e) {}
     try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
@@ -344,6 +345,7 @@ async function manualRefresh() {
   // AI 機會實驗室 + 驗證策略晉升（手動刷新同步執行）
   try { recordLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab record 錯誤:', e); }
   try { updateLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab update 錯誤:', e); }
+  try { updateSLTightnessWatch(data); } catch(e) {}
   try { recordProvenStrategyTrades(data); } catch(e) {}
   try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
   try { checkPostDataReversal(data); } catch(e) { console.error('[manualRefresh] checkPostDataReversal 錯誤:', e); }
@@ -884,8 +886,8 @@ function _buildHWRBannerFromTrade(t) {
     else if (sg === 'SS') _P.push('訊號品質 SS 級（完美）');
     else if (sg === 'S')  _P.push('訊號品質 S 級（頂級）');
     else if (sg === 'A')  _P.push('訊號品質 A 級（優質）');
-    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（25因子評分 ${sc} 分）`, source:'AI 訊號品質' });
-    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（25因子評分 ${sc} 分）`, source:'AI 訊號品質' });
+    else if (sg === 'B') _W.push({ level:'caution', text:`訊號品質 B 級（26因子評分 ${sc} 分）`, source:'AI 訊號品質' });
+    else if (sg)         _W.push({ level:'danger',  text:`訊號品質 ${sg} 級（26因子評分 ${sc} 分）`, source:'AI 訊號品質' });
 
     // ② 風控分（100分制）
     if (conf >= 80)      _P.push(`風控分 ${conf} 分（強勢）`);
@@ -952,7 +954,7 @@ function _buildHWRBannerFromTrade(t) {
   } catch(_e) { return ''; }
 }
 
-/* ── SQ 25因子面板（持倉 / 等待進場 共用）────────────────────── */
+/* ── SQ 26因子面板（持倉 / 等待進場 共用）────────────────────── */
 function buildSQPanelFromTrade(t) {
   try {
     const factors = t.sqFactors;
@@ -4082,7 +4084,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else if (_sqOI.state === 'unfavorable') { _sqScore -= 1; _sqFactors.push(`❌ ㉕OI ${OI_REGIME_LABEL[_sqOI.trend.regime]} -1`); }
   } catch(_e) {}
 
-  // 分數 floor 為 0，等級校準（25 因子校準，滿分 ≈ 31 分）
+  // ㉖ 實驗室驗證加權 ±2（實測勝率明顯高/低的分析標籤自動加減分）
+  try {
+    const _sqBtcChg = (typeof state !== 'undefined' && state.data) ? parseFloat(state.data.find(d => d.symbol === 'BTC/USDT')?.change24h) : NaN;
+    const _sqLab = labTagSqBonus(coin, isLong, _sqBtcChg);
+    if (_sqLab.delta !== 0) { _sqScore += _sqLab.delta; _sqLab.hits.forEach(h => _sqFactors.push(`㉖${h}`)); }
+  } catch(_e) {}
+
+  // 分數 floor 為 0，等級校準（26 因子校準，滿分 ≈ 33 分）
   _sqScore = Math.max(0, _sqScore);
   const _sqGrade = _sqScore >= 23 ? 'SSS'
                  : _sqScore >= 20 ? 'SS'
@@ -4093,7 +4102,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
-  // ── SQ 25因子完整面板（幣種詳情 / 觀望 / 持倉均可注入）──
+  // ── SQ 26因子完整面板（幣種詳情 / 觀望 / 持倉均可注入）──
   const _sqPanelHtml = (() => { try {
     const _sqPos  = _sqFactors.filter(f => f.startsWith('✅'));
     const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
@@ -4662,8 +4671,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     else if (_sqGrade === 'SS') _hwrP.push('訊號品質 SS 級（完美）');
     else if (_sqGrade === 'S')  _hwrP.push('訊號品質 S 級（頂級）');
     else if (_sqGrade === 'A')  _hwrP.push('訊號品質 A 級（優質）');
-    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，25因子評分 ${_sqScore} 分）`, source:'AI 訊號品質' });
-    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（25因子評分 ${_sqScore} 分），勝率基礎偏弱`, source:'AI 訊號品質' });
+    else if (_sqGrade === 'B') _hwrW.push({ level:'caution', text:`訊號品質 B 級（良好但非頂級，26因子評分 ${_sqScore} 分）`, source:'AI 訊號品質' });
+    else                       _hwrW.push({ level:'danger',  text:`訊號品質 ${_sqGrade} 級（26因子評分 ${_sqScore} 分），勝率基礎偏弱`, source:'AI 訊號品質' });
 
     // ② 風控分
     if (conf >= 80)      _hwrP.push(`風控分 ${conf} 分（高）`);
@@ -9463,6 +9472,7 @@ function triggerRescan() {
     // AI 機會實驗室：紙上追蹤（獨立於正式交易，不設風控門檻）
     try { recordLabOpportunities(data); } catch(e) {}
     try { updateLabOpportunities(data); } catch(e) {}
+    try { updateSLTightnessWatch(data); } catch(e) {}
     // 驗證策略晉升：實驗室 ≥100 筆樣本且勝率 ≥90% 的分析方式 → 免風控分建正式單
     try { recordProvenStrategyTrades(data); } catch(e) {}
     // 扣分條件有效性審查（每 6 小時，無預測力的風險條件自動豁免）
@@ -9708,7 +9718,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260713d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260713e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -9803,7 +9813,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _sqRelaxTG = (setup.gateRelaxed === true || (setup.sqGate != null && setup.sqGate < 10 && setup.sqGate > 0))
     ? `\n⚠️ <b>配額寬鬆模式建單</b>：今日訊號未達 3 個，門檻暫調 SQ≥${setup.sqGate}、風控分≥${setup.confGate ?? 60}（寬鬆單表現不佳會自動熔斷）`
     : '';
-  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（25因子評分 ${_sqScoreTG} 分）${_sqRelaxTG}`;
+  const _sqLine    = `${_sqEmoji} AI 訊號品質：<b>${_sqGradeTG} 級 — ${_sqLabelTG}</b>（26因子評分 ${_sqScoreTG} 分）${_sqRelaxTG}`;
 
   // ── 風控分扣分明細（止損風控 + 風險評估扣分，在 _riskScore 已知後補充）──
   const _learnPenTg = calcLearnDrag(setup.learnPenalty || 0);
@@ -10337,6 +10347,12 @@ async function recordSignalsFromScan(data) {
       else if (_ssOI.state === 'unfavorable') { _scanSqScore -= 1; _scanSqFactors.push(`❌ OI ${OI_REGIME_LABEL[_ssOI.trend.regime]}（${_ssOI.trend.oiChg > 0 ? '+' : ''}${_ssOI.trend.oiChg}%）-1`); }
     } catch(_e) {}
 
+    // ㉖ 實驗室驗證加權 ±2（實測勝率明顯高/低的分析標籤自動加減分）
+    try {
+      const _ssLab = labTagSqBonus(coin, isLong, _btcChg24);
+      if (_ssLab.delta !== 0) { _scanSqScore += _ssLab.delta; _ssLab.hits.forEach(h => _scanSqFactors.push(h)); }
+    } catch(_e) {}
+
     // ⑨ 巨鯨籌碼 ±1
     try {
       const _ssWhl = coin.whaleData;
@@ -10686,6 +10702,9 @@ async function recordSignalsFromScan(data) {
       if (_rcOI.state === 'favorable') _sqRC += 1;
       else if (_rcOI.state === 'unfavorable') _sqRC -= 1;
     } catch(_e) {}
+
+    // ㉖ 實驗室驗證加權 ±2（與建單評分一致）
+    try { const _rcLab = labTagSqBonus(_sqCoin, _sqIsLong, _btcChg24); _sqRC += _rcLab.delta; } catch(_e) {}
 
     // ⑨ 巨鯨籌碼 ±1（from whaleData）
     try {
@@ -11489,6 +11508,11 @@ function updateOpenTrades(data) {
       } else {
         trade.exitPrice = sl;
         trade.pnlR = '-1.0';
+        // 止損鬆緊診斷：記錄此單止損後續觀察 24h，判斷「若止損再寬是否會反轉觸及止盈」
+        // slReversal: null=觀察中 / true=反轉觸TP（止損太緊）/ false=續跌未反轉（止損正確）
+        trade.slWatchUntil = Date.now() + 24 * 60 * 60 * 1000;
+        trade.slReversal   = null;
+        trade.slTp1        = tp1;  // 觀察目標（原始止盈一）
       }
       if (outcome === 'sl' || outcome === 'be') {
         trade.analysis = generateTradeAnalysis(trade);
@@ -14503,6 +14527,79 @@ function recordProvenStrategyTrades(data) {
   return changed;
 }
 
+/* ── 止損鬆緊診斷 ────────────────────────────────────────────────
+   對每筆觸止損的單，止損後續觀察 24h：若價格反轉觸及原止盈一 → 止損設太緊。
+   每次掃描執行；用實測結果回答「大量止損是不是止損太緊造成的」。 */
+function updateSLTightnessWatch(data) {
+  if (!Array.isArray(data) || !data.length) return;
+  const tlog = loadTradeLog();
+  const now = Date.now();
+  let changed = false;
+  for (const t of tlog) {
+    if (t.outcome !== 'sl' || t.slReversal !== null || t.slReversal === undefined) continue;
+    if (!t.slWatchUntil || !t.slTp1) continue;
+    const coin = data.find(d => d.symbol === t.symbol);
+    const cur = parseFloat(coin?.price) || 0;
+    const isLong = t.direction === 'long';
+    if (cur > 0) {
+      // 反轉觸及原止盈一 → 止損太緊（本可獲利）
+      if (isLong ? cur >= t.slTp1 : cur <= t.slTp1) { t.slReversal = true; changed = true; continue; }
+    }
+    // 觀察期滿仍未反轉 → 止損正確（續往不利方向）
+    if (now > t.slWatchUntil) { t.slReversal = false; changed = true; }
+  }
+  if (changed) saveTradeLog(tlog);
+}
+/* 止損鬆緊統計：已判定的止損單中，多少比例是「反轉觸TP＝止損太緊」 */
+function computeSLTightnessStats() {
+  const resolved = loadTradeLog().filter(t => t.outcome === 'sl' && (t.slReversal === true || t.slReversal === false));
+  const tooTight = resolved.filter(t => t.slReversal === true).length;
+  const n = resolved.length;
+  return { n, tooTight, pct: n ? tooTight / n * 100 : 0, watching: loadTradeLog().filter(t => t.outcome === 'sl' && t.slReversal === null).length };
+}
+
+/* ── 實驗室 → SQ 評分自動回饋 ────────────────────────────────────
+   實測勝率明顯高/低於基準的分析標籤，自動加/減 SQ 分（漸進式，非二元晉升）。
+   標籤樣本 ≥40 且勝率高於整體基準 +10pp → +1；低於 -10pp → -1。60 秒快取。 */
+let _labTagWeightCache = null, _labTagWeightTs = 0;
+function getLabTagWeights() {
+  const now = Date.now();
+  if (_labTagWeightCache && now - _labTagWeightTs < 60 * 1000) return _labTagWeightCache;
+  const closed = loadAILab().filter(o => o.status === 'closed');
+  const weights = {};
+  if (closed.length >= 40) {
+    const baseWin = closed.filter(o => (o.pnlR || 0) > 0).length / closed.length * 100;
+    const stat = {};
+    for (const o of closed) for (const t of (o.tags || [])) {
+      stat[t] = stat[t] || { n: 0, w: 0 };
+      stat[t].n++; if ((o.pnlR || 0) > 0) stat[t].w++;
+    }
+    for (const [t, s] of Object.entries(stat)) {
+      if (s.n < 40) continue;
+      const wr = s.w / s.n * 100;
+      if (wr >= baseWin + 10)      weights[t] = { w: 1, wr, n: s.n };
+      else if (wr <= baseWin - 10) weights[t] = { w: -1, wr, n: s.n };
+    }
+  }
+  _labTagWeightCache = weights; _labTagWeightTs = now;
+  return weights;
+}
+/* 依實測標籤權重計算 SQ 加權（上限 ±2，避免單一來源過度主導） */
+function labTagSqBonus(coin, isLong, btcChg) {
+  try {
+    const weights = getLabTagWeights();
+    if (!Object.keys(weights).length) return { delta: 0, hits: [] };
+    const tags = computeLabTags(coin, isLong, btcChg);
+    let delta = 0; const hits = [];
+    for (const t of tags) {
+      const w = weights[t];
+      if (w) { delta += w.w; hits.push(`${w.w > 0 ? '✅' : '❌'} 實測${t}（勝率${w.wr.toFixed(0)}%）${w.w > 0 ? '+' : ''}${w.w}`); }
+    }
+    delta = Math.max(-2, Math.min(2, delta));
+    return { delta, hits };
+  } catch(_e) { return { delta: 0, hits: [] }; }
+}
+
 /* 分析維度標籤（實驗室收錄與驗證策略建單共用）：命中的分析方式清單 */
 function computeLabTags(coin, isLong, btcChg) {
   const tags = [];
@@ -14703,6 +14800,42 @@ function renderLabPage() {
       <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">樣本 ≥10 筆才具參考性；同一機會可命中多個標籤，統計互有重疊</div>
     </div>` : `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:12px;color:var(--text3);font-size:0.8rem">尚無完結樣本 — 機會完結（觸及止盈/止損）後這裡會出現各分析方式的績效排行</div>`;
 
+  // ── 標籤組合分析：2-標籤組合的勝率（挖掘單一標籤看不到的協同效應）──
+  const comboStats = {};
+  for (const o of closed) {
+    const tg = (o.tags || []).slice().sort();
+    for (let i = 0; i < tg.length; i++) for (let j = i + 1; j < tg.length; j++) {
+      const key = tg[i] + ' ＋ ' + tg[j];
+      if (!comboStats[key]) comboStats[key] = { n: 0, w: 0, r: 0 };
+      comboStats[key].n++;
+      if ((o.pnlR || 0) > 0) comboStats[key].w++;
+      comboStats[key].r += (o.pnlR || 0);
+    }
+  }
+  const comboRows = Object.entries(comboStats)
+    .filter(([, s]) => s.n >= 8)  // 組合樣本門檻較高（避免偶然）
+    .map(([c, s]) => ({ combo: c, n: s.n, wr: s.w / s.n * 100, r: s.r, avgR: s.r / s.n }))
+    .sort((a, b) => b.wr - a.wr || b.r - a.r)
+    .slice(0, 12);
+  const comboTableHtml = comboRows.length ? `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:8px">🧩 標籤組合勝率排行（2 標籤同時命中，樣本 ≥8）</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+        <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+          <th style="padding:4px 6px">標籤組合</th><th style="padding:4px 6px;text-align:right">樣本</th>
+          <th style="padding:4px 6px;text-align:right">勝率</th><th style="padding:4px 6px;text-align:right">累計 R</th>
+          <th style="padding:4px 6px;text-align:right">平均 R</th></tr></thead>
+        <tbody>${comboRows.map(r => `<tr>
+          <td style="padding:4px 6px;font-weight:600">${r.combo}</td>
+          <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.n}</td>
+          <td style="padding:4px 6px;text-align:right;font-weight:700;color:${_wrC(r.wr)}">${r.wr.toFixed(0)}%</td>
+          <td style="padding:4px 6px;text-align:right;font-weight:700;color:${_rC(r.r)}">${r.r > 0 ? '+' : ''}${r.r.toFixed(2)}</td>
+          <td style="padding:4px 6px;text-align:right;color:${_rC(r.avgR)}">${r.avgR > 0 ? '+' : ''}${r.avgR.toFixed(2)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">兩個標籤同時出現時的勝率，常高於各自單獨的表現（協同效應）；找出最強配方後可據此調整進場優先序。</div>
+    </div>` : '';
+
   const listRows = lab.slice(0, 60).map(o => {
     const stIcon = { pending:'⏳', open:'📈', closed: (o.pnlR||0) > 0 ? '✅' : '❌', expired:'⌛', missed:'🚀' }[o.status] || '';
     const stText = { pending:'等待進場', open:'追蹤中', closed: o.outcome === 'tp1' ? `止盈 +${o.pnlR}R` : o.outcome === 'sl' ? '止損 -1R' : `到期 ${o.pnlR > 0 ? '+' : ''}${o.pnlR}R`, expired:'未觸發過期', missed:'飛越錯過' }[o.status] || '';
@@ -14772,6 +14905,7 @@ function renderLabPage() {
       <div class="tl-stat-card"><div class="tl-stat-val" style="color:${_rC(totalR)}">${totalR > 0 ? '+' : ''}${totalR.toFixed(1)} R</div><div class="tl-stat-lbl">累計 R</div></div>
     </div>
     ${tagTableHtml}
+    ${comboTableHtml}
     <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
       <div style="font-size:0.85rem;font-weight:700;color:var(--text1);padding:10px 14px;border-bottom:1px solid var(--border)">📋 機會清單（最近 60 筆）</div>
       ${listRows || '<div style="padding:16px;color:var(--text3);font-size:0.8rem">掃描進行中，發現符合 2 個以上分析維度同向的機會後會自動收錄</div>'}
@@ -15267,6 +15401,26 @@ function _rptBuildYearView(yearTrades, year) {
         <div class="rpt-stat-lbl">期望值（每筆）</div>
       </div>
     </div>
+
+    ${(() => {
+      const _slt = computeSLTightnessStats();
+      if (_slt.n < 5) return `<div class="rpt-chart-card"><div class="rpt-chart-title">🔍 止損鬆緊診斷</div><div style="color:var(--text3);font-size:0.8rem;padding:8px 4px">已判定止損單 ${_slt.n} 筆${_slt.watching ? `（${_slt.watching} 筆觀察中）` : ''}，樣本 ≥5 筆後顯示診斷。</div></div>`;
+      const _c = _slt.pct >= 55 ? 'var(--bear)' : _slt.pct >= 40 ? '#f59e0b' : 'var(--bull)';
+      const _rec = _slt.pct >= 55
+        ? '⚠️ 過半止損單其實會反轉獲利 → 止損明顯設太緊，建議把 ATR 止損倍數調寬（例如 1.3→1.6），或等回踩更靠近結構的位置再進場。'
+        : _slt.pct >= 40
+        ? '止損偏緊，約四成止損單會反轉。可考慮小幅放寬止損或提高進場精準度。'
+        : '✅ 止損鬆緊合理，多數止損單為真實走弱，維持現有止損設定。';
+      return `<div class="rpt-chart-card">
+        <div class="rpt-chart-title">🔍 止損鬆緊診斷（止損後觀察 24h 是否反轉觸及止盈）</div>
+        <div style="display:flex;align-items:baseline;gap:10px;margin:6px 0 8px">
+          <span style="font-size:1.8rem;font-weight:800;color:${_c}">${_slt.pct.toFixed(0)}%</span>
+          <span style="font-size:0.82rem;color:var(--text2)">的止損單反轉觸及止盈（止損太緊）</span>
+          <span style="font-size:0.72rem;color:var(--text3);margin-left:auto">${_slt.tooTight}/${_slt.n} 筆已判定${_slt.watching ? `　${_slt.watching} 觀察中` : ''}</span>
+        </div>
+        <div style="font-size:0.8rem;color:var(--text2);line-height:1.7;background:${_c}11;border-left:3px solid ${_c};padding:8px 12px;border-radius:0 6px 6px 0">${_rec}</div>
+      </div>`;
+    })()}
 
     <div class="rpt-chart-card">
       <div class="rpt-chart-title">帳戶成長曲線（累計 R，從零起算）</div>
@@ -16034,6 +16188,8 @@ async function checkAndSendAlerts(data) {
         try { const _qVw=_footprintCache[coin.symbol]?.vwap;const _qVwP=parseFloat(coin.price)||0;if(_qVw>0&&_qVwP>0){const _qVwD=(_qVwP-_qVw)/_qVw;if(isLong){if(_qVwD>=0&&_qVwD<=0.02)_qSq+=1;else if(_qVwD>0.025||_qVwD<-0.005)_qSq-=1;}else{if(_qVwD<=0&&_qVwD>=-0.02)_qSq+=1;else if(_qVwD<-0.025||_qVwD>0.005)_qSq-=1;}} } catch(_e){}
         // ㉕ OI 未平倉量趨勢（與建單評分一致）
         try { const _qOI=oiAlignment(coin.symbol,isLong);if(_qOI.state==='favorable')_qSq+=1;else if(_qOI.state==='unfavorable')_qSq-=1; } catch(_e){}
+        // ㉖ 實驗室驗證加權（與建單評分一致）
+        try { const _qLab=labTagSqBonus(coin,isLong,_alertBtcChg24);_qSq+=_qLab.delta; } catch(_e){}
         try { const _qWhl=coin.whaleData;if(_qWhl){if(isLong?(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=2):(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=2))_qSq+=1;else if(isLong?(_qWhl.bias==='bear'&&(_qWhl.bigSellCount||0)>=3):(_qWhl.bias==='bull'&&(_qWhl.bigBuyCount||0)>=3))_qSq-=1;} } catch(_e){}
         // ⑫⑬ 技術面 + R/R
         if ((notifSetup.techPenalty||0)===0) _qSq+=1; else if ((notifSetup.techPenalty||0)>=12) _qSq-=1;
@@ -16076,7 +16232,7 @@ async function checkAndSendAlerts(data) {
     // AI 風控攔截 或 方向=觀望 或 R/R 不足 → 完全不通知
     if (notifSetup.hardBlocked || notifSetup.direction === 'wait' || notifSetup.rrBlocked) continue;
 
-    // ① SQ 25因子達門檻（預設 9/A 級，未達每日配額時自適應放寬；訊號品質門檻，最先判斷）
+    // ① SQ 26因子達門檻（預設 9/A 級，未達每日配額時自適應放寬；訊號品質門檻，最先判斷）
     const _sqPassGate = (notifSetup.sqScore != null)
       ? notifSetup.sqScore >= _alertGates.minSq
       : ['SSS','SS','S','A'].includes(notifSetup.sqGrade);
