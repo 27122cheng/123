@@ -4510,6 +4510,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         _canAutoRecord = conf >= 60 && ['SSS','SS','S','A'].includes(_sqGrade);
       }
     }
+    // 全局連續止損熔斷（跨方向長連虧防護）
+    if (_canAutoRecord) {
+      const _lsgAuto = lossStreakGuard();
+      if (_lsgAuto.blocked) _canAutoRecord = false;
+      else if (_lsgAuto.strict && !(conf >= 70 && ['SSS','SS','S'].includes(_sqGrade))) _canAutoRecord = false;
+    }
     if (_canAutoRecord) {
       tlog.unshift({
         id: `${coin.symbol}-${Date.now()}`,
@@ -9559,6 +9565,8 @@ function relaxedCohortUnderperforms() {
 function getAdaptiveGates() {
   const strict = { minConf: 60, minSq: 10, relaxed: false, label: '' };
   try {
+    // 連續止損 ≥3 筆時，停止一切配額性放寬（壞行情裡強湊每日訊號 = 送人頭）
+    if (globalLossStreak().streak >= 3) return strict;
     const n = countSignalsToday();
     if (n >= DAILY_SIGNAL_TARGET) return strict;
     if (relaxedCohortUnderperforms()) return strict;  // 放寬單歷史勝率不佳 → 熔斷
@@ -9567,6 +9575,57 @@ function getAdaptiveGates() {
     if (h >= 12) return { minConf: 58, minSq: 9, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥9、風控分≥58）` };
     return strict;
   } catch(_e) { return strict; }
+}
+
+/* ── 全局連續止損熔斷 ────────────────────────────────────────────
+   問題：sameDirGuard 只看單方向 60 分鐘窗口，跨方向、跨小時的長連虧
+   （行情結構整體不利系統）擋不住，曾出現 30 筆連續止損。
+   規則（只計 'sl'，保本 'be' 不中斷也不累計；任一 tp1/tp2 歸零）：
+   ≥3 筆連虧 → 加嚴模式：僅收 SQ≥12 且風控分≥70 的頂級訊號，且每日配額停止放寬
+   ≥5 筆連虧 → 暫停所有新建單，至最後一筆止損後 6 小時
+   ≥8 筆連虧 → 暫停所有新建單，至最後一筆止損後 24 小時
+   冷卻結束後自動恢復為加嚴模式，直到出現一筆止盈才完全解除。 */
+function globalLossStreak() {
+  const closed = loadTradeLog()
+    .filter(t => t.status === 'closed' && t.outcome && t.exitTime)
+    .sort((a, b) => (b.exitTime || 0) - (a.exitTime || 0));
+  let streak = 0, lastSlTime = 0;
+  for (const t of closed) {
+    if (t.outcome === 'sl') { streak++; if (!lastSlTime) lastSlTime = t.exitTime; }
+    else if (t.outcome === 'tp1' || t.outcome === 'tp2') break;
+    // 'be' 保本：不中斷連虧計數，也不累計
+  }
+  return { streak, lastSlTime };
+}
+let _lsgNoticeShown = 0;
+function lossStreakGuard() {
+  try {
+    const { streak, lastSlTime } = globalLossStreak();
+    const fmtT = ts => new Date(ts).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    let res;
+    if (streak >= 8) {
+      const until = lastSlTime + 24 * 60 * 60 * 1000;
+      res = Date.now() < until
+        ? { blocked: true, strict: true, streak, until, reason: `🛑 全局熔斷：連續止損 ${streak} 筆，暫停建單至 ${fmtT(until)}` }
+        : { blocked: false, strict: true, streak, reason: `⚠️ 連虧 ${streak} 筆熔斷解除，加嚴模式（SQ≥12 且風控分≥70）直到出現止盈` };
+    } else if (streak >= 5) {
+      const until = lastSlTime + 6 * 60 * 60 * 1000;
+      res = Date.now() < until
+        ? { blocked: true, strict: true, streak, until, reason: `🛑 全局熔斷：連續止損 ${streak} 筆，暫停建單至 ${fmtT(until)}` }
+        : { blocked: false, strict: true, streak, reason: `⚠️ 連虧 ${streak} 筆熔斷解除，加嚴模式（SQ≥12 且風控分≥70）直到出現止盈` };
+    } else if (streak >= 3) {
+      res = { blocked: false, strict: true, streak, reason: `⚠️ 連續止損 ${streak} 筆，加嚴模式：僅收 SQ≥12 且風控分≥70 訊號` };
+    } else {
+      res = { blocked: false, strict: false, streak };
+    }
+    // 熔斷/加嚴狀態提示（每 30 分鐘最多一次，避免洗版）
+    if (res.reason && Date.now() - _lsgNoticeShown > 30 * 60 * 1000) {
+      _lsgNoticeShown = Date.now();
+      try { if (typeof showToast === 'function') showToast(res.reason, res.blocked ? 'error' : 'info'); } catch(_t) {}
+      console.warn('[loss-streak]', res.reason);
+    }
+    return res;
+  } catch(_e) { return { blocked: false, strict: false, streak: 0 }; }
 }
 
 /* ── 同方向集中度控管 ────────────────────────────────────────────
@@ -10486,6 +10545,14 @@ async function recordSignalsFromScan(data) {
     // 同方向集中度控管（活躍上限 / 爆量節流 / 連續止損熔斷）
     const _dirGuardMsg = sameDirGuard(_freshTlog, direction, _scanSqScore);
     if (_dirGuardMsg) { console.log('[dir-guard]', coin.symbol, _dirGuardMsg); continue; }
+
+    // 全局連續止損熔斷（跨方向長連虧防護）
+    const _lsgScan = lossStreakGuard();
+    if (_lsgScan.blocked) continue;
+    if (_lsgScan.strict && !(_scanSqScore >= 12 && Math.max(0, (setup.conf || 0) - (_scanRiskPen || 0)) >= 70)) {
+      console.log('[loss-streak] 加嚴模式擋下', coin.symbol);
+      continue;
+    }
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
@@ -11448,13 +11515,23 @@ function updateOpenTrades(data) {
       const tradeAge = (Date.now() - (trade.timestamp || 0)) / 1000;
       if (tradeAge < MIN_PENDING_SECS) continue; // 太新，跳過進場確認
 
-      // 多頭：現價降至進場價附近（0.5% 容差）
-      // 空頭：現價升至進場價附近（0.5% 容差）
-      const touched = isLong ? cur <= entry * 1.005 : cur >= entry * 0.995;
-      if (touched) {
-        trade.status    = 'open';
-        trade.entryTime = Date.now();
-        changed = true;
+      // ── 兩段式進場確認（與加倉邏輯一致，避免「觸價即進場」接刀）──
+      // 舊邏輯：現價回踩到進場價 ±0.5% 就直接成交 → 動能反向貫穿進場價時
+      // 一樣進場，成交的單子系統性偏向失敗盤（adverse selection），是連虧主因之一。
+      // 步驟1：等回踩觸及進場位（容差收緊至 0.1%）
+      if (!trade.entryTouched) {
+        const touchedNow = isLong ? cur <= entry * 1.001 : cur >= entry * 0.999;
+        if (touchedNow) { trade.entryTouched = true; trade.entryTouchTime = Date.now(); changed = true; }
+      }
+      // 步驟2：觸及後需反向收復 0.3%（多單反彈 / 空單回落）確認有接手盤才進場；
+      // 觸及後直接續跌破止損的單子，由上方「進場前跌破止損」檢查取消，不會成交。
+      if (trade.entryTouched) {
+        const bounceConfirm = isLong ? cur >= entry * 1.003 : cur <= entry * 0.997;
+        if (bounceConfirm) {
+          trade.status    = 'open';
+          trade.entryTime = Date.now();
+          changed = true;
+        }
       }
       continue;
     }
@@ -11502,21 +11579,24 @@ function updateOpenTrades(data) {
       trade.exitTime = Date.now();
       if (outcome === 'tp2') {
         trade.exitPrice = tp2;
-        trade.pnlR = ((Math.abs(tp2 - entry) / baseRisk)).toFixed(2);
       } else if (outcome === 'tp1') {
         trade.exitPrice = tp1;
-        trade.pnlR = ((Math.abs(tp1 - entry) / baseRisk)).toFixed(2);
       } else if (outcome === 'be') {
         trade.exitPrice = entry;
-        trade.pnlR = '0.0';
       } else {
         trade.exitPrice = sl;
-        trade.pnlR = '-1.0';
         // 止損鬆緊診斷：記錄此單止損後續觀察 24h，判斷「若止損再寬是否會反轉觸及止盈」
         // slReversal: null=觀察中 / true=反轉觸TP（止損太緊）/ false=續跌未反轉（止損正確）
         trade.slWatchUntil = Date.now() + 24 * 60 * 60 * 1000;
         trade.slReversal   = null;
         trade.slTp1        = tp1;  // 觀察目標（原始止盈一）
+      }
+      // pnlR 統一計算並計入手續費+滑點（taker 進出各約 0.05% 名目價值），
+      // 讓報表貼近實盤：止損約 -1.05R、保本約 -0.05R，勝率門檻不再被零成本假設美化
+      {
+        const _feeCost = (entry + trade.exitPrice) * 0.0005;
+        const _gross   = (trade.exitPrice - entry) * (isLong ? 1 : -1);
+        trade.pnlR = ((_gross - _feeCost) / baseRisk).toFixed(2);
       }
       if (outcome === 'sl' || outcome === 'be') {
         trade.analysis = generateTradeAnalysis(trade);
@@ -13050,7 +13130,8 @@ function computeLearnProfile() {
   const shortLosses = shortClosed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
 
   const check = (cond, subLoss, subAll, penaltyConf, warnTpl) => {
-    if (subAll.length < 2) return null;
+    // 最少 5 筆樣本才啟用規則：2 筆虧 1 筆＝50% 純屬雜訊，會讓學習引擎過擬合
+    if (subAll.length < 5) return null;
     const rate = subLoss.length / subAll.length;
     if (rate < 0.05) return null; // AI 目標勝率 95%+，止損率 > 5% 即觸發規則
     const scaledPenalty = rate >= 0.6 ? penaltyConf + 15 : rate >= 0.4 ? penaltyConf + 5 : penaltyConf;
@@ -14478,6 +14559,8 @@ function recordProvenStrategyTrades(data) {
     if (btcVolGuardBlocks(coin.symbol)) continue;
     // 同方向集中度控管：驗證策略單跳過 SQ 加嚴（傳 99），但活躍上限與止損熔斷仍適用
     if (sameDirGuard(tlog, dir, 99)) continue;
+    // 全局連續止損熔斷：驗證策略單同樣受暫停約束（連虧期間停止一切新單）
+    if (lossStreakGuard().blocked) continue;
     const h4Ok = isLong ? (coin.h4Signal||'').includes('bull') : (coin.h4Signal||'').includes('bear');
     const s15 = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
     if (!h4Ok || !(isLong ? s15.includes('bull') : s15.includes('bear'))) continue;
@@ -16259,7 +16342,11 @@ async function checkAndSendAlerts(data) {
         && (t.status === 'open' || t.status === 'pending'));
       // 同方向集中度控管（與 recordSignalsFromScan 同一標準）
       const _alertDirGuard = sameDirGuard(_tlog2, dir, notifSetup.sqScore);
-      if (!_alreadyIn && !_alertDirGuard) {
+      // 全局連續止損熔斷（與 recordSignalsFromScan 同一標準）
+      const _alertLsg = lossStreakGuard();
+      const _alertLsgPass = !_alertLsg.blocked
+        && (!_alertLsg.strict || (notifConf >= 70 && (notifSetup.sqScore ?? 0) >= 12));
+      if (!_alreadyIn && !_alertDirGuard && _alertLsgPass) {
         // 長線單需 SQ ≥ S；SQ = A 時降格為短線單建單，避免建立後立即被 SQ 監控降格
         const _isLongTermEntry = notifSetup.isLongTerm === true && ['SSS','SS','S'].includes(notifSetup.sqGrade);
         const _newTrade = {

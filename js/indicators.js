@@ -138,23 +138,8 @@ function parseKlines(raw) {
   };
 }
 
-/* ── 平均真實範圍 ATR（Wilder 平滑法）──────────────────── */
-function calcATR(highs, lows, closes, period = 14) {
-  const n = closes.length;
-  if (n < period + 1) return closes[n - 1] * 0.012;
-  const trs = [];
-  for (let i = 1; i < n; i++) {
-    trs.push(Math.max(
-      highs[i] - lows[i],
-      Math.abs(highs[i]  - closes[i - 1]),
-      Math.abs(lows[i]   - closes[i - 1])
-    ));
-  }
-  // Wilder 平滑
-  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
-  return atr;
-}
+/* calcATR 唯一定義在下方（原本此處有第二份同名定義，後載入者覆蓋前者，
+   兩版對「資料不足」的處理不同——ATR 可能變 0 導致止損貼進場價，已合併） */
 
 /* ── 影線拒絕區偵測（震盪行情支撐壓力）───────────────────
    在 lookback 根 K 棒中，找 pivot 高低點並統計：
@@ -462,7 +447,9 @@ function calcATR(highs, lows, closes, period = 14) {
       Math.abs(lows[i]   - closes[i - 1])
     ));
   }
-  if (!trs.length) return 0;
+  // 資料不足時給價格 1.2% 的保底值：回傳 0 會讓所有依賴 ATR 的
+  // 止損距離/進場緩衝變成貼著進場價，一根雜訊K棒就掃損
+  if (!trs.length) return (closes && closes.length) ? closes[closes.length - 1] * 0.012 : 0;
   const p = Math.min(period, trs.length);
   let atr = trs.slice(0, p).reduce((a, b) => a + b, 0) / p;
   for (let i = p; i < trs.length; i++) atr = (atr * (period - 1) + trs[i]) / period;
@@ -1545,7 +1532,7 @@ function detectChartPatterns(klines, isLong) {
     const neutral  = patterns.filter(p => p.aligned === null);
     const confirmedAligned = aligned.filter(p => p.status !== 'forming');
     const strongA  = confirmedAligned.filter(p => p.strength === 'strong');
-    const score    = strongA.length >= 2 ? 2 : strongA.length >= 1 ? 2 : confirmedAligned.length >= 1 ? 1 : 0;
+    const score    = strongA.length >= 2 ? 3 : strongA.length >= 1 ? 2 : confirmedAligned.length >= 1 ? 1 : 0;
 
     return { patterns, score, aligned, opposing, neutral };
   } catch(_cpe) { console.warn('[chartPatterns]', _cpe); return { patterns: [], score: 0, aligned: [], opposing: [], neutral: [] }; }
