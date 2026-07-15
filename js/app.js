@@ -9718,7 +9718,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260713e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260715a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10590,6 +10590,10 @@ async function recordSignalsFromScan(data) {
     if (trade.pendingNotify) continue;
     // 驗證策略單（實驗室 ≥100 筆、勝率 ≥90% 晉升）：免 SQ/風控分覆核，讓策略自然跑完
     if (trade.provenStrategy) continue;
+    // 新建掛單寬限期：建立後 30 分鐘內不做 SQ/風控分「軟性」取消，避免即時數據的
+    // 正常抖動（費率/OI/輪動/相對強弱等每分鐘變動）在建單後同分鐘內把分數壓破門檻。
+    // 硬性取消（趨勢反轉、觸止損、飛越止盈、方向反轉）不受寬限期影響，於下方 updateOpenTrades 處理。
+    if (Date.now() - (trade.timestamp || 0) < 30 * 60 * 1000) continue;
     const _sqCoin = data ? data.find(d => d.symbol === trade.symbol) : null;
     if (!_sqCoin) continue;
     const _sqIsLong = trade.direction === 'long';
