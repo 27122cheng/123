@@ -9426,6 +9426,13 @@ async function addCustomPair() {
     showToast(`${sym} 已在清單中`, 'error'); return;
   }
 
+  // 清單只收 Pionex 官方上架的幣（實體交易在 Pionex，未上架的幣無法下單）
+  if (typeof _pionexSymbolSet !== 'undefined' && _pionexSymbolSet && _pionexSymbolSet.size >= 50
+      && !_pionexSymbolSet.has(binSym)) {
+    showToast(`${sym} 未在 Pionex 上架，無法加入（清單只收可實際交易的幣種）`, 'error');
+    return;
+  }
+
   showToast('正在驗證幣種...', 'info');
   let spotPrice = 0;
   for (const host of BINANCE_HOSTS) {
@@ -9826,7 +9833,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260715g';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260715h';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {

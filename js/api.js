@@ -397,8 +397,6 @@ async function fetchAll24hQuoteVols() {
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
   const batchSize = 20;
-  const pairs     = loadPairs();
-  const results   = new Array(pairs.length).fill(null);
   _klineSrcCount = { pionex: 0, binance: 0 };
 
   /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用；
@@ -407,6 +405,28 @@ async function fetchAllFromBinance(timeframe) {
   const [spotPrices, quoteVols24] = await Promise.all([
     fetchAllSpotPrices(), fetchAll24hQuoteVols(), fetchPionexSymbolSet().catch(() => null),
   ]);
+
+  /* ── 清單自動同步 Pionex 官方幣種表 ─────────────────────────
+     實體交易在 Pionex：清單永遠只保留官方上架的幣（含未來下架自動清除）。
+     防呆：官方表需 ≥50 個交易對才可信；同步後至少剩 10 個幣才執行，
+     避免半殘回應誤刪整份清單。Pionex 不可用時不動作（維持原清單）。 */
+  try {
+    if (_pionexSymbolSet && _pionexSymbolSet.size >= 50) {
+      const _all  = loadPairs();
+      const _keep = _all.filter(p => _pionexSymbolSet.has(p.s.replace('/', '')));
+      if (_keep.length < _all.length && _keep.length >= 10) {
+        const _removed = _all.filter(p => !_pionexSymbolSet.has(p.s.replace('/', '')));
+        savePairs(_keep);
+        _removed.forEach(p => { try { if (typeof purgeSymbolData === 'function') purgeSymbolData(p.s); } catch(_e) {} });
+        console.info(`[Pionex同步] 自動移除 ${_removed.length} 個未上架幣種：${_removed.map(p => p.s.replace('/USDT', '')).join('、')}`);
+        try { if (typeof showToast === 'function') showToast(`✂ 清單已與 Pionex 官方同步，移除 ${_removed.length} 個未上架幣種`, 'info'); } catch(_t) {}
+        try { if (typeof renderPairsList === 'function') renderPairsList(); } catch(_r) {}
+      }
+    }
+  } catch(_syncE) {}
+
+  const pairs   = loadPairs();
+  const results = new Array(pairs.length).fill(null);
 
   for (let i = 0; i < pairs.length; i += batchSize) {
     const batch = pairs.slice(i, i + batchSize);
