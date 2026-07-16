@@ -118,12 +118,9 @@ let _pionexPrices = {};
 
 async function refreshPionexPrices() {
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
-    const r = await fetch('https://api.pionex.com/api/v1/market/tickers', { signal: ctrl.signal });
-    clearTimeout(t);
-    if (!r.ok) { console.warn('[Pionex] API 回應錯誤:', r.status); return; }
-    const j = await r.json();
+    const r = await pionexApiFetch('market/tickers', {});
+    if (!r || !r.json) { return; }  // 通道全部不可用（診斷已於 pionexApiFetch 輸出）
+    const j = r.json;
     if (j.result && Array.isArray(j.data?.tickers)) {
       j.data.tickers.forEach(tk => {
         // 支援 BTC_USDT → BTCUSDT 及 BTC_USDT_PERP 等格式
@@ -179,26 +176,71 @@ const _INTERVAL_MS = { '1m':60e3,'5m':3e5,'15m':9e5,'30m':18e5,'1h':36e5,'4h':14
 let _pionexKFails = 0, _pionexKDisabledUntil = 0;
 let _klineSrcCount = { pionex: 0, binance: 0 };  // 每輪掃描數據源統計
 
+/* ── Pionex 智慧通道：直連 → 同源代理 /api/pionex → 放棄 ──────────
+   Pionex 公開 API 通常不帶 CORS 標頭，瀏覽器直連會被擋（表現為
+   TypeError: Failed to fetch）。部署在 Vercel 時，同源代理由
+   api/pionex.js serverless function 轉發，繞過 CORS。
+   通道探測結果記憶於 _pionexChannel：'direct' | 'proxy' | null(未定) */
+let _pionexChannel = null;
+let _pionexDirectFails = 0;
+let _pionexDiagShown = false;
+
+async function pionexApiFetch(path, params, timeoutMs = 8000) {
+  const qs = new URLSearchParams(params).toString();
+  const candidates = [];
+  // 直連連續失敗 3 次後不再嘗試（典型 CORS 封鎖），只走代理
+  if (_pionexChannel !== 'proxy' && _pionexDirectFails < 3) {
+    candidates.push({ ch: 'direct', url: `https://api.pionex.com/api/v1/${path}?${qs}` });
+  }
+  if (_pionexChannel !== 'direct') {
+    candidates.push({ ch: 'proxy', url: `/api/pionex?path=${encodeURIComponent(path)}&${qs}` });
+  }
+  for (const c of candidates) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      const r = await fetch(c.url, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (r.status === 429) return { status: 429, json: null };
+      if (!r.ok) { if (c.ch === 'direct') _pionexDirectFails++; continue; }
+      const j = await r.json().catch(() => null);
+      if (!j || (j.result === undefined && j.data === undefined)) {
+        if (c.ch === 'direct') _pionexDirectFails++;
+        continue;  // 404 頁面 / 非 JSON（代理不存在等）→ 換下一通道
+      }
+      if (_pionexChannel !== c.ch) {
+        _pionexChannel = c.ch;
+        console.info(`[Pionex] 數據通道：${c.ch === 'direct' ? '直連' : '同源代理 /api/pionex'}`);
+        try { if (typeof showToast === 'function' && !_pionexDiagShown) { _pionexDiagShown = true; showToast(`✅ Pionex 數據源已啟用（${c.ch === 'direct' ? '直連' : '代理'}）`, 'success'); } } catch(_t) {}
+      }
+      return { status: 200, json: j };
+    } catch (e) {
+      if (c.ch === 'direct') _pionexDirectFails++;  // CORS 擋下即落此處
+    }
+  }
+  if (!_pionexDiagShown && _pionexDirectFails >= 3) {
+    _pionexDiagShown = true;
+    console.warn('[Pionex] 直連被擋（CORS）且同源代理不可用。部署到 Vercel 後 /api/pionex 代理會自動生效；目前自動改用幣安。');
+    try { if (typeof showToast === 'function') showToast('ℹ️ Pionex 不可直連（CORS），已自動改用幣安數據。部署 Vercel 代理後將自動切換', 'info'); } catch(_t) {}
+  }
+  return null;
+}
+
 async function fetchPionexKlines(symbol, interval, limit = 220) {
   const pInt = PIONEX_INTERVAL_MAP[interval];
   if (!pInt) return null;                              // 週線/月線 Pionex 不支援 → 幣安
   if (Date.now() < _pionexKDisabledUntil) return null; // 熔斷中 → 幣安
   const pSym = symbol.replace('USDT', '_USDT');        // BTCUSDT → BTC_USDT
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
-    const r = await fetch(
-      `https://api.pionex.com/api/v1/market/klines?symbol=${pSym}&interval=${pInt}&limit=${Math.min(500, limit)}`,
-      { signal: ctrl.signal }
-    );
-    clearTimeout(t);
+    const r = await pionexApiFetch('market/klines',
+      { symbol: pSym, interval: pInt, limit: Math.min(500, limit) });
+    if (!r) throw new Error('unreachable');
     if (r.status === 429) {  // 被限速 → 立即熔斷 5 分鐘，整批改走幣安
       _pionexKDisabledUntil = Date.now() + 5 * 60 * 1000;
       console.warn('[Pionex] K線被限速(429)，5 分鐘內改走幣安');
       return null;
     }
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const j = await r.json();
+    const j = r.json;
     const arr = j?.data?.klines;
     if (!j?.result || !Array.isArray(arr) || arr.length === 0) return null;
     const ms = _INTERVAL_MS[interval] || 6e4;
