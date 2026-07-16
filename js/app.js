@@ -601,6 +601,33 @@ function renderAll() {
                : '演示数据';
   const el = document.getElementById('last-updated');
   if (el) el.textContent = new Date().toLocaleTimeString('zh-CN') + ' · ' + srcTag;
+  try { updateDataSrcBadge(); } catch(_e) {}
+}
+
+/* ── 導航列數據源標籤（LIVE 倒數旁）：每輪掃描更新 ──────────────
+   綠色「Pionex」= K線主要來自 Pionex（與實體成交所一致）
+   藍色「混合」  = 兩邊都有（部分幣種 Pionex 沒上架）
+   黃色「幣安」  = Pionex 不可用（CORS 未解 / 代理未部署 / 熔斷中）*/
+function updateDataSrcBadge() {
+  const el = document.getElementById('data-src-badge');
+  if (!el) return;
+  const p = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.pionex)  || 0;
+  const b = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.binance) || 0;
+  const ch = (typeof _pionexChannel !== 'undefined' && _pionexChannel) || null;
+  el.classList.remove('src-pionex', 'src-mixed', 'src-binance');
+  if (p > 0 && b === 0) {
+    el.classList.add('src-pionex');
+    el.textContent = `Pionex ${p}`;
+    el.title = `K線數據源：Pionex 全量（${ch === 'proxy' ? '同源代理' : '直連'}），與實體成交所一致`;
+  } else if (p > 0) {
+    el.classList.add('src-mixed');
+    el.textContent = `Pionex ${p}／幣安 ${b}`;
+    el.title = `K線數據源：Pionex ${p} 筆（${ch === 'proxy' ? '代理' : '直連'}）＋ 幣安 ${b} 筆（Pionex 未上架或個別失敗的幣種）`;
+  } else {
+    el.classList.add('src-binance');
+    el.textContent = `幣安 ${b || ''}`.trim();
+    el.title = 'K線數據源：全部走幣安（Pionex 不可直連且代理未生效，或熔斷冷卻中）';
+  }
 }
 
 /* ── 概览卡片 ───────────────────────────────────────────────── */
@@ -9788,7 +9815,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260715e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260715f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {

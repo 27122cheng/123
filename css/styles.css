@@ -213,6 +213,17 @@ a { text-decoration: none; cursor: pointer; }
   font-size: 0.8rem; font-weight: 500; color: var(--text2);
   white-space: nowrap;
 }
+/* K線數據源常駐顯示（Pionex / 幣安），每輪掃描更新 */
+.data-src-badge {
+  display: flex; align-items: center;
+  padding: 5px 12px; border-radius: 20px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--card-border);
+  font-size: 0.74rem; font-weight: 600; color: var(--text2);
+  white-space: nowrap; letter-spacing: 0.2px;
+}
+.data-src-badge.src-pionex { color: #00e676; border-color: rgba(0,230,118,0.35); }
+.data-src-badge.src-mixed  { color: #00d4ff; border-color: rgba(0,212,255,0.35); }
+.data-src-badge.src-binance{ color: #f0b90b; border-color: rgba(240,185,11,0.35); }
 .live-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--bull);
@@ -1421,6 +1432,7 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
   .chip { padding: 5px 10px; font-size: 0.75rem; }
   .tf-group { display: none; }
   .refresh-pill { display: none; }
+  .data-src-badge { font-size: 0.66rem; padding: 4px 8px; }
   .tv-chart { height: 420px; }
 }
 
