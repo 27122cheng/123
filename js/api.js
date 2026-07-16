@@ -168,6 +168,78 @@ function buildHeaders(apiKey) {
   return h;
 }
 
+/* ═══════════════════ Pionex K 線引擎（優先數據源）═══════════════
+   實體交易在 Pionex 成交 → 用 Pionex 自己的 K 棒計算進場/止損/支撐壓力
+   與插針判定，和實際成交所完全一致（不再靠幣安價 × 比例換算近似）。
+   Pionex 免費公開 API 沒有的數據（週線/月線、合約費率/OI/多空比、
+   aggTrades 巨鯨、K棒內主動買量）維持使用幣安。
+   任何失敗（限速/格式/斷線）自動降級走幣安，行為等同原版。 */
+const PIONEX_INTERVAL_MAP = { '1m':'1M','5m':'5M','15m':'15M','30m':'30M','1h':'60M','4h':'4H','8h':'8H','12h':'12H','1d':'1D' };
+const _INTERVAL_MS = { '1m':60e3,'5m':3e5,'15m':9e5,'30m':18e5,'1h':36e5,'4h':144e5,'8h':288e5,'12h':432e5,'1d':864e5 };
+let _pionexKFails = 0, _pionexKDisabledUntil = 0;
+let _klineSrcCount = { pionex: 0, binance: 0 };  // 每輪掃描數據源統計
+
+async function fetchPionexKlines(symbol, interval, limit = 220) {
+  const pInt = PIONEX_INTERVAL_MAP[interval];
+  if (!pInt) return null;                              // 週線/月線 Pionex 不支援 → 幣安
+  if (Date.now() < _pionexKDisabledUntil) return null; // 熔斷中 → 幣安
+  const pSym = symbol.replace('USDT', '_USDT');        // BTCUSDT → BTC_USDT
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(
+      `https://api.pionex.com/api/v1/market/klines?symbol=${pSym}&interval=${pInt}&limit=${Math.min(500, limit)}`,
+      { signal: ctrl.signal }
+    );
+    clearTimeout(t);
+    if (r.status === 429) {  // 被限速 → 立即熔斷 5 分鐘，整批改走幣安
+      _pionexKDisabledUntil = Date.now() + 5 * 60 * 1000;
+      console.warn('[Pionex] K線被限速(429)，5 分鐘內改走幣安');
+      return null;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    const arr = j?.data?.klines;
+    if (!j?.result || !Array.isArray(arr) || arr.length === 0) return null;
+    const ms = _INTERVAL_MS[interval] || 6e4;
+    const rows = [];
+    for (const k of arr) {
+      // 官方格式為物件 {time,open,close,high,low,volume}；防禦性兼容陣列格式
+      const isObj = k && typeof k === 'object' && !Array.isArray(k);
+      const t0 = parseFloat(isObj ? k.time  : k[0]);
+      const o  = parseFloat(isObj ? k.open  : k[1]);
+      const h  = parseFloat(isObj ? k.high  : k[2]);
+      const l  = parseFloat(isObj ? k.low   : k[3]);
+      const c  = parseFloat(isObj ? k.close : k[4]);
+      const v  = parseFloat(isObj ? k.volume: k[5]) || 0;
+      if (!isFinite(t0) || !isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c) || c <= 0) return null; // 格式不符 → 幣安
+      const qv = v * c;
+      // 對齊幣安陣列格式 [openTime,o,h,l,c,vol,closeTime,quoteVol,trades,takerBuyBase,takerBuyQuote,ignore]
+      // [9] 主動買量 Pionex 無此數據，以 v/2 佔位——需要真實 taker 買量的足跡圖不走 Pionex
+      rows.push([t0, String(o), String(h), String(l), String(c), String(v), t0 + ms - 1, String(qv), 0, String(v / 2), String(qv / 2), '0']);
+    }
+    rows.sort((a, b) => a[0] - b[0]);
+    _pionexKFails = 0;
+    return rows.slice(-limit);
+  } catch (e) {
+    if (++_pionexKFails >= 8) {  // 連續失敗（斷線等）→ 熔斷 10 分鐘
+      _pionexKDisabledUntil = Date.now() + 10 * 60 * 1000;
+      _pionexKFails = 0;
+      console.warn('[Pionex] K線連續失敗，10 分鐘內改走幣安');
+    }
+    return null;
+  }
+}
+
+/* 智慧路由：Pionex 優先（與實際交易所一致），不支援/失敗 → 幣安 */
+async function fetchKlinesSmart(symbol, interval, limit = 220) {
+  const p = await fetchPionexKlines(symbol, interval, limit);
+  if (p && p.length >= Math.min(30, limit)) { _klineSrcCount.pionex++; return p; }
+  const b = await fetchKlines(symbol, interval, limit);
+  if (b) _klineSrcCount.binance++;
+  return b;
+}
+
 /* ═══════════════════ 幣安 K 線引擎 ═══════════════════════ */
 
 /* 獲取單個幣對的 K 線數據（依序嘗試多個端點）*/
@@ -211,16 +283,41 @@ async function fetchAllSpotPrices() {
   return {};
 }
 
+/* 幣安 24h 成交額批量查詢（成交量強度分類維持幣安口徑）
+   Pionex 是小所，成交量遠小於幣安；量能分類（高/中/低）與巨鯨門檻
+   都以幣安流動性校準，K 線改用 Pionex 後，24h 成交額仍取幣安數值 */
+async function fetchAll24hQuoteVols() {
+  const syms = JSON.stringify(loadPairs().map(p => p.s.replace('/', '')));
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(
+        `${host}/api/v3/ticker/24hr?symbols=${encodeURIComponent(syms)}&type=MINI`,
+        { signal: ctrl.signal }
+      );
+      clearTimeout(t);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const list = await res.json();
+      const map = {};
+      list.forEach(tk => { map[tk.symbol] = parseFloat(tk.quoteVolume); });
+      return map;
+    } catch { continue; }
+  }
+  return {};
+}
+
 /* 並行批次獲取所有交易對 K 線，並即時計算技術指標 */
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
   const batchSize = 20;
   const pairs     = loadPairs();
   const results   = new Array(pairs.length).fill(null);
+  _klineSrcCount = { pionex: 0, binance: 0 };
 
   /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用 */
   if (typeof updateScanProgress === 'function') updateScanProgress(0);
-  const spotPrices = await fetchAllSpotPrices();
+  const [spotPrices, quoteVols24] = await Promise.all([fetchAllSpotPrices(), fetchAll24hQuoteVols()]);
 
   for (let i = 0; i < pairs.length; i += batchSize) {
     const batch = pairs.slice(i, i + batchSize);
@@ -229,12 +326,13 @@ async function fetchAllFromBinance(timeframe) {
       batch.map(pair => {
         const sym = pair.s.replace('/', '');
         // 5 timeframes in parallel: 15m(primary), 1D, 1W, 4H, 1H
+        // 價格類 K 線 Pionex 優先（與實際成交所一致）；週線 Pionex 無 → 幣安
         return Promise.allSettled([
-          fetchKlines(sym, interval, 220),
-          fetchKlines(sym, '1d', 100),
+          fetchKlinesSmart(sym, interval, 220),
+          fetchKlinesSmart(sym, '1d', 100),
           fetchKlines(sym, '1w', 52),
-          fetchKlines(sym, '4h', 100),
-          fetchKlines(sym, '1h', 100),
+          fetchKlinesSmart(sym, '4h', 100),
+          fetchKlinesSmart(sym, '1h', 100),
         ]);
       })
     );
@@ -258,10 +356,14 @@ async function fetchAllFromBinance(timeframe) {
       const h1Sig    = h1Raw   && h1Raw.length   >= 30 ? analyzeTimeframeSignal(h1Raw)   : null;
 
       if (analysed) {
+        // 24h 成交額以幣安為準（量能分類口徑不變）；幣安批量失敗時退回 K 線估算
+        const _bQV = quoteVols24[sym];
+        const _volFinal = (_bQV != null && isFinite(_bQV)) ? Math.round(_bQV) : analysed.volume;
         results[idx] = {
           ...analysed,
+          volume:         _volFinal,
           trend:          scoreToTrend(analysed.score),
-          volumeStrength: getVolStr(analysed.volume),
+          volumeStrength: getVolStr(_volFinal),
           signal15m:      sig15m?.signal    || null,
           dailySignal:    daySig?.signal    || null,
           weeklySignal:   wkSig?.signal     || null,
@@ -298,6 +400,9 @@ async function fetchAllFromBinance(timeframe) {
     if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
   }
 
+  if (_klineSrcCount.pionex || _klineSrcCount.binance) {
+    console.info(`[數據源] K線 Pionex ${_klineSrcCount.pionex} 筆 / 幣安 ${_klineSrcCount.binance} 筆`);
+  }
   return results;
 }
 
@@ -426,7 +531,10 @@ async function fetchMTFKlines(symbol) {
   await Promise.allSettled(tfs.map(async tf => {
     const limit = tf === '1w' ? 60 : tf === '1M' ? 24 : 100;
     const minBars = tf === '1w' ? 8 : tf === '1M' ? 6 : 30;
-    const raw = await fetchKlines(base, tf, limit);
+    // 週線/月線 Pionex 不支援走幣安；其餘價格類 K 線 Pionex 優先
+    const raw = (tf === '1w' || tf === '1M')
+      ? await fetchKlines(base, tf, limit)
+      : await fetchKlinesSmart(base, tf, limit);
     if (raw && raw.length >= minBars) {
       out[tf] = {
         signal:    analyzeTimeframeSignal(raw),

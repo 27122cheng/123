@@ -9788,7 +9788,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260715c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260715d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11851,7 +11851,8 @@ async function verifyIntrabarHits() {
       const sinceTs = trade.lastWickCheck || trade.entryTime || trade.timestamp || (Date.now() - 5 * 60000);
       const needBars = Math.min(30, Math.max(3, Math.ceil((Date.now() - sinceTs) / 60000) + 1));
       let raw = null;
-      try { raw = await fetchKlines(sym, '1m', needBars); } catch(_e) {}
+      // Pionex 優先：實體單在 Pionex 成交，用 Pionex 的 1m 插針判定掃損最貼近實際
+      try { raw = await (typeof fetchKlinesSmart === 'function' ? fetchKlinesSmart : fetchKlines)(sym, '1m', needBars); } catch(_e) {}
       if (!raw || !raw.length) continue;
       const isLong = trade.direction === 'long';
       const { entry, tp1, tp2 } = trade;
