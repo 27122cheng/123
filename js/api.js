@@ -273,12 +273,56 @@ async function fetchPionexKlines(symbol, interval, limit = 220) {
   }
 }
 
-/* 智慧路由：Pionex 優先（與實際交易所一致），不支援/失敗 → 幣安 */
-async function fetchKlinesSmart(symbol, interval, limit = 220) {
+/* ── Pionex 上架幣種表 + 價格精度（common/symbols，6 小時快取）────
+   用途：① 未上架的幣直接走幣安，不浪費失敗請求
+        ② 顯示價格依 Pionex 的報價精度（quotePrecision）修整小數位
+        ③ 設定頁標示「Pionex 未上架」並提供一鍵移除 */
+let _pionexSymbolSet = null;      // Set('BTCUSDT', ...)
+let _pionexPrecision = {};        // { BTCUSDT: 2, ... } 報價小數位
+let _pionexSymbolsAt = 0;
+
+async function fetchPionexSymbolSet() {
+  if (_pionexSymbolSet && Date.now() - _pionexSymbolsAt < 6 * 3600 * 1000) return _pionexSymbolSet;
+  try {
+    const r = await pionexApiFetch('common/symbols', {});
+    const arr = r?.json?.data?.symbols;
+    if (Array.isArray(arr) && arr.length > 0) {
+      const set = new Set();
+      const prec = {};
+      for (const s of arr) {
+        const sym = String(s.symbol || '').replace(/_/g, '');
+        if (!sym) continue;
+        set.add(sym);
+        const qp = parseInt(s.quotePrecision);
+        if (isFinite(qp) && qp >= 0 && qp <= 12) prec[sym] = qp;
+      }
+      _pionexSymbolSet = set;
+      _pionexPrecision = prec;
+      _pionexSymbolsAt = Date.now();
+      console.info(`[Pionex] 幣種表已更新：${set.size} 個上架交易對`);
+    }
+  } catch (_e) {}
+  return _pionexSymbolSet;
+}
+
+/* 智慧路由：Pionex 優先（與實際交易所一致），不支援/未上架/失敗 → 幣安
+   trackKey：傳入 'BTC/USDT' 時記錄該幣主數據源（供 UI 逐幣標示） */
+let _klineSrcBySymbol = {};       // { 'BTC/USDT': 'pionex'|'binance' }
+async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) {
+  // 已知未上架 → 直接幣安，不浪費請求
+  if (_pionexSymbolSet && !_pionexSymbolSet.has(symbol)) {
+    const b0 = await fetchKlines(symbol, interval, limit);
+    if (b0) { _klineSrcCount.binance++; if (trackKey) _klineSrcBySymbol[trackKey] = 'binance'; }
+    return b0;
+  }
   const p = await fetchPionexKlines(symbol, interval, limit);
-  if (p && p.length >= Math.min(30, limit)) { _klineSrcCount.pionex++; return p; }
+  if (p && p.length >= Math.min(30, limit)) {
+    _klineSrcCount.pionex++;
+    if (trackKey) _klineSrcBySymbol[trackKey] = 'pionex';
+    return p;
+  }
   const b = await fetchKlines(symbol, interval, limit);
-  if (b) _klineSrcCount.binance++;
+  if (b) { _klineSrcCount.binance++; if (trackKey) _klineSrcBySymbol[trackKey] = 'binance'; }
   return b;
 }
 
@@ -357,9 +401,12 @@ async function fetchAllFromBinance(timeframe) {
   const results   = new Array(pairs.length).fill(null);
   _klineSrcCount = { pionex: 0, binance: 0 };
 
-  /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用 */
+  /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用；
+     同時更新 Pionex 上架幣種表（未上架的幣直接走幣安，價格精度對齊 Pionex） */
   if (typeof updateScanProgress === 'function') updateScanProgress(0);
-  const [spotPrices, quoteVols24] = await Promise.all([fetchAllSpotPrices(), fetchAll24hQuoteVols()]);
+  const [spotPrices, quoteVols24] = await Promise.all([
+    fetchAllSpotPrices(), fetchAll24hQuoteVols(), fetchPionexSymbolSet().catch(() => null),
+  ]);
 
   for (let i = 0; i < pairs.length; i += batchSize) {
     const batch = pairs.slice(i, i + batchSize);
@@ -370,7 +417,7 @@ async function fetchAllFromBinance(timeframe) {
         // 5 timeframes in parallel: 15m(primary), 1D, 1W, 4H, 1H
         // 價格類 K 線 Pionex 優先（與實際成交所一致）；週線 Pionex 無 → 幣安
         return Promise.allSettled([
-          fetchKlinesSmart(sym, interval, 220),
+          fetchKlinesSmart(sym, interval, 220, pair.s),  // 主時框記錄逐幣數據源
           fetchKlinesSmart(sym, '1d', 100),
           fetchKlines(sym, '1w', 52),
           fetchKlinesSmart(sym, '4h', 100),
@@ -401,8 +448,16 @@ async function fetchAllFromBinance(timeframe) {
         // 24h 成交額以幣安為準（量能分類口徑不變）；幣安批量失敗時退回 K 線估算
         const _bQV = quoteVols24[sym];
         const _volFinal = (_bQV != null && isFinite(_bQV)) ? Math.round(_bQV) : analysed.volume;
+        // 數據源標記 + 價格小數位對齊 Pionex 報價精度（quotePrecision）
+        const _src  = _klineSrcBySymbol[pair.s] || 'binance';
+        const _prec = _pionexPrecision[sym];
+        const _pxFinal = (_src === 'pionex' && _prec != null)
+          ? parseFloat((+analysed.price).toFixed(_prec)) : analysed.price;
         results[idx] = {
           ...analysed,
+          price:          _pxFinal,
+          dataSrc:        _src,
+          onPionex:       _pionexSymbolSet ? _pionexSymbolSet.has(sym) : null,
           volume:         _volFinal,
           trend:          scoreToTrend(analysed.score),
           volumeStrength: getVolStr(_volFinal),
@@ -419,6 +474,8 @@ async function fetchAllFromBinance(timeframe) {
       } else {
         const fallbackPrice = spotPrices[sym] || pair.p;
         results[idx] = {
+          dataSrc: 'binance',
+          onPionex: _pionexSymbolSet ? _pionexSymbolSet.has(sym) : null,
           symbol: pair.s, trend: '中性', score: 50,
           price:  fmtPrice(fallbackPrice),
           rsi: 50, adx: 20,
@@ -481,6 +538,8 @@ function enrichData(raw) {
       h1Rsi:           item.h1Rsi             ?? null,
       bb:              item.bb                ?? null,
       patterns:        item.patterns          ?? null,
+      dataSrc:         item.dataSrc           ?? null,
+      onPionex:        item.onPionex          ?? null,
     };
   });
 }

@@ -725,13 +725,21 @@ function buildDashRow(row) {
   return `<tr onclick="navigateTo('coin','${row.symbol}')">
     <td class="sym-cell">
       <span class="sym-base">${row.symbol.replace('/USDT','')}</span>
-      <span class="sym-quote">/USDT</span>
+      <span class="sym-quote">/USDT</span>${srcDotHtml(row)}
     </td>
     <td class="price-cell">${fmtPrice(row.price)}</td>
     <td><span class="trend-badge ${trendClass(row.trend)}">${trendArrow(row.trend)} ${row.trend}</span></td>
     <td><span class="vol-chip vol-${volClass(row.volumeStrength)}">${fmtVol(row.volume)}</span></td>
     <td style="color:${chgColor};font-weight:600;white-space:nowrap">${chgSign}${chg.toFixed(2)}%</td>
   </tr>`;
+}
+
+/* 逐幣數據源小圓點：綠=Pionex價格 / 黃=幣安價格（Pionex 未上架） */
+function srcDotHtml(row) {
+  if (row.dataSrc === 'pionex') return '<span class="src-dot src-p" title="Pionex 價格（與實體成交所一致）"></span>';
+  if (row.onPionex === false)   return '<span class="src-dot src-b" title="Pionex 未上架 — 幣安價格（與 Pionex 報價可能有差異）"></span>';
+  if (row.dataSrc === 'binance') return '<span class="src-dot src-b" title="本輪走幣安價格（Pionex 暫時不可用）"></span>';
+  return '';
 }
 
 function fmtVol(v) {
@@ -787,7 +795,7 @@ function renderRankingTable() {
             ${row.symbol.replace('/USDT','').slice(0,3)}
           </div>
           <div>
-            <div style="font-weight:600">${row.symbol.replace('/USDT','')}</div>
+            <div style="font-weight:600">${row.symbol.replace('/USDT','')}${srcDotHtml(row)}</div>
             <div style="font-size:0.72rem;color:var(--text3)">USDT</div>
           </div>
         </div>
@@ -8972,7 +8980,10 @@ async function renderCoinDetail(symbol) {
   document.getElementById('coin-avatar').textContent  = base.slice(0, 3);
   document.getElementById('coin-name').textContent    = symbol;
   document.getElementById('coin-price').textContent   = fmtPrice(coin.price);
-  document.getElementById('coin-price-sub').textContent = 'USDT';
+  document.getElementById('coin-price-sub').textContent = 'USDT · ' +
+    (coin.dataSrc === 'pionex' ? 'Pionex 價格'
+     : coin.onPionex === false ? '幣安價格（Pionex 未上架）'
+     : '幣安價格');
 
   const trendChip = document.getElementById('coin-trend-chip');
   trendChip.textContent = trendArrow(coin.trend) + ' ' + coin.trend;
@@ -9815,7 +9826,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260715f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260715g';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -17452,13 +17463,35 @@ function renderPairsList() {
   const count = document.getElementById('pairs-count');
   if (!list) return;
   const pairs = loadPairs();
-  if (count) count.textContent = `共 ${pairs.length} 個交易對`;
-  list.innerHTML = pairs.map(p => `
-    <div class="pair-chip">
-      <span>${p.s}</span>
+  const pxSet = (typeof _pionexSymbolSet !== 'undefined') ? _pionexSymbolSet : null;
+  const notListed = pxSet ? pairs.filter(p => !pxSet.has(p.s.replace('/', ''))).length : 0;
+  if (count) count.textContent = `共 ${pairs.length} 個交易對` + (notListed ? `（${notListed} 個 Pionex 未上架）` : '');
+  list.innerHTML = pairs.map(p => {
+    const unlisted = pxSet && !pxSet.has(p.s.replace('/', ''));
+    return `
+    <div class="pair-chip${unlisted ? ' pair-unlisted' : ''}" ${unlisted ? 'title="Pionex 未上架，此幣種數據走幣安"' : ''}>
+      <span>${p.s}${unlisted ? ' <em class="unlisted-tag">未上架</em>' : ''}</span>
       <button class="pair-chip-rm" onclick="removePairFromList('${p.s}')" title="移除">×</button>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
+}
+
+/* 一鍵移除 Pionex 未上架幣種（實體交易在 Pionex，無法交易的幣不需要掃描） */
+function removeNonPionexPairs() {
+  const pxSet = (typeof _pionexSymbolSet !== 'undefined') ? _pionexSymbolSet : null;
+  if (!pxSet || !pxSet.size) {
+    showToast('尚未取得 Pionex 幣種表（等下一輪掃描或檢查 Pionex 連線）', 'error');
+    return;
+  }
+  const pairs = loadPairs();
+  const removed = pairs.filter(p => !pxSet.has(p.s.replace('/', '')));
+  if (!removed.length) { showToast('目前清單全部都在 Pionex 上架，無需移除', 'info'); return; }
+  if (!confirm(`將移除 ${removed.length} 個 Pionex 未上架幣種：\n${removed.map(p => p.s.replace('/USDT','')).join('、')}\n\n確定嗎？`)) return;
+  savePairs(pairs.filter(p => pxSet.has(p.s.replace('/', ''))));
+  removed.forEach(p => { try { purgeSymbolData(p.s); } catch(_e) {} });
+  renderPairsList();
+  showToast(`已移除 ${removed.length} 個 Pionex 未上架幣種，下輪掃描生效`, 'success');
+  try { triggerRescan(); } catch(_e) {}
 }
 
 /* ── 设置页面 ───────────────────────────────────────────────── */
