@@ -3867,6 +3867,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (adxVal >= 22) { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
   else                   { _sqScore -= 1; _sqFactors.push(`❌ ADX ${adxVal} 趨勢過弱 -1`); }
 
+  // ⑥+ Kill Zone 時段 ±1（倫敦/紐約開盤獵殺時段品質最高；冷門時段訊號易假）
+  {
+    const _sqKzQ = (typeof computeKillZone === 'function' ? computeKillZone() : null);
+    if (_sqKzQ?.quality === 'high')     { _sqScore += 1; _sqFactors.push(`✅ ${_sqKzQ.emoji} ${_sqKzQ.name}（黃金時段）+1`); }
+    else if (_sqKzQ?.quality === 'low') { _sqScore -= 1; _sqFactors.push(`❌ ${_sqKzQ.emoji} ${_sqKzQ.name}（非主力時段）-1`); }
+    else if (_sqKzQ)                     { _sqFactors.push(`⬜ ${_sqKzQ.emoji} ${_sqKzQ.name}（一般時段）`); }
+  }
+
   // ⑦ 訂單流（CVD + Taker 主動買賣）— max +1
   const _sqOFOk  = isLong ? (cvdTrend === 'bull' && buyPct > 55) : (cvdTrend === 'bear' && buyPct < 45);
   const _sqOFOpp = isLong ? (cvdTrend === 'bear' && buyPct < 45) : (cvdTrend === 'bull' && buyPct > 55);
@@ -4131,8 +4139,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   // 分數 floor 為 0，等級校準（26 因子校準，滿分 ≈ 33 分）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 23 ? 'SSS'
-                 : _sqScore >= 20 ? 'SS'
+  const _sqGrade = _sqScore >= 24 ? 'SSS'
+                 : _sqScore >= 21 ? 'SS'
                  : _sqScore >= 17 ? 'S'
                  : _sqScore >= 10 ? 'A'
                  : _sqScore >= 7  ? 'B'
@@ -9833,7 +9841,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10160,6 +10168,13 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
     if (_rcAdx >= 28) _sqRC += 1;
     else if (_rcAdx < 22) _sqRC -= 1;  // 與建單評分一致（原 <20 不對稱）
 
+    // ⑦+ Kill Zone 時段 ±1（與建單評分一致）
+    try {
+      const _rcKzQ = (typeof computeKillZone === 'function' ? computeKillZone() : null);
+      if (_rcKzQ?.quality === 'high')     _sqRC += 1;
+      else if (_rcKzQ?.quality === 'low') _sqRC -= 1;
+    } catch(_e) {}
+
     // ⑧ 訂單流 Taker ±1（from derivData）
     try {
       const _rcTkr = _sqCoin.derivData?.takerBuySell ?? 1;
@@ -10337,10 +10352,10 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（25 因子校準，滿分 ≈ 31 分）
+    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（26 因子含Kill Zone，滿分 ≈ 32 分）
     _sqRC = Math.max(0, _sqRC);
-    const _rcGrade = _sqRC >= 23 ? 'SSS'
-                   : _sqRC >= 20 ? 'SS'
+    const _rcGrade = _sqRC >= 24 ? 'SSS'
+                   : _sqRC >= 21 ? 'SS'
                    : _sqRC >= 17 ? 'S'
                    : _sqRC >= 10 ? 'A'
                    : _sqRC >= 7  ? 'B'
@@ -10591,7 +10606,7 @@ async function recordSignalsFromScan(data) {
     const _scanMacd    = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
 
-    // ── 完整版訊號品質評分（4H+15m 硬性條件 + 其餘時框加分，等級門檻 SSS≥23/SS≥20/S≥17/A≥10/B≥7/C≥4/D<4（25 因子校準，滿分 ≈31））──
+    // ── 完整版訊號品質評分（4H+15m 硬性條件 + 其餘時框加分，等級門檻 SSS≥24/SS≥21/S≥17/A≥10/B≥7/C≥4/D<4（26 因子含Kill Zone時段校準，滿分 ≈32））──
     let _scanSqScore = 0;
     const _scanSqFactors = [];
 
@@ -10660,6 +10675,13 @@ async function recordSignalsFromScan(data) {
       else { _scanSqFactors.push('⬜ 足跡圖 Delta 中性'); }
       if ((_ssFP.microstructureQuality || 0) >= 7) { _scanSqScore += 1; _scanSqFactors.push(`✅ 市場微結構優質（${_ssFP.microstructureQuality}分）+1`); }
       else if ((_ssFP.microstructureQuality || 0) <= 3) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 市場微結構偏弱（${_ssFP.microstructureQuality}分）-1`); }
+    }
+
+    // ⑦+ Kill Zone 時段 ±1（與建單/監控同一標準）
+    {
+      const _ssKzQ = (typeof computeKillZone === 'function' ? computeKillZone() : null);
+      if (_ssKzQ?.quality === 'high')     { _scanSqScore += 1; _scanSqFactors.push(`✅ ${_ssKzQ.name}（黃金時段）+1`); }
+      else if (_ssKzQ?.quality === 'low') { _scanSqScore -= 1; _scanSqFactors.push(`❌ ${_ssKzQ.name}（非主力時段）-1`); }
     }
 
     // ⑦ ADX ±1
@@ -10827,8 +10849,8 @@ async function recordSignalsFromScan(data) {
 
     // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（25 因子校準，滿分 ≈ 31 分）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 23 ? 'SSS'
-                       : _scanSqScore >= 20 ? 'SS'
+    const _scanSqGrade = _scanSqScore >= 24 ? 'SSS'
+                       : _scanSqScore >= 21 ? 'SS'
                        : _scanSqScore >= 17 ? 'S'
                        : _scanSqScore >= 10 ? 'A'
                        : _scanSqScore >= 7  ? 'B'
@@ -10984,7 +11006,7 @@ async function recordSignalsFromScan(data) {
   }
 
   // ── 訊號品質持續監控：掛單未進場前每次掃描用完整 21 因子重新評估，低於 A 級自動取消 ──
-  // 等級門檻：SSS≥23 / SS≥20 / S≥17 / A≥10 / B≥7 / C≥4 / D<4（與建單評分完全一致，25 因子校準）
+  // 等級門檻：SSS≥24 / SS≥21 / S≥17 / A≥10 / B≥7 / C≥4 / D<4（與建單評分完全一致，26 因子含Kill Zone時段校準）
   // ICT結構和圖形確認需要異步 MTF Kline，其餘 ~18 個因子均可從掃描快取即時取得
   const _sqCancelIds = new Set();
   for (const trade of tlog) {
@@ -14745,6 +14767,17 @@ function maybeAuditPenaltyFactors() {
 }
 
 /* ── 驗證策略白名單：實驗室某分析方式 ≥100 筆完結樣本且勝率 ≥80% → 晉升正式系統 ── */
+/* ── Wilson 95% 信賴下界 ─────────────────────────────────────
+   原始勝率在樣本少時會被運氣灌水（10/10 = 100% 但真實可能只有 72%）。
+   Wilson 下界回答「以 95% 信心，真實勝率至少是多少」：
+   樣本越少下界越保守，證據夠強時又能提早通過——
+   假標籤擋得住、真標籤晉升得更早。 */
+function wilsonLB(w, n, z = 1.96) {
+  if (!n) return 0;
+  const p = w / n, z2 = z * z;
+  return Math.max(0, (p + z2 / (2 * n) - z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n)) / (1 + z2 / n));
+}
+
 function getProvenLabTags() {
   const closed = loadAILab().filter(o => o.status === 'closed');
   const stats = {};
@@ -14753,8 +14786,11 @@ function getProvenLabTags() {
     stats[t].n++;
     if ((o.pnlR || 0) > 0) stats[t].w++;
   }
+  // 晉升標準改用 Wilson 下界：n≥50 且下界 ≥75%
+  // （≈ 50 筆需 87% 原始勝率、100 筆需 84%、200 筆需 81%——
+  //   比舊規則「100 筆 + 原始 80%」更早捕捉強標籤，同時擋掉運氣灌水）
   return Object.entries(stats)
-    .filter(([, s]) => s.n >= 100 && s.w / s.n >= 0.80)
+    .filter(([, s]) => s.n >= 50 && wilsonLB(s.w, s.n) >= 0.75)
     .map(([t]) => t);
 }
 
@@ -14889,7 +14925,12 @@ let _labTagWeightCache = null, _labTagWeightTs = 0;
 function getLabTagWeights() {
   const now = Date.now();
   if (_labTagWeightCache && now - _labTagWeightTs < 60 * 1000) return _labTagWeightCache;
-  const closed = loadAILab().filter(o => o.status === 'closed');
+  // 近期窗口：只取最近 400 筆已平倉樣本——市場結構會變，
+  // 半年前的標籤表現不應該永遠影響今天的加權（regime 衰減）
+  const closedAll = loadAILab().filter(o => o.status === 'closed');
+  const closed = closedAll
+    .sort((a, b) => (b.closeTime || b.exitTime || b.timestamp || 0) - (a.closeTime || a.exitTime || a.timestamp || 0))
+    .slice(0, 400);
   const weights = {};
   if (closed.length >= 40) {
     const baseWin = closed.filter(o => (o.pnlR || 0) > 0).length / closed.length * 100;
@@ -14899,10 +14940,14 @@ function getLabTagWeights() {
       stat[t].n++; if ((o.pnlR || 0) > 0) stat[t].w++;
     }
     for (const [t, s] of Object.entries(stat)) {
-      if (s.n < 40) continue;
+      if (s.n < 30) continue;
       const wr = s.w / s.n * 100;
-      if (wr >= baseWin + 10)      weights[t] = { w: 1, wr, n: s.n };
-      else if (wr <= baseWin - 10) weights[t] = { w: -1, wr, n: s.n };
+      // 正向加權：Wilson 下界仍高於基準 +5pp（統計上確定優於平均，非運氣）
+      const lb = wilsonLB(s.w, s.n) * 100;
+      // 負向扣分：Wilson 上界（=1−敗率下界）仍低於基準 −5pp（統計上確定劣於平均）
+      const ub = (1 - wilsonLB(s.n - s.w, s.n)) * 100;
+      if (lb >= baseWin + 5)      weights[t] = { w: 1, wr, n: s.n };
+      else if (ub <= baseWin - 5) weights[t] = { w: -1, wr, n: s.n };
     }
   }
   _labTagWeightCache = weights; _labTagWeightTs = now;
@@ -14971,6 +15016,15 @@ function computeLabTags(coin, isLong, btcChg) {
     if (coin.patterns && (isLong ? (coin.patterns.bull123 || coin.patterns.bull2B) : (coin.patterns.bear123 || coin.patterns.bear2B))) tags.push('123/2B形態');
     const kzH = new Date().getUTCHours();
     if ((kzH >= 7 && kzH < 11) || (kzH >= 13 && kzH < 17)) tags.push('KillZone時段');
+    // ── 情境標籤（時段 × 宏觀）：讓實驗室統計能發現
+    //   「某訊號只在特定時段/宏觀環境下有效」的組合優勢 ──
+    const _ctxKz = (typeof computeKillZone === 'function') ? computeKillZone() : null;
+    if (_ctxKz?.code) tags.push(`時段-${_ctxKz.code}`);
+    if (typeof _macroCache !== 'undefined' && _macroCache) {
+      const _ctxNd = computeMacroNetDir(_macroCache.fg, _macroCache) || '';
+      if (isLong ? _ctxNd.includes('bull') : _ctxNd.includes('bear'))      tags.push('宏觀順風');
+      else if (isLong ? _ctxNd.includes('bear') : _ctxNd.includes('bull')) tags.push('宏觀逆風');
+    }
   } catch(_e) {}
   return tags;
 }
