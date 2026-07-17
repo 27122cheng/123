@@ -3063,7 +3063,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
   // ── 止損精修：噪音底線 / 最大風險上限 / VP VAL|VAH 錨點 ──
   try {
-    const _slMinDist = atr * 0.5;
+    const _slMinDist = atr * 0.5 * getAdaptiveSlWiden();  // 止損太緊診斷自動加寬噪音底線
     const _slMaxPct  = price > 10000 ? 0.025 : price > 500 ? 0.035 : 0.045;
     const _slMaxDist = price * _slMaxPct;
     if (isLong) {
@@ -9833,7 +9833,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260715h';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11639,31 +11639,52 @@ function updateOpenTrades(data) {
     const baseRisk = Math.abs(entry - (trade.baseSl ?? sl)) || Math.abs(entry - sl) || 1;
     const isLong = direction === 'long';
     let outcome = null;
-    if (isLong) {
-      if (cur >= tp2) {
-        outcome = 'tp2';
-      } else if (cur >= tp1 && !trade.tp1Hit) {
-        if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
-        trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
-        tp1Hits.push({ trade, coin, cur });
-      } else if (trade.tp1Hit && cur <= entry) {
-        // TP1已觸及後跌回成本 → 自動保本出場
-        outcome = 'be';
-      } else if (cur <= sl) {
-        outcome = 'sl';
+
+    // ── +1R 提前保本：未觸 TP1 前浮盈達 +1R 即把止損移至成本 ──
+    // 勝率優化：TP1 在 ~1.5R，原本 1.0~1.4R 回落的單全額 -1R；
+    // 提前在 +1R 鎖成本，這批單從虧損轉為保本，進場數量不變
+    if (!trade.tp1Hit && !trade.beArmed) {
+      const _uR = ((cur - entry) * (isLong ? 1 : -1)) / baseRisk;
+      if (_uR >= 1.0) {
+        if (!trade.baseSl) trade.baseSl = trade.sl;
+        trade.sl = entry; trade.beArmed = true; changed = true;
       }
-    } else {
-      if (cur <= tp2) {
-        outcome = 'tp2';
-      } else if (cur <= tp1 && !trade.tp1Hit) {
-        if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
-        trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
-        tp1Hits.push({ trade, coin, cur });
-      } else if (trade.tp1Hit && cur >= entry) {
-        // TP1已觸及後漲回成本 → 自動保本出場
-        outcome = 'be';
-      } else if (cur >= sl) {
-        outcome = 'sl';
+    }
+    // ── 時間止損：短線單持倉 >16 小時仍在 ±0.3R 內原地踏步 → 保本離場 ──
+    // 停滯單多數最終走向止損；主動平掉換防，長線單（canScaleIn）不適用
+    if (!trade.canScaleIn && trade.entryTime
+        && Date.now() - trade.entryTime > 16 * 3600 * 1000) {
+      const _uRt = ((cur - entry) * (isLong ? 1 : -1)) / baseRisk;
+      if (Math.abs(_uRt) < 0.3) { trade.timeStopped = true; outcome = 'be'; }
+    }
+
+    if (!outcome) {
+      if (isLong) {
+        if (cur >= tp2) {
+          outcome = 'tp2';
+        } else if (cur >= tp1 && !trade.tp1Hit) {
+          if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
+          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
+          tp1Hits.push({ trade, coin, cur });
+        } else if ((trade.tp1Hit || trade.beArmed) && cur <= entry) {
+          // TP1已觸及 / +1R保本已武裝 後跌回成本 → 自動保本出場
+          outcome = 'be';
+        } else if (cur <= sl) {
+          outcome = 'sl';
+        }
+      } else {
+        if (cur <= tp2) {
+          outcome = 'tp2';
+        } else if (cur <= tp1 && !trade.tp1Hit) {
+          if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
+          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
+          tp1Hits.push({ trade, coin, cur });
+        } else if ((trade.tp1Hit || trade.beArmed) && cur >= entry) {
+          // TP1已觸及 / +1R保本已武裝 後漲回成本 → 自動保本出場
+          outcome = 'be';
+        } else if (cur >= sl) {
+          outcome = 'sl';
+        }
       }
     }
     if (outcome) {
@@ -11675,7 +11696,8 @@ function updateOpenTrades(data) {
       } else if (outcome === 'tp1') {
         trade.exitPrice = tp1;
       } else if (outcome === 'be') {
-        trade.exitPrice = entry;
+        // 時間止損以現價離場（±0.3R 內），一般保本以成本價離場
+        trade.exitPrice = trade.timeStopped ? cur : entry;
       } else {
         trade.exitPrice = sl;
         // 止損鬆緊診斷：記錄此單止損後續觀察 24h，判斷「若止損再寬是否會反轉觸及止盈」
@@ -11926,7 +11948,16 @@ async function verifyIntrabarHits() {
         const tp2Hit = tp2 && (isLong ? hi >= tp2 : lo <= tp2);
         const tp1Now = tp1 && !trade.tp1Hit && (isLong ? hi >= tp1 : lo <= tp1);
         // 同一根 K 棒同時觸及 → 保守判定先觸止損（實盤最壞情況）
-        if (slHit) { outcome = trade.tp1Hit ? 'be' : 'sl'; break; }
+        if (slHit) { outcome = (trade.tp1Hit || trade.beArmed) ? 'be' : 'sl'; break; }
+        // +1R 提前保本（與 updateOpenTrades 同一標準，用 K 棒高低點判定）
+        if (!trade.tp1Hit && !trade.beArmed) {
+          const _bR = Math.abs(entry - (trade.baseSl ?? trade.sl)) || 1;
+          const _uR = ((isLong ? hi : lo) - entry) * (isLong ? 1 : -1) / _bR;
+          if (_uR >= 1.0) {
+            if (!trade.baseSl) trade.baseSl = trade.sl;
+            trade.sl = entry; trade.beArmed = true; changed = true;
+          }
+        }
         if (tp1Now) {
           if (!trade.baseSl) trade.baseSl = trade.sl;
           trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損移至成本
@@ -14832,6 +14863,25 @@ function computeSLTightnessStats() {
   return { n, tooTight, pct: n ? tooTight / n * 100 : 0, watching: loadTradeLog().filter(t => t.outcome === 'sl' && t.slReversal === null).length };
 }
 
+/* ── 自適應止損加寬（勝率優化，不影響交易量）─────────────────
+   止損鬆緊診斷（slReversal）顯示近期止損單「止損後 24h 內反轉觸及
+   原止盈」比例過高 → 止損普遍設在插針獵殺區，自動加寬 ATR 噪音底線。
+   上限 1.35 倍；樣本不足或比例正常維持 1.0。快取 60 秒。 */
+function getAdaptiveSlWiden() {
+  try {
+    const c = getAdaptiveSlWiden._c;
+    if (c && Date.now() - c.ts < 60000) return c.v;
+    const s = computeSLTightnessStats();
+    let v = 1.0;
+    if      (s.n >= 6 && s.pct >= 60) v = 1.35;
+    else if (s.n >= 6 && s.pct >= 45) v = 1.2;
+    else if (s.n >= 4 && s.pct >= 75) v = 1.25;
+    if (v > 1) console.info(`[adaptive-sl] 止損太緊比例 ${s.pct.toFixed(0)}%（${s.tooTight}/${s.n}），噪音底線加寬 ×${v}`);
+    getAdaptiveSlWiden._c = { ts: Date.now(), v };
+    return v;
+  } catch(_e) { return 1.0; }
+}
+
 /* ── 實驗室 → SQ 評分自動回饋 ────────────────────────────────────
    實測勝率明顯高/低於基準的分析標籤，自動加/減 SQ 分（漸進式，非二元晉升）。
    標籤樣本 ≥40 且勝率高於整體基準 +10pp → +1；低於 -10pp → -1。60 秒快取。 */
@@ -16604,9 +16654,32 @@ async function checkAndSendAlerts(data) {
         };
         _tlog2.unshift(_newTrade);
         saveTradeLog(_tlog2);
-        const _tlabel = _isLongTermEntry ? '長線單' : '短線單';
-        const _ticon  = _isLongTermEntry ? '💎' : '📡';
-        // toast 延遲至 updateOpenTrades pendingNotify 通過風控分重算後再顯示
+        // ── 建單當下即時發送通知（≤3 秒同步要求）──────────────
+        // 舊設計：pendingNotify 交給 updateOpenTrades 延遲重驗後才發，最壞晚 15 秒。
+        // 建單前終審已用「SQ 監控同一套數學」驗證過（pre-audit），延遲重驗不再必要。
+        try {
+          const _nowNs = loadSettings();
+          if (_nowNs.notifTelegram && _nowNs.tgToken && _nowNs.tgChatId) {
+            const _nowTg = Object.assign({}, _newTrade, _newTrade._notifyRisk || {});
+            sendTelegramMessage(_nowNs.tgToken, _nowNs.tgChatId,
+              buildTelegramText(coin, dir, _nowTg, _macroCache,
+                typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
+            _newTrade.telegramSent = true;
+          }
+          if (_nowNs.notifBrowser) {
+            sendBrowserNotification(
+              `${_isLongTermEntry ? '💎長線單' : '📡短線單'} 新掛單：${coin.symbol} ${dir === 'long' ? '▲做多' : '▼做空'}`,
+              `信心 ${_newTrade.conf || 0}%　SQ ${_newTrade.sqGrade || ''}　進場 ${_newTrade.entry || ''}`,
+              `csp-pending-${coin.symbol}`
+            );
+          }
+          _newTrade.pendingNotify = false;   // 已即時通知，不再走延遲通道
+          delete _newTrade._notifyRisk;
+          saveTradeLog(_tlog2);
+          const _tlabel = _isLongTermEntry ? '長線單' : '短線單';
+          const _ticon  = _isLongTermEntry ? '💎' : '📡';
+          try { if (typeof showToast === 'function') showToast(`${_ticon} ${_tlabel}：${coin.symbol} ${dir === 'long' ? '▲做多' : '▼做空'} 風控分 ${_newTrade.conf || 0} 分，已加入持倉`, 'success'); } catch(_t) {}
+        } catch(_ntE) { console.warn('[instant-notify]', _ntE); }
       }
     } catch(_te) { console.warn('[checkAndSendAlerts] trade create failed', _te); }
 
@@ -17481,6 +17554,32 @@ function renderPairsList() {
       <button class="pair-chip-rm" onclick="removePairFromList('${p.s}')" title="移除">×</button>
     </div>`;
   }).join('');
+}
+
+/* 手動同步 Pionex 幣種表：強制重抓官方表 → 清理未上架幣種 → 重設月度計時 */
+async function syncPionexPairsNow() {
+  showToast('🔄 正在同步 Pionex 官方幣種表…', 'info');
+  try { _pionexSymbolsAt = 0; } catch(_e) {}   // 強制略過 6h 快取重新抓
+  let set = null;
+  try { set = await fetchPionexSymbolSet(); } catch(_e) {}
+  if (!set || set.size < 50) {
+    showToast('取得 Pionex 幣種表失敗（Pionex 連線或代理不可用），未做任何變更', 'error');
+    return;
+  }
+  localStorage.setItem('csp_pionex_sync_at', String(Date.now()));  // 重設月度計時
+  const pairs   = loadPairs();
+  const removed = pairs.filter(p => !set.has(p.s.replace('/', '')));
+  if (!removed.length) {
+    renderPairsList();
+    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣全部在 Pionex 上架（官方表 ${set.size} 個交易對）`, 'success');
+    return;
+  }
+  if (!confirm(`同步結果：${removed.length} 個幣未在 Pionex 上架：\n${removed.map(p => p.s.replace('/USDT', '')).join('、')}\n\n移除它們嗎？`)) return;
+  savePairs(pairs.filter(p => set.has(p.s.replace('/', ''))));
+  removed.forEach(p => { try { purgeSymbolData(p.s); } catch(_e) {} });
+  renderPairsList();
+  showToast(`✂ 已移除 ${removed.length} 個 Pionex 未上架幣種，下輪掃描生效`, 'success');
+  try { triggerRescan(); } catch(_e) {}
 }
 
 /* 一鍵移除 Pionex 未上架幣種（實體交易在 Pionex，無法交易的幣不需要掃描） */

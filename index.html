@@ -805,7 +805,7 @@
         <div class="setting-row" style="margin-top:12px;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn-ghost" onclick="resetCustomPairs()" style="font-size:0.82rem">重置為默認清單（100個幣種）</button>
-            <button class="btn-ghost" onclick="removeNonPionexPairs()" style="font-size:0.82rem;color:#00e676">✂ 移除 Pionex 未上架幣種</button>
+            <button class="btn-ghost" onclick="syncPionexPairsNow()" style="font-size:0.82rem;color:#00e676">🔄 同步 Pionex 幣種表（清理未上架）</button>
             <button class="btn-ghost" onclick="clearAllPairs()" style="font-size:0.82rem;color:var(--bear)">🗑 清空全部</button>
           </div>
           <span id="pairs-count" style="color:var(--text3);font-size:0.82rem;align-self:center"></span>
@@ -825,8 +825,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260715h"></script>
-  <script src="js/api.js?v=20260715h"></script>
-  <script src="js/app.js?v=20260715h"></script>
+  <script src="js/indicators.js?v=20260716a"></script>
+  <script src="js/api.js?v=20260716a"></script>
+  <script src="js/app.js?v=20260716a"></script>
 </body>
 </html>
