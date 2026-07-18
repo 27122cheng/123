@@ -3914,10 +3914,29 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   else if (_sqIctCnt === 1) _sqFactors.push('⚠️ ICT 單一結構 +1');
   else                      _sqFactors.push('⬜ ICT 結構：無明顯支撐');
 
-  // ⑥ ADX 趨勢強度 — max +1，過弱時扣分
-  if (adxVal >= 28)      { _sqScore += 1; _sqFactors.push(`✅ ADX ${adxVal} 趨勢確立 +1`); }
-  else if (adxVal >= 22) { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
-  else                   { _sqScore -= 1; _sqFactors.push(`❌ ADX ${adxVal} 趨勢過弱 -1`); }
+  // ⑥ ADX 趨勢強度 — 勝率驗證優先（帳戶實測勝率），樣本不足退回啟發值
+  {
+    const _adxWr = winrateFactorAdj('adx', adxVal);
+    if (_adxWr.decided) {
+      _sqScore += _adxWr.adj;
+      const _tag = _adxWr.adj > 0 ? `✅ ADX ${adxVal}（實測勝率 ${_adxWr.wr}%＞均 ${_adxWr.base}%）+${_adxWr.adj}`
+                : _adxWr.adj < 0 ? `❌ ADX ${adxVal}（實測勝率 ${_adxWr.wr}%＜均 ${_adxWr.base}%，${_adxWr.label} 區）${_adxWr.adj}`
+                : `⬜ ADX ${adxVal}（實測勝率 ${_adxWr.wr}%，與均值無異）`;
+      _sqFactors.push(_tag);
+    } else if (adxVal >= 28)      { _sqScore += 1; _sqFactors.push(`✅ ADX ${adxVal} 趨勢確立 +1`); }
+    else if (adxVal >= 22) { _sqFactors.push(`⚠️ ADX ${adxVal} 趨勢偏弱`); }
+    else                   { _sqScore -= 1; _sqFactors.push(`❌ ADX ${adxVal} 趨勢過弱 -1`); }
+  }
+
+  // ⑥R RSI 勝率驗證（只做扣分守門，勝率過低區間才扣，不加分不動等級上限）
+  {
+    const _rsiV = parseFloat(coin.rsi);
+    const _rsiWr = winrateFactorAdj('rsi', _rsiV);
+    if (_rsiWr.decided && _rsiWr.adj < 0) {
+      _sqScore += _rsiWr.adj;
+      _sqFactors.push(`❌ RSI ${_rsiV}（實測勝率 ${_rsiWr.wr}%＜均 ${_rsiWr.base}%，${_rsiWr.label} 區）${_rsiWr.adj}`);
+    }
+  }
 
   // ⑥+ Kill Zone 時段 ±1（倫敦/紐約開盤獵殺時段品質最高；冷門時段訊號易假）
   {
@@ -9909,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10233,8 +10252,17 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
 
     // ⑦ ADX ±1
     const _rcAdx = parseFloat(_sqCoin.adx) || 20;
-    if (_rcAdx >= 28) _sqRC += 1;
-    else if (_rcAdx < 22) _sqRC -= 1;  // 與建單評分一致（原 <20 不對稱）
+    {
+      const _rcAdxWr = winrateFactorAdj('adx', _rcAdx);
+      if (_rcAdxWr.decided) _sqRC += _rcAdxWr.adj;   // 勝率驗證優先（與建單同源）
+      else if (_rcAdx >= 28) _sqRC += 1;
+      else if (_rcAdx < 22) _sqRC -= 1;              // 樣本不足退回啟發值
+    }
+    // ⑦R RSI 勝率驗證（只扣分守門，與建單同源）
+    {
+      const _rcRsiWr = winrateFactorAdj('rsi', parseFloat(_sqCoin.rsi));
+      if (_rcRsiWr.decided && _rcRsiWr.adj < 0) _sqRC += _rcRsiWr.adj;
+    }
 
     // ⑦+ Kill Zone 時段 ±1（與建單評分一致）
     try {
@@ -10760,11 +10788,28 @@ async function recordSignalsFromScan(data) {
       else if (_ssKzQ?.quality === 'low') { _scanSqScore -= 1; _scanSqFactors.push(`❌ ${_ssKzQ.name}（非主力時段）-1`); }
     }
 
-    // ⑦ ADX ±1
+    // ⑦ ADX — 勝率驗證優先（與建單同一 winrateFactorAdj），樣本不足退回啟發值
     const _ssAdx = parseFloat(coin.adx) || 20;
-    if (_ssAdx >= 28) { _scanSqScore += 1; _scanSqFactors.push(`✅ ADX ${_ssAdx} 趨勢確立 +1`); }
-    else if (_ssAdx >= 22) { _scanSqFactors.push(`⚠️ ADX ${_ssAdx} 趨勢偏弱`); }
-    else { _scanSqScore -= 1; _scanSqFactors.push(`❌ ADX ${_ssAdx} 趨勢過弱 -1`); }
+    {
+      const _ssAdxWr = winrateFactorAdj('adx', _ssAdx);
+      if (_ssAdxWr.decided) {
+        _scanSqScore += _ssAdxWr.adj;
+        _scanSqFactors.push(_ssAdxWr.adj > 0 ? `✅ ADX ${_ssAdx}（實測勝率 ${_ssAdxWr.wr}%）+${_ssAdxWr.adj}`
+          : _ssAdxWr.adj < 0 ? `❌ ADX ${_ssAdx}（實測勝率 ${_ssAdxWr.wr}%＜均 ${_ssAdxWr.base}%）${_ssAdxWr.adj}`
+          : `⬜ ADX ${_ssAdx}（實測與均值無異）`);
+      } else if (_ssAdx >= 28) { _scanSqScore += 1; _scanSqFactors.push(`✅ ADX ${_ssAdx} 趨勢確立 +1`); }
+      else if (_ssAdx >= 22) { _scanSqFactors.push(`⚠️ ADX ${_ssAdx} 趨勢偏弱`); }
+      else { _scanSqScore -= 1; _scanSqFactors.push(`❌ ADX ${_ssAdx} 趨勢過弱 -1`); }
+    }
+    // ⑦R RSI 勝率驗證（只扣分守門）
+    {
+      const _ssRsiV = parseFloat(coin.rsi);
+      const _ssRsiWr = winrateFactorAdj('rsi', _ssRsiV);
+      if (_ssRsiWr.decided && _ssRsiWr.adj < 0) {
+        _scanSqScore += _ssRsiWr.adj;
+        _scanSqFactors.push(`❌ RSI ${_ssRsiV}（實測勝率 ${_ssRsiWr.wr}%＜均 ${_ssRsiWr.base}%）${_ssRsiWr.adj}`);
+      }
+    }
 
     // ⑧ Taker 訂單流 ±1
     try {
@@ -14885,6 +14930,37 @@ function wilsonLB(w, n, z = 1.96) {
   if (!n) return 0;
   const p = w / n, z2 = z * z;
   return Math.max(0, (p + z2 / (2 * n) - z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n)) / (1 + z2 / n));
+}
+
+/* ── 勝率驗證因子調整（SQ 因子由「寫死啟發值」升級為「帳戶實測勝率」）──
+   查 learn profile 的分區實際勝率（adxStats/rsiStats/confStats），
+   用 Wilson 上下界對比整體勝率基準，回傳分級調整：
+     樣本 < 5           → decided:false（呼叫端退回原啟發值）
+     勝率上界 ≤ 基準-18  → -2（嚴重偏低，高信心）
+     勝率上界 ≤ 基準-8   → -1（偏低）
+     勝率下界 ≥ 基準+8   → +1（確定優於平均）
+     其餘                → 0（統計上與平均無異）
+   ※ 硬封鎖屬 applyLearnAdjustment，不在此處；此函式只做加分/扣分。 */
+function winrateFactorAdj(field, value) {
+  try {
+    const prof = (typeof getLearnProfile === 'function') ? getLearnProfile() : null;
+    if (!prof || !prof.ready) return { decided: false };
+    const stats = field === 'adx' ? prof.adxStats : field === 'rsi' ? prof.rsiStats : field === 'conf' ? prof.confStats : null;
+    if (!Array.isArray(stats)) return { decided: false };
+    const v = parseFloat(value);
+    if (!isFinite(v)) return { decided: false };
+    const zone = stats.find(z => v >= z.min && v < z.max);
+    if (!zone || (zone.total || 0) < 5) return { decided: false };
+    const n = zone.total, losses = zone.lossCount || 0, wins = n - losses;
+    const base = parseFloat(prof.winRate) || 50;          // 整體勝率基準
+    const lb = wilsonLB(wins, n) * 100;                   // 勝率下界
+    const ub = (1 - wilsonLB(losses, n)) * 100;           // 勝率上界
+    let adj = 0;
+    if      (ub <= base - 18) adj = -2;
+    else if (ub <= base - 8)  adj = -1;
+    else if (lb >= base + 8)  adj = +1;
+    return { decided: true, adj, wr: Math.round(wins / n * 100), n, label: zone.label, base: Math.round(base) };
+  } catch(_e) { return { decided: false }; }
 }
 
 function getProvenLabTags() {
