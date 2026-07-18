@@ -1332,6 +1332,32 @@ function buildPendingPositionSetup(t, currentPrice) {
 }
 
 /* ── ICT Kill Zone 獵殺時段偵測 ────────────────────────────── */
+/* ── 動能過熱懲罰（取代「動能群組總分封頂」的等效、可跨路徑一致實作）──
+   MACD/BB走軌/ADX/放量/足跡Delta/訂單流 高度相關，單邊亢奮時同時亮燈，
+   讓 SQ 在情緒最高點拿最高分＝買在山頂。此處數同向動能指標數量，
+   ≥5 個同時亮＋RSI 過熱（多>72/空<28）＝ −2；≥4 個同向＝ −1。
+   只用 coin 欄位計算，三套評分（建單/掃描/監控）呼叫同一函式，保證同分。 */
+function momentumHeatPenalty(coin, isLong) {
+  try {
+    let n = 0;
+    const macd = parseFloat(coin.macdHist) || 0;
+    if (isLong ? macd > 0 : macd < 0) n++;
+    if ((parseFloat(coin.adx) || 0) >= 28) n++;
+    const vs = coin.volumeStrength || '';
+    if (vs.includes('強') || vs === 'high' || vs.includes('高')) n++;
+    if (coin.bb && (isLong ? coin.bb.walkingBull : coin.bb.walkingBear)) n++;
+    // 相對強弱（動能延伸）
+    if (typeof _btcH4Dir !== 'undefined') { /* 保留：BTC 方向已獨立計分，不重複 */ }
+    const rsi = parseFloat(coin.rsi);
+    const rsiHot = isFinite(rsi) && (isLong ? rsi >= 68 : rsi <= 32);
+    if (rsiHot) n++;
+    const rsiExtreme = isFinite(rsi) && (isLong ? rsi >= 72 : rsi <= 28);
+    if (n >= 5 && rsiExtreme) return -2;
+    if (n >= 4) return -1;
+    return 0;
+  } catch(_e) { return 0; }
+}
+
 function computeKillZone() {
   const now = new Date();
   const t = now.getUTCHours() + now.getUTCMinutes() / 60;
@@ -2686,8 +2712,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
 
   const isDayAligned = isLong ? dayBullSig : dayBearSig;
 
-  // 長線單條件：五週期全部同向 + 長線信心 ≥ 85%
-  const _dayWkAligned = _5tfAligned && ltConf >= 85;
+  // ── 長線單條件改版（2026-07）：HTF 定方向 + LTF 找位置 ──────────────
+  // 舊：五週期(15m+1h+4h+1d+1w)全同向 + ltConf≥85 → 動能全開才上車＝追高買在成熟段。
+  // 新：週線+日線同向（大方向）＋4H 不逆向（不需 15m/1h 同向）＋ltConf≥75；
+  //     再要求價格在折價區/均衡區進場（多單 Discount、空單 Premium）——
+  //     折價區檢查在 _ictPD 算出後（下方）執行，不在此處判定 Premium 就降回短線。
+  const _htfAligned  = isLong ? (wkBullSig && dayBullSig) : (wkBearSig && dayBearSig);
+  const _h4NotOppd   = isLong ? !h4BearSig : !h4BullSig;
+  const _dayWkAligned = _htfAligned && _h4NotOppd && ltConf >= 75;
   let canScaleIn = _dayWkAligned;
   let ltTag = canScaleIn ? ' <span class="lt-tag lt-bull">〔長線單〕</span>' : '';
   // 根據類型更新 dirLabel
@@ -2708,6 +2740,21 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_raw4h?.length >= 5 && typeof detectOrderBlocks   === 'function') _ictOB4h  = detectOrderBlocks(_raw4h, isLong);
     if (_raw4h?.length >= 5 && typeof detectFairValueGaps === 'function') _ictFVG4h = detectFairValueGaps(_raw4h, isLong);
   } catch(_icte) { console.warn('[ICT analysis]', _icte); }
+
+  // ── 長線單折價區把關（HTF 定方向後，LTF 找位置）──────────────────
+  // 大方向對了還要「買在便宜的位置」：多單需 Discount/均衡區，空單需 Premium/均衡區。
+  // 價格在溢價區(多)/折價區(空)＝追高摸頂，降回短線單（大勢仍在，只是位置不好，
+  // 不做長線佈局/加倉，改當短線單處理）。_ictPD 拿不到時放行（不因缺資料誤降級）。
+  let _ltDowngradeReason = '';
+  if (canScaleIn && _ictPD) {
+    const _ltPosOk = isLong
+      ? (_ictPD.zone === 'discount' || _ictPD.zone === 'slight_discount' || _ictPD.zone === 'equilibrium')
+      : (_ictPD.zone === 'premium'  || _ictPD.zone === 'slight_premium'  || _ictPD.zone === 'equilibrium');
+    if (!_ltPosOk) {
+      canScaleIn = false;
+      _ltDowngradeReason = `⏸️ 大方向${isLong ? '偏多' : '偏空'}成立，但價格在${_ictPD.zoneLabel}（${_ictPD.pctInRange.toFixed(0)}%）非理想佈局位，降為短線單，等回${isLong ? '折價' : '溢價'}區再佈局長線`;
+    }
+  }
 
   // ── ICT 五大模型偵測（Turtle Soup / 2022 Core / Unicorn / Silver Bullet）──
   let _turtleSoup = null, _coreModel = null, _unicornModel = null, _silverBullet = null;
@@ -2748,6 +2795,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   // ── 進場點 ──
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
+  if (_ltDowngradeReason) entryReasons.push(_ltDowngradeReason);  // 長線→短線降級說明（折價區把關）
   if (isLong) {
     const near4hSup = _htfSupps.find(s => (price - s) < atr * 1.0);
     const nearSup   = supps[0];
@@ -3063,9 +3111,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
   // ── 止損精修：噪音底線 / 最大風險上限 / VP VAL|VAH 錨點 ──
   try {
-    const _slMinDist = atr * 0.5 * getAdaptiveSlWiden();  // 止損太緊診斷自動加寬噪音底線
+    // 噪音底線 0.5→0.8 ATR（2026-07）：15m 加密貨幣正常噪音 0.8~1.2×ATR，
+    // 0.5 等於把止損放在插針獵殺區。自適應加寬疊加其上（上限 ≈1.1×ATR）。
+    const _slMinDist = atr * 0.8 * getAdaptiveSlWiden();
+    // 止損上限改「價格分層 ∧ ATR 倍數」取小：平靜期用 ATR 收緊、暴動期用分層封頂，
+    // 避免平靜的 BTC 給到 2.5% 過寬、暴動的山寨被 4.5% 綁太窄
     const _slMaxPct  = price > 10000 ? 0.025 : price > 500 ? 0.035 : 0.045;
-    const _slMaxDist = price * _slMaxPct;
+    const _slMaxDist = Math.min(price * _slMaxPct, atr * 3.5);
     if (isLong) {
       if ((entry - sl) < _slMinDist) { sl = entry - _slMinDist; slReason += `（已擴展至ATR噪音底線）`; }
       if ((entry - sl) > _slMaxDist) { sl = entry - _slMaxDist; slReason = `風控上限止損 ${(_slMaxPct*100).toFixed(1)}% — ${fmtPrice(sl)}`; }
@@ -3788,9 +3840,9 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _sqDefChecks  = learnResult?.defenseChecks || [];
   const _sqFailChecks = _sqDefChecks.filter(c => !c.pass && c.type !== 'sugg_ref');
 
-  // ① 其餘時框同向加分（1H / 日線 / 週線）— 4H+15m（短線）或日線+4H+15m（長線）為硬性條件，不重複計分
-  // 硬性條件通過標籤：長線顯示日線+4H+15m，短線顯示4H+15m
-  _sqFactors.push(canScaleIn ? '✅ 日線+4H+15m 三確認（長線硬性條件）' : '✅ 4H+15m 雙確認（短線硬性條件）');
+  // ① 其餘時框同向加分（1H / 日線 / 週線）— 4H+15m（短線）或週線+日線+4H+折價區（長線）為硬性條件，不重複計分
+  // 硬性條件通過標籤：長線顯示週線+日線+4H+折價區，短線顯示4H+15m
+  _sqFactors.push(canScaleIn ? '✅ 週線+日線+4H 同向 + 折價區佈局（長線硬性條件）' : '✅ 4H+15m 雙確認（短線硬性條件）');
   {
     const _sqH1Ok  = h1?.signal?.includes(isLong ? 'bull' : 'bear');
     const _sqH1Op  = h1?.signal?.includes(isLong ? 'bear' : 'bull');
@@ -4108,6 +4160,18 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       }
     }
   } catch(_e) {}
+
+  // ㉗ BTC 4H 方向 ±1（山寨與 BTC 逆勢是最大虧損來源；BTC 本身不計）
+  if (coin.symbol !== 'BTC/USDT' && _btcH4Dir !== 'neutral') {
+    if (isLong ? _btcH4Dir === 'bull' : _btcH4Dir === 'bear') { _sqScore += 1; _sqFactors.push(`✅ ㉗BTC 4H 同向（${_btcH4Dir === 'bull' ? '偏多' : '偏空'}）+1`); }
+    else                                                       { _sqScore -= 1; _sqFactors.push(`❌ ㉗BTC 4H 逆向（${_btcH4Dir === 'bull' ? '偏多' : '偏空'}）-1`); }
+  }
+
+  // ㉘ 動能過熱懲罰（動能指標齊亮＋RSI 過熱＝追高風險）
+  {
+    const _sqHeat = momentumHeatPenalty(coin, isLong);
+    if (_sqHeat < 0) { _sqScore += _sqHeat; _sqFactors.push(`⚠️ ㉘動能過熱，追高風險 ${_sqHeat}`); }
+  }
   // ㉔ VWAP 位置 ±1（與掃描路徑一致）
   try {
     const _sqVwV = _footprintCache[coin.symbol]?.vwap;
@@ -9718,11 +9782,15 @@ function sameDirGuard(tlog, direction, sqScore) {
    山寨訊號在 BTC 急波動期間最容易被掃損，此守門僅擋「新建單」，不影響既有持倉監控。 */
 const _btcPriceHist = [];   // {ts, p}，保留 20 分鐘
 let _btcVolGuardUntil = 0;
+let _btcH4Dir = 'neutral';   // BTC 4H 方向（掃描時更新，供 SQ「BTC 4H 同向」因子跨路徑使用）
 function updateBtcVolGuard(data) {
   try {
     const btc = data?.find(d => d.symbol === 'BTC/USDT');
     const p = parseFloat(btc?.price) || 0;
     if (!p) return;
+    // 擷取 BTC 4H 方向：山寨與 BTC 逆勢是最大虧損來源，供 SQ ±1 因子使用
+    const _bh4 = (btc.h4Signal || '');
+    _btcH4Dir = _bh4.includes('bull') ? 'bull' : _bh4.includes('bear') ? 'bear' : 'neutral';
     const now = Date.now();
     _btcPriceHist.push({ ts: now, p });
     while (_btcPriceHist.length && now - _btcPriceHist[0].ts > 20 * 60 * 1000) _btcPriceHist.shift();
@@ -9841,7 +9909,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10199,6 +10267,14 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
         else if (_sqIsLong ? _rcRel <= -1.5 : _rcRel >= 1.5) _sqRC -= 1;
       }
     } catch(_e) {}
+
+    // ㉗ BTC 4H 方向 ±1（與建單評分一致）
+    if (_sqCoin.symbol !== 'BTC/USDT' && _btcH4Dir !== 'neutral') {
+      if (_sqIsLong ? _btcH4Dir === 'bull' : _btcH4Dir === 'bear') _sqRC += 1; else _sqRC -= 1;
+    }
+
+    // ㉘ 動能過熱懲罰（與建單評分一致）
+    _sqRC += momentumHeatPenalty(_sqCoin, _sqIsLong);
 
     // ㉔ VWAP 位置 ±1（與建單評分一致）
     try {
@@ -10716,6 +10792,18 @@ async function recordSignalsFromScan(data) {
         else if (isLong ? _ssRel <= -1.5 : _ssRel >= 1.5) { _scanSqScore -= 1; _scanSqFactors.push(`❌ 相對強弱逆向（vs BTC ${_ssRel >= 0 ? '+' : ''}${_ssRel.toFixed(1)}%）-1`); }
       }
     } catch(_e) {}
+
+    // ㉗ BTC 4H 方向 ±1（山寨與 BTC 逆勢是最大虧損來源；與建單/監控一致）
+    if (coin.symbol !== 'BTC/USDT' && _btcH4Dir !== 'neutral') {
+      if (isLong ? _btcH4Dir === 'bull' : _btcH4Dir === 'bear') { _scanSqScore += 1; _scanSqFactors.push(`✅ ㉗BTC 4H 同向 +1`); }
+      else { _scanSqScore -= 1; _scanSqFactors.push(`❌ ㉗BTC 4H 逆向 -1`); }
+    }
+
+    // ㉘ 動能過熱懲罰（與建單/監控一致）
+    {
+      const _ssHeat = momentumHeatPenalty(coin, isLong);
+      if (_ssHeat < 0) { _scanSqScore += _ssHeat; _scanSqFactors.push(`⚠️ ㉘動能過熱 ${_ssHeat}`); }
+    }
 
     // ㉔ VWAP 位置 ±1（日內多空掌控 + 過度延伸懲罰）
     try {
@@ -11504,6 +11592,18 @@ async function backgroundMonitorLongTermStatus() {
   }
 }
 
+/* ── 反彈確認幅度（ATR 相對化，取代固定 0.3%）─────────────────
+   固定 0.3% 對 BTC 是有效確認，對高波動山寨只是雜訊（1 分鐘就跳 0.5%）。
+   用進場-止損距離（≈0.8~1.3×ATR）當波動代理：
+   反彈幅度 = clamp(0.15%, 0.25 × 風險距離/entry, 0.8%)。
+   風險距離不可用時退回 0.3%。 */
+function reboundFrac(entry, sl) {
+  const e = parseFloat(entry) || 0, s = parseFloat(sl) || 0;
+  if (e <= 0 || s <= 0) return 0.003;
+  const riskPct = Math.abs(e - s) / e;
+  return Math.min(0.008, Math.max(0.0015, 0.25 * riskPct));
+}
+
 function updateOpenTrades(data) {
   if (!isSignalMaster()) return new Set();  // 非訊號主機：不更新持倉狀態、不發通知
   const tlog = loadTradeLog();
@@ -11570,13 +11670,20 @@ function updateOpenTrades(data) {
       // 信號轉弱（長線單跳過；短線單以 scoreFailed 為主，避免評分短暫波動觸發過早取消）
       // 注意：signalWeak 門檻從 68 移除，改為只在 trendReversed 或 scoreFailed 時才取消
       const signalWeak = false; // 已廢棄：原 nowScore < 68 會讓剛建立的掛單立即被取消（建立門檻75 vs 取消門檻68）
+      // ── 趨勢/評分反轉需連續 2 輪掃描確認（whipsaw 防護）───────────
+      // coin.trend / score 來自 15m 評分，一根大 K 棒就能翻面，
+      // 把基於 4H 結構的掛單瞬間取消、下一輪又翻回。改為累計 2 次才取消：
+      // 本輪反向 → trendRevCount+1；本輪回正 → 歸零；達 2 才執行取消。
+      const _revNow = trendReversed || scoreFailed;
+      if (_revNow) trade.trendRevCount = (trade.trendRevCount || 0) + 1;
+      else if (trade.trendRevCount) { trade.trendRevCount = 0; changed = true; }
       // 精煉單（幣種詳情頁建立，refined=true）保留至自然到期或 SL/TP 觸發；
       // 掃描粗略單（refined=false）才依趨勢/評分自動取消
-      if (!trade.refined && (trendReversed || scoreFailed || signalWeak)) {
+      if (!trade.refined && (trade.trendRevCount || 0) >= 2) {
         const reasons = [];
         if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
-        const cancelReason = reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`;
+        const cancelReason = (reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`) + '（連續 2 輪確認）';
         addCancelCooldown(trade, cancelReason);
         toDeleteIds.add(trade.id);
         changed = true;
@@ -11638,10 +11745,11 @@ function updateOpenTrades(data) {
         const touchedNow = isLong ? cur <= entry * 1.001 : cur >= entry * 0.999;
         if (touchedNow) { trade.entryTouched = true; trade.entryTouchTime = Date.now(); changed = true; }
       }
-      // 步驟2：觸及後需反向收復 0.3%（多單反彈 / 空單回落）確認有接手盤才進場；
+      // 步驟2：觸及後需反向收復（ATR 相對幅度，多單反彈 / 空單回落）確認有接手盤才進場；
       // 觸及後直接續跌破止損的單子，由上方「進場前跌破止損」檢查取消，不會成交。
       if (trade.entryTouched) {
-        const bounceConfirm = isLong ? cur >= entry * 1.003 : cur <= entry * 0.997;
+        const _rf = reboundFrac(entry, trade.sl);
+        const bounceConfirm = isLong ? cur >= entry * (1 + _rf) : cur <= entry * (1 - _rf);
         if (bounceConfirm) {
           trade.status    = 'open';
           trade.entryTime = Date.now();
@@ -11759,10 +11867,11 @@ function updateOpenTrades(data) {
           const touchedLevel = isLong ? cur <= pendingSI.entryLevel : cur >= pendingSI.entryLevel;
           if (touchedLevel) { pendingSI.touched = true; changed = true; }
         }
-        // 步驟2：回踩到位後等反彈確認（多頭反彈 0.3%；空頭回落 0.3%）才進場
+        // 步驟2：回踩到位後等反彈確認（ATR 相對幅度，多頭反彈 / 空頭回落）才進場
+        const _siRf = reboundFrac(pendingSI.entryLevel, trade.sl);
         const bounceConfirm = pendingSI.touched && (
-          isLong  ? cur >= pendingSI.entryLevel * 1.003
-                  : cur <= pendingSI.entryLevel * 0.997
+          isLong  ? cur >= pendingSI.entryLevel * (1 + _siRf)
+                  : cur <= pendingSI.entryLevel * (1 - _siRf)
         );
         if (bounceConfirm) {
           pendingSI.status     = 'open';
@@ -16760,7 +16869,9 @@ function calcRiskPenalty(score) {
    所有計算風控分的路徑（建單/監控/詳情頁/Telegram）一律經此函數，確保扣分一致。 */
 function calcLearnDrag(p) {
   try { if (_getRiskMuteSet().has('learn_drag')) return 0; } catch(_e) {}  // AI 審查豁免：止損建議整體不扣分
-  return Math.min(40, Math.round((p || 0) * 0.85));
+  // 上限 40→25（2026-07）：佔門檻 60 的 2/3 過重，學習引擎已有 5 筆樣本+Wilson 門檻，
+  // 不需要單一維度就能把 conf 從 100 砸到 60 以下
+  return Math.min(25, Math.round((p || 0) * 0.85));
 }
 function isLearnDragMuted() {
   try { return _getRiskMuteSet().has('learn_drag'); } catch(_e) { return false; }
@@ -16817,29 +16928,14 @@ function computeFullRisk(coin, params, isLong) {
     if (recText) recs.push(recText);
   };
 
-  // 1. 風控分
-  if (conf < 65)      addF('f1_conf', 20, `信心偏低（${conf}%）`, '考慮縮小倉位至正常的 40-50%');
-  else if (conf < 72) addF('f1_conf', 10, `信心中等（${conf}%）`, '建議倉位不超過正常的 70%');
-
-  // 2. ADX 趨勢強度
-  const _adx = parseFloat(coin.adx) || 0;
-  if (_adx < 18)      addF('f2_adx', 28, `ADX ${_adx.toFixed(1)} 極弱，無趨勢`, 'ADX 過低，趨勢不明確，強烈建議觀望');
-  else if (_adx < 22) addF('f2_adx', 18, `ADX ${_adx.toFixed(1)} 偏弱`, '趨勢動能不足，易被洗出，適合小倉試單');
-  else if (_adx < 25) addF('f2_adx', 8,  `ADX ${_adx.toFixed(1)} 略低`);
-
-  // 3. 宏觀逆風
-  if (macroOpposePenalty > 15)     addF('f3_macro', 22, '宏觀強逆風', '宏觀方向明顯相反，可考慮降低倉位');
-  else if (macroOpposePenalty > 8) addF('f3_macro', 12, '宏觀中等逆風', '宏觀有逆風，可縮小倉位並設止損');
-  else if (macroOpposePenalty > 3) addF('f3_macro', 5,  '宏觀輕微逆風');
-
-  // 4. AI 趨勢預測逆向
-  if (aiTrendPenalty > 10)     addF('f4_ai', 15, 'AI 趨勢預測逆向', 'AI 週/日預測與進場方向相反，可謹慎操作');
-  else if (aiTrendPenalty > 4) addF('f4_ai', 7,  'AI 趨勢預測輕微逆向');
-
-  // 5. AI 風控歷史記憶
-  if (learnPenalty > 10)     addF('f5_learn', 18, 'AI 風控記憶觸發', '此幣種歷史止損模式頻繁，可等更好進場點');
-  else if (learnPenalty > 5) addF('f5_learn', 9,  'AI 風控記憶輕微觸發', '歷史有止損記錄，可降低倉位比例');
-
+  // ── 去重（2026-07）：f1_conf / f2_adx / f3_macro / f4_ai / f5_learn / f12_sq
+  //   六項已移除。原因：這些維度已在「SQ 因子評分」與「conf 計算」中扣過一次，
+  //   風險分再扣一次形成同一維度重複懲罰 3~4 次，臨界單被連環扣殺，
+  //   也是歷史上需要 mute 機制、取消緩衝、建了又取消的根源。
+  //   風險分改為只承載「SQ 未涵蓋的執行風險」（R/R、數據事件、區間、大週期、
+  //   技術籌碼、巨鯨、量能、MACD、VWAP延伸、輪動、OI）。
+  //   ADX 已在 SQ ±1、conf 的 hardAdxPenalty；宏觀在 SQ ±2、conf macroPenalty；
+  //   AI 趨勢在 SQ ±1、conf aiTrendPenalty；學習記憶在 conf learnDrag；SQ 級別即 conf 本身。
   // 6. R/R 比率
   if (rr1 < 1.2)      addF('f6_rr', 18, `R/R 過低（${rr1}:1）`, 'R/R 不足 1.2:1，風險報酬偏低，可評估是否進場');
   else if (rr1 < 1.5) addF('f6_rr', 8,  `R/R 偏低（${rr1}:1）`, 'R/R 略低，止損設定要精確');
@@ -16865,10 +16961,7 @@ function computeFullRisk(coin, params, isLong) {
     addF('f11_whale', 12, `巨鯨方向逆向（主力${isLong ? '賣出' : '買入'}）`, '主力資金方向與進場方向相反，考慮等巨鯨轉向或縮小倉位');
   }
 
-  // 12. AI 訊號品質
-  const _sqGradeR = params.sqGrade;
-  if (_sqGradeR === 'D')      addF('f12_sq', 12, 'AI 訊號品質 D 級', '多時框確認不足，訊號偏弱，建議等更強訊號再進場');
-  else if (_sqGradeR === 'C') addF('f12_sq', 6,  'AI 訊號品質 C 級', '訊號品質偏低，可縮小倉位或等待更明確信號');
+  // 12. AI 訊號品質（f12_sq）已移除：SQ 級別 = conf 本身，重複懲罰
 
   // 13. 成交量萎縮（成交量不足時趨勢可靠性下降）
   const _volStrR = (coin.volumeStrength || '');
@@ -16978,7 +17071,23 @@ function computeSimpleSetup(coin, isLong) {
     : (isLong ? (coin.score || 50) >= 55 : (coin.score || 50) <= 45);
   // 組合判斷
   const _isShortTerm = _dayAligned && _h4Aligned && _h1Aligned && _15mAligned; // 短線：4 框同向
-  const _isLongTerm  = _isShortTerm && _wkAligned;                              // 長線：短線基礎 + 週線
+  // ── 長線改版（2026-07，與 buildTradeSetup 同philosophy）：HTF 定方向 + LTF 找位置 ──
+  // 舊：週線+日線+4H+1H+15m 五框全同向（動能全開才上車＝追高）。
+  // 新：週線+日線同向（大方向）＋4H 不逆向；不要求 1H/15m 同向。
+  //     並用快取的 Premium/Discount 把關位置：多單在溢價區/空單在折價區 → 降回短線。
+  const _htfDirOk    = _wkAligned && _dayAligned;
+  const _h4NotOppSS  = isLong ? !(coin.h4Signal || '').includes('bear') : !(coin.h4Signal || '').includes('bull');
+  let _isLongTerm    = _htfDirOk && _h4NotOppSS;
+  // 位置把關（快取可用時）：非理想佈局位 → 降回短線
+  try {
+    const _pdSS = _tradeSetupCache[coin.symbol]?.premiumDiscount;
+    if (_isLongTerm && _pdSS) {
+      const _posOk = isLong
+        ? (_pdSS.zone === 'discount' || _pdSS.zone === 'slight_discount' || _pdSS.zone === 'equilibrium')
+        : (_pdSS.zone === 'premium'  || _pdSS.zone === 'slight_premium'  || _pdSS.zone === 'equilibrium');
+      if (!_posOk) _isLongTerm = false;
+    }
+  } catch(_e) {}
   const _mtfBothAlign = _isLongTerm || _isShortTerm;
   const _mtfContraWk  = isLong ? (coin.weeklySignal || '').includes('bear') : (coin.weeklySignal || '').includes('bull');
   const _mtfContraDay = isLong ? (coin.dailySignal  || '').includes('bear') : (coin.dailySignal  || '').includes('bull');
