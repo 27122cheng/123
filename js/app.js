@@ -4201,11 +4201,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_sqLab.delta !== 0) { _sqScore += _sqLab.delta; _sqLab.hits.forEach(h => _sqFactors.push(`㉖${h}`)); }
   } catch(_e) {}
 
-  // 分數 floor 為 0，等級校準（26 因子校準，滿分 ≈ 33 分）
+  // 分數 floor 為 0，等級校準（28 因子校準，滿分 ≈ 34；SSS≥25/SS≥22/S≥18/A≥10/B≥7/C≥4）
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 24 ? 'SSS'
-                 : _sqScore >= 21 ? 'SS'
-                 : _sqScore >= 17 ? 'S'
+  const _sqGrade = _sqScore >= 25 ? 'SSS'
+                 : _sqScore >= 22 ? 'SS'
+                 : _sqScore >= 18 ? 'S'
                  : _sqScore >= 10 ? 'A'
                  : _sqScore >= 7  ? 'B'
                  : _sqScore >= 4  ? 'C' : 'D';
@@ -4428,7 +4428,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     tp1 = _stTp1; tp2 = _stTp2; tp1Reason = _stTp1R; tp2Reason = _stTp2R;
     if (!isRangeMode && isDayAligned) dirLabel = isLong ? '短線做多' : '短線做空';
     else dirLabel = isLong ? '做多' : '做空';
-    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（17分），已降格為短線單`);
+    _sqFactors.push(`⚠️ 長線單訊號品質 ${_sqGrade}（${_sqScore}分）未達 S 級（18分），已降格為短線單`);
     // 若之前是長線單 → 更新 tlog + 發送降格通知
     if (_wasLT) try {
       const _tlogDG = loadTradeLog();
@@ -9909,7 +9909,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -10428,11 +10428,11 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（26 因子含Kill Zone，滿分 ≈ 32 分）
+    // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（28 因子，滿分 ≈ 34）
     _sqRC = Math.max(0, _sqRC);
-    const _rcGrade = _sqRC >= 24 ? 'SSS'
-                   : _sqRC >= 21 ? 'SS'
-                   : _sqRC >= 17 ? 'S'
+    const _rcGrade = _sqRC >= 25 ? 'SSS'
+                   : _sqRC >= 22 ? 'SS'
+                   : _sqRC >= 18 ? 'S'
                    : _sqRC >= 10 ? 'A'
                    : _sqRC >= 7  ? 'B'
                    : _sqRC >= 4  ? 'C' : 'D';
@@ -10682,7 +10682,7 @@ async function recordSignalsFromScan(data) {
     const _scanMacd    = parseFloat(coin.macdHist) || 0;
     const _macdAligned = isLong ? _scanMacd > 0 : _scanMacd < 0;
 
-    // ── 完整版訊號品質評分（4H+15m 硬性條件 + 其餘時框加分，等級門檻 SSS≥24/SS≥21/S≥17/A≥10/B≥7/C≥4/D<4（26 因子含Kill Zone時段校準，滿分 ≈32））──
+    // ── 完整版訊號品質評分（4H+15m 硬性條件 + 其餘時框加分，等級門檻 SSS≥25/SS≥22/S≥18/A≥10/B≥7/C≥4/D<4（28 因子校準，滿分 ≈34））──
     let _scanSqScore = 0;
     const _scanSqFactors = [];
 
@@ -10935,11 +10935,11 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_e) {}
 
-    // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（25 因子校準，滿分 ≈ 31 分）
+    // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（28 因子校準，滿分 ≈ 34）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 24 ? 'SSS'
-                       : _scanSqScore >= 21 ? 'SS'
-                       : _scanSqScore >= 17 ? 'S'
+    const _scanSqGrade = _scanSqScore >= 25 ? 'SSS'
+                       : _scanSqScore >= 22 ? 'SS'
+                       : _scanSqScore >= 18 ? 'S'
                        : _scanSqScore >= 10 ? 'A'
                        : _scanSqScore >= 7  ? 'B'
                        : _scanSqScore >= 4  ? 'C' : 'D';
@@ -10949,7 +10949,7 @@ async function recordSignalsFromScan(data) {
     if (canScaleIn && !['SSS','SS','S'].includes(_scanSqGrade)) {
       if (_scanSqScore < _scanGates.minSq) continue; // 短線也不達標 → 跳過
       canScaleIn = false; // 降格為短線單
-      _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（17分），已降格為短線單`);
+      _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（18分），已降格為短線單`);
     } else if (!canScaleIn && _scanSqScore < _scanGates.minSq) {
       continue; // 短線單也不達標
     }
@@ -10986,7 +10986,7 @@ async function recordSignalsFromScan(data) {
     try {
       const _auditTrade = { direction, entry: setup.entry, sl: setup.sl, tp1: setup.tp1, canScaleIn };
       const _audit = computeSqMonitorScore(_auditTrade, coin, isLong, { wBias, tBias, btcChg24: _btcChg24 });
-      const _auditSqGate = canScaleIn ? 17 : _scanGates.minSq;
+      const _auditSqGate = canScaleIn ? 18 : _scanGates.minSq;
       if (_audit.sq < _auditSqGate) {
         console.log(`[pre-audit] ${coin.symbol} 監控口徑評分 ${_audit.sq} < ${_auditSqGate}，不建單（杜絕建了又取消）`);
         continue;
@@ -11094,7 +11094,7 @@ async function recordSignalsFromScan(data) {
   }
 
   // ── 訊號品質持續監控：掛單未進場前每次掃描用完整 21 因子重新評估，低於 A 級自動取消 ──
-  // 等級門檻：SSS≥24 / SS≥21 / S≥17 / A≥10 / B≥7 / C≥4 / D<4（與建單評分完全一致，26 因子含Kill Zone時段校準）
+  // 等級門檻：SSS≥25 / SS≥22 / S≥18 / A≥10 / B≥7 / C≥4 / D<4（與建單評分完全一致，28 因子校準）
   // ICT結構和圖形確認需要異步 MTF Kline，其餘 ~18 個因子均可從掃描快取即時取得
   const _sqCancelIds = new Set();
   for (const trade of tlog) {
@@ -11120,7 +11120,7 @@ async function recordSignalsFromScan(data) {
     // 緩衝目的：臨界分數的正常波動不應反覆觸發建立→取消
     // 長線單 SQ 降至短線門檻以上但 < S → 降級為短線單繼續持有；低於短線門檻才取消
     const _rcSqGate = Math.max(4, (trade.sqGate ?? 10) - 2);
-    const _rcSqPass = trade.canScaleIn ? _sqRC >= 17 : _sqRC >= _rcSqGate;
+    const _rcSqPass = trade.canScaleIn ? _sqRC >= 18 : _sqRC >= _rcSqGate;
     if (!_rcSqPass) {
       if (trade.canScaleIn && _sqRC >= _rcSqGate) {
         // 長線 → 短線降級
@@ -11132,7 +11132,7 @@ async function recordSignalsFromScan(data) {
         try { sendCancelTelegramNotification(trade, _downgradeReason); } catch(_n) {}
         try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} SQ 降至 ${_rcGrade} 級，長線單降格為短線單`, 'warning'); } catch(_t) {}
       } else {
-        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（17分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`;
+        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（18分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`;
         addCancelCooldown(trade, _sqCancelReason);
         _sqCancelIds.add(trade.id);
         changed = true;
@@ -16761,7 +16761,7 @@ async function checkAndSendAlerts(data) {
           const _aTrade = { direction: dir, entry: notifSetup.entry, sl: notifSetup.sl, tp1: notifSetup.tp1,
                             canScaleIn: notifSetup.isLongTerm === true };
           const _aRes = computeSqMonitorScore(_aTrade, coin, dir === 'long', _aCtx);
-          const _aGate = _aTrade.canScaleIn ? 17 : _alertGates.minSq;
+          const _aGate = _aTrade.canScaleIn ? 18 : _alertGates.minSq;
           if (_aRes.sq < _aGate) {
             _alertAuditPass = false;
             console.log(`[pre-audit] ${coin.symbol} 通知路徑監控口徑評分 ${_aRes.sq} < ${_aGate}，不建單`);
