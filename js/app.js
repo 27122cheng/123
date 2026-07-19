@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716g';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716h';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11703,6 +11703,19 @@ function updateOpenTrades(data) {
       const isLong = trade.direction === 'long';
       const entry  = trade.entry;
 
+      // ── 進場成交（限價單語意，2026-07 回復）──────────────────────
+      // 對應真實掛單：多單價格 ≤ 進場點、空單價格 ≥ 進場點即成交，
+      // 成交價 = 進場點（非現價）。一旦成交立即交由持倉邏輯管理 SL/TP，
+      // 不再套用任何「進場前取消」——避免系統把你實盤已成交的單事後取消。
+      // Q3：過冷卻期後價格已在多單進場點下方/空單進場點上方，仍以進場點成交。
+      if (entry && (isLong ? cur <= entry : cur >= entry)) {
+        trade.status    = 'open';
+        trade.entryTime = Date.now();
+        changed = true;
+        continue;
+      }
+
+      // ── 以下皆為「尚未成交」時的失效取消（使用者可接受的情況）──
       // ── 進場前信號有效性檢查：趨勢反轉或評分跌破門檻則取消掛單 ──
       const nowScore = parseFloat(coin.score) || 50;
       // 趨勢反轉判斷（長線單跳過）
@@ -11737,26 +11750,18 @@ function updateOpenTrades(data) {
         continue;
       }
 
-      // ── 進場前越過止損失效位 → 只在「決定性破壞」才作廢；短暫戳破保留掛單 ──
-      // 掛單未成交＝未虧損。價格短暫戳破失效位又回來，不代表結構破壞，
-      // 不應把整張單殺掉。只有越過失效位超過「風險距離的一半」（趨勢真的走反）
-      // 才作廢；輕微/暫時越過則保留原進場點，待價格回踩到進場位仍依兩段式進場。
+      // ── 尚未成交，價格已越過止損失效位 → 掛單作廢（未成交、無虧損）──
+      // 註：能走到這裡代表上方「限價成交」未觸發（價格未曾到達進場點），
+      // 此時越過止損失效位＝這張單還沒進場就已失效，作廢。使用者可接受此取消。
       const sl = trade.sl;
       if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
-        const _slRisk = Math.abs(entry - sl) || (entry * 0.02);
-        const _slDecisive = isLong ? (cur < sl - _slRisk * 0.5) : (cur > sl + _slRisk * 0.5);
-        if (_slDecisive) {
-          const _slReason = `掛單未成交即失效：進場前價格決定性${isLong ? '跌破' : '漲破'}止損失效位 $${fmtPrice(sl)}（現價 $${fmtPrice(cur)}，越過逾風險半幅代表趨勢反向），掛單作廢（未成交、無虧損）`;
-          addCancelCooldown(trade, _slReason);
-          toDeleteIds.add(trade.id);
-          changed = true;
-          cancelledSymbols.add(trade.symbol);
-          sendCancelTelegramNotification(trade, _slReason);
-          continue;
-        }
-        // 短暫戳破：保留掛單，記錄一次戳破供顯示；不 continue，
-        // 讓下方兩段式進場在價格回踩到原進場位時仍以原進場點成交。
-        if (!trade.slPoked) { trade.slPoked = true; changed = true; }
+        const _slReason = `掛單未成交即失效：進場前價格已${isLong ? '跌破' : '漲破'}止損失效位 $${fmtPrice(sl)}（現價 $${fmtPrice(cur)}），掛單作廢（未成交、無虧損）`;
+        addCancelCooldown(trade, _slReason);
+        toDeleteIds.add(trade.id);
+        changed = true;
+        cancelledSymbols.add(trade.symbol);
+        sendCancelTelegramNotification(trade, _slReason);
+        continue;
       }
 
       // ── 未回踩進場，價格已飛越止盈位 → 取消並通知（機會已過）──
@@ -11786,31 +11791,7 @@ function updateOpenTrades(data) {
         continue;
       }
 
-      // 進場確認：訊號後等 2 分鐘，確保 Telegram 通知已送達且有足夠時間觀察回踩
-      // 設計：T=0 訊號出現 → T<120s 觀察期（不入場）→ T≥120s 等回踩確認
-      const MIN_PENDING_SECS = 120; // 2 分鐘最低觀察期
-      const tradeAge = (Date.now() - (trade.timestamp || 0)) / 1000;
-      if (tradeAge < MIN_PENDING_SECS) continue; // 太新，跳過進場確認
-
-      // ── 兩段式進場確認（與加倉邏輯一致，避免「觸價即進場」接刀）──
-      // 舊邏輯：現價回踩到進場價 ±0.5% 就直接成交 → 動能反向貫穿進場價時
-      // 一樣進場，成交的單子系統性偏向失敗盤（adverse selection），是連虧主因之一。
-      // 步驟1：等回踩觸及進場位（容差收緊至 0.1%）
-      if (!trade.entryTouched) {
-        const touchedNow = isLong ? cur <= entry * 1.001 : cur >= entry * 0.999;
-        if (touchedNow) { trade.entryTouched = true; trade.entryTouchTime = Date.now(); changed = true; }
-      }
-      // 步驟2：觸及後需反向收復（ATR 相對幅度，多單反彈 / 空單回落）確認有接手盤才進場；
-      // 觸及後直接續跌破止損的單子，由上方「進場前跌破止損」檢查取消，不會成交。
-      if (trade.entryTouched) {
-        const _rf = reboundFrac(entry, trade.sl);
-        const bounceConfirm = isLong ? cur >= entry * (1 + _rf) : cur <= entry * (1 - _rf);
-        if (bounceConfirm) {
-          trade.status    = 'open';
-          trade.entryTime = Date.now();
-          changed = true;
-        }
-      }
+      // 尚未到達進場點、也未失效 → 繼續等待（限價成交由上方限價語意處理）
       continue;
     }
 
@@ -12111,15 +12092,15 @@ async function verifyIntrabarHits() {
       const { entry, tp1, tp2 } = trade;
 
       if (trade.status === 'pending') {
-        // 掛單：用 1m 高低點補「觸及進場位」與「進場前跌破止損」的插針偵測
+        // 掛單：用 1m 高低點補限價成交的插針偵測——區間內若觸及進場點，
+        // 即以進場點成交（多單 low ≤ 進場點、空單 high ≥ 進場點），與主迴圈限價語意一致
+        let _filled = false;
         for (const bar of raw) {
           if (parseFloat(bar[6]) <= sinceTs) continue; // closeTime 在檢查點之前的棒略過
           const hi = parseFloat(bar[2]), lo = parseFloat(bar[3]);
-          if (!trade.entryTouched) {
-            const touchedNow = isLong ? lo <= entry * 1.001 : hi >= entry * 0.999;
-            if (touchedNow) { trade.entryTouched = true; trade.entryTouchTime = Date.now(); changed = true; }
-          }
+          if (entry && (isLong ? lo <= entry : hi >= entry)) { _filled = true; break; }
         }
+        if (_filled) { trade.status = 'open'; trade.entryTime = Date.now(); changed = true; }
         trade.lastWickCheck = Date.now(); changed = true;
         continue;
       }
