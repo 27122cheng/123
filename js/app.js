@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11737,10 +11737,12 @@ function updateOpenTrades(data) {
         continue;
       }
 
-      // ── 進場前已突破止損位 → 立即取消（風控執行）──
+      // ── 進場前價格已越過止損失效位 → 掛單作廢（未成交、無虧損）──
+      // 說明：掛單尚未成交，此處「止損位」是進場的失效價位。價格在成交前
+      // 就越過它，代表若此刻進場會立即被掃損，故直接作廢掛單保護資金。
       const sl = trade.sl;
       if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
-        const _slReason = `進場前價格已${isLong ? '跌破' : '突破'}止損位 $${sl}（現價 $${cur.toPrecision(6)}）`;
+        const _slReason = `掛單未成交即失效：進場前價格已${isLong ? '跌破' : '漲破'}止損失效位 $${fmtPrice(sl)}（現價 $${fmtPrice(cur)}），若進場將立即掃損，掛單作廢（未成交、無虧損）`;
         addCancelCooldown(trade, _slReason);
         toDeleteIds.add(trade.id);
         changed = true;
