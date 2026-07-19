@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716g';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11737,18 +11737,26 @@ function updateOpenTrades(data) {
         continue;
       }
 
-      // ── 進場前價格已越過止損失效位 → 掛單作廢（未成交、無虧損）──
-      // 說明：掛單尚未成交，此處「止損位」是進場的失效價位。價格在成交前
-      // 就越過它，代表若此刻進場會立即被掃損，故直接作廢掛單保護資金。
+      // ── 進場前越過止損失效位 → 只在「決定性破壞」才作廢；短暫戳破保留掛單 ──
+      // 掛單未成交＝未虧損。價格短暫戳破失效位又回來，不代表結構破壞，
+      // 不應把整張單殺掉。只有越過失效位超過「風險距離的一半」（趨勢真的走反）
+      // 才作廢；輕微/暫時越過則保留原進場點，待價格回踩到進場位仍依兩段式進場。
       const sl = trade.sl;
       if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
-        const _slReason = `掛單未成交即失效：進場前價格已${isLong ? '跌破' : '漲破'}止損失效位 $${fmtPrice(sl)}（現價 $${fmtPrice(cur)}），若進場將立即掃損，掛單作廢（未成交、無虧損）`;
-        addCancelCooldown(trade, _slReason);
-        toDeleteIds.add(trade.id);
-        changed = true;
-        cancelledSymbols.add(trade.symbol);
-        sendCancelTelegramNotification(trade, _slReason);
-        continue;
+        const _slRisk = Math.abs(entry - sl) || (entry * 0.02);
+        const _slDecisive = isLong ? (cur < sl - _slRisk * 0.5) : (cur > sl + _slRisk * 0.5);
+        if (_slDecisive) {
+          const _slReason = `掛單未成交即失效：進場前價格決定性${isLong ? '跌破' : '漲破'}止損失效位 $${fmtPrice(sl)}（現價 $${fmtPrice(cur)}，越過逾風險半幅代表趨勢反向），掛單作廢（未成交、無虧損）`;
+          addCancelCooldown(trade, _slReason);
+          toDeleteIds.add(trade.id);
+          changed = true;
+          cancelledSymbols.add(trade.symbol);
+          sendCancelTelegramNotification(trade, _slReason);
+          continue;
+        }
+        // 短暫戳破：保留掛單，記錄一次戳破供顯示；不 continue，
+        // 讓下方兩段式進場在價格回踩到原進場位時仍以原進場點成交。
+        if (!trade.slPoked) { trade.slPoked = true; changed = true; }
       }
 
       // ── 未回踩進場，價格已飛越止盈位 → 取消並通知（機會已過）──
@@ -12325,7 +12333,7 @@ function sendCancelTelegramNotification(trade, reason) {
   // 學習記憶扣分 + 詳細建議
   const learnPen = trade.learnPenalty || 0;
   if (learnPen > 0) {
-    bullets.push(`止損歷史記憶觸發 -${learnPen}%`);
+    bullets.push(`止損歷史記憶觸發：實扣 -${calcLearnDrag(learnPen)} 分（記憶嚴重度 ${learnPen}，扣分上限 25）`);
     try {
       const lr = applyLearnAdjustment(trade.direction, trade.rsi || 50, trade.adx || 20, { skipAdxRule: true });
       (lr.warnings || []).slice(0, 3).forEach(w => bullets.push(`  ↳ ${esc(w)}`));

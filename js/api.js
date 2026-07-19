@@ -800,7 +800,8 @@ function buildWeakenedSignalText(coin, direction, setup, siteUrl = '') {
     deducts.push(`AI 趨勢預測逆向 -${setup.aiTrendPenalty}%`);
   }
   if (setup.learnPenalty > 0) {
-    deducts.push(`止損歷史記憶觸發 -${setup.learnPenalty}%`);
+    // 顯示記憶嚴重度；實際扣分有上限（見上方信心度變化），避免「嚴重度 52% 但風控分卻 75」的誤會
+    deducts.push(`止損歷史記憶觸發（嚴重度 ${setup.learnPenalty}，實扣分以上方信心度變化為準）`);
     (setup.learnWarn || []).slice(0, 2).forEach(w => deducts.push(`  ↳ ${w.slice(0, 55)}`));
   }
 
