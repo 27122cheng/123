@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716i';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716j';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11703,12 +11703,20 @@ function updateOpenTrades(data) {
       const isLong = trade.direction === 'long';
       const entry  = trade.entry;
 
-      // ── 進場成交（限價單語意，2026-07 回復）──────────────────────
-      // 對應真實掛單：多單價格 ≤ 進場點、空單價格 ≥ 進場點即成交，
-      // 成交價 = 進場點（非現價）。一旦成交立即交由持倉邏輯管理 SL/TP，
-      // 不再套用任何「進場前取消」——避免系統把你實盤已成交的單事後取消。
-      // Q3：過冷卻期後價格已在多單進場點下方/空單進場點上方，仍以進場點成交。
-      if (entry && (isLong ? cur <= entry : cur >= entry)) {
+      // ── 進場成交：建單後價格「曾經經過進場點」即算入場（限價單語意）──────
+      // 追蹤建單以來的最高/最低價，只要進場點落在 [最低, 最高] 區間內，
+      // 代表價格曾觸及過進場點 → 以進場點成交（成交價 = 進場點，非現價）。
+      // 用區間而非當下現價，避免 15 秒輪詢間價格掃過進場點又離開而漏判。
+      // 成交後自成交時點起評估 SL/TP，不再套用任何「進場前取消」。
+      if (cur > 0) {
+        const _nHi = Math.max(trade.hiSince ?? cur, cur);
+        const _nLo = Math.min(trade.loSince ?? cur, cur);
+        if (_nHi !== trade.hiSince || _nLo !== trade.loSince) {
+          trade.hiSince = _nHi; trade.loSince = _nLo; changed = true;  // 持久化區間追蹤
+        }
+      }
+      if (entry && trade.loSince != null && trade.hiSince != null
+          && trade.loSince <= entry && trade.hiSince >= entry) {
         trade.status    = 'open';
         trade.entryTime = Date.now();
         changed = true;
@@ -12092,15 +12100,18 @@ async function verifyIntrabarHits() {
       const { entry, tp1, tp2 } = trade;
 
       if (trade.status === 'pending') {
-        // 掛單：用 1m 高低點補限價成交的插針偵測——區間內若觸及進場點，
-        // 即以進場點成交（多單 low ≤ 進場點、空單 high ≥ 進場點），與主迴圈限價語意一致
-        let _filled = false;
+        // 掛單：用 1m 高低點更新「建單以來最高/最低」，補足輪詢間隙的插針，
+        // 只要進場點曾落在區間內即以進場點成交（與主迴圈限價語意一致）
         for (const bar of raw) {
           if (parseFloat(bar[6]) <= sinceTs) continue; // closeTime 在檢查點之前的棒略過
           const hi = parseFloat(bar[2]), lo = parseFloat(bar[3]);
-          if (entry && (isLong ? lo <= entry : hi >= entry)) { _filled = true; break; }
+          if (isFinite(hi)) trade.hiSince = Math.max(trade.hiSince ?? hi, hi);
+          if (isFinite(lo)) trade.loSince = Math.min(trade.loSince ?? lo, lo);
         }
-        if (_filled) { trade.status = 'open'; trade.entryTime = Date.now(); changed = true; }
+        if (entry && trade.loSince != null && trade.hiSince != null
+            && trade.loSince <= entry && trade.hiSince >= entry) {
+          trade.status = 'open'; trade.entryTime = Date.now(); changed = true;
+        }
         trade.lastWickCheck = Date.now(); changed = true;
         continue;
       }
