@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716h';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716i';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -16934,11 +16934,44 @@ function calcRiskPenalty(score) {
 
 /* 止損風控扣分（統一入口，2026-07 調降版）：懲罰 × 0.85、上限 40（原為原值直取、上限 45）。
    所有計算風控分的路徑（建單/監控/詳情頁/Telegram）一律經此函數，確保扣分一致。 */
+/* 帳戶整體勝率（連結實驗室 + 實際交易）：供止損記憶扣分上限自適應使用。
+   優先用實際交易(learn profile)；樣本不足時用實驗室機會分析(loadAILab)補充。
+   快取 60 秒避免逐筆重算。 */
+function accountWinrate() {
+  try {
+    const c = accountWinrate._c;
+    if (c && Date.now() - c.ts < 60000) return c.v;
+    let wr = NaN;
+    const prof = (typeof getLearnProfile === 'function') ? getLearnProfile() : null;
+    const profN = prof && prof.ready ? ((prof.wins || 0) + (prof.losses || 0)) : 0;
+    if (profN >= 20) {
+      wr = parseFloat(prof.winRate);
+    } else {
+      const lab = (typeof loadAILab === 'function' ? loadAILab() : []).filter(o => o.status === 'closed');
+      if (lab.length >= 20) wr = lab.filter(o => (o.pnlR || 0) > 0).length / lab.length * 100;
+      else if (prof && prof.ready) wr = parseFloat(prof.winRate);
+    }
+    accountWinrate._c = { ts: Date.now(), v: wr };
+    return wr;
+  } catch(_e) { return NaN; }
+}
+
 function calcLearnDrag(p) {
   try { if (_getRiskMuteSet().has('learn_drag')) return 0; } catch(_e) {}  // AI 審查豁免：止損建議整體不扣分
-  // 上限 40→25（2026-07）：佔門檻 60 的 2/3 過重，學習引擎已有 5 筆樣本+Wilson 門檻，
-  // 不需要單一維度就能把 conf 從 100 砸到 60 以下
-  return Math.min(25, Math.round((p || 0) * 0.85));
+  const _p = p || 0;
+  if (_p <= 0) return 0;
+  // 自適應上限（2026-07）：連結實驗室/實際交易的整體勝率——勝率越差扣越多。
+  // 樣本不足（勝率未知）時退回原上限 25，避免早期無資料就重罰。
+  const wr = accountWinrate();
+  let cap = 25;
+  if (isFinite(wr)) {
+    cap = wr >= 55 ? 18
+        : wr >= 45 ? 25
+        : wr >= 35 ? 35
+        : wr >= 25 ? 45
+        :            55;   // 勝率 <25%：止損記憶可扣到 55（配合風險分最多可把 conf 壓到極低）
+  }
+  return Math.min(cap, Math.round(_p * 0.85));
 }
 function isLearnDragMuted() {
   try { return _getRiskMuteSet().has('learn_drag'); } catch(_e) { return false; }
