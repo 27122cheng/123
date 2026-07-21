@@ -4641,9 +4641,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
     // 全局連續止損熔斷（跨方向長連虧防護）
     if (_canAutoRecord) {
-      const _lsgAuto = lossStreakGuard();
-      if (_lsgAuto.blocked) _canAutoRecord = false;
-      else if (_lsgAuto.strict && !(conf >= 70 && ['SSS','SS','S'].includes(_sqGrade))) _canAutoRecord = false;
+      if (lossStreakGuard().blocked) _canAutoRecord = false;  // 只剩硬停；漸進壓制交給 learnDrag
     }
     if (_canAutoRecord) {
       tlog.unshift({
@@ -9749,21 +9747,23 @@ function lossStreakGuard() {
   try {
     const { streak, lastSlTime } = globalLossStreak();
     const fmtT = ts => new Date(ts).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    // 只保留「硬停」這一獨有功能（連虧到一定程度直接暫停一段時間）；
+    // 「≥3 加嚴」與「解除後 strict」已移除——那部分與自適應 learnDrag（依樣本數+
+    // 止損率漸進加重）重疊，會對同一個「表現差」訊號壓兩次。漸進壓制交給 learnDrag，
+    // 這裡只負責重大連虧時的全局硬停（capital protection，per-signal 無法取代）。
     let res;
     if (streak >= 8) {
       const until = lastSlTime + 24 * 60 * 60 * 1000;
       res = Date.now() < until
-        ? { blocked: true, strict: true, streak, until, reason: `🛑 全局熔斷：連續止損 ${streak} 筆，暫停建單至 ${fmtT(until)}` }
-        : { blocked: false, strict: true, streak, reason: `⚠️ 連虧 ${streak} 筆熔斷解除，加嚴模式（SQ≥12 且風控分≥70）直到出現止盈` };
+        ? { blocked: true, streak, until, reason: `🛑 全局熔斷：連續止損 ${streak} 筆，暫停建單至 ${fmtT(until)}` }
+        : { blocked: false, streak };
     } else if (streak >= 5) {
       const until = lastSlTime + 6 * 60 * 60 * 1000;
       res = Date.now() < until
-        ? { blocked: true, strict: true, streak, until, reason: `🛑 全局熔斷：連續止損 ${streak} 筆，暫停建單至 ${fmtT(until)}` }
-        : { blocked: false, strict: true, streak, reason: `⚠️ 連虧 ${streak} 筆熔斷解除，加嚴模式（SQ≥12 且風控分≥70）直到出現止盈` };
-    } else if (streak >= 3) {
-      res = { blocked: false, strict: true, streak, reason: `⚠️ 連續止損 ${streak} 筆，加嚴模式：僅收 SQ≥12 且風控分≥70 訊號` };
+        ? { blocked: true, streak, until, reason: `🛑 全局熔斷：連續止損 ${streak} 筆，暫停建單至 ${fmtT(until)}` }
+        : { blocked: false, streak };
     } else {
-      res = { blocked: false, strict: false, streak };
+      res = { blocked: false, streak };
     }
     // 熔斷/加嚴狀態提示（每 30 分鐘最多一次，避免洗版）
     if (res.reason && Date.now() - _lsgNoticeShown > 30 * 60 * 1000) {
@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716j';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716k';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11015,13 +11015,8 @@ async function recordSignalsFromScan(data) {
     const _dirGuardMsg = sameDirGuard(_freshTlog, direction, _scanSqScore);
     if (_dirGuardMsg) { console.log('[dir-guard]', coin.symbol, _dirGuardMsg); continue; }
 
-    // 全局連續止損熔斷（跨方向長連虧防護）
-    const _lsgScan = lossStreakGuard();
-    if (_lsgScan.blocked) continue;
-    if (_lsgScan.strict && !(_scanSqScore >= 12 && Math.max(0, (setup.conf || 0) - (_scanRiskPen || 0)) >= 70)) {
-      console.log('[loss-streak] 加嚴模式擋下', coin.symbol);
-      continue;
-    }
+    // 全局連續止損熔斷：只剩重大連虧的硬停；漸進壓制交給自適應 learnDrag
+    if (lossStreakGuard().blocked) continue;
 
     // ── 建單前終審（根本解法，取代 30 分鐘時間寬限）──────────────
     // 用「SQ 監控完全相同的評分函式」預演下一輪監控會怎麼評這筆單：
@@ -11879,6 +11874,8 @@ function updateOpenTrades(data) {
         trade.slWatchUntil = Date.now() + 24 * 60 * 60 * 1000;
         trade.slReversal   = null;
         trade.slTp1        = tp1;  // 觀察目標（原始止盈一）
+        // 秒損標記：進場後 ≤30 分鐘就止損＝一進場就被掃（供 AI 秒損條件分析）
+        trade.immediateStop = !!(trade.entryTime && (Date.now() - trade.entryTime) <= 30 * 60 * 1000);
       }
       // pnlR 統一計算並計入手續費+滑點（taker 進出各約 0.05% 名目價值），
       // 讓報表貼近實盤：止損約 -1.05R、保本約 -0.05R，勝率門檻不再被零成本假設美化
@@ -12163,6 +12160,8 @@ async function verifyIntrabarHits() {
         trade.slWatchUntil = Date.now() + 24 * 60 * 60 * 1000;
         trade.slReversal   = null;
         trade.slTp1        = tp1;
+        // 秒損標記（進場後 ≤30 分鐘就止損）——插針判定的秒損尤其常見
+        trade.immediateStop = !!(trade.entryTime && (Date.now() - trade.entryTime) <= 30 * 60 * 1000);
       }
       if (outcome === 'sl' || outcome === 'be') {
         try { trade.analysis = generateTradeAnalysis(trade); } catch(_e) {}
@@ -15987,6 +15986,22 @@ function _rptBuildYearView(yearTrades, year) {
       </div>`;
     })()}
 
+    ${(() => {
+      const _imm = computeImmStopProfile();
+      if (!_imm.ready) return `<div class="rpt-chart-card"><div class="rpt-chart-title">⚡ 秒損條件分析（一進場就被掃損）</div><div style="color:var(--text3);font-size:0.8rem;padding:8px 4px">止損單 ${_imm.total} 筆，樣本 ≥8 筆後 AI 開始分析哪些條件容易秒損。</div></div>`;
+      const _row = (it, flagged) => `<div style="display:flex;align-items:center;gap:8px;font-size:0.8rem;padding:3px 0">
+        <span style="color:${flagged ? 'var(--bear)' : '#f59e0b'}">${flagged ? '🔴 重點關注' : '👁 觀望'}</span>
+        <span style="color:var(--text2)">${it.label}</span>
+        <span style="margin-left:auto;color:var(--text3)">秒損率 <b style="color:${flagged ? 'var(--bear)' : 'var(--text2)'}">${it.rate}%</b>（${it.immN}/${it.n} 筆）</span></div>`;
+      return `<div class="rpt-chart-card">
+        <div class="rpt-chart-title">⚡ 秒損條件分析（一進場就被掃損；基準秒損率 ${_imm.base}%）</div>
+        ${_imm.flagged.length ? `<div style="margin:4px 0 8px">${_imm.flagged.map(it => _row(it, true)).join('')}</div>
+          <div style="font-size:0.78rem;color:var(--text2);line-height:1.6;background:var(--bear)11;border-left:3px solid var(--bear);padding:8px 12px;border-radius:0 6px 6px 0">🔴 上列條件的單子明顯較常一進場就被掃損，已自動列入風險評估（命中時提高風險分、降低信心）。往後遇到這些條件建議等更好進場點或縮小倉位。</div>`
+          : `<div style="font-size:0.8rem;color:var(--bull);padding:4px 0">✅ 目前沒有統計上顯著的「秒損條件」，各進場條件的秒損率與基準相近。</div>`}
+        ${_imm.watching.length ? `<div style="margin-top:8px;font-size:0.75rem;color:var(--text3)">繼續觀望（樣本或顯著性不足，尚未列入風控）：</div>${_imm.watching.slice(0,4).map(it => _row(it, false)).join('')}` : ''}
+      </div>`;
+    })()}
+
     <div class="rpt-chart-card">
       <div class="rpt-chart-title">帳戶成長曲線（累計 R，從零起算）</div>
       <div class="rpt-chart-wrap">${chartSvg}</div>
@@ -16820,10 +16835,8 @@ async function checkAndSendAlerts(data) {
         && (t.status === 'open' || t.status === 'pending'));
       // 同方向集中度控管（與 recordSignalsFromScan 同一標準）
       const _alertDirGuard = sameDirGuard(_tlog2, dir, notifSetup.sqScore);
-      // 全局連續止損熔斷（與 recordSignalsFromScan 同一標準）
-      const _alertLsg = lossStreakGuard();
-      const _alertLsgPass = !_alertLsg.blocked
-        && (!_alertLsg.strict || (notifConf >= 70 && (notifSetup.sqScore ?? 0) >= 12));
+      // 全局連續止損熔斷：只剩硬停；漸進壓制交給自適應 learnDrag
+      const _alertLsgPass = !lossStreakGuard().blocked;
       // 建單前終審：與 SQ 監控共用 computeSqMonitorScore（根本解法，杜絕建了又取消）
       let _alertAuditPass = true;
       if (!_alreadyIn && !_alertDirGuard && _alertLsgPass) {
@@ -16945,42 +16958,119 @@ function calcRiskPenalty(score) {
 
 /* 止損風控扣分（統一入口，2026-07 調降版）：懲罰 × 0.85、上限 40（原為原值直取、上限 45）。
    所有計算風控分的路徑（建單/監控/詳情頁/Telegram）一律經此函數，確保扣分一致。 */
-/* 帳戶整體勝率（連結實驗室 + 實際交易）：供止損記憶扣分上限自適應使用。
-   優先用實際交易(learn profile)；樣本不足時用實驗室機會分析(loadAILab)補充。
-   快取 60 秒避免逐筆重算。 */
-function accountWinrate() {
+/* 帳戶止損嚴重度 = 統計上有信心的止損率下界（Wilson）。
+   直接用「樣本數 + 止損率」計算：樣本越多、止損率越高 → 值越大（越嚴重）；
+   樣本少時 Wilson 下界自動保守，不會因幾筆倒霉就重罰。
+   優先用實際交易(learn profile)，樣本不足時用實驗室機會分析(loadAILab)補充。快取 60 秒。 */
+function accountLossSeverity() {
   try {
-    const c = accountWinrate._c;
+    const c = accountLossSeverity._c;
     if (c && Date.now() - c.ts < 60000) return c.v;
-    let wr = NaN;
+    let n = 0, losses = 0;
     const prof = (typeof getLearnProfile === 'function') ? getLearnProfile() : null;
     const profN = prof && prof.ready ? ((prof.wins || 0) + (prof.losses || 0)) : 0;
-    if (profN >= 20) {
-      wr = parseFloat(prof.winRate);
-    } else {
+    if (profN >= 15) { n = profN; losses = prof.losses || 0; }
+    else {
       const lab = (typeof loadAILab === 'function' ? loadAILab() : []).filter(o => o.status === 'closed');
-      if (lab.length >= 20) wr = lab.filter(o => (o.pnlR || 0) > 0).length / lab.length * 100;
-      else if (prof && prof.ready) wr = parseFloat(prof.winRate);
+      if (lab.length >= 15) { n = lab.length; losses = lab.filter(o => (o.pnlR || 0) <= 0).length; }
+      else if (profN >= 8) { n = profN; losses = prof.losses || 0; }  // 樣本較少也給（Wilson 會自動保守）
     }
-    accountWinrate._c = { ts: Date.now(), v: wr };
-    return wr;
+    const v = n >= 8 ? wilsonLB(losses, n) : NaN;   // 止損率下界 0~1（含樣本數效應）
+    accountLossSeverity._c = { ts: Date.now(), v };
+    return v;
   } catch(_e) { return NaN; }
+}
+
+/* ── 秒損條件分析（Point 2）──────────────────────────────────────
+   AI 判斷「哪些進場條件容易讓單子一進場就被掃損」，供之後重點關注/繼續觀望。
+   把已平倉的止損單分成「秒損（immediateStop）」與「非秒損」，逐一比對各進場
+   條件（時段/評分強度/巨鯨/量能/BB走軌/方向），用 Wilson 下界找出在秒損中
+   顯著過度出現的條件：
+     樣本足且統計顯著 → flagged（重點關注，回饋為風險扣分）
+     樣本不足          → watching（繼續觀望，只顯示不扣分）
+   回傳 { ready, base, flagged:[{key,label,rate,n}], watching:[...] } */
+function computeImmStopProfile() {
+  try {
+    const c = computeImmStopProfile._c;
+    if (c && Date.now() - c.ts < 60000) return c.v;
+    const sls = loadTradeLog().filter(t => t.status === 'closed' && t.outcome === 'sl' && t.entryTime);
+    const res = { ready: false, base: 0, flagged: [], watching: [], total: sls.length };
+    if (sls.length >= 8) {
+      res.ready = true;
+      const immN = sls.filter(t => t.immediateStop).length;
+      const base = immN / sls.length;   // 秒損在所有止損中的基準比例
+      res.base = Math.round(base * 100);
+      // 各進場條件取值
+      const conds = {
+        '時段-london':  t => t.entryKillZone === 'london',
+        '時段-ny':      t => t.entryKillZone === 'ny',
+        '時段-asia':    t => t.entryKillZone === 'asia',
+        '時段-other':   t => t.entryKillZone === 'other',
+        '評分-weak':    t => t.entryScoreStrength === 'weak',
+        '評分-strong':  t => t.entryScoreStrength === 'strong',
+        '巨鯨逆向':      t => t.entryWhaleBias && ((t.direction==='long'&&t.entryWhaleBias==='bear')||(t.direction==='short'&&t.entryWhaleBias==='bull')),
+        '量能弱':        t => (t.entryVolStrength||'').includes('弱') || (t.entryVolStrength||'').includes('低'),
+        'BB逆向走軌':    t => (t.direction==='long'&&t.entryBBWalkingBear) || (t.direction==='short'&&t.entryBBWalkingBull),
+        '做多':          t => t.direction === 'long',
+        '做空':          t => t.direction === 'short',
+      };
+      for (const [key, fn] of Object.entries(conds)) {
+        const sub = sls.filter(fn);
+        if (sub.length < 4) continue;
+        const subImm = sub.filter(t => t.immediateStop).length;
+        const rate = subImm / sub.length;
+        // 該條件的秒損率下界（Wilson）顯著高於基準 +12pp → 重點關注
+        const lb = wilsonLB(subImm, sub.length) * 100;
+        const item = { key, label: key, rate: Math.round(rate * 100), n: sub.length, immN: subImm };
+        if (sub.length >= 6 && lb >= res.base + 12) res.flagged.push(item);
+        else if (rate > base) res.watching.push(item);
+      }
+      res.flagged.sort((a, b) => b.rate - a.rate);
+      res.watching.sort((a, b) => b.rate - a.rate);
+    }
+    computeImmStopProfile._c = { ts: Date.now(), v: res };
+    return res;
+  } catch(_e) { return { ready: false, base: 0, flagged: [], watching: [], total: 0 }; }
+}
+
+/* 目前幣種是否命中「重點關注的秒損條件」→ 回傳 {hit, penalty, labels} 供風險分使用 */
+function immStopRiskFor(coin, isLong) {
+  try {
+    const prof = computeImmStopProfile();
+    if (!prof.ready || !prof.flagged.length) return { hit: false, penalty: 0, labels: [] };
+    const kz = (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })();
+    const score = isLong ? (coin.score || 50) : 100 - (coin.score || 50);
+    const strength = score >= 75 ? 'strong' : score >= 65 ? 'medium' : 'weak';
+    const cur = {
+      [`時段-${kz}`]: true,
+      [`評分-${strength}`]: true,
+      '巨鯨逆向': coin.whaleData && ((isLong && coin.whaleData.bias==='bear')||(!isLong && coin.whaleData.bias==='bull')),
+      '量能弱': (coin.volumeStrength||'').includes('弱') || (coin.volumeStrength||'').includes('低'),
+      'BB逆向走軌': (isLong && coin.bb?.walkingBear) || (!isLong && coin.bb?.walkingBull),
+      [isLong ? '做多' : '做空']: true,
+    };
+    const labels = [];
+    for (const f of prof.flagged) if (cur[f.key]) labels.push(`${f.label}（秒損率 ${f.rate}%）`);
+    // 命中 1 個 +6 風險分、2 個以上 +12（重點關注 = 提高風險、降 conf）
+    const penalty = labels.length >= 2 ? 12 : labels.length === 1 ? 6 : 0;
+    return { hit: labels.length > 0, penalty, labels };
+  } catch(_e) { return { hit: false, penalty: 0, labels: [] }; }
 }
 
 function calcLearnDrag(p) {
   try { if (_getRiskMuteSet().has('learn_drag')) return 0; } catch(_e) {}  // AI 審查豁免：止損建議整體不扣分
   const _p = p || 0;
   if (_p <= 0) return 0;
-  // 自適應上限（2026-07）：連結實驗室/實際交易的整體勝率——勝率越差扣越多。
-  // 樣本不足（勝率未知）時退回原上限 25，避免早期無資料就重罰。
-  const wr = accountWinrate();
+  // 自適應上限（2026-07）：用「樣本數 + 止損率」的 Wilson 下界計算——
+  // 止損越嚴重（樣本足且止損率高）扣越多；樣本不足時退回上限 25。
+  const lr = accountLossSeverity();  // 有信心的止損率下界（0~1）
   let cap = 25;
-  if (isFinite(wr)) {
-    cap = wr >= 55 ? 18
-        : wr >= 45 ? 25
-        : wr >= 35 ? 35
-        : wr >= 25 ? 45
-        :            55;   // 勝率 <25%：止損記憶可扣到 55（配合風險分最多可把 conf 壓到極低）
+  if (isFinite(lr)) {
+    cap = lr >= 0.75 ? 55   // 止損率下界 ≥75%：止損記憶可扣到 55
+        : lr >= 0.65 ? 45
+        : lr >= 0.55 ? 35
+        : lr >= 0.45 ? 25
+        :              18;  // 止損率下界 <45%（表現好）：輕放
   }
   return Math.min(cap, Math.round(_p * 0.85));
 }
@@ -17123,6 +17213,13 @@ function computeFullRisk(coin, params, isLong) {
           : '下跌由多頭平倉推動而非新空進場，跌勢可能衰竭，留意反彈');
       }
     }
+  } catch(_e) {}
+
+  // 18. 秒損條件（Point 2）：命中「AI 判定容易一進場就被掃損」的條件 → 重點關注
+  try {
+    const _imm = immStopRiskFor(coin, isLong);
+    if (_imm.hit) addF('f18_immstop', _imm.penalty, `秒損高風險條件（${_imm.labels.join('、')}）`,
+      '此組合歷史上一進場就被掃損的比例偏高，建議等更好進場點或縮小倉位');
   } catch(_e) {}
 
   score = Math.min(100, score);
