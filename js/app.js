@@ -9616,7 +9616,7 @@ function triggerRescan() {
     try { recordLabOpportunities(data); } catch(e) {}
     try { updateLabOpportunities(data); } catch(e) {}
     try { updateSLTightnessWatch(data); } catch(e) {}
-    // 驗證策略晉升：實驗室 ≥100 筆樣本且勝率 ≥90% 的分析方式 → 免風控分建正式單
+    // 驗證策略晉升：實驗室 >50 筆樣本且勝率 >75% 的分析方式 → 免風控分建正式單
     try { recordProvenStrategyTrades(data); } catch(e) {}
     // 扣分條件有效性審查（每 6 小時，無預測力的風險條件自動豁免）
     try { maybeAuditPenaltyFactors(); } catch(e) {}
@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716l';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716m';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -14987,11 +14987,9 @@ function getProvenLabTags() {
     stats[t].n++;
     if ((o.pnlR || 0) > 0) stats[t].w++;
   }
-  // 晉升標準改用 Wilson 下界：n≥50 且下界 ≥75%
-  // （≈ 50 筆需 87% 原始勝率、100 筆需 84%、200 筆需 81%——
-  //   比舊規則「100 筆 + 原始 80%」更早捕捉強標籤，同時擋掉運氣灌水）
+  // 晉升/豁免標準（依使用者設定）：樣本數 > 50 且勝率 > 75% → 免風控分建單
   return Object.entries(stats)
-    .filter(([, s]) => s.n >= 50 && wilsonLB(s.w, s.n) >= 0.75)
+    .filter(([, s]) => s.n > 50 && (s.w / s.n) > 0.75)
     .map(([t]) => t);
 }
 
@@ -15032,7 +15030,7 @@ function recordProvenStrategyTrades(data) {
       symbol: coin.symbol, direction: dir, timestamp: Date.now(),
       entryPrice: parseFloat(coin.price) || 0,
       entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
-      entryReason: `⭐ 驗證策略（${hits.join('、')}）：實驗室 ≥100 筆樣本、勝率 ≥80%，免風控分建單`,
+      entryReason: `⭐ 驗證策略（${hits.join('、')}）：實驗室 >50 筆樣本、勝率 >75%，免風控分建單`,
       slReason: setup.slReason, tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
       rsi: parseFloat(coin.rsi) || 50, adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
@@ -15433,7 +15431,7 @@ function renderLabPage() {
   const provenTags = getProvenLabTags();
   const provenHtml = `
     <div style="background:${provenTags.length ? 'rgba(251,191,36,.06)' : 'var(--card)'};border:1px solid ${provenTags.length ? 'rgba(251,191,36,.3)' : 'var(--border)'};border-radius:10px;padding:12px 14px;margin-bottom:12px">
-      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥100 筆樣本且勝率 ≥80% 自動晉升正式系統，免風控分建單）</div>
+      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（>50 筆樣本且勝率 >75% 自動晉升正式系統，免風控分建單）</div>
       ${provenTags.length
         ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${provenTags.map(t => `<span style="font-size:0.74rem;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.4);padding:3px 10px;border-radius:14px;font-weight:700">⭐ ${t}</span>`).join('')}</div>
            <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">命中白名單標籤的訊號會直接建立正式掛單（標記 ⭐ 驗證策略），不經風控分/SQ 門檻，監控中亦不覆核取消</div>`
