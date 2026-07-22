@@ -9928,7 +9928,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716k';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716l';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11827,32 +11827,39 @@ function updateOpenTrades(data) {
       if (Math.abs(_uRt) < 0.3) { trade.timeStopped = true; outcome = 'be'; }
     }
 
+    // ── TP1 後移動停利（優化）：鎖住峰值後方 0.8R，只往獲利方向棘輪不回落 ──
+    // 舊：TP1 後止損固定在成本，衝到接近 TP2 又回落只能保本(0R)，白吐一整段浮盈。
+    // 新：TP1 觸及後隨新高/新低把止損往獲利方向推，鎖住「峰值 − 0.8R」，
+    //     地板為成本(保本)。獲利區止損被觸及＝獲利了結(計為 tp1 贏單)。
+    if (trade.tp1Hit && !outcome) {
+      trade.peakPrice = isLong ? Math.max(trade.peakPrice ?? cur, cur) : Math.min(trade.peakPrice ?? cur, cur);
+      const _peakR   = (isLong ? (trade.peakPrice - entry) : (entry - trade.peakPrice)) / baseRisk;
+      const _lockR   = Math.max(0, _peakR - 0.8);   // 鎖住峰值後方 0.8R（>0 才進獲利區）
+      const _trailSL = isLong ? entry + _lockR * baseRisk : entry - _lockR * baseRisk;
+      if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) { trade.sl = _trailSL; changed = true; }
+    }
+
     if (!outcome) {
       if (isLong) {
         if (cur >= tp2) {
           outcome = 'tp2';
         } else if (cur >= tp1 && !trade.tp1Hit) {
           if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
-          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
+          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損移至成本，之後開始移動停利
           tp1Hits.push({ trade, coin, cur });
-        } else if ((trade.tp1Hit || trade.beArmed) && cur <= entry) {
-          // TP1已觸及 / +1R保本已武裝 後跌回成本 → 自動保本出場
-          outcome = 'be';
-        } else if (cur <= sl) {
-          outcome = 'sl';
+        } else if (cur <= trade.sl) {
+          // 止損被觸及：成本以上=移動停利獲利了結(tp1贏)、成本=保本(be)、成本以下=止損(sl)
+          outcome = trade.sl > entry ? 'tp1' : (trade.sl < entry ? 'sl' : 'be');
         }
       } else {
         if (cur <= tp2) {
           outcome = 'tp2';
         } else if (cur <= tp1 && !trade.tp1Hit) {
           if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
-          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損自動移至成本
+          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損移至成本，之後開始移動停利
           tp1Hits.push({ trade, coin, cur });
-        } else if ((trade.tp1Hit || trade.beArmed) && cur >= entry) {
-          // TP1已觸及 / +1R保本已武裝 後漲回成本 → 自動保本出場
-          outcome = 'be';
-        } else if (cur >= sl) {
-          outcome = 'sl';
+        } else if (cur >= trade.sl) {
+          outcome = trade.sl < entry ? 'tp1' : (trade.sl > entry ? 'sl' : 'be');
         }
       }
     }
@@ -11863,7 +11870,9 @@ function updateOpenTrades(data) {
       if (outcome === 'tp2') {
         trade.exitPrice = tp2;
       } else if (outcome === 'tp1') {
-        trade.exitPrice = tp1;
+        // TP1 後移動停利獲利了結：出場價 = 被觸及的移動止損位（非 TP1 價）
+        trade.exitPrice = trade.sl;
+        trade.trailExit = true;  // 標記：由移動停利出場（供報表識別）
       } else if (outcome === 'be') {
         // 時間止損以現價離場（±0.3R 內），一般保本以成本價離場
         trade.exitPrice = trade.timeStopped ? cur : entry;
@@ -12123,7 +12132,13 @@ async function verifyIntrabarHits() {
         const tp2Hit = tp2 && (isLong ? hi >= tp2 : lo <= tp2);
         const tp1Now = tp1 && !trade.tp1Hit && (isLong ? hi >= tp1 : lo <= tp1);
         // 同一根 K 棒同時觸及 → 保守判定先觸止損（實盤最壞情況）
-        if (slHit) { outcome = (trade.tp1Hit || trade.beArmed) ? 'be' : 'sl'; break; }
+        // 止損位在成本以上(移動停利)=獲利了結 tp1、成本=保本 be、成本以下=止損 sl
+        if (slHit) {
+          outcome = isLong ? (slNow > entry ? 'tp1' : slNow < entry ? 'sl' : 'be')
+                           : (slNow < entry ? 'tp1' : slNow > entry ? 'sl' : 'be');
+          if (outcome === 'tp1') trade.trailExit = true;
+          break;
+        }
         // +1R 提前保本（與 updateOpenTrades 同一標準，用 K 棒高低點判定）
         if (!trade.tp1Hit && !trade.beArmed) {
           const _bR = Math.abs(entry - (trade.baseSl ?? trade.sl)) || 1;
