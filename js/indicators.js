@@ -231,10 +231,54 @@ function fmtDecimals(v) {
 }
 
 /* ── 完整技術分析入口 ────────────────────────────────────── */
+/* ── 嚴格趨勢確認（三關，加分項）───────────────────────────────
+   借用「均線多頭排列 + RSI/KD 動能 + 量能/MACD」的趨勢跟隨紀律：
+   第一關 均線排列：價 > MA7 > MA25 > MA99（多）／價 < MA7 < MA25 < MA99（空）
+   第二關 動能    ：RSI>50 且上行 + KD 在 50 上方黃金交叉（多，空為鏡像）
+   第三關 量能+MACD：量 > MA20均量 + MACD(DIF) 在零軸上方且柱翻紅（多，空鏡像）
+   回傳每方向通過關數（0~3），全過＝高信心趨勢，供 SQ 當純加分項。 */
+function computeStrictTrend(highs, lows, closes, volumes) {
+  try {
+    const n = closes.length;
+    if (n < 30) return null;
+    const price = closes[n - 1];
+    const sma = (arr, p) => { const s = arr.slice(-Math.min(p, arr.length)); return s.reduce((a, b) => a + b, 0) / s.length; };
+    const ma7 = sma(closes, 7), ma25 = sma(closes, 25), ma99 = sma(closes, 99);
+    const rsi = calcRSI(closes, 14), rsiPrev = calcRSI(closes.slice(0, -1), 14);
+    const { macd: dif, hist } = calcMACD(closes);   // dif = MACD 線（零軸判斷）
+    // 隨機指標 KD（%K 週期 9，%D = 3-SMA of %K）
+    const kArr = [];
+    for (let i = 8; i < n; i++) {
+      const hh = Math.max(...highs.slice(i - 8, i + 1));
+      const ll = Math.min(...lows.slice(i - 8, i + 1));
+      kArr.push(hh === ll ? 50 : 100 * (closes[i] - ll) / (hh - ll));
+    }
+    const kK = kArr.length ? kArr[kArr.length - 1] : 50;
+    const kD = kArr.length >= 3 ? (kArr[kArr.length - 1] + kArr[kArr.length - 2] + kArr[kArr.length - 3]) / 3 : kK;
+    const volMA20 = sma(volumes, 20), lastVol = volumes[n - 1];
+    const highVol = lastVol > volMA20;
+
+    // 多頭三關
+    const g1L = price > ma7 && ma7 > ma25 && ma25 > ma99;
+    const g2L = rsi > 50 && rsi > rsiPrev && kK > kD && kK > 50;
+    const g3L = highVol && dif > 0 && hist > 0;
+    const cntL = (g1L ? 1 : 0) + (g2L ? 1 : 0) + (g3L ? 1 : 0);
+    // 空頭三關（鏡像）
+    const g1S = price < ma7 && ma7 < ma25 && ma25 < ma99;
+    const g2S = rsi < 50 && rsi < rsiPrev && kK < kD && kK < 50;
+    const g3S = highVol && dif < 0 && hist < 0;
+    const cntS = (g1S ? 1 : 0) + (g2S ? 1 : 0) + (g3S ? 1 : 0);
+    return {
+      long:  { g1: g1L, g2: g2L, g3: g3L, count: cntL, pass: cntL === 3 },
+      short: { g1: g1S, g2: g2S, g3: g3S, count: cntS, pass: cntS === 3 },
+    };
+  } catch (_e) { return null; }
+}
+
 function analyzeKlines(symbol, raw) {
   if (!raw || raw.length < 30) return null;
 
-  const { opens, highs, lows, closes, quoteVols } = parseKlines(raw);
+  const { opens, highs, lows, closes, volumes, quoteVols } = parseKlines(raw);
   const price = closes[closes.length - 1];
 
   const rsi    = calcRSI(closes, 14);
@@ -264,9 +308,11 @@ function analyzeKlines(symbol, raw) {
 
   const bb       = computeBBSignal(raw);
   const patterns = detect123And2B(highs, lows, closes);
+  const strictTrend = computeStrictTrend(highs, lows, closes, volumes);
 
   return {
     symbol,
+    strictTrend,
     price:      fmtDecimals(price),
     rsi:        parseFloat(rsi.toFixed(1)),
     adx:        parseFloat(adx.toFixed(1)),

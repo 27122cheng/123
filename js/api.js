@@ -562,6 +562,7 @@ function enrichData(raw) {
       h1Rsi:           item.h1Rsi             ?? null,
       bb:              item.bb                ?? null,
       patterns:        item.patterns          ?? null,
+      strictTrend:     item.strictTrend       ?? null,
       dataSrc:         item.dataSrc           ?? null,
       onPionex:        item.onPionex          ?? null,
     };
