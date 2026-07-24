@@ -9685,7 +9685,7 @@ function triggerRescan() {
     try { recordLabOpportunities(data); } catch(e) {}
     try { updateLabOpportunities(data); } catch(e) {}
     try { updateSLTightnessWatch(data); } catch(e) {}
-    // 驗證策略晉升：實驗室 >50 筆樣本且勝率 >75% 的分析方式 → 免風控分建正式單
+    // 驗證策略晉升：實驗室 ≥50 筆樣本且勝率 ≥75% 的分析方式 → 免風控分建正式單
     try { recordProvenStrategyTrades(data); } catch(e) {}
     // 扣分條件有效性審查（每 6 小時，無預測力的風險條件自動豁免）
     try { maybeAuditPenaltyFactors(); } catch(e) {}
@@ -15118,7 +15118,8 @@ function maybeAuditPenaltyFactors() {
   try { auditPenaltyFactors(); } catch(_e) {}
 }
 
-/* ── 驗證策略白名單：實驗室某分析方式 ≥100 筆完結樣本且勝率 ≥80% → 晉升正式系統 ── */
+/* ── 驗證策略白名單：實驗室某分析方式 ≥50 筆完結樣本且勝率 ≥75% → 晉升正式系統
+   （門檻集中於 LAB_MIN_SAMPLES / LAB_MIN_WR，與標籤加分共用同一組） ── */
 /* ── Wilson 95% 信賴下界 ─────────────────────────────────────
    原始勝率在樣本少時會被運氣灌水（10/10 = 100% 但真實可能只有 72%）。
    Wilson 下界回答「以 95% 信心，真實勝率至少是多少」：
@@ -15161,7 +15162,24 @@ function winrateFactorAdj(field, value) {
   } catch(_e) { return { decided: false }; }
 }
 
-function getProvenLabTags() {
+/* ── 實驗室統一門檻（全站唯一來源）──────────────────────────────
+   使用者定案：樣本數 ≥50 且勝率 ≥75% 才開始對實際交易加分；
+   勝率越高加越多，最高 +5 分。實驗室其他處的樣本數/勝率門檻一律沿用此組，
+   避免「晉升標準」與「加分標準」各用一套造成不一致。 */
+const LAB_MIN_SAMPLES = 50;   // 單一標籤最低樣本數
+const LAB_MIN_WR      = 75;   // 開始加分的勝率門檻（%）
+const LAB_MAX_BONUS   = 5;    // 加分上限
+/* 勝率 → 加分（越高加越多，75% 起跳、95% 封頂 +5） */
+function labWrToBonus(wr) {
+  if (wr < LAB_MIN_WR) return 0;
+  if (wr >= 95) return 5;
+  if (wr >= 90) return 4;
+  if (wr >= 85) return 3;
+  if (wr >= 80) return 2;
+  return 1;                   // 75 ≤ wr < 80
+}
+/* 標籤統計（實驗室已完結樣本，依 pnlR>0 判定勝負） */
+function labTagStats() {
   const closed = loadAILab().filter(o => o.status === 'closed');
   const stats = {};
   for (const o of closed) for (const t of (o.tags || [])) {
@@ -15169,9 +15187,14 @@ function getProvenLabTags() {
     stats[t].n++;
     if ((o.pnlR || 0) > 0) stats[t].w++;
   }
-  // 晉升/豁免標準（依使用者設定）：樣本數 > 50 且勝率 > 75% → 免風控分建單
+  return { stats, closedCount: closed.length };
+}
+
+function getProvenLabTags() {
+  const { stats } = labTagStats();
+  // 晉升/豁免標準：與加分標準同一組門檻（樣本 ≥50 且勝率 ≥75%）
   return Object.entries(stats)
-    .filter(([, s]) => s.n > 50 && (s.w / s.n) > 0.75)
+    .filter(([, s]) => s.n >= LAB_MIN_SAMPLES && (s.w / s.n * 100) >= LAB_MIN_WR)
     .map(([t]) => t);
 }
 
@@ -15301,8 +15324,9 @@ function getAdaptiveSlWiden() {
 }
 
 /* ── 實驗室 → SQ 評分自動回饋 ────────────────────────────────────
-   實測勝率明顯高/低於基準的分析標籤，自動加/減 SQ 分（漸進式，非二元晉升）。
-   標籤樣本 ≥40 且勝率高於整體基準 +10pp → +1；低於 -10pp → -1。60 秒快取。 */
+   加分：樣本 ≥LAB_MIN_SAMPLES(50) 且勝率 ≥LAB_MIN_WR(75%) → 依勝率分級 +1~+5。
+   扣分：樣本同樣 ≥50，且 Wilson 上界仍低於整體基準 −5pp（統計上確定劣於平均）→ −1。
+   60 秒快取。門檻與 getProvenLabTags 共用同一組常數。 */
 let _labTagWeightCache = null, _labTagWeightTs = 0;
 function getLabTagWeights() {
   const now = Date.now();
@@ -15314,7 +15338,7 @@ function getLabTagWeights() {
     .sort((a, b) => (b.closeTime || b.exitTime || b.timestamp || 0) - (a.closeTime || a.exitTime || a.timestamp || 0))
     .slice(0, 400);
   const weights = {};
-  if (closed.length >= 40) {
+  if (closed.length >= LAB_MIN_SAMPLES) {
     const baseWin = closed.filter(o => (o.pnlR || 0) > 0).length / closed.length * 100;
     const stat = {};
     for (const o of closed) for (const t of (o.tags || [])) {
@@ -15322,20 +15346,20 @@ function getLabTagWeights() {
       stat[t].n++; if ((o.pnlR || 0) > 0) stat[t].w++;
     }
     for (const [t, s] of Object.entries(stat)) {
-      if (s.n < 30) continue;
+      if (s.n < LAB_MIN_SAMPLES) continue;      // 樣本數門檻統一為 50
       const wr = s.w / s.n * 100;
-      // 正向加權：Wilson 下界仍高於基準 +5pp（統計上確定優於平均，非運氣）
-      const lb = wilsonLB(s.w, s.n) * 100;
-      // 負向扣分：Wilson 上界（=1−敗率下界）仍低於基準 −5pp（統計上確定劣於平均）
+      // 加分：勝率 ≥75% 起跳，越高加越多（最高 +5）
+      const bonus = labWrToBonus(wr);
+      if (bonus > 0) { weights[t] = { w: bonus, wr, n: s.n }; continue; }
+      // 扣分：Wilson 上界（=1−敗率下界）仍低於基準 −5pp（統計上確定劣於平均）
       const ub = (1 - wilsonLB(s.n - s.w, s.n)) * 100;
-      if (lb >= baseWin + 5)      weights[t] = { w: 1, wr, n: s.n };
-      else if (ub <= baseWin - 5) weights[t] = { w: -1, wr, n: s.n };
+      if (ub <= baseWin - 5) weights[t] = { w: -1, wr, n: s.n };
     }
   }
   _labTagWeightCache = weights; _labTagWeightTs = now;
   return weights;
 }
-/* 依實測標籤權重計算 SQ 加權（上限 ±2，避免單一來源過度主導） */
+/* 依實測標籤權重計算 SQ 加權（加分上限 +5 依使用者設定，扣分維持 -2） */
 function labTagSqBonus(coin, isLong, btcChg) {
   try {
     const weights = getLabTagWeights();
@@ -15344,9 +15368,9 @@ function labTagSqBonus(coin, isLong, btcChg) {
     let delta = 0; const hits = [];
     for (const t of tags) {
       const w = weights[t];
-      if (w) { delta += w.w; hits.push(`${w.w > 0 ? '✅' : '❌'} 實測${t}（勝率${w.wr.toFixed(0)}%）${w.w > 0 ? '+' : ''}${w.w}`); }
+      if (w) { delta += w.w; hits.push(`${w.w > 0 ? '✅' : '❌'} 實測${t}（勝率${w.wr.toFixed(0)}%／${w.n}筆）${w.w > 0 ? '+' : ''}${w.w}`); }
     }
-    delta = Math.max(-2, Math.min(2, delta));
+    delta = Math.max(-2, Math.min(LAB_MAX_BONUS, delta));
     return { delta, hits };
   } catch(_e) { return { delta: 0, hits: [] }; }
 }
