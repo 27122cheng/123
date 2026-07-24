@@ -1364,38 +1364,31 @@ function momentumHeatPenalty(coin, isLong) {
      P1 15m 趨勢方向（coin.trend）
      P2 BTC 4H 方向（_btcH4Dir，BTC 本身不計）
      P3 嚴格趨勢三關（strictTrend；反向被確認＝逆風）
-   規則（不動等級門檻、不砍乾淨單的量，只重新分配）：
+   規則（只減分、不加分：加分一律交給經實驗室驗證的㉖，避免憑空灌分）：
      • ≥3 支核心逆向 → -6（跟整個大局作對，直接壓到不入場）
-     • ==2 支核心逆向 → -3（壓一個等級，濾掉低精準）
-     • 0 逆向且 3 支全同向 → +1（最高共識＝最高精準，補回交易量）
-     • 其餘（0~1 逆向）→ 0（單因子已各自計分，避免重複扣）
+     • ==2 支核心逆向 → -3（壓一個等級，濾掉低品質）
+     • 0~1 逆向 → 0（單因子已各自計分，避免重複扣；不再補量加分）
    僅用 coin 層欄位，三條評分路徑（建單/監控/掃描）共用以保證同數學。 */
 function coreConsensusDelta(coin, isLong) {
   try {
     const trend = coin.trend || '';
     const trendAgainst = trend && (isLong ? trend.includes('看跌') : trend.includes('看漲'));
-    const trendFor     = trend && (isLong ? trend.includes('看漲') : trend.includes('看跌'));
 
     const isBtc   = coin.symbol === 'BTC/USDT';
     const btcDir  = (typeof _btcH4Dir !== 'undefined') ? _btcH4Dir : 'neutral';
     const btcAgainst = !isBtc && btcDir !== 'neutral' && (isLong ? btcDir === 'bear' : btcDir === 'bull');
-    const btcFor     = !isBtc && btcDir !== 'neutral' && (isLong ? btcDir === 'bull' : btcDir === 'bear');
 
     const st    = coin.strictTrend;
-    const stDir = st && (isLong ? st.long : st.short);
     const stOpp = st && (isLong ? st.short : st.long);
     const stAgainst = !!(stOpp && stOpp.count >= 2);   // 反向被嚴格三關確認＝核心逆風
-    const stFor     = !!(stDir && stDir.count >= 3);   // 本向三關全過＝核心同向
 
     const conflicts = (trendAgainst ? 1 : 0) + (btcAgainst ? 1 : 0) + (stAgainst ? 1 : 0);
-    const agrees    = (trendFor ? 1 : 0) + (btcFor ? 1 : 0) + (stFor ? 1 : 0);
 
     let delta = 0, tag = '';
     if (conflicts >= 3) { delta = -6; tag = `❌ ㉚核心共識全面逆向（趨勢/BTC/嚴格趨勢 ${conflicts} 項逆風）-6`; }
     else if (conflicts === 2) { delta = -3; tag = `❌ ㉚核心共識不足（${conflicts} 項核心逆風）-3`; }
-    else if (conflicts === 0 && agrees >= 3) { delta = 1; tag = `⭐ ㉚核心共識一致（趨勢+BTC+嚴格趨勢全同向）+1`; }
-    return { delta, conflicts, agrees, tag };
-  } catch(_e) { return { delta: 0, conflicts: 0, agrees: 0, tag: '' }; }
+    return { delta, conflicts, tag };
+  } catch(_e) { return { delta: 0, conflicts: 0, tag: '' }; }
 }
 
 /* ── 限價單成交判定（忠實對應實盤限價單：碰到進場點即成交）─────────
