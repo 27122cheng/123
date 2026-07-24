@@ -1398,30 +1398,22 @@ function coreConsensusDelta(coin, isLong) {
   } catch(_e) { return { delta: 0, conflicts: 0, agrees: 0, tag: '' }; }
 }
 
-/* ── 限價單成交判定（穿透緩衝，過濾插針輕觸假成交）──────────────
-   問題：實體限價單掛在進場點，價格「輕觸一下就離開」在對手交易所（或
-   不同資料源）常常不會真的成交，但模擬單只要區間掃過進場點就算入場，
-   造成「實倉沒進、持倉頁卻顯示進場」。
-   解法：
-     1. 用建單參考價（entryPrice）判斷價格「該從哪一側」回到進場點，
-        只認該側的穿透——回踩單只認低點向下穿透、突破單只認高點向上穿透，
-        對向插針不再誤判成交。
-     2. 需真正「穿越」進場點一個緩衝（隨止損距離縮放，約 6% R 或 0.05%），
-        單一插針輕觸不算成交 → 更貼近實盤限價單、順帶略減交易量提升精準度。 */
+/* ── 限價單成交判定（忠實對應實盤限價單：碰到進場點即成交）─────────
+   進場成交要如實反映使用者掛在交易所的限價單，不作為減量／提精準的手段
+   （交易品質靠選單階段的 SQ／核心共識把關，與成交判定無關）。
+   唯一保留的是「方向正確性」——用建單參考價（entryPrice）判斷價格該從
+   哪一側回到進場點，只認該側的觸及：回踩單認低點觸及、突破單認高點觸及，
+   對向插針不誤判成交（限價單本就只在該側成交）。無緩衝，碰到即算成交。 */
 function isLimitFilled(trade) {
   const entry = parseFloat(trade.entry) || 0;
   if (!entry || trade.loSince == null || trade.hiSince == null) return false;
-  const _sl   = parseFloat(trade.sl) || 0;
-  const _risk = _sl > 0 ? Math.abs(entry - _sl) : entry * 0.01;
-  const buf   = Math.max(entry * 0.0005, _risk * 0.06);   // 穿透緩衝：0.05% 與 6%R 取大
-  const ref   = parseFloat(trade.entryPrice) || 0;
+  const ref = parseFloat(trade.entryPrice) || 0;
   if (ref <= 0) {
-    // 舊單無建單參考價：退回「區間穿越 + 任一側穿透」
-    return trade.loSince <= entry && trade.hiSince >= entry &&
-      ((entry - trade.loSince) >= buf || (trade.hiSince - entry) >= buf);
+    // 舊單無建單參考價：退回區間穿越（曾涵蓋進場點即成交）
+    return trade.loSince <= entry && trade.hiSince >= entry;
   }
-  if (ref >= entry) return trade.loSince <= entry - buf;   // 回踩：低點需向下穿透進場點
-  return trade.hiSince >= entry + buf;                     // 突破：高點需向上穿透進場點
+  if (ref >= entry) return trade.loSince <= entry;   // 回踩：低點觸及進場點即成交
+  return trade.hiSince >= entry;                     // 突破：高點觸及進場點即成交
 }
 
 function computeKillZone() {
