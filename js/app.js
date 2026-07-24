@@ -192,7 +192,7 @@ function startRefreshCycle() {
   clearInterval(_bgScanTimer);
   _bgScanTimer = setInterval(() => {
     if (!state.data || !state.data.length) return;
-    try { recordSignalsFromScan(state.data); } catch(e) {}
+    withCreateLock("scanSignals", () => recordSignalsFromScan(state.data));
     try { updateOpenTrades(state.data); } catch(e) {}
     // 1m 插針驗證：補輪詢間隙的止損/止盈觸及（實體交易已掃損但頁面沒發現的根因）
     verifyIntrabarHits().catch(e => console.warn('[wick-check]', e));
@@ -267,7 +267,7 @@ function startRefreshCycle() {
     // 先渲染持倉頁面（使用更新前的資料），避免 updateOpenTrades 刪除後顯示空白
     try { if (state.currentPage === 'positions') renderPositionsPage(); } catch(e) {}
     let _cancelled1 = new Set();
-    try { checkAndSendAlerts(data); } catch(e) { console.error('[refresh] checkAndSendAlerts 錯誤:', e); }
+    withCreateLock("alerts", () => checkAndSendAlerts(data));
     try { _cancelled1 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[refresh] updateOpenTrades 錯誤:', e); }
     verifyIntrabarHits().catch(e => console.warn('[wick-check]', e));
     // 確保宏觀快取就緒，避免掃描時因 _macroCache 為 null 觸發震盪模式封鎖
@@ -277,7 +277,7 @@ function startRefreshCycle() {
         if (_rfg || _rgm) _macroCache = { ...(_rgm || {}), fg: _rfg };
       } catch(_re) {}
     }
-    try { recordSignalsFromScan(data); } catch(e) { console.error('[refresh] recordSignalsFromScan 錯誤:', e); }
+    withCreateLock("scanSignals", () => recordSignalsFromScan(data));
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
     try { recordLabOpportunities(data); } catch(e) { console.error('[refresh] lab record 錯誤:', e); }
     try { updateLabOpportunities(data); } catch(e) { console.error('[refresh] lab update 錯誤:', e); }
@@ -335,7 +335,7 @@ async function manualRefresh() {
   hideScanBar();
   try { applyFilters(); renderAll(); } catch(e) { console.error('[manualRefresh] renderAll 錯誤:', e); }
   let _cancelled2 = new Set();
-  try { checkAndSendAlerts(data); } catch(e) { console.error('[manualRefresh] checkAndSendAlerts 錯誤:', e); }
+  withCreateLock("alerts", () => checkAndSendAlerts(data));
   try { _cancelled2 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[manualRefresh] updateOpenTrades 錯誤:', e); }
   // 確保宏觀快取就緒，避免掃描時因 _macroCache 為 null 觸發震盪模式封鎖
   if (!_macroCache) {
@@ -344,7 +344,7 @@ async function manualRefresh() {
       if (_rfg2 || _rgm2) _macroCache = { ...(_rgm2 || {}), fg: _rfg2 };
     } catch(_re2) {}
   }
-  try { recordSignalsFromScan(data); } catch(e) { console.error('[manualRefresh] recordSignalsFromScan 錯誤:', e); }
+  withCreateLock("scanSignals", () => recordSignalsFromScan(data));
   // AI 機會實驗室 + 驗證策略晉升（手動刷新同步執行）
   try { recordLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab record 錯誤:', e); }
   try { updateLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab update 錯誤:', e); }
@@ -508,7 +508,7 @@ function navigateTo(page, coinSymbol) {
     if (_positionsScanTimer) clearInterval(_positionsScanTimer);
     _positionsScanTimer = setInterval(() => {
       if (state.data && state.data.length) {
-        try { recordSignalsFromScan(state.data); } catch(e) {}
+        withCreateLock("scanSignals", () => recordSignalsFromScan(state.data));
         try { updateOpenTrades(state.data); } catch(e) {}
         try { recordLabOpportunities(state.data); } catch(e) {}
         try { updateLabOpportunities(state.data); } catch(e) {}
@@ -9678,9 +9678,9 @@ function triggerRescan() {
     state.data = data; state.dataSource = source;
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
-    recordSignalsFromScan(data);
+    withCreateLock("scanSignals", () => recordSignalsFromScan(data));
     updateOpenTrades(data);
-    checkAndSendAlerts(data);
+    withCreateLock("alerts", () => checkAndSendAlerts(data));
     // AI 機會實驗室：紙上追蹤（獨立於正式交易，不設風控門檻）
     try { recordLabOpportunities(data); } catch(e) {}
     try { updateLabOpportunities(data); } catch(e) {}
@@ -9711,6 +9711,56 @@ function saveTradeLog(log) {
       console.warn('[saveTradeLog] localStorage 已滿，已自動裁剪舊記錄');
     } catch(e2) { console.error('[saveTradeLog] localStorage 寫入失敗', e2); }
   }
+}
+
+/* ── 建單唯一入口（根治「同一訊號出現好幾筆」）──────────────────
+   問題根源：有多條建單路徑（掃描建單 / 警報建單 / 驗證策略建單）在同一輪
+   掃描中被「不 await」地並行觸發，每條各自 loadTradeLog() 拿到自己的快照、
+   各自 save 回去。典型的 read-modify-write 競態：
+     • 兩條路徑都在對方存檔前通過「已有持倉？」檢查 → 同幣種建出兩筆
+     • 後存檔者用舊快照覆蓋先存檔者 → 單子消失 → 下一輪又重建一次
+   解法：所有建單一律走這個唯一入口。內部「重新載入 → 檢查 → 寫入」全程
+   同步無 await，對 JS 事件迴圈而言是原子操作，不可能被交錯插入。
+   三道去重：
+     1. 同幣種已有活躍單（掛單/持倉）→ 拒絕
+     2. 同幣種同方向在冷卻窗內剛建過 → 拒絕（擋住「連續好幾筆一樣的」）
+     3. 相同指紋（幣種+方向+進場價四捨五入）於 30 分鐘內重複 → 拒絕
+   回傳 true=已建立（log 已存檔），false=被去重擋下。 */
+const _DEDUP_WINDOW_MS = 30 * 60 * 1000;
+function commitNewTrade(newTrade) {
+  try {
+    if (!newTrade || !newTrade.symbol) return false;
+    const log = loadTradeLog();                    // 一律以最新狀態為準，不用呼叫端的舊快照
+    const sym = newTrade.symbol;
+    const dir = newTrade.direction;
+    // ① 同幣種已有活躍單
+    if (log.some(t => t.symbol === sym && (t.status === 'open' || t.status === 'pending'))) return false;
+    const now = newTrade.timestamp || Date.now();
+    // ② 同幣種同方向在去重窗內剛建立過（不論目前狀態，擋重複訊號連發）
+    if (log.some(t => t.symbol === sym && t.direction === dir &&
+        now - (t.timestamp || 0) < _DEDUP_WINDOW_MS)) return false;
+    // ③ 進場價指紋重複（同幣種同方向且進場價幾乎相同）
+    const _fp = (e) => (parseFloat(e) || 0).toPrecision(6);
+    if (newTrade.entry && log.some(t => t.symbol === sym && t.direction === dir &&
+        t.entry && _fp(t.entry) === _fp(newTrade.entry) &&
+        now - (t.timestamp || 0) < _DEDUP_WINDOW_MS)) return false;
+    log.unshift(newTrade);
+    if (log.length > 500) log.splice(500);
+    saveTradeLog(log);
+    return true;
+  } catch(_e) { return false; }
+}
+
+/* 非同步建單路徑的重入鎖：15 秒自動刷新與手動刷新可能重疊，
+   同一函式並行執行是上述競態的主要來源之一。包一層鎖讓後到者直接跳過。 */
+const _createLocks = {};
+function withCreateLock(name, fn) {
+  if (_createLocks[name]) { console.log(`[lock] ${name} 上一輪尚未結束，跳過本次`); return Promise.resolve(); }
+  _createLocks[name] = true;
+  return Promise.resolve()
+    .then(fn)
+    .catch(e => { console.error(`[lock] ${name} 錯誤:`, e); })
+    .finally(() => { _createLocks[name] = false; });
 }
 
 /* 啟動時儲存空間健檢：寫入探針失敗（空間滿）→ 自動裁剪最占空間的歷史資料，
@@ -11201,11 +11251,13 @@ async function recordSignalsFromScan(data) {
         : _scanCurPrice < newTrade.entry * 0.997;  // 空單：現價已跌過進場位 0.3%
       if (_pastEntry) newTrade.note = '等待回踩確認進場';
     }
-    _freshTlog.unshift(newTrade);
-    // 立即存檔：防止同批掃描中下一幣種的 _freshTlog 讀取到舊狀態而覆蓋本次建單
-    saveTradeLog(_freshTlog);
+    // 建單唯一入口（原子：重新載入→去重→存檔），杜絕多路徑並行建出重複訊號
+    if (!commitNewTrade(newTrade)) {
+      console.log(`[dedup] ${coin.symbol} 已有相同訊號，略過重複建單`);
+      continue;
+    }
     // 同步回 tlog 供後續 SQ 監控迴圈使用（splice 保留同一陣列引用）
-    tlog.splice(0, tlog.length, ..._freshTlog);
+    tlog.splice(0, tlog.length, ...loadTradeLog());
     changed = true;
     const _tLabel = canScaleIn ? '長線單' : '短線單';
     const _tIcon  = canScaleIn ? '💎' : '📡';
@@ -15137,8 +15189,9 @@ function recordProvenStrategyTrades(data) {
       sqGrade: 'A', sqScore: null, sqGradeLabel: '驗證策略',
       sqFactors: [`⭐ 驗證策略命中：${hits.join('、')}`, `📊 全部標籤：${tags.join('、')}`],
     };
-    tlog.unshift(nt);
-    saveTradeLog(tlog);
+    // 建單唯一入口（原子去重）：避免與掃描建單路徑並行建出重複訊號
+    if (!commitNewTrade(nt)) { console.log(`[dedup] ${coin.symbol} 驗證策略單重複，略過`); continue; }
+    tlog.splice(0, tlog.length, ...loadTradeLog());
     changed = true;
     try { if (typeof showToast === 'function') showToast(`⭐ 驗證策略：${coin.symbol} ${isLong ? '▲做多' : '▼做空'}（${hits.join('、')}），免風控分建單`, 'success'); } catch(_t) {}
     try {
@@ -17008,8 +17061,12 @@ async function checkAndSendAlerts(data) {
             flipRisks: notifSetup.flipRisks,
           },
         };
-        _tlog2.unshift(_newTrade);
-        saveTradeLog(_tlog2);
+        // 建單唯一入口（原子去重）：避免與掃描/驗證策略路徑並行建出重複訊號
+        if (!commitNewTrade(_newTrade)) {
+          console.log(`[dedup] ${coin.symbol} 警報路徑訊號重複，略過建單`);
+          continue;
+        }
+        _tlog2.splice(0, _tlog2.length, ...loadTradeLog());
         // ── 建單當下即時發送通知（≤3 秒同步要求）──────────────
         // 舊設計：pendingNotify 交給 updateOpenTrades 延遲重驗後才發，最壞晚 15 秒。
         // 建單前終審已用「SQ 監控同一套數學」驗證過（pre-audit），延遲重驗不再必要。
