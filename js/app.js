@@ -1358,6 +1358,46 @@ function momentumHeatPenalty(coin, isLong) {
   } catch(_e) { return 0; }
 }
 
+/* ── ㉚ 核心共識守門（非線性精準度過濾）──────────────────────────
+   線性加總制會讓「邊緣因子灌水、核心論點打架」的低精準單拿到高分。
+   本函式只看三支「核心、彼此獨立」的方向支柱：
+     P1 15m 趨勢方向（coin.trend）
+     P2 BTC 4H 方向（_btcH4Dir，BTC 本身不計）
+     P3 嚴格趨勢三關（strictTrend；反向被確認＝逆風）
+   規則（不動等級門檻、不砍乾淨單的量，只重新分配）：
+     • ≥3 支核心逆向 → -6（跟整個大局作對，直接壓到不入場）
+     • ==2 支核心逆向 → -3（壓一個等級，濾掉低精準）
+     • 0 逆向且 3 支全同向 → +1（最高共識＝最高精準，補回交易量）
+     • 其餘（0~1 逆向）→ 0（單因子已各自計分，避免重複扣）
+   僅用 coin 層欄位，三條評分路徑（建單/監控/掃描）共用以保證同數學。 */
+function coreConsensusDelta(coin, isLong) {
+  try {
+    const trend = coin.trend || '';
+    const trendAgainst = trend && (isLong ? trend.includes('看跌') : trend.includes('看漲'));
+    const trendFor     = trend && (isLong ? trend.includes('看漲') : trend.includes('看跌'));
+
+    const isBtc   = coin.symbol === 'BTC/USDT';
+    const btcDir  = (typeof _btcH4Dir !== 'undefined') ? _btcH4Dir : 'neutral';
+    const btcAgainst = !isBtc && btcDir !== 'neutral' && (isLong ? btcDir === 'bear' : btcDir === 'bull');
+    const btcFor     = !isBtc && btcDir !== 'neutral' && (isLong ? btcDir === 'bull' : btcDir === 'bear');
+
+    const st    = coin.strictTrend;
+    const stDir = st && (isLong ? st.long : st.short);
+    const stOpp = st && (isLong ? st.short : st.long);
+    const stAgainst = !!(stOpp && stOpp.count >= 2);   // 反向被嚴格三關確認＝核心逆風
+    const stFor     = !!(stDir && stDir.count >= 3);   // 本向三關全過＝核心同向
+
+    const conflicts = (trendAgainst ? 1 : 0) + (btcAgainst ? 1 : 0) + (stAgainst ? 1 : 0);
+    const agrees    = (trendFor ? 1 : 0) + (btcFor ? 1 : 0) + (stFor ? 1 : 0);
+
+    let delta = 0, tag = '';
+    if (conflicts >= 3) { delta = -6; tag = `❌ ㉚核心共識全面逆向（趨勢/BTC/嚴格趨勢 ${conflicts} 項逆風）-6`; }
+    else if (conflicts === 2) { delta = -3; tag = `❌ ㉚核心共識不足（${conflicts} 項核心逆風）-3`; }
+    else if (conflicts === 0 && agrees >= 3) { delta = 1; tag = `⭐ ㉚核心共識一致（趨勢+BTC+嚴格趨勢全同向）+1`; }
+    return { delta, conflicts, agrees, tag };
+  } catch(_e) { return { delta: 0, conflicts: 0, agrees: 0, tag: '' }; }
+}
+
 function computeKillZone() {
   const now = new Date();
   const t = now.getUTCHours() + now.getUTCMinutes() / 60;
@@ -4231,6 +4271,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _sqLab = labTagSqBonus(coin, isLong, _sqBtcChg);
     if (_sqLab.delta !== 0) { _sqScore += _sqLab.delta; _sqLab.hits.forEach(h => _sqFactors.push(`㉖${h}`)); }
   } catch(_e) {}
+
+  // ㉚ 核心共識守門（非線性精準度過濾）— 三條評分路徑共用同一函式
+  {
+    const _cc = coreConsensusDelta(coin, isLong);
+    if (_cc.delta !== 0) { _sqScore += _cc.delta; _sqFactors.push(_cc.tag); }
+  }
 
   // 分數 floor 為 0，等級校準（28 因子校準，滿分 ≈ 34；SSS≥25/SS≥22/S≥18/A≥10/B≥7/C≥4）
   _sqScore = Math.max(0, _sqScore);
@@ -10474,6 +10520,9 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
       }
     } catch(_e) {}
 
+    // ㉚ 核心共識守門（與建單/掃描共用同一函式，保證同數學）
+    { const _cc = coreConsensusDelta(_sqCoin, _sqIsLong); _sqRC += _cc.delta; }
+
     // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（28 因子，滿分 ≈ 34）
     _sqRC = Math.max(0, _sqRC);
     const _rcGrade = _sqRC >= 26 ? 'SSS'
@@ -11006,6 +11055,12 @@ async function recordSignalsFromScan(data) {
         if ((_ssPat.opposing?.length || 0) > 0) { _scanSqScore -= Math.min(2, _ssPat.opposing.length); _scanSqFactors.push(`❌ 逆向圖形警告 -${Math.min(2,_ssPat.opposing.length)}`); }
       }
     } catch(_e) {}
+
+    // ㉚ 核心共識守門（與建單/監控共用同一函式，保證同數學）
+    {
+      const _cc = coreConsensusDelta(coin, isLong);
+      if (_cc.delta !== 0) { _scanSqScore += _cc.delta; _scanSqFactors.push(_cc.tag); }
+    }
 
     // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（28 因子校準，滿分 ≈ 34）
     _scanSqScore = Math.max(0, _scanSqScore);
