@@ -113,39 +113,36 @@ function tfToBinanceInterval(tf) {
   return { '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' }[tf] || '15m';
 }
 
-/* ---------- Pionex 顯示價格快取 ---------- */
-let _pionexPrices = {};
+/* ---------- OKX 顯示價格快取 ---------- */
+let _okxPrices = {};
 
-async function refreshPionexPrices() {
+/* OKX 現貨行情：GET /api/v5/market/tickers?instType=SPOT
+   回應 { code:"0", data:[{ instId:"BTC-USDT", last:"...", ... }] } */
+async function refreshOkxPrices() {
   try {
-    const r = await pionexApiFetch('market/tickers', {});
-    if (!r || !r.json) { return; }  // 通道全部不可用（診斷已於 pionexApiFetch 輸出）
-    const j = r.json;
-    if (j.result && Array.isArray(j.data?.tickers)) {
-      j.data.tickers.forEach(tk => {
-        // 支援 BTC_USDT → BTCUSDT 及 BTC_USDT_PERP 等格式
-        _pionexPrices[tk.symbol.replace(/_/g, '')] = parseFloat(tk.close);
-        _pionexPrices[tk.symbol.replace('_USDT', 'USDT').replace(/_/g, '')] = parseFloat(tk.close);
-      });
-    } else {
-      console.warn('[Pionex] 回應格式異常，嘗試備用解析');
-      // 備用：若 result 不在預期位置，嘗試直接找 tickers 陣列
-      const tickers = j.tickers || j.data || [];
-      if (Array.isArray(tickers)) {
-        tickers.forEach(tk => {
-          if (tk.symbol) _pionexPrices[tk.symbol.replace(/_/g, '')] = parseFloat(tk.close || tk.last || tk.price || 0);
-        });
-      }
+    const r = await okxApiFetch('market/tickers', { instType: 'SPOT' });
+    if (!r || !r.json) return;   // 通道全部不可用（診斷已於 okxApiFetch 輸出）
+    const arr = r.json?.data;
+    if (!Array.isArray(arr) || !arr.length) {
+      console.warn('[OKX] 行情回應格式異常');
+      return;
+    }
+    for (const tk of arr) {
+      const inst = String(tk.instId || '');
+      if (!inst) continue;
+      const px = parseFloat(tk.last);
+      if (!isFinite(px) || px <= 0) continue;
+      _okxPrices[inst.replace(/-/g, '')] = px;   // BTC-USDT → BTCUSDT
     }
   } catch(e) {
-    console.warn('[Pionex] 價格取得失敗:', e?.message || e);
+    console.warn('[OKX] 價格取得失敗:', e?.message || e);
   }
 }
 
-function toPionex(sym, binanceCur, level) {
+function toOkx(sym, binanceCur, level) {
   if (!level || !binanceCur) return level;
   const key = sym.replace('/', '').toUpperCase();
-  const px = _pionexPrices[key];
+  const px = _okxPrices[key];
   if (!px || px <= 0) return level;
   return level * (px / binanceCur);
 }
@@ -165,35 +162,39 @@ function buildHeaders(apiKey) {
   return h;
 }
 
-/* ═══════════════════ Pionex K 線引擎（優先數據源）═══════════════
-   實體交易在 Pionex 成交 → 用 Pionex 自己的 K 棒計算進場/止損/支撐壓力
+/* ═══════════════════ OKX K 線引擎（優先數據源）═══════════════
+   實體交易在 OKX 成交 → 用 OKX 自己的 K 棒計算進場/止損/支撐壓力
    與插針判定，和實際成交所完全一致（不再靠幣安價 × 比例換算近似）。
-   Pionex 免費公開 API 沒有的數據（週線/月線、合約費率/OI/多空比、
-   aggTrades 巨鯨、K棒內主動買量）維持使用幣安。
-   任何失敗（限速/格式/斷線）自動降級走幣安，行為等同原版。 */
-const PIONEX_INTERVAL_MAP = { '1m':'1M','5m':'5M','15m':'15M','30m':'30M','1h':'60M','4h':'4H','8h':'8H','12h':'12H','1d':'1D' };
-const _INTERVAL_MS = { '1m':60e3,'5m':3e5,'15m':9e5,'30m':18e5,'1h':36e5,'4h':144e5,'8h':288e5,'12h':432e5,'1d':864e5 };
-let _pionexKFails = 0, _pionexKDisabledUntil = 0;
-let _klineSrcCount = { pionex: 0, binance: 0 };  // 每輪掃描數據源統計
+   OKX 公開 API 沒有的數據（合約費率/OI/多空比、aggTrades 巨鯨、
+   K棒內主動買量）維持使用幣安。
+   任何失敗（限速/格式/斷線）自動降級走幣安，行為等同原版。
+   註：OKX 的 bar 參數大小寫有意義——分鐘小寫(1m/15m)，時/日/週/月大寫
+   (1H/4H/1D/1W/1M)，且原生支援週線與月線（Pionex 時期需退回幣安）。 */
+const OKX_BAR_MAP = { '1m':'1m','3m':'3m','5m':'5m','15m':'15m','30m':'30m',
+  '1h':'1H','2h':'2H','4h':'4H','6h':'6H','12h':'12H','1d':'1D','1w':'1W','1M':'1M' };
+const _INTERVAL_MS = { '1m':60e3,'3m':18e4,'5m':3e5,'15m':9e5,'30m':18e5,'1h':36e5,'2h':72e5,
+  '4h':144e5,'6h':216e5,'12h':432e5,'1d':864e5,'1w':6048e5,'1M':2592e6 };
+let _okxKFails = 0, _okxKDisabledUntil = 0;
+let _klineSrcCount = { okx: 0, binance: 0 };  // 每輪掃描數據源統計
 
-/* ── Pionex 智慧通道：直連 → 同源代理 /api/pionex → 放棄 ──────────
-   Pionex 公開 API 通常不帶 CORS 標頭，瀏覽器直連會被擋（表現為
+/* ── OKX 智慧通道：直連 → 同源代理 /api/okx → 放棄 ──────────
+   OKX 公開 API 通常不帶 CORS 標頭，瀏覽器直連會被擋（表現為
    TypeError: Failed to fetch）。部署在 Vercel 時，同源代理由
-   api/pionex.js serverless function 轉發，繞過 CORS。
-   通道探測結果記憶於 _pionexChannel：'direct' | 'proxy' | null(未定) */
-let _pionexChannel = null;
-let _pionexDirectFails = 0;
-let _pionexDiagShown = false;
+   api/okx.js serverless function 轉發，繞過 CORS。
+   通道探測結果記憶於 _okxChannel：'direct' | 'proxy' | null(未定) */
+let _okxChannel = null;
+let _okxDirectFails = 0;
+let _okxDiagShown = false;
 
-async function pionexApiFetch(path, params, timeoutMs = 8000) {
+async function okxApiFetch(path, params, timeoutMs = 8000) {
   const qs = new URLSearchParams(params).toString();
   const candidates = [];
   // 直連連續失敗 3 次後不再嘗試（典型 CORS 封鎖），只走代理
-  if (_pionexChannel !== 'proxy' && _pionexDirectFails < 3) {
-    candidates.push({ ch: 'direct', url: `https://api.pionex.com/api/v1/${path}?${qs}` });
+  if (_okxChannel !== 'proxy' && _okxDirectFails < 3) {
+    candidates.push({ ch: 'direct', url: `https://www.okx.com/api/v5/${path}?${qs}` });
   }
-  if (_pionexChannel !== 'direct') {
-    candidates.push({ ch: 'proxy', url: `/api/pionex?path=${encodeURIComponent(path)}&${qs}` });
+  if (_okxChannel !== 'direct') {
+    candidates.push({ ch: 'proxy', url: `/api/okx?path=${encodeURIComponent(path)}&${qs}` });
   }
   for (const c of candidates) {
     try {
@@ -202,123 +203,161 @@ async function pionexApiFetch(path, params, timeoutMs = 8000) {
       const r = await fetch(c.url, { signal: ctrl.signal });
       clearTimeout(t);
       if (r.status === 429) return { status: 429, json: null };
-      if (!r.ok) { if (c.ch === 'direct') _pionexDirectFails++; continue; }
+      if (!r.ok) { if (c.ch === 'direct') _okxDirectFails++; continue; }
       const j = await r.json().catch(() => null);
-      if (!j || (j.result === undefined && j.data === undefined)) {
-        if (c.ch === 'direct') _pionexDirectFails++;
+      // OKX 統一回應格式 { code:"0", msg:"", data:[...] }；code 非 "0" 即為業務錯誤
+      if (!j || j.data === undefined) {
+        if (c.ch === 'direct') _okxDirectFails++;
         continue;  // 404 頁面 / 非 JSON（代理不存在等）→ 換下一通道
       }
-      if (_pionexChannel !== c.ch) {
-        _pionexChannel = c.ch;
-        console.info(`[Pionex] 數據通道：${c.ch === 'direct' ? '直連' : '同源代理 /api/pionex'}`);
-        try { if (typeof showToast === 'function' && !_pionexDiagShown) { _pionexDiagShown = true; showToast(`✅ Pionex 數據源已啟用（${c.ch === 'direct' ? '直連' : '代理'}）`, 'success'); } } catch(_t) {}
+      if (String(j.code) !== '0') {
+        console.warn(`[OKX] API 錯誤 code=${j.code} msg=${j.msg || ''}`);
+        return { status: 200, json: null };
+      }
+      if (_okxChannel !== c.ch) {
+        _okxChannel = c.ch;
+        console.info(`[OKX] 數據通道：${c.ch === 'direct' ? '直連' : '同源代理 /api/okx'}`);
+        try { if (typeof showToast === 'function' && !_okxDiagShown) { _okxDiagShown = true; showToast(`✅ OKX 數據源已啟用（${c.ch === 'direct' ? '直連' : '代理'}）`, 'success'); } } catch(_t) {}
       }
       return { status: 200, json: j };
     } catch (e) {
-      if (c.ch === 'direct') _pionexDirectFails++;  // CORS 擋下即落此處
+      if (c.ch === 'direct') _okxDirectFails++;  // CORS 擋下即落此處
     }
   }
-  if (!_pionexDiagShown && _pionexDirectFails >= 3) {
-    _pionexDiagShown = true;
-    console.warn('[Pionex] 直連被擋（CORS）且同源代理不可用。部署到 Vercel 後 /api/pionex 代理會自動生效；目前自動改用幣安。');
-    try { if (typeof showToast === 'function') showToast('ℹ️ Pionex 不可直連（CORS），已自動改用幣安數據。部署 Vercel 代理後將自動切換', 'info'); } catch(_t) {}
+  if (!_okxDiagShown && _okxDirectFails >= 3) {
+    _okxDiagShown = true;
+    console.warn('[OKX] 直連被擋（CORS）且同源代理不可用。部署到 Vercel 後 /api/okx 代理會自動生效；目前自動改用幣安。');
+    try { if (typeof showToast === 'function') showToast('ℹ️ OKX 不可直連（CORS），已自動改用幣安數據。部署 Vercel 代理後將自動切換', 'info'); } catch(_t) {}
   }
   return null;
 }
 
-async function fetchPionexKlines(symbol, interval, limit = 220) {
-  const pInt = PIONEX_INTERVAL_MAP[interval];
-  if (!pInt) return null;                              // 週線/月線 Pionex 不支援 → 幣安
-  if (Date.now() < _pionexKDisabledUntil) return null; // 熔斷中 → 幣安
-  const pSym = symbol.replace('USDT', '_USDT');        // BTCUSDT → BTC_USDT
+/* OKX 現貨 K 線：GET /api/v5/market/candles?instId=BTC-USDT&bar=15m&limit=300
+   回應 data 為「新→舊」倒序陣列，每筆 [ts,o,h,l,vol,volCcy,volCcyQuote,confirm]
+   （ts=開盤毫秒字串）。單次上限 300 根，超過需改走 history-candles。 */
+const OKX_MAX_LIMIT = 300;
+async function fetchOkxKlines(symbol, interval, limit = 220) {
+  const bar = OKX_BAR_MAP[interval];
+  if (!bar) return null;                             // 不支援的週期 → 幣安
+  if (Date.now() < _okxKDisabledUntil) return null;  // 熔斷中 → 幣安
+  const instId = toOkxInstId(symbol);                // BTCUSDT → BTC-USDT
+  if (!instId) return null;
   try {
-    const r = await pionexApiFetch('market/klines',
-      { symbol: pSym, interval: pInt, limit: Math.min(500, limit) });
+    const r = await okxApiFetch('market/candles',
+      { instId, bar, limit: Math.min(OKX_MAX_LIMIT, limit) });
     if (!r) throw new Error('unreachable');
     if (r.status === 429) {  // 被限速 → 立即熔斷 5 分鐘，整批改走幣安
-      _pionexKDisabledUntil = Date.now() + 5 * 60 * 1000;
-      console.warn('[Pionex] K線被限速(429)，5 分鐘內改走幣安');
+      _okxKDisabledUntil = Date.now() + 5 * 60 * 1000;
+      console.warn('[OKX] K線被限速(429)，5 分鐘內改走幣安');
       return null;
     }
-    const j = r.json;
-    const arr = j?.data?.klines;
-    if (!j?.result || !Array.isArray(arr) || arr.length === 0) return null;
+    const arr = r.json?.data;
+    if (!Array.isArray(arr) || arr.length === 0) return null;
     const ms = _INTERVAL_MS[interval] || 6e4;
     const rows = [];
     for (const k of arr) {
-      // 官方格式為物件 {time,open,close,high,low,volume}；防禦性兼容陣列格式
-      const isObj = k && typeof k === 'object' && !Array.isArray(k);
-      const t0 = parseFloat(isObj ? k.time  : k[0]);
-      const o  = parseFloat(isObj ? k.open  : k[1]);
-      const h  = parseFloat(isObj ? k.high  : k[2]);
-      const l  = parseFloat(isObj ? k.low   : k[3]);
-      const c  = parseFloat(isObj ? k.close : k[4]);
-      const v  = parseFloat(isObj ? k.volume: k[5]) || 0;
-      if (!isFinite(t0) || !isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c) || c <= 0) return null; // 格式不符 → 幣安
-      const qv = v * c;
+      if (!Array.isArray(k) || k.length < 6) return null;   // 格式不符 → 幣安
+      const t0 = parseFloat(k[0]);
+      const o  = parseFloat(k[1]);
+      const h  = parseFloat(k[2]);
+      const l  = parseFloat(k[3]);
+      const c  = parseFloat(k[4]);
+      const v  = parseFloat(k[5]) || 0;                     // 基礎幣成交量
+      if (!isFinite(t0) || !isFinite(o) || !isFinite(h) || !isFinite(l) || !isFinite(c) || c <= 0) return null;
+      // volCcyQuote(k[7]) 為計價幣成交額；缺值時以 v*c 估算
+      const qv = parseFloat(k[7]);
+      const quoteVol = isFinite(qv) && qv > 0 ? qv : v * c;
       // 對齊幣安陣列格式 [openTime,o,h,l,c,vol,closeTime,quoteVol,trades,takerBuyBase,takerBuyQuote,ignore]
-      // [9] 主動買量 Pionex 無此數據，以 v/2 佔位——需要真實 taker 買量的足跡圖不走 Pionex
-      rows.push([t0, String(o), String(h), String(l), String(c), String(v), t0 + ms - 1, String(qv), 0, String(v / 2), String(qv / 2), '0']);
+      // [9] 主動買量 OKX K線無此欄位，以 v/2 佔位——需要真實 taker 買量的足跡圖不走 OKX
+      rows.push([t0, String(o), String(h), String(l), String(c), String(v),
+                 t0 + ms - 1, String(quoteVol), 0, String(v / 2), String(quoteVol / 2), '0']);
     }
-    rows.sort((a, b) => a[0] - b[0]);
-    _pionexKFails = 0;
+    rows.sort((a, b) => a[0] - b[0]);   // OKX 回傳新→舊，統一轉為舊→新（同幣安）
+    _okxKFails = 0;
     return rows.slice(-limit);
   } catch (e) {
-    if (++_pionexKFails >= 8) {  // 連續失敗（斷線等）→ 熔斷 10 分鐘
-      _pionexKDisabledUntil = Date.now() + 10 * 60 * 1000;
-      _pionexKFails = 0;
-      console.warn('[Pionex] K線連續失敗，10 分鐘內改走幣安');
+    if (++_okxKFails >= 8) {  // 連續失敗（斷線等）→ 熔斷 10 分鐘
+      _okxKDisabledUntil = Date.now() + 10 * 60 * 1000;
+      _okxKFails = 0;
+      console.warn('[OKX] K線連續失敗，10 分鐘內改走幣安');
     }
     return null;
   }
 }
 
-/* ── Pionex 上架幣種表 + 價格精度（common/symbols，6 小時快取）────
-   用途：① 未上架的幣直接走幣安，不浪費失敗請求
-        ② 顯示價格依 Pionex 的報價精度（quotePrecision）修整小數位
-        ③ 設定頁標示「Pionex 未上架」並提供一鍵移除 */
-let _pionexSymbolSet = null;      // Set('BTCUSDT', ...)
-let _pionexPrecision = {};        // { BTCUSDT: 2, ... } 報價小數位
-let _pionexSymbolsAt = 0;
+/* ── 交易對格式轉換：BTCUSDT / BTC/USDT → BTC-USDT（OKX instId）────
+   只處理 USDT 計價（本系統清單皆為 USDT 交易對）。 */
+function toOkxInstId(symbol) {
+  const s = String(symbol || '').replace('/', '').toUpperCase();
+  if (!s.endsWith('USDT') || s.length <= 4) return null;
+  return s.slice(0, -4) + '-USDT';
+}
 
-async function fetchPionexSymbolSet() {
-  if (_pionexSymbolSet && Date.now() - _pionexSymbolsAt < 6 * 3600 * 1000) return _pionexSymbolSet;
+/* ── OKX 上架幣種表 + 價格精度（public/instruments，6 小時快取）────
+   用途：① 未上架的幣直接走幣安，不浪費失敗請求
+        ② 顯示價格依 OKX 的報價精度（由 tickSz 推導）修整小數位
+        ③ 設定頁標示「OKX 未上架」並提供一鍵移除
+   只收 state==='live' 的現貨交易對（暫停/下架的不算上架）。 */
+let _okxSymbolSet = null;      // Set('BTCUSDT', ...)
+let _okxPrecision = {};        // { BTCUSDT: 2, ... } 報價小數位
+let _okxSymbolsAt = 0;
+
+/* tickSz("0.001") → 小數位數 3；("1") → 0；科學記號亦支援 */
+function _tickSzToDecimals(tickSz) {
+  const t = String(tickSz || '');
+  if (!t) return null;
+  if (t.includes('e') || t.includes('E')) {
+    const n = Number(t);
+    if (!isFinite(n) || n <= 0) return null;
+    return Math.max(0, Math.ceil(-Math.log10(n)));
+  }
+  const dot = t.indexOf('.');
+  if (dot < 0) return 0;
+  return t.length - dot - 1;
+}
+
+async function fetchOkxSymbolSet() {
+  if (_okxSymbolSet && Date.now() - _okxSymbolsAt < 6 * 3600 * 1000) return _okxSymbolSet;
   try {
-    const r = await pionexApiFetch('common/symbols', {});
-    const arr = r?.json?.data?.symbols;
+    const r = await okxApiFetch('public/instruments', { instType: 'SPOT' });
+    const arr = r?.json?.data;
     if (Array.isArray(arr) && arr.length > 0) {
       const set = new Set();
       const prec = {};
-      for (const s of arr) {
-        const sym = String(s.symbol || '').replace(/_/g, '');
-        if (!sym) continue;
+      for (const it of arr) {
+        if (it.state && it.state !== 'live') continue;     // 非交易中不算上架
+        const inst = String(it.instId || '');
+        if (!inst.endsWith('-USDT')) continue;             // 只收 USDT 交易對
+        const sym = inst.replace(/-/g, '');                // BTC-USDT → BTCUSDT
         set.add(sym);
-        const qp = parseInt(s.quotePrecision);
-        if (isFinite(qp) && qp >= 0 && qp <= 12) prec[sym] = qp;
+        const d = _tickSzToDecimals(it.tickSz);
+        if (d != null && d >= 0 && d <= 12) prec[sym] = d;
       }
-      _pionexSymbolSet = set;
-      _pionexPrecision = prec;
-      _pionexSymbolsAt = Date.now();
-      console.info(`[Pionex] 幣種表已更新：${set.size} 個上架交易對`);
+      if (set.size > 0) {
+        _okxSymbolSet = set;
+        _okxPrecision = prec;
+        _okxSymbolsAt = Date.now();
+        console.info(`[OKX] 幣種表已更新：${set.size} 個上架交易對`);
+      }
     }
   } catch (_e) {}
-  return _pionexSymbolSet;
+  return _okxSymbolSet;
 }
 
-/* 智慧路由：Pionex 優先（與實際交易所一致），不支援/未上架/失敗 → 幣安
+/* 智慧路由：OKX 優先（與實際交易所一致），不支援/未上架/失敗 → 幣安
    trackKey：傳入 'BTC/USDT' 時記錄該幣主數據源（供 UI 逐幣標示） */
-let _klineSrcBySymbol = {};       // { 'BTC/USDT': 'pionex'|'binance' }
+let _klineSrcBySymbol = {};       // { 'BTC/USDT': 'okx'|'binance' }
 async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) {
   // 已知未上架 → 直接幣安，不浪費請求
-  if (_pionexSymbolSet && !_pionexSymbolSet.has(symbol)) {
+  if (_okxSymbolSet && !_okxSymbolSet.has(symbol)) {
     const b0 = await fetchKlines(symbol, interval, limit);
     if (b0) { _klineSrcCount.binance++; if (trackKey) _klineSrcBySymbol[trackKey] = 'binance'; }
     return b0;
   }
-  const p = await fetchPionexKlines(symbol, interval, limit);
+  const p = await fetchOkxKlines(symbol, interval, limit);
   if (p && p.length >= Math.min(30, limit)) {
-    _klineSrcCount.pionex++;
-    if (trackKey) _klineSrcBySymbol[trackKey] = 'pionex';
+    _klineSrcCount.okx++;
+    if (trackKey) _klineSrcBySymbol[trackKey] = 'okx';
     return p;
   }
   const b = await fetchKlines(symbol, interval, limit);
@@ -370,8 +409,8 @@ async function fetchAllSpotPrices() {
 }
 
 /* 幣安 24h 成交額批量查詢（成交量強度分類維持幣安口徑）
-   Pionex 是小所，成交量遠小於幣安；量能分類（高/中/低）與巨鯨門檻
-   都以幣安流動性校準，K 線改用 Pionex 後，24h 成交額仍取幣安數值 */
+   OKX 是小所，成交量遠小於幣安；量能分類（高/中/低）與巨鯨門檻
+   都以幣安流動性校準，K 線改用 OKX 後，24h 成交額仍取幣安數值 */
 async function fetchAll24hQuoteVols() {
   const syms = JSON.stringify(loadPairs().map(p => p.s.replace('/', '')));
   for (const host of BINANCE_HOSTS) {
@@ -397,32 +436,32 @@ async function fetchAll24hQuoteVols() {
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
   const batchSize = 20;
-  _klineSrcCount = { pionex: 0, binance: 0 };
+  _klineSrcCount = { okx: 0, binance: 0 };
 
   /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用；
-     同時更新 Pionex 上架幣種表（未上架的幣直接走幣安，價格精度對齊 Pionex） */
+     同時更新 OKX 上架幣種表（未上架的幣直接走幣安，價格精度對齊 OKX） */
   if (typeof updateScanProgress === 'function') updateScanProgress(0);
   const [spotPrices, quoteVols24] = await Promise.all([
-    fetchAllSpotPrices(), fetchAll24hQuoteVols(), fetchPionexSymbolSet().catch(() => null),
+    fetchAllSpotPrices(), fetchAll24hQuoteVols(), fetchOkxSymbolSet().catch(() => null),
   ]);
 
-  /* ── 清單自動同步 Pionex 官方幣種表（每月一次；設定頁可手動觸發）──
-     實體交易在 Pionex：清單只保留官方上架的幣（含未來下架自動清除）。
+  /* ── 清單自動同步 OKX 官方幣種表（每月一次；設定頁可手動觸發）──
+     實體交易在 OKX：清單只保留官方上架的幣（含未來下架自動清除）。
      防呆：官方表需 ≥50 個交易對才可信；同步後至少剩 10 個幣才執行，
-     避免半殘回應誤刪整份清單。Pionex 不可用時不動作（維持原清單）。 */
+     避免半殘回應誤刪整份清單。OKX 不可用時不動作（維持原清單）。 */
   try {
-    const _syncKey  = 'csp_pionex_sync_at';
+    const _syncKey  = 'csp_okx_sync_at';
     const _lastSync = parseInt(localStorage.getItem(_syncKey)) || 0;
-    if (_pionexSymbolSet && _pionexSymbolSet.size >= 50
+    if (_okxSymbolSet && _okxSymbolSet.size >= 50
         && Date.now() - _lastSync > 30 * 24 * 3600 * 1000) {
       const _all  = loadPairs();
-      const _keep = _all.filter(p => _pionexSymbolSet.has(p.s.replace('/', '')));
+      const _keep = _all.filter(p => _okxSymbolSet.has(p.s.replace('/', '')));
       if (_keep.length < _all.length && _keep.length >= 10) {
-        const _removed = _all.filter(p => !_pionexSymbolSet.has(p.s.replace('/', '')));
+        const _removed = _all.filter(p => !_okxSymbolSet.has(p.s.replace('/', '')));
         savePairs(_keep);
         _removed.forEach(p => { try { if (typeof purgeSymbolData === 'function') purgeSymbolData(p.s); } catch(_e) {} });
-        console.info(`[Pionex月度同步] 自動移除 ${_removed.length} 個未上架幣種：${_removed.map(p => p.s.replace('/USDT', '')).join('、')}`);
-        try { if (typeof showToast === 'function') showToast(`✂ 月度同步：移除 ${_removed.length} 個 Pionex 未上架幣種`, 'info'); } catch(_t) {}
+        console.info(`[OKX月度同步] 自動移除 ${_removed.length} 個未上架幣種：${_removed.map(p => p.s.replace('/USDT', '')).join('、')}`);
+        try { if (typeof showToast === 'function') showToast(`✂ 月度同步：移除 ${_removed.length} 個 OKX 未上架幣種`, 'info'); } catch(_t) {}
         try { if (typeof renderPairsList === 'function') renderPairsList(); } catch(_r) {}
       }
       localStorage.setItem(_syncKey, String(Date.now()));  // 無論有無移除都記錄本次同步
@@ -439,11 +478,11 @@ async function fetchAllFromBinance(timeframe) {
       batch.map(pair => {
         const sym = pair.s.replace('/', '');
         // 5 timeframes in parallel: 15m(primary), 1D, 1W, 4H, 1H
-        // 價格類 K 線 Pionex 優先（與實際成交所一致）；週線 Pionex 無 → 幣安
+        // 價格類 K 線 OKX 優先（與實際成交所一致）
         return Promise.allSettled([
           fetchKlinesSmart(sym, interval, 220, pair.s),  // 主時框記錄逐幣數據源
           fetchKlinesSmart(sym, '1d', 100),
-          fetchKlines(sym, '1w', 52),
+          fetchKlinesSmart(sym, '1w', 52),
           fetchKlinesSmart(sym, '4h', 100),
           fetchKlinesSmart(sym, '1h', 100),
         ]);
@@ -472,16 +511,16 @@ async function fetchAllFromBinance(timeframe) {
         // 24h 成交額以幣安為準（量能分類口徑不變）；幣安批量失敗時退回 K 線估算
         const _bQV = quoteVols24[sym];
         const _volFinal = (_bQV != null && isFinite(_bQV)) ? Math.round(_bQV) : analysed.volume;
-        // 數據源標記 + 價格小數位對齊 Pionex 報價精度（quotePrecision）
+        // 數據源標記 + 價格小數位對齊 OKX 報價精度（quotePrecision）
         const _src  = _klineSrcBySymbol[pair.s] || 'binance';
-        const _prec = _pionexPrecision[sym];
-        const _pxFinal = (_src === 'pionex' && _prec != null)
+        const _prec = _okxPrecision[sym];
+        const _pxFinal = (_src === 'okx' && _prec != null)
           ? parseFloat((+analysed.price).toFixed(_prec)) : analysed.price;
         results[idx] = {
           ...analysed,
           price:          _pxFinal,
           dataSrc:        _src,
-          onPionex:       _pionexSymbolSet ? _pionexSymbolSet.has(sym) : null,
+          onOkx:       _okxSymbolSet ? _okxSymbolSet.has(sym) : null,
           volume:         _volFinal,
           trend:          scoreToTrend(analysed.score),
           volumeStrength: getVolStr(_volFinal),
@@ -499,7 +538,7 @@ async function fetchAllFromBinance(timeframe) {
         const fallbackPrice = spotPrices[sym] || pair.p;
         results[idx] = {
           dataSrc: 'binance',
-          onPionex: _pionexSymbolSet ? _pionexSymbolSet.has(sym) : null,
+          onOkx: _okxSymbolSet ? _okxSymbolSet.has(sym) : null,
           symbol: pair.s, trend: '中性', score: 50,
           price:  fmtPrice(fallbackPrice),
           rsi: 50, adx: 20,
@@ -523,8 +562,8 @@ async function fetchAllFromBinance(timeframe) {
     if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
   }
 
-  if (_klineSrcCount.pionex || _klineSrcCount.binance) {
-    console.info(`[數據源] K線 Pionex ${_klineSrcCount.pionex} 筆 / 幣安 ${_klineSrcCount.binance} 筆`);
+  if (_klineSrcCount.okx || _klineSrcCount.binance) {
+    console.info(`[數據源] K線 OKX ${_klineSrcCount.okx} 筆 / 幣安 ${_klineSrcCount.binance} 筆`);
   }
   return results;
 }
@@ -564,7 +603,7 @@ function enrichData(raw) {
       patterns:        item.patterns          ?? null,
       strictTrend:     item.strictTrend       ?? null,
       dataSrc:         item.dataSrc           ?? null,
-      onPionex:        item.onPionex          ?? null,
+      onOkx:        item.onOkx          ?? null,
     };
   });
 }
@@ -657,10 +696,8 @@ async function fetchMTFKlines(symbol) {
   await Promise.allSettled(tfs.map(async tf => {
     const limit = tf === '1w' ? 60 : tf === '1M' ? 24 : 100;
     const minBars = tf === '1w' ? 8 : tf === '1M' ? 6 : 30;
-    // 週線/月線 Pionex 不支援走幣安；其餘價格類 K 線 Pionex 優先
-    const raw = (tf === '1w' || tf === '1M')
-      ? await fetchKlines(base, tf, limit)
-      : await fetchKlinesSmart(base, tf, limit);
+    // OKX 原生支援週線(1W)/月線(1M)，全週期一律 OKX 優先、失敗自動降級幣安
+    const raw = await fetchKlinesSmart(base, tf, limit);
     if (raw && raw.length >= minBars) {
       out[tf] = {
         signal:    analyzeTimeframeSignal(raw),

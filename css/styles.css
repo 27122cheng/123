@@ -213,7 +213,7 @@ a { text-decoration: none; cursor: pointer; }
   font-size: 0.8rem; font-weight: 500; color: var(--text2);
   white-space: nowrap;
 }
-/* K線數據源常駐顯示（Pionex / 幣安），每輪掃描更新 */
+/* K線數據源常駐顯示（OKX / 幣安），每輪掃描更新 */
 .data-src-badge {
   display: flex; align-items: center;
   padding: 5px 12px; border-radius: 20px;
@@ -221,11 +221,11 @@ a { text-decoration: none; cursor: pointer; }
   font-size: 0.74rem; font-weight: 600; color: var(--text2);
   white-space: nowrap; letter-spacing: 0.2px;
 }
-.data-src-badge.src-pionex { color: #00e676; border-color: rgba(0,230,118,0.35); }
+.data-src-badge.src-okx { color: #00e676; border-color: rgba(0,230,118,0.35); }
 .data-src-badge.src-mixed  { color: #00d4ff; border-color: rgba(0,212,255,0.35); }
 .data-src-badge.src-binance{ color: #f0b90b; border-color: rgba(240,185,11,0.35); }
 
-/* 逐幣數據源小圓點（幣種名旁）：綠=Pionex價格 黃=幣安價格 */
+/* 逐幣數據源小圓點（幣種名旁）：綠=OKX價格 黃=幣安價格 */
 .src-dot {
   display: inline-block; width: 6px; height: 6px; border-radius: 50%;
   margin-left: 6px; vertical-align: 2px;
@@ -233,7 +233,7 @@ a { text-decoration: none; cursor: pointer; }
 .src-dot.src-p { background: #00e676; box-shadow: 0 0 4px rgba(0,230,118,0.6); }
 .src-dot.src-b { background: #f0b90b; box-shadow: 0 0 4px rgba(240,185,11,0.6); }
 
-/* 設定頁：Pionex 未上架幣種標示 */
+/* 設定頁：OKX 未上架幣種標示 */
 .pair-chip.pair-unlisted { border-color: rgba(240,185,11,0.4); }
 .pair-chip .unlisted-tag {
   font-style: normal; font-size: 0.62rem; color: #f0b90b;

@@ -792,7 +792,7 @@
           自定義追蹤幣種
         </h3>
         <div class="setting-row vertical" style="gap:8px">
-          <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">新增幣種（輸入符號後按新增，系統會驗證 Pionex 是否上架；清單每輪掃描自動與 Pionex 官方幣種表同步）</div>
+          <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">新增幣種（輸入符號後按新增，系統會驗證 OKX 是否上架；清單每輪掃描自動與 OKX 官方幣種表同步）</div>
           <div style="display:flex;gap:8px">
             <input id="add-pair-input" type="text" class="setting-input" placeholder="例如：BTC、DOGE、PEPE" style="flex:1;text-transform:uppercase"
               onkeydown="if(event.key==='Enter')addCustomPair()" />
@@ -805,7 +805,7 @@
         <div class="setting-row" style="margin-top:12px;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn-ghost" onclick="resetCustomPairs()" style="font-size:0.82rem">重置為默認清單（100個幣種）</button>
-            <button class="btn-ghost" onclick="syncPionexPairsNow()" style="font-size:0.82rem;color:#00e676">🔄 同步 Pionex 幣種表（清理未上架）</button>
+            <button class="btn-ghost" onclick="syncOkxPairsNow()" style="font-size:0.82rem;color:#00e676">🔄 同步 OKX 幣種表（清理未上架）</button>
             <button class="btn-ghost" onclick="clearAllPairs()" style="font-size:0.82rem;color:var(--bear)">🗑 清空全部</button>
           </div>
           <span id="pairs-count" style="color:var(--text3);font-size:0.82rem;align-self:center"></span>
@@ -825,8 +825,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260716y"></script>
-  <script src="js/api.js?v=20260716y"></script>
-  <script src="js/app.js?v=20260716y"></script>
+  <script src="js/indicators.js?v=20260716z"></script>
+  <script src="js/api.js?v=20260716z"></script>
+  <script src="js/app.js?v=20260716z"></script>
 </body>
 </html>

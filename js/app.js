@@ -52,7 +52,7 @@ async function init() {
     state.data       = data;
     state.dataSource = source;
     state.filtered   = [...data];
-    refreshPionexPrices().catch(() => {});
+    refreshOkxPrices().catch(() => {});
   } catch (e) {
     console.error('[init] fetchMarketData 失敗，使用空數據', e);
     state.data     = [];
@@ -261,7 +261,7 @@ function startRefreshCycle() {
     // 資料取得成功，後續渲染步驟各自保護
     state.data       = data;
     state.dataSource = source;
-    refreshPionexPrices().catch(() => {});
+    refreshOkxPrices().catch(() => {});
     hideScanBar();
     try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); }
     // 先渲染持倉頁面（使用更新前的資料），避免 updateOpenTrades 刪除後顯示空白
@@ -605,28 +605,28 @@ function renderAll() {
 }
 
 /* ── 導航列數據源標籤（LIVE 倒數旁）：每輪掃描更新 ──────────────
-   綠色「Pionex」= K線主要來自 Pionex（與實體成交所一致）
-   藍色「混合」  = 兩邊都有（部分幣種 Pionex 沒上架）
-   黃色「幣安」  = Pionex 不可用（CORS 未解 / 代理未部署 / 熔斷中）*/
+   綠色「OKX」= K線主要來自 OKX（與實體成交所一致）
+   藍色「混合」  = 兩邊都有（部分幣種 OKX 沒上架）
+   黃色「幣安」  = OKX 不可用（CORS 未解 / 代理未部署 / 熔斷中）*/
 function updateDataSrcBadge() {
   const el = document.getElementById('data-src-badge');
   if (!el) return;
-  const p = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.pionex)  || 0;
+  const p = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.okx)  || 0;
   const b = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.binance) || 0;
-  const ch = (typeof _pionexChannel !== 'undefined' && _pionexChannel) || null;
-  el.classList.remove('src-pionex', 'src-mixed', 'src-binance');
+  const ch = (typeof _okxChannel !== 'undefined' && _okxChannel) || null;
+  el.classList.remove('src-okx', 'src-mixed', 'src-binance');
   if (p > 0 && b === 0) {
-    el.classList.add('src-pionex');
-    el.textContent = `Pionex ${p}`;
-    el.title = `K線數據源：Pionex 全量（${ch === 'proxy' ? '同源代理' : '直連'}），與實體成交所一致`;
+    el.classList.add('src-okx');
+    el.textContent = `OKX ${p}`;
+    el.title = `K線數據源：OKX 全量（${ch === 'proxy' ? '同源代理' : '直連'}），與實體成交所一致`;
   } else if (p > 0) {
     el.classList.add('src-mixed');
-    el.textContent = `Pionex ${p}／幣安 ${b}`;
-    el.title = `K線數據源：Pionex ${p} 筆（${ch === 'proxy' ? '代理' : '直連'}）＋ 幣安 ${b} 筆（Pionex 未上架或個別失敗的幣種）`;
+    el.textContent = `OKX ${p}／幣安 ${b}`;
+    el.title = `K線數據源：OKX ${p} 筆（${ch === 'proxy' ? '代理' : '直連'}）＋ 幣安 ${b} 筆（OKX 未上架或個別失敗的幣種）`;
   } else {
     el.classList.add('src-binance');
     el.textContent = `幣安 ${b || ''}`.trim();
-    el.title = 'K線數據源：全部走幣安（Pionex 不可直連且代理未生效，或熔斷冷卻中）';
+    el.title = 'K線數據源：全部走幣安（OKX 不可直連且代理未生效，或熔斷冷卻中）';
   }
 }
 
@@ -734,11 +734,11 @@ function buildDashRow(row) {
   </tr>`;
 }
 
-/* 逐幣數據源小圓點：綠=Pionex價格 / 黃=幣安價格（Pionex 未上架） */
+/* 逐幣數據源小圓點：綠=OKX價格 / 黃=幣安價格（OKX 未上架） */
 function srcDotHtml(row) {
-  if (row.dataSrc === 'pionex') return '<span class="src-dot src-p" title="Pionex 價格（與實體成交所一致）"></span>';
-  if (row.onPionex === false)   return '<span class="src-dot src-b" title="Pionex 未上架 — 幣安價格（與 Pionex 報價可能有差異）"></span>';
-  if (row.dataSrc === 'binance') return '<span class="src-dot src-b" title="本輪走幣安價格（Pionex 暫時不可用）"></span>';
+  if (row.dataSrc === 'okx') return '<span class="src-dot src-p" title="OKX 價格（與實體成交所一致）"></span>';
+  if (row.onOkx === false)   return '<span class="src-dot src-b" title="OKX 未上架 — 幣安價格（與 OKX 報價可能有差異）"></span>';
+  if (row.dataSrc === 'binance') return '<span class="src-dot src-b" title="本輪走幣安價格（OKX 暫時不可用）"></span>';
   return '';
 }
 
@@ -1847,7 +1847,7 @@ function buildExtremeRevHtml(er, coin, mtfData) {
     const tp2 = isTop ? price - atr * 3.5      : price     + atr * 3.5;
 
     const _pxSym = (coin.symbol || '').replace('/', '').toUpperCase();
-    const _px = v => { try { return toPionex(_pxSym, price, v); } catch(e) { return v.toFixed(4); } };
+    const _px = v => { try { return toOkx(_pxSym, price, v); } catch(e) { return v.toFixed(4); } };
 
     const catLabel = { vol:'量能', momentum:'動能/背離', struct:'價格結構', flow:'訂單流', sentiment:'市場情緒', crowd:'公開輿論', mtf:'多時框', extra:'補充指標' };
     const catColor = { vol:'#60a5fa', momentum:'#f59e0b', struct:'#a78bfa', flow:'#34d399', sentiment:'#f87171', crowd:'#fbbf24', mtf:'#e879f9', extra:'#94a3b8' };
@@ -1935,7 +1935,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _extremeRev = (() => { try { return detectExtremeReversal(coin, mtfData, deriv, globalMkt, whale, fearGreed); } catch(_e) { return { direction: null, confidence: 0, signals: [], topScore: 0, bottomScore: 0 }; } })();
   const _erHtml = () => buildExtremeRevHtml(_extremeRev, coin, mtfData);
   const _pxSym = (coin.symbol || '').replace('/', '').toUpperCase();
-  const _px = v => { try { return toPionex(_pxSym, price, v); } catch(e) { return v.toFixed(4); } };
+  const _px = v => { try { return toOkx(_pxSym, price, v); } catch(e) { return v.toFixed(4); } };
 
   // 若已有進行中的開倉或等待進場的掛單，優先顯示對應畫面
   const tlogNow = loadTradeLog();
@@ -9139,8 +9139,8 @@ async function renderCoinDetail(symbol) {
   document.getElementById('coin-name').textContent    = symbol;
   document.getElementById('coin-price').textContent   = fmtPrice(coin.price);
   document.getElementById('coin-price-sub').textContent = 'USDT · ' +
-    (coin.dataSrc === 'pionex' ? 'Pionex 價格'
-     : coin.onPionex === false ? '幣安價格（Pionex 未上架）'
+    (coin.dataSrc === 'okx' ? 'OKX 價格'
+     : coin.onOkx === false ? '幣安價格（OKX 未上架）'
      : '幣安價格');
 
   const trendChip = document.getElementById('coin-trend-chip');
@@ -9214,7 +9214,7 @@ async function renderCoinDetail(symbol) {
     fetchWhaleTrades(symbol),
     fetchFootprintData(symbol),
     fetchLiquidationMap(symbol),
-    refreshPionexPrices(),
+    refreshOkxPrices(),
   ]);
 
   // 足跡圖緩存（供 AI 分析函數讀取）
@@ -9584,10 +9584,10 @@ async function addCustomPair() {
     showToast(`${sym} 已在清單中`, 'error'); return;
   }
 
-  // 清單只收 Pionex 官方上架的幣（實體交易在 Pionex，未上架的幣無法下單）
-  if (typeof _pionexSymbolSet !== 'undefined' && _pionexSymbolSet && _pionexSymbolSet.size >= 50
-      && !_pionexSymbolSet.has(binSym)) {
-    showToast(`${sym} 未在 Pionex 上架，無法加入（清單只收可實際交易的幣種）`, 'error');
+  // 清單只收 OKX 官方上架的幣（實體交易在 OKX，未上架的幣無法下單）
+  if (typeof _okxSymbolSet !== 'undefined' && _okxSymbolSet && _okxSymbolSet.size >= 50
+      && !_okxSymbolSet.has(binSym)) {
+    showToast(`${sym} 未在 OKX 上架，無法加入（清單只收可實際交易的幣種）`, 'error');
     return;
   }
 
@@ -10165,7 +10165,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const canScaleIn = !!(setup.canScaleIn || setup.isLongTerm);
   const _price = parseFloat(coin.price) || 1;
   const _pSym  = (coin.symbol || '').replace('/', '').toUpperCase();
-  const _px    = v => { try { return toPionex(_pSym, _price, v); } catch(e) { return v.toFixed(4); } };
+  const _px    = v => { try { return toOkx(_pSym, _price, v); } catch(e) { return v.toFixed(4); } };
 
   // ── AI 週/日趨勢（優先從 macroCache 即時計算，fallback 用 setup 存儲值）──
   let wBias = 'neutral', wBiasLabel = setup.weeklyBias || '', wBiasConf = setup.weeklyConf || 0;
@@ -12286,7 +12286,7 @@ async function verifyIntrabarHits() {
       const sinceTs = trade.lastWickCheck || trade.entryTime || trade.timestamp || (Date.now() - 5 * 60000);
       const needBars = Math.min(30, Math.max(3, Math.ceil((Date.now() - sinceTs) / 60000) + 1));
       let raw = null;
-      // Pionex 優先：實體單在 Pionex 成交，用 Pionex 的 1m 插針判定掃損最貼近實際
+      // OKX 優先：實體單在 OKX 成交，用 OKX 的 1m 插針判定掃損最貼近實際
       try { raw = await (typeof fetchKlinesSmart === 'function' ? fetchKlinesSmart : fetchKlines)(sym, '1m', needBars); } catch(_e) {}
       if (!raw || !raw.length) continue;
       const isLong = trade.direction === 'long';
@@ -13481,7 +13481,7 @@ function checkPostDataReversal(data) {
     localStorage.setItem(alertKey, JSON.stringify(sentAlerts));
 
     const _slPxSym = (trade.symbol || '').replace('/', '').toUpperCase();
-    const _slPx = v => { try { return toPionex(_slPxSym, cur || 1, v); } catch(e) { return v.toFixed(4); } };
+    const _slPx = v => { try { return toOkx(_slPxSym, cur || 1, v); } catch(e) { return v.toFixed(4); } };
     const fmt     = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
     const dir     = isLong ? '▲ 多' : '▼ 空';
     const pnlSign = currentPnlR >= 0 ? '+' : '';
@@ -14513,7 +14513,7 @@ function renderPositionsPage() {
     const risk    = Math.abs(entry - (t.baseSl ?? sl)) || 1;
     const isLong  = t.direction === 'long';
     const _tpxSym = (t.symbol || '').replace('/', '').toUpperCase();
-    const _tpx = v => { try { return toPionex(_tpxSym, cur || 1, v); } catch(e) { return v.toFixed(4); } };
+    const _tpx = v => { try { return toOkx(_tpxSym, cur || 1, v); } catch(e) { return v.toFixed(4); } };
 
     let unrealR   = null, unrealPct = null, priceClr = 'var(--text2)';
     if (cur && entry) {
@@ -18232,60 +18232,60 @@ function renderPairsList() {
   const count = document.getElementById('pairs-count');
   if (!list) return;
   const pairs = loadPairs();
-  const pxSet = (typeof _pionexSymbolSet !== 'undefined') ? _pionexSymbolSet : null;
+  const pxSet = (typeof _okxSymbolSet !== 'undefined') ? _okxSymbolSet : null;
   const notListed = pxSet ? pairs.filter(p => !pxSet.has(p.s.replace('/', ''))).length : 0;
-  if (count) count.textContent = `共 ${pairs.length} 個交易對` + (notListed ? `（${notListed} 個 Pionex 未上架）` : '');
+  if (count) count.textContent = `共 ${pairs.length} 個交易對` + (notListed ? `（${notListed} 個 OKX 未上架）` : '');
   list.innerHTML = pairs.map(p => {
     const unlisted = pxSet && !pxSet.has(p.s.replace('/', ''));
     return `
-    <div class="pair-chip${unlisted ? ' pair-unlisted' : ''}" ${unlisted ? 'title="Pionex 未上架，此幣種數據走幣安"' : ''}>
+    <div class="pair-chip${unlisted ? ' pair-unlisted' : ''}" ${unlisted ? 'title="OKX 未上架，此幣種數據走幣安"' : ''}>
       <span>${p.s}${unlisted ? ' <em class="unlisted-tag">未上架</em>' : ''}</span>
       <button class="pair-chip-rm" onclick="removePairFromList('${p.s}')" title="移除">×</button>
     </div>`;
   }).join('');
 }
 
-/* 手動同步 Pionex 幣種表：強制重抓官方表 → 清理未上架幣種 → 重設月度計時 */
-async function syncPionexPairsNow() {
-  showToast('🔄 正在同步 Pionex 官方幣種表…', 'info');
-  try { _pionexSymbolsAt = 0; } catch(_e) {}   // 強制略過 6h 快取重新抓
+/* 手動同步 OKX 幣種表：強制重抓官方表 → 清理未上架幣種 → 重設月度計時 */
+async function syncOkxPairsNow() {
+  showToast('🔄 正在同步 OKX 官方幣種表…', 'info');
+  try { _okxSymbolsAt = 0; } catch(_e) {}   // 強制略過 6h 快取重新抓
   let set = null;
-  try { set = await fetchPionexSymbolSet(); } catch(_e) {}
+  try { set = await fetchOkxSymbolSet(); } catch(_e) {}
   if (!set || set.size < 50) {
-    showToast('取得 Pionex 幣種表失敗（Pionex 連線或代理不可用），未做任何變更', 'error');
+    showToast('取得 OKX 幣種表失敗（OKX 連線或代理不可用），未做任何變更', 'error');
     return;
   }
-  localStorage.setItem('csp_pionex_sync_at', String(Date.now()));  // 重設月度計時
+  localStorage.setItem('csp_okx_sync_at', String(Date.now()));  // 重設月度計時
   const pairs   = loadPairs();
   const removed = pairs.filter(p => !set.has(p.s.replace('/', '')));
   if (!removed.length) {
     renderPairsList();
-    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣全部在 Pionex 上架（官方表 ${set.size} 個交易對）`, 'success');
+    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣全部在 OKX 上架（官方表 ${set.size} 個交易對）`, 'success');
     return;
   }
-  if (!confirm(`同步結果：${removed.length} 個幣未在 Pionex 上架：\n${removed.map(p => p.s.replace('/USDT', '')).join('、')}\n\n移除它們嗎？`)) return;
+  if (!confirm(`同步結果：${removed.length} 個幣未在 OKX 上架：\n${removed.map(p => p.s.replace('/USDT', '')).join('、')}\n\n移除它們嗎？`)) return;
   savePairs(pairs.filter(p => set.has(p.s.replace('/', ''))));
   removed.forEach(p => { try { purgeSymbolData(p.s); } catch(_e) {} });
   renderPairsList();
-  showToast(`✂ 已移除 ${removed.length} 個 Pionex 未上架幣種，下輪掃描生效`, 'success');
+  showToast(`✂ 已移除 ${removed.length} 個 OKX 未上架幣種，下輪掃描生效`, 'success');
   try { triggerRescan(); } catch(_e) {}
 }
 
-/* 一鍵移除 Pionex 未上架幣種（實體交易在 Pionex，無法交易的幣不需要掃描） */
-function removeNonPionexPairs() {
-  const pxSet = (typeof _pionexSymbolSet !== 'undefined') ? _pionexSymbolSet : null;
+/* 一鍵移除 OKX 未上架幣種（實體交易在 OKX，無法交易的幣不需要掃描） */
+function removeNonOkxPairs() {
+  const pxSet = (typeof _okxSymbolSet !== 'undefined') ? _okxSymbolSet : null;
   if (!pxSet || !pxSet.size) {
-    showToast('尚未取得 Pionex 幣種表（等下一輪掃描或檢查 Pionex 連線）', 'error');
+    showToast('尚未取得 OKX 幣種表（等下一輪掃描或檢查 OKX 連線）', 'error');
     return;
   }
   const pairs = loadPairs();
   const removed = pairs.filter(p => !pxSet.has(p.s.replace('/', '')));
-  if (!removed.length) { showToast('目前清單全部都在 Pionex 上架，無需移除', 'info'); return; }
-  if (!confirm(`將移除 ${removed.length} 個 Pionex 未上架幣種：\n${removed.map(p => p.s.replace('/USDT','')).join('、')}\n\n確定嗎？`)) return;
+  if (!removed.length) { showToast('目前清單全部都在 OKX 上架，無需移除', 'info'); return; }
+  if (!confirm(`將移除 ${removed.length} 個 OKX 未上架幣種：\n${removed.map(p => p.s.replace('/USDT','')).join('、')}\n\n確定嗎？`)) return;
   savePairs(pairs.filter(p => pxSet.has(p.s.replace('/', ''))));
   removed.forEach(p => { try { purgeSymbolData(p.s); } catch(_e) {} });
   renderPairsList();
-  showToast(`已移除 ${removed.length} 個 Pionex 未上架幣種，下輪掃描生效`, 'success');
+  showToast(`已移除 ${removed.length} 個 OKX 未上架幣種，下輪掃描生效`, 'success');
   try { triggerRescan(); } catch(_e) {}
 }
 
