@@ -115,6 +115,7 @@ function tfToBinanceInterval(tf) {
 
 /* ---------- OKX 顯示價格快取 ---------- */
 let _okxPrices = {};
+let _okxVol24  = {};   // { BTCUSDT: 24h 計價幣成交額 } 供幣種表同步時依流動性排序
 
 /* OKX 現貨行情：GET /api/v5/market/tickers?instType=SPOT
    回應 { code:"0", data:[{ instId:"BTC-USDT", last:"...", ... }] } */
@@ -132,7 +133,10 @@ async function refreshOkxPrices() {
       if (!inst) continue;
       const px = parseFloat(tk.last);
       if (!isFinite(px) || px <= 0) continue;
-      _okxPrices[inst.replace(/-/g, '')] = px;   // BTC-USDT → BTCUSDT
+      const key = inst.replace(/-/g, '');          // BTC-USDT → BTCUSDT
+      _okxPrices[key] = px;
+      const vq = parseFloat(tk.volCcy24h);          // 24h 計價幣(USDT)成交額
+      if (isFinite(vq) && vq >= 0) _okxVol24[key] = vq;
     }
   } catch(e) {
     console.warn('[OKX] 價格取得失敗:', e?.message || e);
@@ -186,6 +190,23 @@ let _okxChannel = null;
 let _okxDirectFails = 0;
 let _okxDiagShown = false;
 
+/* ── OKX 限速閘門（根治「只有 40 筆走 OKX」）────────────────────
+   OKX 公開行情端點限速為 40 次 / 2 秒 / IP。掃描時每幣 5 個週期並發，
+   數十個請求瞬間湧出 → 第 41 個起回 429 → 舊版直接熔斷 5 分鐘，
+   於是每輪固定只有約 40 筆走 OKX、其餘全部退回幣安（使用者看到的症狀）。
+   改為主動排隊：所有 OKX 請求間隔至少 OKX_MIN_GAP_MS，換算約 33 次/2 秒，
+   留約 17% 餘裕，從源頭避免觸發 429。
+   _okxNextSlot 於 await 前同步預約時槽，並發呼叫也能正確排隊不重疊。 */
+const OKX_MIN_GAP_MS = 60;
+let _okxNextSlot = 0;
+async function _okxGate() {
+  const now  = Date.now();
+  const slot = Math.max(now, _okxNextSlot);
+  _okxNextSlot = slot + OKX_MIN_GAP_MS;   // 同步預約，避免並發搶同一時槽
+  const wait = slot - now;
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+}
+
 async function okxApiFetch(path, params, timeoutMs = 8000) {
   const qs = new URLSearchParams(params).toString();
   const candidates = [];
@@ -198,11 +219,16 @@ async function okxApiFetch(path, params, timeoutMs = 8000) {
   }
   for (const c of candidates) {
     try {
+      await _okxGate();                    // 限速排隊
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       const r = await fetch(c.url, { signal: ctrl.signal });
       clearTimeout(t);
-      if (r.status === 429) return { status: 429, json: null };
+      if (r.status === 429) {
+        // 仍被限速：把後續時槽整體往後推 1 秒讓速率自然降下來，不再長時間熔斷
+        _okxNextSlot = Math.max(_okxNextSlot, Date.now() + 1000);
+        return { status: 429, json: null };
+      }
       if (!r.ok) { if (c.ch === 'direct') _okxDirectFails++; continue; }
       const j = await r.json().catch(() => null);
       // OKX 統一回應格式 { code:"0", msg:"", data:[...] }；code 非 "0" 即為業務錯誤
@@ -246,9 +272,9 @@ async function fetchOkxKlines(symbol, interval, limit = 220) {
     const r = await okxApiFetch('market/candles',
       { instId, bar, limit: Math.min(OKX_MAX_LIMIT, limit) });
     if (!r) throw new Error('unreachable');
-    if (r.status === 429) {  // 被限速 → 立即熔斷 5 分鐘，整批改走幣安
-      _okxKDisabledUntil = Date.now() + 5 * 60 * 1000;
-      console.warn('[OKX] K線被限速(429)，5 分鐘內改走幣安');
+    if (r.status === 429) {
+      // 限速閘門已把速率壓在額度內；偶發 429 只讓「這一筆」退回幣安，
+      // 不再熔斷 5 分鐘（舊行為會讓整輪掃描剩下的幣全部退回幣安）
       return null;
     }
     const arr = r.json?.data;

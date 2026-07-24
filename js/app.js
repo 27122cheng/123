@@ -16015,6 +16015,17 @@ function exportFullBackup() {
         backup.data[k] = localStorage.getItem(k);
       }
     }
+    // 幣種表一併備份：loadPairs() 在使用者未自訂過時只回傳預設值、
+    // 不會寫進 localStorage，上面的 csp_* 掃描就抓不到 → 這裡明確補上，
+    // 確保還原後幣種表（含同步下來的 OKX 幣種）完整回復。
+    let _pairCount = 0;
+    try {
+      const _pairs = loadPairs();
+      if (Array.isArray(_pairs) && _pairs.length) {
+        backup.data[PAIRS_KEY] = JSON.stringify(_pairs);
+        _pairCount = _pairs.length;
+      }
+    } catch(_pe) {}
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -16022,7 +16033,7 @@ function exportFullBackup() {
     a.download = `csp_full_backup_${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`完整備份已匯出（${Object.keys(backup.data).length} 個項目）`, 'success');
+    showToast(`完整備份已匯出（${Object.keys(backup.data).length} 個項目，含 ${_pairCount} 個幣種）`, 'success');
   } catch(_e) { showToast('備份匯出失敗：' + _e.message, 'error'); }
 }
 function importFullBackup() {
@@ -18255,19 +18266,50 @@ async function syncOkxPairsNow() {
     showToast('取得 OKX 幣種表失敗（OKX 連線或代理不可用），未做任何變更', 'error');
     return;
   }
+  // 取得最新報價：新增幣種需要初始價格，並依 24h 成交額排序（流動性高的排前面）
+  try { await refreshOkxPrices(); } catch(_e) {}
   localStorage.setItem('csp_okx_sync_at', String(Date.now()));  // 重設月度計時
+
   const pairs   = loadPairs();
+  const have    = new Set(pairs.map(p => p.s.replace('/', '')));
   const removed = pairs.filter(p => !set.has(p.s.replace('/', '')));
-  if (!removed.length) {
+  // 雙向同步：OKX 有、但清單沒有的幣種一併抓下來存進清單
+  const addable = [...set]
+    .filter(sym => !have.has(sym))
+    .map(sym => ({
+      sym,
+      s:   sym.replace('USDT', '/USDT'),
+      p:   (typeof _okxPrices !== 'undefined' && _okxPrices[sym]) || 0,
+      vol: (typeof _okxVol24  !== 'undefined' && _okxVol24[sym])  || 0,
+    }))
+    .filter(x => x.p > 0)                       // 無報價的不加（下架中/無流動性）
+    .sort((a, b) => b.vol - a.vol);             // 依 24h 成交額由大到小
+
+  if (!removed.length && !addable.length) {
     renderPairsList();
-    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣全部在 OKX 上架（官方表 ${set.size} 個交易對）`, 'success');
+    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣與 OKX 官方表（${set.size} 個交易對）完全一致`, 'success');
     return;
   }
-  if (!confirm(`同步結果：${removed.length} 個幣未在 OKX 上架：\n${removed.map(p => p.s.replace('/USDT', '')).join('、')}\n\n移除它們嗎？`)) return;
-  savePairs(pairs.filter(p => set.has(p.s.replace('/', ''))));
+
+  const msg = [`OKX 官方現貨表共 ${set.size} 個 USDT 交易對。`, ''];
+  if (addable.length) {
+    const preview = addable.slice(0, 15).map(x => x.s.replace('/USDT', '')).join('、');
+    msg.push(`➕ 新增 ${addable.length} 個（清單缺少、OKX 有上架，依成交額排序）：`,
+             `${preview}${addable.length > 15 ? ` …等 ${addable.length} 個` : ''}`, '');
+  }
+  if (removed.length) {
+    msg.push(`➖ 移除 ${removed.length} 個（OKX 未上架）：`,
+             removed.map(p => p.s.replace('/USDT', '')).join('、'), '');
+  }
+  msg.push(`同步後清單共 ${pairs.length - removed.length + addable.length} 個幣種。`,
+           '⚠️ 幣種越多每輪掃描越久（OKX 限速 40 次/2 秒）。', '', '確定套用嗎？');
+  if (!confirm(msg.join('\n'))) return;
+
+  const kept = pairs.filter(p => set.has(p.s.replace('/', '')));
+  savePairs([...kept, ...addable.map(x => ({ s: x.s, p: x.p }))]);
   removed.forEach(p => { try { purgeSymbolData(p.s); } catch(_e) {} });
   renderPairsList();
-  showToast(`✂ 已移除 ${removed.length} 個 OKX 未上架幣種，下輪掃描生效`, 'success');
+  showToast(`✅ 同步完成：新增 ${addable.length} 個、移除 ${removed.length} 個，下輪掃描生效`, 'success');
   try { triggerRescan(); } catch(_e) {}
 }
 
