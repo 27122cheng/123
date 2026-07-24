@@ -4317,10 +4317,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       <div style="height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-bottom:10px">
         <div style="height:100%;width:${_sqBarW}%;background:${_sqBClr};border-radius:2px"></div>
       </div>
-      ${_sqPos.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#22c55e;font-weight:600;margin-bottom:3px">✅ 同向加分（${_sqPos.length}項）</div>${_sqPos.map(f=>`<div style="font-size:0.73rem;color:#86efac;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
-      ${_sqNeg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${_sqNeg.length}項）</div>${_sqNeg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
-      ${_sqWarn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${_sqWarn.length}項）</div>${_sqWarn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
-      ${_sqNeut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${_sqNeut.length}項）</div>${_sqNeut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
+      ${_sqPos.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#22c55e;font-weight:600;margin-bottom:3px">✅ 同向加分（${_sqPos.length}項）</div>${_sqPos.map(f=>`<div style="font-size:0.73rem;color:#86efac;padding:1px 0;line-height:1.6">${f}${sqEvidenceBadge(f)}</div>`).join('')}</div>` : ''}
+      ${_sqNeg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${_sqNeg.length}項）</div>${_sqNeg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}${sqEvidenceBadge(f)}</div>`).join('')}</div>` : ''}
+      ${_sqWarn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${_sqWarn.length}項）</div>${_sqWarn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}${sqEvidenceBadge(f)}</div>`).join('')}</div>` : ''}
+      ${_sqNeut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${_sqNeut.length}項）</div>${_sqNeut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}${sqEvidenceBadge(f)}</div>`).join('')}</div>` : ''}
       <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 60分　需 SQ≥A（≥10分）方可入場</div>
     </div>`;
   } catch(_sqPE) { return ''; } })();
@@ -15190,6 +15190,58 @@ function labTagStats() {
   return { stats, closedCount: closed.length };
 }
 
+/* ── 因子實測成績（讓報告可核對，而非只給結論）──────────────────
+   報告過去只說「✅ 巨鯨同向 +1」，看不出「巨鯨同向」這個分析方式到底準不準。
+   這裡把每個 SQ 因子對應到實驗室標籤的實測樣本，於因子後標註「實測 x%／n筆」，
+   使用者能自行判斷哪些因子有真憑實據、哪些只是理論加分。
+   關鍵字比對 SQ 因子文字 → 實驗室標籤（labTagStats 的統計來源）。 */
+const SQ_EVIDENCE_MAP = [
+  { tag: 'ICT-OrderBlock',   kw: ['訂單塊', 'OrderBlock'] },
+  { tag: 'ICT-FVG',          kw: ['FVG'] },
+  { tag: '足跡Delta同向',     kw: ['足跡', 'Delta'] },
+  { tag: '主力吸籌',          kw: ['吸籌'] },
+  { tag: 'VWAP掌控',         kw: ['VWAP'] },
+  { tag: '爆倉擠壓',          kw: ['爆倉'] },
+  { tag: '巨鯨同向',          kw: ['巨鯨'] },
+  { tag: '資金費率反向擁擠',   kw: ['資金費率'] },
+  { tag: 'OI新錢同向',        kw: ['OI'] },
+  { tag: '相對強弱',          kw: ['相對強弱'] },
+  { tag: 'BB走軌',           kw: ['BB', '布林'] },
+  { tag: 'MACD動能',         kw: ['MACD'] },
+  { tag: '放量',             kw: ['放量', '成交量'] },
+  { tag: 'ADX強趨勢',        kw: ['ADX'] },
+];
+let _sqEvCache = null, _sqEvTs = 0;
+function _sqEvidenceStats() {
+  const now = Date.now();
+  if (_sqEvCache && now - _sqEvTs < 60 * 1000) return _sqEvCache;
+  const { stats, closedCount } = labTagStats();
+  const base = closedCount
+    ? loadAILab().filter(o => o.status === 'closed' && (o.pnlR || 0) > 0).length / closedCount * 100
+    : null;
+  _sqEvCache = { stats, base }; _sqEvTs = now;
+  return _sqEvCache;
+}
+/* 回傳該因子的實測成績 HTML 標註；無對應樣本則回空字串（不硬湊） */
+function sqEvidenceBadge(text) {
+  try {
+    if (!text) return '';
+    const hit = SQ_EVIDENCE_MAP.find(m => m.kw.some(k => text.includes(k)));
+    if (!hit) return '';
+    const { stats, base } = _sqEvidenceStats();
+    const s = stats[hit.tag];
+    if (!s || !s.n) return '';
+    const wr = s.w / s.n * 100;
+    // 樣本未達統一門檻 → 標為參考用，避免使用者把小樣本當定論
+    const weak = s.n < LAB_MIN_SAMPLES;
+    const clr  = weak ? 'var(--text3)'
+               : wr >= LAB_MIN_WR ? '#22c55e'
+               : (base != null && wr < base - 5) ? '#ef4444' : 'var(--text3)';
+    return `<span style="font-size:0.66rem;color:${clr};opacity:.95;margin-left:6px">`
+         + `實測 ${wr.toFixed(0)}%／${s.n}筆${weak ? '（樣本不足）' : ''}</span>`;
+  } catch(_e) { return ''; }
+}
+
 function getProvenLabTags() {
   const { stats } = labTagStats();
   // 晉升/豁免標準：與加分標準同一組門檻（樣本 ≥50 且勝率 ≥75%）
@@ -15645,6 +15697,47 @@ function renderLabPage() {
         : `<div style="font-size:0.74rem;color:var(--text3)">尚無達標策略 — 任一分析方式累積 100 筆完結樣本且勝率 ≥80% 後自動晉升</div>`}
     </div>`;
 
+  // ── 分析維度實測成績單（每個因子目前拿幾分、憑什麼拿）──
+  let scorecardHtml = '';
+  try {
+    const { stats } = labTagStats();
+    const w = getLabTagWeights();
+    const rows = Object.entries(stats)
+      .map(([tag, s]) => {
+        const wr = s.w / s.n * 100;
+        return { tag, n: s.n, wr, w: w[tag]?.w ?? 0 };
+      })
+      .sort((a, b) => (b.w - a.w) || (b.wr - a.wr));
+    if (rows.length) {
+      const _verdict = (r) => r.n < LAB_MIN_SAMPLES
+        ? { t: `樣本不足（${r.n}/${LAB_MIN_SAMPLES}）`, c: 'var(--text3)' }
+        : r.w > 0 ? { t: `已驗證有效 +${r.w}`, c: '#22c55e' }
+        : r.w < 0 ? { t: `已驗證偏弱 ${r.w}`,  c: '#ef4444' }
+        : { t: '未達加分門檻', c: 'var(--text3)' };
+      scorecardHtml = `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+        <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:8px">📋 分析維度實測成績單（因子憑什麼加分）</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+          <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+            <th style="padding:4px 6px">分析方式</th><th style="padding:4px 6px;text-align:right">樣本</th>
+            <th style="padding:4px 6px;text-align:right">實測勝率</th><th style="padding:4px 6px;text-align:right">目前 SQ 加權</th>
+            <th style="padding:4px 6px;text-align:right">判定</th></tr></thead>
+          <tbody>${rows.map(r => { const v = _verdict(r); return `<tr>
+            <td style="padding:4px 6px">${r.tag}</td>
+            <td style="padding:4px 6px;text-align:right;color:${r.n >= LAB_MIN_SAMPLES ? 'var(--text2)' : 'var(--text3)'}">${r.n}${r.n >= LAB_MIN_SAMPLES ? '' : '/' + LAB_MIN_SAMPLES}</td>
+            <td style="padding:4px 6px;text-align:right;font-weight:600;color:${r.wr >= LAB_MIN_WR ? '#22c55e' : 'var(--text2)'}">${r.wr.toFixed(0)}%</td>
+            <td style="padding:4px 6px;text-align:right;font-weight:700;color:${r.w > 0 ? '#22c55e' : r.w < 0 ? '#ef4444' : 'var(--text3)'}">${r.w > 0 ? '+' + r.w : r.w || '—'}</td>
+            <td style="padding:4px 6px;text-align:right;color:${v.c}">${v.t}</td>
+          </tr>`; }).join('')}</tbody>
+        </table></div>
+        <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">
+          加分規則：樣本 ≥${LAB_MIN_SAMPLES} 且勝率 ≥${LAB_MIN_WR}% 起跳，勝率越高加越多
+          （75~80→+1、80~85→+2、85~90→+3、90~95→+4、≥95→+5，上限 +${LAB_MAX_BONUS}）。
+        </div>
+      </div>`;
+    }
+  } catch(_se) {}
+
   // ── 扣分條件有效性審查面板 ──
   let auditHtml = '';
   try {
@@ -15681,6 +15774,7 @@ function renderLabPage() {
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
     ${provenHtml}
+    ${scorecardHtml}
     ${auditHtml}
     <div class="tl-stats">
       <div class="tl-stat-card"><div class="tl-stat-val">${active.length}</div><div class="tl-stat-lbl">追蹤中</div></div>
