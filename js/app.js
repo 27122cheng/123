@@ -9751,6 +9751,53 @@ function commitNewTrade(newTrade) {
   } catch(_e) { return false; }
 }
 
+/* ── 分批出場損益（讓帳與「TP1 減倉 60%」的實際操作一致）────────
+   舊模型：不論是否觸及 TP1，都當成「整筆進、整筆出」，用最終出場價算 pnlR。
+   但系統給的指令是「到達止盈一減倉 60%」，實際只有 40% 尾倉跑到最後，
+   因此舊帳兩邊都錯：
+     • 跑到 TP2(2.5R)   記 2.5R，實際 0.6×1.0 + 0.4×2.5 = 1.6R（高估）
+     • 移動停利 +0.7R 出 記 0.7R，實際 0.6×1.0 + 0.4×0.7 = 0.88R（低估）
+   這個 pnlR 會餵給實驗室標籤勝率、㉖驗證加分、止損 AI、連虧熔斷，
+   偏差會讓整套自我學習往錯的方向加權，故統一改為加權計算。
+   手續費：進場收全倉，出場依 60/40 兩筆分別計（taker 各約 0.05%）。
+   未觸及 TP1 的單維持原本 100% 單筆計算，行為不變。 */
+const TP1_EXIT_FRAC = 0.6;   // 觸及止盈一時減倉比例（與 tp1Reason 文案一致）
+function computeTradePnlR(trade, exitPrice, baseRisk, isLong) {
+  const entry = parseFloat(trade.entry) || 0;
+  const exit  = parseFloat(exitPrice)   || 0;
+  const risk  = baseRisk || 1;
+  const dir   = isLong ? 1 : -1;
+  const tp1   = parseFloat(trade.tp1) || 0;
+  // 已觸及 TP1：60% 在 TP1 落袋，40% 尾倉跑到最終出場價
+  if (trade.tp1Hit && tp1 > 0) {
+    const f = TP1_EXIT_FRAC;
+    const gross = (f * (tp1 - entry) + (1 - f) * (exit - entry)) * dir;
+    const fee   = (entry + f * tp1 + (1 - f) * exit) * 0.0005;
+    return ((gross - fee) / risk).toFixed(2);
+  }
+  const gross = (exit - entry) * dir;
+  const fee   = (entry + exit) * 0.0005;
+  return ((gross - fee) / risk).toFixed(2);
+}
+
+/* ── 交易結果分類（保本 be 獨立成「平手」，不再算敗仗）──────────
+   舊制把 be 與 sl 一起算輸。但 be 是保本出場，實際僅 ≈ -0.05R（只賠手續費），
+   與 -1.05R 的真止損完全不同性質。主要來源是「16 小時時間止損」——單子在
+   ±0.3R 原地踏步就換防離場，那是正確的風控動作，卻被記成敗仗，造成：
+     • 勝率分母被灌水而長期偏低
+     • 學習系統把「主動換防」當失敗情境學習
+   改為三分類：勝(tp1/tp2)、負(sl)、平手(be，不計入勝率分子分母)。
+   （連虧熔斷 globalLossStreak 早已正確排除 be，此處統一其餘統計口徑） */
+function isWinTrade(t)  { return t.outcome === 'tp1' || t.outcome === 'tp2'; }
+function isLossTrade(t) { return t.outcome === 'sl'; }
+function isFlatTrade(t) { return t.outcome === 'be'; }
+/* 勝率 = 勝 /(勝+負)，平手不計入分母；無有效樣本回傳 null */
+function winRateOf(arr) {
+  const w = arr.filter(isWinTrade).length;
+  const l = arr.filter(isLossTrade).length;
+  return (w + l) > 0 ? (w / (w + l) * 100) : null;
+}
+
 /* 非同步建單路徑的重入鎖：15 秒自動刷新與手動刷新可能重疊，
    同一函式並行執行是上述競態的主要來源之一。包一層鎖讓後到者直接跳過。 */
 const _createLocks = {};
@@ -9815,8 +9862,8 @@ function relaxedCohortUnderperforms() {
     const closed = loadTradeLog().filter(t =>
       t.status === 'closed' && (t.gateRelaxed === true || (t.sqGate ?? 10) < 9));
     if (closed.length < 12) return false;
-    const wins = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2').length;
-    return (wins / closed.length * 100) < 45;
+    const _wr = winRateOf(closed);   // 平手(be)不計入分母，避免換防單把放寬組誤判為劣績
+    return _wr != null && _wr < 45;
   } catch(_e) { return false; }
 }
 function getAdaptiveGates() {
@@ -12031,11 +12078,8 @@ function updateOpenTrades(data) {
       }
       // pnlR 統一計算並計入手續費+滑點（taker 進出各約 0.05% 名目價值），
       // 讓報表貼近實盤：止損約 -1.05R、保本約 -0.05R，勝率門檻不再被零成本假設美化
-      {
-        const _feeCost = (entry + trade.exitPrice) * 0.0005;
-        const _gross   = (trade.exitPrice - entry) * (isLong ? 1 : -1);
-        trade.pnlR = ((_gross - _feeCost) / baseRisk).toFixed(2);
-      }
+      // 分批出場加權損益（觸及 TP1 者 60% 落袋 + 40% 尾倉），兩處出場路徑共用同一函式
+      trade.pnlR = computeTradePnlR(trade, trade.exitPrice, baseRisk, isLong);
       if (outcome === 'sl' || outcome === 'be') {
         trade.analysis = generateTradeAnalysis(trade);
       }
@@ -12307,11 +12351,8 @@ async function verifyIntrabarHits() {
       trade.exitTime = Date.now();
       trade.exitPrice = outcome === 'tp2' ? tp2 : outcome === 'be' ? entry : trade.sl;
       trade.intrabarHit = true;  // 標記：由 1m 插針驗證判定（供報表/診斷識別）
-      {
-        const _feeCost = (entry + trade.exitPrice) * 0.0005;
-        const _gross   = (trade.exitPrice - entry) * (isLong ? 1 : -1);
-        trade.pnlR = ((_gross - _feeCost) / baseRisk).toFixed(2);
-      }
+      // 分批出場加權損益（觸及 TP1 者 60% 落袋 + 40% 尾倉），兩處出場路徑共用同一函式
+      trade.pnlR = computeTradePnlR(trade, trade.exitPrice, baseRisk, isLong);
       if (outcome === 'sl') {
         trade.slWatchUntil = Date.now() + 24 * 60 * 60 * 1000;
         trade.slReversal   = null;
@@ -13636,8 +13677,8 @@ function computeLearnProfile() {
   const closed = loadTradeLog().filter(t => t.status === 'closed');
   if (closed.length < 2) return { ready: false, closed: closed.length };
 
-  const losses = closed.filter(t => t.outcome === 'sl' || t.outcome === 'be');
-  const wins   = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+  const losses = closed.filter(isLossTrade);   // 平手(be)不算敗仗，避免學習系統把「主動換防」當失敗情境
+  const wins   = closed.filter(isWinTrade);
 
   // ── 區間分析 helper ──
   const zoneStats = (arr, field, ranges) =>
@@ -13839,7 +13880,7 @@ function computeLearnProfile() {
   return {
     ready: true, closed: closed.length,
     wins: wins.length, losses: losses.length,
-    winRate: (wins.length / closed.length * 100).toFixed(1),
+    winRate: (winRateOf(closed) ?? 0).toFixed(1),   // 勝/(勝+負)，平手不計入分母
     rsiStats, adxStats, confStats,
     rules, bestConditions, mem,
   };
@@ -15642,7 +15683,7 @@ function renderTradeLogPage() {
   const wins    = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
   const losses  = closed.filter(t => t.outcome === 'sl');
   const bes     = closed.filter(t => t.outcome === 'be');
-  const winRate = closed.length ? (wins.length / closed.length * 100).toFixed(1) : '0.0';
+  const winRate = (winRateOf(closed) ?? 0).toFixed(1);   // 勝/(勝+負)，平手(be)不計入分母
   const avgWinR = wins.length
     ? (wins.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0) / wins.length).toFixed(2)
     : '--';
