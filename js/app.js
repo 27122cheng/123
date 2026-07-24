@@ -607,7 +607,9 @@ function renderAll() {
 /* ── 導航列數據源標籤（LIVE 倒數旁）：每輪掃描更新 ──────────────
    綠色「OKX」= K線主要來自 OKX（與實體成交所一致）
    藍色「混合」  = 兩邊都有（部分幣種 OKX 沒上架）
-   黃色「幣安」  = OKX 不可用（CORS 未解 / 代理未部署 / 熔斷中）*/
+   黃色「幣安」  = OKX 不可用（CORS 未解 / 代理未部署 / 熔斷中）
+   註：正常情況必為「混合」——交易關鍵週期(15m/5m/1m)走 OKX，
+   1H 以上趨勢週期走幣安以避開 OKX 40次/2秒限速。*/
 function updateDataSrcBadge() {
   const el = document.getElementById('data-src-badge');
   if (!el) return;
@@ -622,7 +624,9 @@ function updateDataSrcBadge() {
   } else if (p > 0) {
     el.classList.add('src-mixed');
     el.textContent = `OKX ${p}／幣安 ${b}`;
-    el.title = `K線數據源：OKX ${p} 筆（${ch === 'proxy' ? '代理' : '直連'}）＋ 幣安 ${b} 筆（OKX 未上架或個別失敗的幣種）`;
+    el.title = `K線數據源：OKX ${p} 筆（${ch === 'proxy' ? '代理' : '直連'}，交易關鍵週期 15m/5m/1m，`
+             + `進場・止損・插針判定與實際成交所一致）＋ 幣安 ${b} 筆（1H 以上僅判斷趨勢方向，`
+             + `交易所微小價差無影響，走幣安可避開 OKX 限速）`;
   } else {
     el.classList.add('src-binance');
     el.textContent = `幣安 ${b || ''}`.trim();

@@ -183,7 +183,7 @@ const OKX_BAR_MAP = { '1m':'1m','3m':'3m','5m':'5m','15m':'15m','30m':'30m',
 const _INTERVAL_MS = { '1m':60e3,'3m':18e4,'5m':3e5,'15m':9e5,'30m':18e5,'1h':36e5,'2h':72e5,
   '4h':144e5,'6h':216e5,'12h':432e5,'1d':864e5,'1w':6048e5,'1M':2592e6 };
 let _okxKFails = 0, _okxKDisabledUntil = 0;
-let _klineSrcCount = { okx: 0, binance: 0 };  // 每輪掃描數據源統計
+let _klineSrcCount = { okx: 0, binance: 0, cache: 0 };  // 每輪掃描數據源統計
 
 /* ── OKX 智慧通道：直連 → 同源代理 /api/okx → 放棄 ──────────
    OKX 公開 API 通常不帶 CORS 標頭，瀏覽器直連會被擋（表現為
@@ -377,22 +377,56 @@ async function fetchOkxSymbolSet() {
 /* 智慧路由：OKX 優先（與實際交易所一致），不支援/未上架/失敗 → 幣安
    trackKey：傳入 'BTC/USDT' 時記錄該幣主數據源（供 UI 逐幣標示） */
 let _klineSrcBySymbol = {};       // { 'BTC/USDT': 'okx'|'binance' }
+/* ── K 線快取（大幅降低每輪重複請求）──────────────────────────
+   問題：每 15 秒一輪掃描，每幣要 5 個週期，日線/週線在一輪之間根本不會變，
+   卻每輪都重抓 → 請求量爆炸、頁面卡在載入畫面。
+   解法：依週期長度給快取效期——短週期效期短（不影響即時偵測），
+   高階週期效期長（1 小時內日線不可能變出新意義）。 */
+const _KLINE_TTL = { '1m':15e3, '3m':30e3, '5m':30e3, '15m':45e3, '30m':90e3,
+  '1h':24e4, '2h':6e5, '4h':6e5, '6h':12e5, '12h':12e5, '1d':18e5, '1w':108e5, '1M':216e5 };
+const _klineCache = new Map();   // key: sym|interval|limit → { ts, rows }
+function _klineCacheGet(key, interval) {
+  const hit = _klineCache.get(key);
+  if (!hit) return null;
+  const ttl = _KLINE_TTL[interval] || 3e4;
+  if (Date.now() - hit.ts > ttl) { _klineCache.delete(key); return null; }
+  return hit.rows;
+}
+function _klineCacheSet(key, rows) {
+  if (!rows || !rows.length) return;
+  // 上限保護：避免長時間執行後 Map 無限增長（100 幣 × 13 週期 ≈ 1300）
+  if (_klineCache.size > 2000) _klineCache.clear();
+  _klineCache.set(key, { ts: Date.now(), rows });
+}
+
+/* 只有「交易關鍵週期」走 OKX（進場/止損/插針判定需與實際成交所一致）。
+   1h 以上僅用於判斷趨勢方向，交易所間的微小價差無影響 → 一律走幣安。
+   這讓每輪 OKX 請求由「幣數×5」降為「幣數×1」，在 40 次/2 秒的硬限制下
+   把掃描時間從約 30 秒壓到約 6 秒（此前頁面卡在載入畫面的主因）。 */
+const OKX_PRECISION_INTERVALS = new Set(['1m', '3m', '5m', '15m', '30m']);
+
 async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) {
-  // 已知未上架 → 直接幣安，不浪費請求
-  if (_okxSymbolSet && !_okxSymbolSet.has(symbol)) {
-    const b0 = await fetchKlines(symbol, interval, limit);
-    if (b0) { _klineSrcCount.binance++; if (trackKey) _klineSrcBySymbol[trackKey] = 'binance'; }
-    return b0;
+  const _ck = `${symbol}|${interval}|${limit}`;
+  const _cached = _klineCacheGet(_ck, interval);
+  if (_cached) {
+    if (trackKey && _klineSrcBySymbol[trackKey] == null) _klineSrcBySymbol[trackKey] = 'cache';
+    return _cached;
+  }
+  const _fin = (rows, src) => {
+    if (rows) {
+      _klineCacheSet(_ck, rows);
+      _klineSrcCount[src]++;
+      if (trackKey) _klineSrcBySymbol[trackKey] = src;
+    }
+    return rows;
+  };
+  // 已知未上架、或非交易關鍵週期 → 直接幣安，不浪費 OKX 額度
+  if ((_okxSymbolSet && !_okxSymbolSet.has(symbol)) || !OKX_PRECISION_INTERVALS.has(interval)) {
+    return _fin(await fetchKlines(symbol, interval, limit), 'binance');
   }
   const p = await fetchOkxKlines(symbol, interval, limit);
-  if (p && p.length >= Math.min(30, limit)) {
-    _klineSrcCount.okx++;
-    if (trackKey) _klineSrcBySymbol[trackKey] = 'okx';
-    return p;
-  }
-  const b = await fetchKlines(symbol, interval, limit);
-  if (b) { _klineSrcCount.binance++; if (trackKey) _klineSrcBySymbol[trackKey] = 'binance'; }
-  return b;
+  if (p && p.length >= Math.min(30, limit)) return _fin(p, 'okx');
+  return _fin(await fetchKlines(symbol, interval, limit), 'binance');
 }
 
 /* ═══════════════════ 幣安 K 線引擎 ═══════════════════════ */
@@ -466,7 +500,7 @@ async function fetchAll24hQuoteVols() {
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
   const batchSize = 20;
-  _klineSrcCount = { okx: 0, binance: 0 };
+  _klineSrcCount = { okx: 0, binance: 0, cache: 0 };
 
   /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用；
      同時更新 OKX 上架幣種表（未上架的幣直接走幣安，價格精度對齊 OKX） */
