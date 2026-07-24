@@ -421,9 +421,17 @@ async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) 
     }
     return rows;
   };
-  // 已知未上架、或非交易關鍵週期 → 直接幣安，不浪費 OKX 額度
-  if ((_okxSymbolSet && !_okxSymbolSet.has(symbol)) || !OKX_PRECISION_INTERVALS.has(interval)) {
+  // 已知 OKX 未上架 → 直接幣安（OKX 抓不到，不浪費請求）
+  if (_okxSymbolSet && !_okxSymbolSet.has(symbol)) {
     return _fin(await fetchKlines(symbol, interval, limit), 'binance');
+  }
+  // 非交易關鍵週期 → 優先幣安（限速寬鬆）；但幣種表已與 OKX 同步，清單中會有
+  // 「OKX 有、幣安沒有」的幣（例如 XMU），這類幣幣安會回 null → 必須退回 OKX，
+  // 否則該幣完全沒有 1H 以上資料，趨勢判斷全部失效。
+  if (!OKX_PRECISION_INTERVALS.has(interval)) {
+    const bh = await fetchKlines(symbol, interval, limit);
+    if (bh && bh.length) return _fin(bh, 'binance');
+    return _fin(await fetchOkxKlines(symbol, interval, limit), 'okx');
   }
   const p = await fetchOkxKlines(symbol, interval, limit);
   if (p && p.length >= Math.min(30, limit)) return _fin(p, 'okx');

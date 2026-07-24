@@ -9356,7 +9356,7 @@ function loadTradingViewChart(symbol, interval) {
   container.innerHTML = '';
 
   const base     = symbol.replace('/USDT','').replace('/','').toUpperCase();
-  const tvSymbol = 'BINANCE:' + base + 'USDT';
+  const tvSymbol = tvExchangePrefix(base) + ':' + base + 'USDT';
   const ivl      = interval || '15';
 
   // 4 秒後若 widget 未渲染 canvas，自動切換到 iframe 備援
@@ -9410,11 +9410,24 @@ function loadTradingViewChart(symbol, interval) {
   }
 }
 
+/* ── 圖表交易所前綴（修「此商品不存在」）──────────────────────
+   幣種表已改為與 OKX 官方上架表同步，清單中會有「OKX 有、幣安沒有」的幣
+   （例如 XMU）。圖表元件原本寫死 BINANCE: 前綴，遇到這類幣就顯示
+   「此商品不存在」。改為依實際上架情形選擇交易所：
+   在 OKX 上架 → OKX:（同時與本系統的行情/K線來源一致），否則退回 BINANCE:。 */
+function tvExchangePrefix(base) {
+  try {
+    const sym = String(base || '').toUpperCase() + 'USDT';
+    if (typeof _okxSymbolSet !== 'undefined' && _okxSymbolSet && _okxSymbolSet.has(sym)) return 'OKX';
+  } catch(_e) {}
+  return 'BINANCE';
+}
+
 function renderFallbackChart(container, symbol, interval) {
   const base = symbol.replace('/USDT','').replace('/','').toUpperCase();
   const ivl  = interval || '15';
   // s.tradingview.com/widgetembed 是官方 CDN 嵌入端點，比 www 更可靠
-  const src = `https://s.tradingview.com/widgetembed/?symbol=BINANCE%3A${base}USDT` +
+  const src = `https://s.tradingview.com/widgetembed/?symbol=${tvExchangePrefix(base)}%3A${base}USDT` +
     `&interval=${ivl}&theme=dark&style=1&locale=zh_TW` +
     `&hidesidetoolbar=0&hidetoptoolbar=0&saveimage=0&withdateranges=1` +
     `&studies=RSI%40tv-basicstudies%2CMACD%40tv-basicstudies%2CVWAP%40tv-basicstudies`;
