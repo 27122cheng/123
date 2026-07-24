@@ -613,24 +613,43 @@ function renderAll() {
 function updateDataSrcBadge() {
   const el = document.getElementById('data-src-badge');
   if (!el) return;
-  const p = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.okx)  || 0;
-  const b = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.binance) || 0;
+  const p  = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.okx)     || 0;
+  const b  = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.binance) || 0;
+  const cc = (typeof _klineSrcCount !== 'undefined' && _klineSrcCount.cache)   || 0;
   const ch = (typeof _okxChannel !== 'undefined' && _okxChannel) || null;
+  const chLabel = ch === 'proxy' ? '同源代理' : '直連';
   el.classList.remove('src-okx', 'src-mixed', 'src-binance');
-  if (p > 0 && b === 0) {
+
+  // 本輪完全命中快取（高階週期效期未到）→ 不代表 OKX 失效，維持上一輪狀態語意
+  if (p === 0 && b === 0 && cc > 0) {
     el.classList.add('src-okx');
-    el.textContent = `OKX ${p}`;
-    el.title = `K線數據源：OKX 全量（${ch === 'proxy' ? '同源代理' : '直連'}），與實體成交所一致`;
-  } else if (p > 0) {
-    el.classList.add('src-mixed');
-    el.textContent = `OKX ${p}／幣安 ${b}`;
-    el.title = `K線數據源：OKX ${p} 筆（${ch === 'proxy' ? '代理' : '直連'}，交易關鍵週期 15m/5m/1m，`
-             + `進場・止損・插針判定與實際成交所一致）＋ 幣安 ${b} 筆（1H 以上僅判斷趨勢方向，`
-             + `交易所微小價差無影響，走幣安可避開 OKX 限速）`;
+    el.textContent = `快取 ${cc}`;
+    el.title = `本輪 K 線全部命中快取（${cc} 筆），未發出新請求。\n`
+             + `高階週期（1H 以上）效期較長，效期內不重抓，這是正常且刻意的省流設計。`;
+    return;
+  }
+
+  const parts = [];
+  if (p)  parts.push(`OKX ${p}`);
+  if (b)  parts.push(`幣安 ${b}`);
+  if (cc) parts.push(`快取 ${cc}`);
+  el.textContent = parts.join('／') || '偵測中…';
+
+  const detail = `本輪 K 線來源：\n`
+    + `• OKX ${p} 筆（${chLabel}）— 交易關鍵週期 15m/5m/1m，進場・止損・插針判定與實際成交所一致\n`
+    + `• 幣安 ${b} 筆 — 1H 以上僅判斷趨勢方向，交易所微小價差無影響，走幣安可避開 OKX 40次/2秒限速\n`
+    + `• 快取 ${cc} 筆 — 效期內未重抓（日線/週線一輪之間不會變）\n`
+    + `合計 ${p + b + cc} 筆`;
+
+  if (p > 0) {
+    // 交易關鍵週期有走到 OKX = 健康狀態（幣安/快取筆數多是正常設計）
+    el.classList.add(b > 0 ? 'src-mixed' : 'src-okx');
+    el.title = detail;
   } else {
+    // 交易關鍵週期完全沒走到 OKX = 真的有問題
     el.classList.add('src-binance');
-    el.textContent = `幣安 ${b || ''}`.trim();
-    el.title = 'K線數據源：全部走幣安（OKX 不可直連且代理未生效，或熔斷冷卻中）';
+    el.title = detail + `\n\n⚠️ 本輪交易關鍵週期未使用 OKX（不可直連且代理未生效，或連續失敗熔斷中），`
+             + `進場/止損價格改以幣安計算，可能與 OKX 實際成交價有些微差異。`;
   }
 }
 

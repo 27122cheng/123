@@ -409,6 +409,7 @@ async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) 
   const _ck = `${symbol}|${interval}|${limit}`;
   const _cached = _klineCacheGet(_ck, interval);
   if (_cached) {
+    _klineSrcCount.cache++;   // 快取命中也要計數，否則徽章數字對不起來
     if (trackKey && _klineSrcBySymbol[trackKey] == null) _klineSrcBySymbol[trackKey] = 'cache';
     return _cached;
   }
