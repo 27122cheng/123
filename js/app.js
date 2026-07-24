@@ -12134,8 +12134,13 @@ async function verifyIntrabarHits() {
       if (trade.status === 'pending') {
         // 掛單：用 1m 高低點更新「建單以來最高/最低」，補足輪詢間隙的插針，
         // 只要進場點曾落在區間內即以進場點成交（與主迴圈限價語意一致）
+        const _createdTs = trade.timestamp || 0;
         for (const bar of raw) {
-          if (parseFloat(bar[6]) <= sinceTs) continue; // closeTime 在檢查點之前的棒略過
+          if (parseFloat(bar[6]) <= sinceTs) continue;    // closeTime 在檢查點之前的棒略過
+          // 建單當下仍在形成中的那根 K 棒，其高低點可能包含「建單前」的插針，
+          // 掛單那一刻實體限價單尚不存在、抓不到建單前的價格 → 略過建單前就開盤的棒，
+          // 避免把建單前掃過進場點的插針誤判為成交（實倉沒碰到卻顯示進場的元兇）。
+          if (parseFloat(bar[0]) < _createdTs) continue;
           const hi = parseFloat(bar[2]), lo = parseFloat(bar[3]);
           if (isFinite(hi)) trade.hiSince = Math.max(trade.hiSince ?? hi, hi);
           if (isFinite(lo)) trade.loSince = Math.min(trade.loSince ?? lo, lo);
