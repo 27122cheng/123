@@ -9584,6 +9584,12 @@ async function addCustomPair() {
     showToast(`${sym} 已在清單中`, 'error'); return;
   }
 
+  // 幣種表上限（掃描節奏考量）：額滿需先移除不要的幣才能再新增
+  if (pairs.length >= MAX_PAIRS) {
+    showToast(`幣種表已達上限 ${MAX_PAIRS} 個，請先移除不需要的幣種再新增`, 'error');
+    return;
+  }
+
   // 清單只收 OKX 官方上架的幣（實體交易在 OKX，未上架的幣無法下單）
   if (typeof _okxSymbolSet !== 'undefined' && _okxSymbolSet && _okxSymbolSet.size >= 50
       && !_okxSymbolSet.has(binSym)) {
@@ -18245,7 +18251,7 @@ function renderPairsList() {
   const pairs = loadPairs();
   const pxSet = (typeof _okxSymbolSet !== 'undefined') ? _okxSymbolSet : null;
   const notListed = pxSet ? pairs.filter(p => !pxSet.has(p.s.replace('/', ''))).length : 0;
-  if (count) count.textContent = `共 ${pairs.length} 個交易對` + (notListed ? `（${notListed} 個 OKX 未上架）` : '');
+  if (count) count.textContent = `共 ${pairs.length}/${MAX_PAIRS} 個交易對` + (notListed ? `（${notListed} 個 OKX 未上架）` : '');
   list.innerHTML = pairs.map(p => {
     const unlisted = pxSet && !pxSet.has(p.s.replace('/', ''));
     return `
@@ -18285,31 +18291,39 @@ async function syncOkxPairsNow() {
     .filter(x => x.p > 0)                       // 無報價的不加（下架中/無流動性）
     .sort((a, b) => b.vol - a.vol);             // 依 24h 成交額由大到小
 
-  if (!removed.length && !addable.length) {
+  // 上限控管：保留的幣 + 新增的幣不得超過 MAX_PAIRS，新增依成交額由高到低補位
+  const kept     = pairs.filter(p => set.has(p.s.replace('/', '')));
+  const capacity = Math.max(0, MAX_PAIRS - kept.length);
+  const toAdd    = addable.slice(0, capacity);
+  const skipped  = addable.length - toAdd.length;   // 因額滿未加入的數量
+
+  if (!removed.length && !toAdd.length) {
     renderPairsList();
-    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣與 OKX 官方表（${set.size} 個交易對）完全一致`, 'success');
+    const _full = kept.length >= MAX_PAIRS ? `（已達上限 ${MAX_PAIRS} 個）` : '';
+    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣皆在 OKX 上架${_full}`, 'success');
     return;
   }
 
-  const msg = [`OKX 官方現貨表共 ${set.size} 個 USDT 交易對。`, ''];
-  if (addable.length) {
-    const preview = addable.slice(0, 15).map(x => x.s.replace('/USDT', '')).join('、');
-    msg.push(`➕ 新增 ${addable.length} 個（清單缺少、OKX 有上架，依成交額排序）：`,
-             `${preview}${addable.length > 15 ? ` …等 ${addable.length} 個` : ''}`, '');
+  const msg = [`OKX 官方現貨表共 ${set.size} 個 USDT 交易對，清單上限 ${MAX_PAIRS} 個。`, ''];
+  if (toAdd.length) {
+    const preview = toAdd.slice(0, 15).map(x => x.s.replace('/USDT', '')).join('、');
+    msg.push(`➕ 新增 ${toAdd.length} 個（清單缺少、OKX 有上架，依 24h 成交額排序）：`,
+             `${preview}${toAdd.length > 15 ? ` …等 ${toAdd.length} 個` : ''}`, '');
   }
   if (removed.length) {
     msg.push(`➖ 移除 ${removed.length} 個（OKX 未上架）：`,
              removed.map(p => p.s.replace('/USDT', '')).join('、'), '');
   }
-  msg.push(`同步後清單共 ${pairs.length - removed.length + addable.length} 個幣種。`,
-           '⚠️ 幣種越多每輪掃描越久（OKX 限速 40 次/2 秒）。', '', '確定套用嗎？');
+  if (skipped > 0) {
+    msg.push(`ℹ️ 另有 ${skipped} 個 OKX 幣種因已達上限 ${MAX_PAIRS} 未加入（成交額較低者）。`, '');
+  }
+  msg.push(`同步後清單共 ${kept.length + toAdd.length} 個幣種。`, '', '確定套用嗎？');
   if (!confirm(msg.join('\n'))) return;
 
-  const kept = pairs.filter(p => set.has(p.s.replace('/', '')));
-  savePairs([...kept, ...addable.map(x => ({ s: x.s, p: x.p }))]);
+  savePairs([...kept, ...toAdd.map(x => ({ s: x.s, p: x.p }))]);
   removed.forEach(p => { try { purgeSymbolData(p.s); } catch(_e) {} });
   renderPairsList();
-  showToast(`✅ 同步完成：新增 ${addable.length} 個、移除 ${removed.length} 個，下輪掃描生效`, 'success');
+  showToast(`✅ 同步完成：新增 ${toAdd.length} 個、移除 ${removed.length} 個（共 ${kept.length + toAdd.length}/${MAX_PAIRS}），下輪掃描生效`, 'success');
   try { triggerRescan(); } catch(_e) {}
 }
 
