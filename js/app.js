@@ -3177,7 +3177,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   let tp1, tp1Reason;
   const _adxForTP = parseFloat(coin.adx) || 20;
   const _adxBoost = _adxForTP >= 35 ? 1.0 : _adxForTP >= 28 ? 0.5 : 0;
-  const minTP1 = isLong ? entry + risk * (1.5 + _adxBoost) : entry - risk * (1.5 + _adxBoost);
+  // TP1 基準拉近至 1.0R（可達性↑ → 勝率上限由 ~40% 升至 ~50%）；
+  // 強趨勢只加半量 boost（最遠 1.5R），避免又把 TP1 推遠而拉低勝率。
+  // 大波段獲利改由「TP1 減倉 60% + 鎖 +0.5R + 尾倉移動止損追 TP2」承接。
+  const minTP1 = isLong ? entry + risk * (1.0 + _adxBoost * 0.5) : entry - risk * (1.0 + _adxBoost * 0.5);
   if (isLong) {
     const _liqDataTP1 = _liquidationCache[coin.symbol];
     const _liqWall1   = _liqDataTP1 ? (_liqDataTP1.shortLiqs || []).filter(l => l.price >= minTP1).sort((a,b)=>a.price-b.price)[0] : null;
@@ -17471,7 +17474,7 @@ function computeSimpleSetup(coin, isLong) {
   } else if (!isLong && _prevLTP1) {
     tp1 = _swLow; _tp1Tag = 'prevlow';
   } else {
-    tp1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5; _tp1Tag = 'rr';
+    tp1 = isLong ? entry + risk * 1.0 : entry - risk * 1.0; _tp1Tag = 'rr';
   }
 
   // ══ TP2：中期波段目標（前高/低 6% 內優先，再 EMA200，再 R:R 2.5）══
