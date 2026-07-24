@@ -9937,7 +9937,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716n';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260716o';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 setInterval(async () => {
   try {
@@ -11833,16 +11833,12 @@ function updateOpenTrades(data) {
     const isLong = direction === 'long';
     let outcome = null;
 
-    // ── +1R 提前保本：未觸 TP1 前浮盈達 +1R 即把止損移至成本 ──
-    // 勝率優化：TP1 在 ~1.5R，原本 1.0~1.4R 回落的單全額 -1R；
-    // 提前在 +1R 鎖成本，這批單從虧損轉為保本，進場數量不變
-    if (!trade.tp1Hit && !trade.beArmed) {
-      const _uR = ((cur - entry) * (isLong ? 1 : -1)) / baseRisk;
-      if (_uR >= 1.0) {
-        if (!trade.baseSl) trade.baseSl = trade.sl;
-        trade.sl = entry; trade.beArmed = true; changed = true;
-      }
-    }
+    // ── +1R 提前保本已移除（2026-07）──────────────────────────────
+    // 原因：止損只有 1R，+1R 在加密貨幣只是很小的波動（不到 TP1 的 1.5R）。
+    // 衝到 +1R 後回踩到進場價是正常洗盤，卻被提前保本在成本掃出（0R，計為輸），
+    // 這正是「稍微盈利又止損、勝率一直掉」的元兇。移除後讓單以原始結構止損
+    // 呼吸到 TP1，給它機會走到止盈，而不是在 +1R 的小回踩就被洗掉。
+
     // ── 時間止損：短線單持倉 >16 小時仍在 ±0.3R 內原地踏步 → 保本離場 ──
     // 停滯單多數最終走向止損；主動平掉換防，長線單（canScaleIn）不適用
     if (!trade.canScaleIn && trade.entryTime
@@ -11869,7 +11865,9 @@ function updateOpenTrades(data) {
           outcome = 'tp2';
         } else if (cur >= tp1 && !trade.tp1Hit) {
           if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
-          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損移至成本，之後開始移動停利
+          // TP1 觸及：止損鎖 +0.5R 獲利（非成本）——回踩就以小獲利出場(算贏)，
+          // 不再有「保本窗口」被回踩掃成 be(輸)。之後移動停利往上棘輪。
+          trade.tp1Hit = true; trade.sl = entry + baseRisk * 0.5; changed = true;
           tp1Hits.push({ trade, coin, cur });
         } else if (cur <= trade.sl) {
           // 止損被觸及：成本以上=移動停利獲利了結(tp1贏)、成本=保本(be)、成本以下=止損(sl)
@@ -11880,7 +11878,8 @@ function updateOpenTrades(data) {
           outcome = 'tp2';
         } else if (cur <= tp1 && !trade.tp1Hit) {
           if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
-          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損移至成本，之後開始移動停利
+          // TP1 觸及：止損鎖 +0.5R 獲利（非成本），回踩以小獲利出場(算贏)
+          trade.tp1Hit = true; trade.sl = entry - baseRisk * 0.5; changed = true;
           tp1Hits.push({ trade, coin, cur });
         } else if (cur >= trade.sl) {
           outcome = trade.sl < entry ? 'tp1' : (trade.sl > entry ? 'sl' : 'be');
@@ -12163,18 +12162,12 @@ async function verifyIntrabarHits() {
           if (outcome === 'tp1') trade.trailExit = true;
           break;
         }
-        // +1R 提前保本（與 updateOpenTrades 同一標準，用 K 棒高低點判定）
-        if (!trade.tp1Hit && !trade.beArmed) {
-          const _bR = Math.abs(entry - (trade.baseSl ?? trade.sl)) || 1;
-          const _uR = ((isLong ? hi : lo) - entry) * (isLong ? 1 : -1) / _bR;
-          if (_uR >= 1.0) {
-            if (!trade.baseSl) trade.baseSl = trade.sl;
-            trade.sl = entry; trade.beArmed = true; changed = true;
-          }
-        }
+        // +1R 提前保本已移除（同 updateOpenTrades）：太早保本是「稍微盈利又止損」元兇
         if (tp1Now) {
           if (!trade.baseSl) trade.baseSl = trade.sl;
-          trade.tp1Hit = true; trade.sl = entry; changed = true; // 止損移至成本
+          const _bR = Math.abs(entry - (trade.baseSl ?? trade.sl)) || 1;
+          // TP1 觸及：止損鎖 +0.5R 獲利（非成本），回踩以小獲利出場(算贏)
+          trade.tp1Hit = true; trade.sl = isLong ? entry + _bR * 0.5 : entry - _bR * 0.5; changed = true;
           tp1Hits.push({ trade, coin: { symbol: trade.symbol, price: tp1 }, cur: tp1 });
           if (tp2Hit) { outcome = 'tp2'; break; } // 同棒連過 TP1+TP2
           continue;
