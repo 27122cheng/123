@@ -500,7 +500,7 @@ function navigateTo(page, coinSymbol) {
     renderDashboardTables();
     renderReversalCards();
   }
-  if (page === 'settings') populateSettingsPage();
+  if (page === 'settings') { populateSettingsPage(); renderSignalMasterStatus(); }
   // 實驗室：僅隨主掃描刷新（進頁先渲染一次；後續由主掃描迴圈的 renderLabPage 掛鉤更新）
   if (page === 'lab') { try { renderLabPage(); } catch(e) {} }
   if (page === 'positions') {
@@ -9783,7 +9783,16 @@ const _DEDUP_WINDOW_MS = 30 * 60 * 1000;
    解法：以 localStorage 做寫入權杖——寫入後立刻讀回比對，只有讀回值仍是
    自己 ID 的分頁取得鎖（last-write-wins 下只會有一個贏家）。鎖含時戳，
    逾時自動失效，避免分頁關閉造成死鎖。 */
-const _TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+/* 分頁識別碼：存在 sessionStorage，重新整理後仍是同一個分頁（訊號主機身分
+   不會因為 F5 就掉），但另開新分頁必定拿到新 ID。 */
+const _TAB_ID = (() => {
+  try {
+    let id = sessionStorage.getItem('csp_tab_id');
+    if (!id) { id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+               sessionStorage.setItem('csp_tab_id', id); }
+    return id;
+  } catch(_e) { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
+})();
 const _TRADE_LOCK_KEY = 'csp_trade_lock';
 const _LOCK_TTL_MS = 5000;
 function _acquireTradeLock() {
@@ -9927,8 +9936,71 @@ function withCreateLock(name, fn) {
    避免「寬鬆建單、嚴格取消」的建了又取消問題。 */
 /* 訊號主機判定：多裝置同時開啟時，只有主機建單/監控/發通知（設定頁開關，預設開啟）。
    各裝置 localStorage 互相獨立，去重無法跨裝置生效——兩台都當主機會重複建單、重複通知。 */
+/* ── 訊號主機選舉（只有主機能建單／發通知）────────────────────────
+   問題：同時開多個分頁時，每個分頁都會獨立建單並各自送 Telegram，
+   使用者就收到同一訊號好幾次（跨分頁互斥鎖只能擋同一瞬間的競態，
+   擋不掉「這輪 A 建、下輪 B 建」的輪流建單）。
+   解法：由使用者在設定頁按鈕明確指定主機，以「最新宣告時間」為準——
+   後按的分頁接手，先前的分頁自動退位。身分存 localStorage（跨分頁共享），
+   分頁 ID 存 sessionStorage（重新整理不掉身分）。
+   相容：若從未宣告過任何主機，維持舊行為（依設定，預設允許），
+   避免既有使用者升級後訊號全部停擺。 */
+const SIGNAL_MASTER_KEY = 'csp_signal_master';
+function getSignalMasterInfo() {
+  try {
+    const raw = localStorage.getItem(SIGNAL_MASTER_KEY);
+    if (!raw) return null;
+    const m = JSON.parse(raw);
+    return (m && m.id) ? m : null;
+  } catch(_e) { return null; }
+}
+function claimSignalMaster() {
+  try {
+    const info = { id: _TAB_ID, ts: Date.now(), ua: _deviceLabel() };
+    localStorage.setItem(SIGNAL_MASTER_KEY, JSON.stringify(info));
+    renderSignalMasterStatus();
+    showToast('✅ 本分頁已設為訊號主機，其他分頁將停止發送訊號', 'success');
+  } catch(_e) { showToast('設定訊號主機失敗：' + _e.message, 'error'); }
+}
+function _deviceLabel() {
+  try {
+    const ua = navigator.userAgent;
+    const os = /iPhone|iPad/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android'
+             : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac'
+             : /Linux/.test(ua) ? 'Linux' : '其他';
+    const br = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera'
+             : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox'
+             : /Safari\//.test(ua) ? 'Safari' : '瀏覽器';
+    return `${os} · ${br}`;
+  } catch(_e) { return '未知裝置'; }
+}
 function isSignalMaster() {
-  try { return loadSettings().signalMaster !== false; } catch(_e) { return true; }
+  try {
+    const m = getSignalMasterInfo();
+    if (m) return m.id === _TAB_ID;              // 已有宣告 → 只有該分頁是主機
+    return loadSettings().signalMaster !== false; // 從未宣告 → 維持舊行為
+  } catch(_e) { return true; }
+}
+/* 設定頁狀態列：顯示目前主機、開啟（宣告）時間，以及本分頁是否為主機 */
+function renderSignalMasterStatus() {
+  const el = document.getElementById('signal-master-status');
+  if (!el) return;
+  const m = getSignalMasterInfo();
+  if (!m) {
+    el.innerHTML = `<span style="color:var(--text3)">尚未指定訊號主機 — 目前所有分頁都會發送訊號（可能重複）。`
+                 + `按上方按鈕將本分頁設為唯一主機。</span>`;
+    return;
+  }
+  const mine = m.id === _TAB_ID;
+  const t = new Date(m.ts);
+  const ts = `${t.toLocaleDateString('zh-TW', { month:'2-digit', day:'2-digit' })} `
+           + `${t.toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit', second:'2-digit' })}`;
+  el.innerHTML = mine
+    ? `<span style="color:#22c55e;font-weight:700">✅ 本分頁為訊號主機</span>`
+      + `<br><span style="color:var(--text3)">開啟時間：${ts}　裝置：${m.ua || '—'}</span>`
+    : `<span style="color:#f59e0b;font-weight:700">⏸️ 本分頁非主機，不會發送訊號</span>`
+      + `<br><span style="color:var(--text3)">目前主機開啟時間：${ts}　裝置：${m.ua || '—'}</span>`
+      + `<br><span style="color:var(--text3)">按上方按鈕可接手（以最新開啟時間為準）</span>`;
 }
 
 const DAILY_SIGNAL_TARGET = 3;
