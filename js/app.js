@@ -4736,7 +4736,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       if (lossStreakGuard().blocked) _canAutoRecord = false;  // 只剩硬停；漸進壓制交給 learnDrag
     }
     if (_canAutoRecord) {
-      tlog.unshift({
+      const _btsNewTrade = {
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
         timestamp: Date.now(),
@@ -4768,13 +4768,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         dirPenalty: 0, bbPenalty: 0,
         lowWinRate: _isLowWinRate || undefined,
         ...tradeCtx,
-      });
-      if (tlog.length > 500) tlog.splice(500);
-      saveTradeLog(tlog);
+      };
+      // 建單唯一入口（原子去重）：此路徑（幣種詳情頁自動建倉）先前直接 unshift+save，
+      // 未經去重，是「同時出現好幾筆一樣的訊號」的殘留來源之一。
+      const _btsCommitted = commitNewTrade(_btsNewTrade);
+      if (!_btsCommitted) console.log(`[dedup] ${coin.symbol} 詳情頁自動建倉重複，略過`);
+      else tlog.splice(0, tlog.length, ...loadTradeLog());
       // ── Telegram 通知（查看幣種詳情頁時新建掛單）──
       try {
         const _ns = loadSettings();
-        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+        if (_btsCommitted && _ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
           // 合併 trade 物件（含 sqGrade/conf 等）和 cache（含 risk/ICT 等）
           const _btsSetup = Object.assign({}, tlog[0] || {}, _tradeSetupCache[coin.symbol] || {}, {
             sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel, sqFactors: _sqFactors,
@@ -12065,7 +12068,12 @@ function updateOpenTrades(data) {
       const _peakR   = (isLong ? (trade.peakPrice - entry) : (entry - trade.peakPrice)) / baseRisk;
       const _lockR   = Math.max(0, _peakR - 0.8);   // 鎖住峰值後方 0.8R（>0 才進獲利區）
       const _trailSL = isLong ? entry + _lockR * baseRisk : entry - _lockR * baseRisk;
-      if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) { trade.sl = _trailSL; changed = true; }
+      if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) {
+        const _oldSL = trade.sl;
+        trade.sl = _trailSL; changed = true;
+        // 止損調整 → 立即通知（移動停利往獲利方向推進，實盤需同步改單）
+        sendSLChangeNotification(trade, _oldSL, _trailSL, `移動停利推進（峰值 ${_peakR.toFixed(2)}R，鎖住 ${_lockR.toFixed(2)}R）`);
+      }
     }
 
     if (!outcome) {
@@ -12076,7 +12084,9 @@ function updateOpenTrades(data) {
           if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
           // TP1 觸及：止損鎖 +0.5R 獲利（非成本）——回踩就以小獲利出場(算贏)，
           // 不再有「保本窗口」被回踩掃成 be(輸)。之後移動停利往上棘輪。
+          const _slBefore = trade.sl;
           trade.tp1Hit = true; trade.sl = entry + baseRisk * 0.5; changed = true;
+          sendSLChangeNotification(trade, _slBefore, trade.sl, '觸及止盈一：減倉 60%，止損上移鎖定 +0.5R 獲利');
           tp1Hits.push({ trade, coin, cur });
         } else if (cur <= trade.sl) {
           // 止損被觸及：成本以上=移動停利獲利了結(tp1贏)、成本=保本(be)、成本以下=止損(sl)
@@ -12088,7 +12098,9 @@ function updateOpenTrades(data) {
         } else if (cur <= tp1 && !trade.tp1Hit) {
           if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
           // TP1 觸及：止損鎖 +0.5R 獲利（非成本），回踩以小獲利出場(算贏)
+          const _slBefore = trade.sl;
           trade.tp1Hit = true; trade.sl = entry - baseRisk * 0.5; changed = true;
+          sendSLChangeNotification(trade, _slBefore, trade.sl, '觸及止盈一：減倉 60%，止損下移鎖定 +0.5R 獲利');
           tp1Hits.push({ trade, coin, cur });
         } else if (cur >= trade.sl) {
           outcome = trade.sl < entry ? 'tp1' : (trade.sl > entry ? 'sl' : 'be');
@@ -12377,7 +12389,11 @@ async function verifyIntrabarHits() {
           if (!trade.baseSl) trade.baseSl = trade.sl;
           const _bR = Math.abs(entry - (trade.baseSl ?? trade.sl)) || 1;
           // TP1 觸及：止損鎖 +0.5R 獲利（非成本），回踩以小獲利出場(算贏)
+          const _slBefore = trade.sl;
           trade.tp1Hit = true; trade.sl = isLong ? entry + _bR * 0.5 : entry - _bR * 0.5; changed = true;
+          // 止損調整即時通知（與 updateOpenTrades 同步，兩處出場路徑行為一致）
+          sendSLChangeNotification(trade, _slBefore, trade.sl,
+            `觸及止盈一：減倉 60%，止損${isLong ? '上' : '下'}移鎖定 +0.5R 獲利`);
           tp1Hits.push({ trade, coin: { symbol: trade.symbol, price: tp1 }, cur: tp1 });
           if (tp2Hit) { outcome = 'tp2'; break; } // 同棒連過 TP1+TP2
           continue;
@@ -12459,6 +12475,46 @@ function _markCancelTgSent(symbol, direction) {
     c[symbol.replace('/USDT','') + '_' + direction] = Date.now();
     localStorage.setItem(_CANCEL_TG_DEDUP_KEY, JSON.stringify(c));
   } catch {}
+}
+
+/* ── 止損調整即時通知 ────────────────────────────────────────
+   止損只要往獲利方向推進（TP1 鎖 +0.5R、移動停利棘輪），實盤都必須同步
+   改單，否則模擬與實倉的出場價會脫節。此通知於止損變動當下立即送出，
+   不進任何佇列、不等下一輪掃描。
+   只在「建單通知已送出」的單上通知，避免使用者收到沒看過的單的改單訊息。 */
+function sendSLChangeNotification(trade, oldSL, newSL, reason) {
+  try {
+    const s = loadSettings();
+    if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+    if (!trade.telegramSent) return;
+    const _o = parseFloat(oldSL), _n = parseFloat(newSL);
+    if (!isFinite(_o) || !isFinite(_n) || _o === _n) return;
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const sym    = trade.symbol.replace('/USDT', '');
+    const isLong = trade.direction === 'long';
+    const entry  = parseFloat(trade.entry) || 0;
+    const base   = Math.abs(entry - (trade.baseSl ?? trade.sl)) || 1;
+    const lockR  = entry ? ((_n - entry) * (isLong ? 1 : -1)) / base : 0;
+    const now = new Date();
+    const ts  = now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) + ' ' +
+                now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+    const lockLine = lockR > 0.01 ? `🔒 已鎖定獲利：+${lockR.toFixed(2)}R（此價出場即為贏單）`
+                   : lockR < -0.01 ? `⚠️ 仍在虧損區：${lockR.toFixed(2)}R`
+                   : `⚖️ 移至成本價（保本）`;
+    const text = [
+      `🛠️ <b>止損調整</b> — ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}`,
+      ``,
+      `📍 原止損：$${fmt(_o)}`,
+      `➡️ 新止損：<b>$${fmt(_n)}</b>`,
+      lockLine,
+      ``,
+      `📝 ${reason || '止損更新'}`,
+      ``,
+      `⏰ ${ts}`,
+      `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #止損調整`,
+    ].join('\n');
+    sendTelegramMessage(s.tgToken, s.tgChatId, text);
+  } catch(_e) { console.warn('[sl-change-notify]', _e); }
 }
 
 function sendCancelTelegramNotification(trade, reason) {
