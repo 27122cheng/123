@@ -8976,16 +8976,30 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
       <ul style="margin:4px 0 0 16px;font-size:0.82em;color:var(--text2)">${brList}</ul>
     </div>`;
   } else if (totalPen > 0) {
-    const penDetail = [
-      adxPen   > 0 ? `ADX 過低 -${adxPen}%` : '',
-      macroPen > 0 ? `宏觀逆風 -${macroPen}%` : '',
-      aiPen    > 0 ? `AI趨勢逆向 -${aiPen}%` : '',
-      learnPen > 0 ? `AI風控規則 -${learnPen}%` : '',
+    // ── 風控分明細（與持倉頁、Telegram 同一套公式）────────────────
+    // 舊版此處把四個「個別逆風因子」直接相加當成扣分（例：18+0+7+35=60），
+    // 但實際公式是 100 −止損風控扣分 −風險評估扣分；ADX/宏觀/AI趨勢是風險
+    // 評估的「輸入因子」而非直接扣分（且風控因子已做過去重），相加後與最終
+    // 風控分對不上——實測顯示「-60%　90% → 最終 70%」這種不成立的算式。
+    // 改為顯示真正的組成，個別因子另列為參考、標明已計入風險評估。
+    const _lockDrag = (typeof calcLearnDrag === 'function') ? calcLearnDrag(learnPen) : learnPen;
+    const _riskPen  = cached?.riskPenalty != null ? cached.riskPenalty
+                    : (riskScore != null && typeof calcRiskPenalty === 'function') ? calcRiskPenalty(riskScore) : 0;
+    const _actualPen = (finalConf != null) ? Math.max(0, 100 - finalConf) : (_lockDrag + _riskPen);
+    const penParts = [
+      _lockDrag > 0 ? `止損風控 -${_lockDrag}` : '',
+      _riskPen  > 0 ? `風險評估 -${_riskPen}（風險分 ${riskScore ?? '--'}）` : '',
     ].filter(Boolean).join('　');
+    const headwinds = [
+      adxPen   > 0 ? `ADX 過低` : '',
+      macroPen > 0 ? `宏觀逆風` : '',
+      aiPen    > 0 ? `AI趨勢逆向` : '',
+    ].filter(Boolean).join('、');
     p5 = `<div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;padding:7px 10px;border-radius:0 6px 6px 0;margin-top:4px">
-      <strong style="color:#f59e0b">⚠️ 風控扣分 -${totalPen}%</strong>
-      ${rawConf != null ? `<span style="color:var(--text3);font-size:0.8em;margin-left:6px">${rawConf}% → 最終 ${finalConf ?? '--'}%</span>` : ''}
-      <div style="font-size:0.8em;color:var(--text3);margin-top:2px">${penDetail}</div>
+      <strong style="color:#f59e0b">⚠️ 風控扣分 -${_actualPen} 分</strong>
+      <span style="color:var(--text3);font-size:0.8em;margin-left:6px">基分 100 → 最終 ${finalConf ?? '--'} 分</span>
+      ${penParts ? `<div style="font-size:0.8em;color:var(--text3);margin-top:2px">${penParts}</div>` : ''}
+      ${headwinds ? `<div style="font-size:0.78em;color:var(--text3);margin-top:2px">逆風因子：${headwinds}（已計入風險評估，非另外扣分）</div>` : ''}
     </div>`;
   } else if (cached) {
     p5 = `<div style="font-size:0.8em;color:#22c55e;margin-top:4px">✅ 風控通過：無扣分，風控分 ${finalConf ?? '--'} 分</div>`;
