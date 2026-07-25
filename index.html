@@ -816,8 +816,9 @@
         <h3 class="settings-group-ttl">📡 訊號主機</h3>
         <div class="setting-row vertical" style="gap:8px">
           <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">
-            同時開多個分頁時，每個分頁都會各自建單並發送 Telegram，導致同一訊號重複出現。
-            指定唯一主機後，只有主機分頁會建單與發送訊號；以最新開啟時間為準，後按的分頁自動接手。
+            同時開多個分頁／裝置時，每一份都會各自建單並發送 Telegram，導致同一訊號重複出現。
+            指定唯一主機後，只有主機會建單與發送訊號；以最新開啟時間為準，後按的自動接手。
+            已接上雲端仲裁時，手機與電腦之間也只會有一台發送（未設定雲端則退回單機模式，僅同瀏覽器分頁生效）。
           </div>
           <button class="btn-ghost" onclick="claimSignalMaster()" style="font-size:0.86rem;color:#00e676">
             📡 將本分頁設為訊號主機
@@ -839,8 +840,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260717n"></script>
-  <script src="js/api.js?v=20260717n"></script>
-  <script src="js/app.js?v=20260717n"></script>
+  <script src="js/indicators.js?v=20260717o"></script>
+  <script src="js/api.js?v=20260717o"></script>
+  <script src="js/app.js?v=20260717o"></script>
 </body>
 </html>

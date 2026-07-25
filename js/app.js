@@ -9960,13 +9960,60 @@ function getSignalMasterInfo() {
     return (m && m.id) ? m : null;
   } catch(_e) { return null; }
 }
-function claimSignalMaster() {
+/* ── 雲端主機狀態（跨裝置）────────────────────────────────────────
+   localStorage 只能協調同一瀏覽器的分頁；手機與電腦各開一份時兩邊都會
+   發訊號。改由雲端 KV 保存「誰是主機」，所有裝置共用同一份。
+   _cloudMaster 為非同步取回後的快取——isSignalMaster() 在掃描迴圈中被
+   同步呼叫，不能每次都等網路，故定期背景更新、同步讀快取。
+   雲端未設定或不可用時 _cloudOk=false，自動退回單機（localStorage）模式。 */
+let _cloudMaster = null;      // { id, ts, ua }
+let _cloudOk     = false;     // 雲端仲裁是否可用
+let _cloudReason = '';        // 不可用原因（設定頁顯示）
+let _cloudCheckedAt = 0;
+
+async function refreshCloudMaster() {
   try {
-    const info = { id: _TAB_ID, ts: Date.now(), ua: _deviceLabel() };
-    localStorage.setItem(SIGNAL_MASTER_KEY, JSON.stringify(info));
-    renderSignalMasterStatus();
-    showToast('✅ 本分頁已設為訊號主機，其他分頁將停止發送訊號', 'success');
-  } catch(_e) { showToast('設定訊號主機失敗：' + _e.message, 'error'); }
+    const r = await fetch('/api/master', { cache: 'no-store' });
+    const j = await r.json().catch(() => null);
+    _cloudCheckedAt = Date.now();
+    if (!j || j.ok !== true) {
+      _cloudOk = false;
+      _cloudReason = (j && j.hint) || (j && j.reason) || '雲端服務未回應';
+      return;
+    }
+    _cloudOk = true; _cloudReason = '';
+    _cloudMaster = j.master || null;
+  } catch(_e) {
+    _cloudOk = false; _cloudReason = '無法連線至雲端仲裁服務';
+    _cloudCheckedAt = Date.now();
+  }
+  try { renderSignalMasterStatus(); } catch(_e) {}
+}
+
+async function claimSignalMaster() {
+  const info = { id: _TAB_ID, ts: Date.now(), ua: _deviceLabel() };
+  // 先寫本機，確保雲端不可用時仍有單機層級的主機指定
+  try { localStorage.setItem(SIGNAL_MASTER_KEY, JSON.stringify(info)); } catch(_e) {}
+  try {
+    const r = await fetch('/api/master', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: _TAB_ID, ua: info.ua }),
+    });
+    const j = await r.json().catch(() => null);
+    if (j && j.ok === true) {
+      _cloudOk = true; _cloudReason = ''; _cloudMaster = j.master || info;
+      renderSignalMasterStatus();
+      showToast('✅ 已設為訊號主機（雲端同步，所有裝置僅此一台發送）', 'success');
+      return;
+    }
+    _cloudOk = false;
+    _cloudReason = (j && j.hint) || (j && j.reason) || '雲端服務未回應';
+  } catch(_e) {
+    _cloudOk = false; _cloudReason = '無法連線至雲端仲裁服務';
+  }
+  renderSignalMasterStatus();
+  showToast('✅ 本分頁已設為訊號主機（單機模式：僅同一瀏覽器的分頁生效）', 'success');
 }
 function _deviceLabel() {
   try {
@@ -9982,8 +10029,10 @@ function _deviceLabel() {
 }
 function isSignalMaster() {
   try {
+    // 雲端可用且已有人宣告 → 以雲端為準（跨裝置唯一主機）
+    if (_cloudOk && _cloudMaster && _cloudMaster.id) return _cloudMaster.id === _TAB_ID;
     const m = getSignalMasterInfo();
-    if (m) return m.id === _TAB_ID;              // 已有宣告 → 只有該分頁是主機
+    if (m) return m.id === _TAB_ID;              // 退回單機：只有該分頁是主機
     return loadSettings().signalMaster !== false; // 從未宣告 → 維持舊行為
   } catch(_e) { return true; }
 }
@@ -9991,23 +10040,35 @@ function isSignalMaster() {
 function renderSignalMasterStatus() {
   const el = document.getElementById('signal-master-status');
   if (!el) return;
-  const m = getSignalMasterInfo();
+  const cloud = _cloudOk && _cloudMaster && _cloudMaster.id;
+  const m = cloud ? _cloudMaster : getSignalMasterInfo();
+  const modeLine = _cloudOk
+    ? `<span style="color:#22d3ee">☁️ 雲端同步中 — 所有裝置共用同一個主機</span>`
+    : `<span style="color:#f59e0b">📴 單機模式 — 僅同一瀏覽器的分頁生效`
+      + `${_cloudReason ? `<br>　${_cloudReason}` : ''}</span>`;
   if (!m) {
-    el.innerHTML = `<span style="color:var(--text3)">尚未指定訊號主機 — 目前所有分頁都會發送訊號（可能重複）。`
-                 + `按上方按鈕將本分頁設為唯一主機。</span>`;
+    el.innerHTML = `${modeLine}<br><span style="color:var(--text3)">尚未指定訊號主機 — `
+                 + `目前所有分頁/裝置都會發送訊號（可能重複）。按上方按鈕將本分頁設為唯一主機。</span>`;
     return;
   }
   const mine = m.id === _TAB_ID;
   const t = new Date(m.ts);
   const ts = `${t.toLocaleDateString('zh-TW', { month:'2-digit', day:'2-digit' })} `
            + `${t.toLocaleTimeString('zh-TW', { hour:'2-digit', minute:'2-digit', second:'2-digit' })}`;
-  el.innerHTML = mine
+  el.innerHTML = modeLine + '<br>' + (mine
     ? `<span style="color:#22c55e;font-weight:700">✅ 本分頁為訊號主機</span>`
       + `<br><span style="color:var(--text3)">開啟時間：${ts}　裝置：${m.ua || '—'}</span>`
     : `<span style="color:#f59e0b;font-weight:700">⏸️ 本分頁非主機，不會發送訊號</span>`
       + `<br><span style="color:var(--text3)">目前主機開啟時間：${ts}　裝置：${m.ua || '—'}</span>`
-      + `<br><span style="color:var(--text3)">按上方按鈕可接手（以最新開啟時間為準）</span>`;
+      + `<br><span style="color:var(--text3)">按上方按鈕可接手（以最新開啟時間為準）</span>`);
 }
+
+/* 背景同步雲端主機狀態：載入後立即取一次，之後每 30 秒更新，
+   讓「別台裝置接手」能在一輪內反映到本機、自動停止發送。 */
+try {
+  refreshCloudMaster();
+  setInterval(() => { refreshCloudMaster(); }, 30000);
+} catch(_e) {}
 
 const DAILY_SIGNAL_TARGET = 3;
 function countSignalsToday() {
