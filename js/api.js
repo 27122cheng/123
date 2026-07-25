@@ -204,13 +204,22 @@ let _okxDiagShown = false;
    留約 17% 餘裕，從源頭避免觸發 429。
    _okxNextSlot 於 await 前同步預約時槽，並發呼叫也能正確排隊不重疊。 */
 const OKX_MIN_GAP_MS = 60;
+/* 排隊上限：超過此秒數就不再排 OKX，該筆直接改走幣安。
+   沒有上限時，一輪掃描（約 220 個 OKX 請求 × 60ms ≈ 13 秒）若超過掃描間隔，
+   下一輪會疊在前一輪的隊尾上，排隊時間每輪累加（實測 13→28→43 秒…），
+   數輪後每個請求都在等數十秒，表現為頁面像當掉一樣毫無回應。 */
+const OKX_MAX_QUEUE_MS = 8000;
 let _okxNextSlot = 0;
+let _okxSkipped  = 0;      // 本輪因排隊過長而改走幣安的筆數（診斷用）
+/* 回傳 false 代表隊列已滿、本筆不排 OKX（呼叫端改走幣安） */
 async function _okxGate() {
   const now  = Date.now();
+  if (_okxNextSlot - now > OKX_MAX_QUEUE_MS) { _okxSkipped++; return false; }
   const slot = Math.max(now, _okxNextSlot);
   _okxNextSlot = slot + OKX_MIN_GAP_MS;   // 同步預約，避免並發搶同一時槽
   const wait = slot - now;
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  return true;
 }
 
 async function okxApiFetch(path, params, timeoutMs = 8000) {
@@ -225,7 +234,7 @@ async function okxApiFetch(path, params, timeoutMs = 8000) {
   }
   for (const c of candidates) {
     try {
-      await _okxGate();                    // 限速排隊
+      if (!await _okxGate()) return null;   // 限速隊列已滿 → 交由呼叫端改走幣安
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       const r = await fetch(c.url, { signal: ctrl.signal });
@@ -515,6 +524,7 @@ async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
   const batchSize = 20;
   _klineSrcCount = { okx: 0, binance: 0, cache: 0 };
+  _okxSkipped = 0;
 
   /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用；
      同時更新 OKX 上架幣種表（未上架的幣直接走幣安，價格精度對齊 OKX） */
@@ -640,6 +650,10 @@ async function fetchAllFromBinance(timeframe) {
     if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
   }
 
+  if (_okxSkipped > 0) {
+    console.warn(`[OKX] 本輪 ${_okxSkipped} 筆因限速隊列已滿（>${OKX_MAX_QUEUE_MS / 1000}s）改走幣安；`
+      + `幣種數過多時屬正常，可於設定頁減少幣種以提高 OKX 覆蓋率`);
+  }
   if (_klineSrcCount.okx || _klineSrcCount.binance) {
     console.info(`[數據源] K線 OKX ${_klineSrcCount.okx} 筆 / 幣安 ${_klineSrcCount.binance} 筆`);
   }
