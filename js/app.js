@@ -12696,20 +12696,40 @@ function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
 }
 
 /* ── 加倉成交後的主倉止損（掛單預告與實際成交共用同一套數學）──────
-   邏輯：前一進場位是新的「成本底線」，再往有利方向加 0.8 ATR 緩衝，
-   讓正常回調不會觸發止損。ATR 由建單時保存的 ADX 推估。
-   fillPrice 傳入預計成交價（掛單預告用加倉位；實際成交時亦為加倉位）。
-   回傳 { sl, willMove }——willMove=false 代表算出來的位置比現行止損還差，
-   不會採用（止損只往獲利方向推進，絕不後退）。 */
+   基準錨：上一進場位 + 0.8 ATR 緩衝——邏輯是「跌破上次加倉的位置＝順勢
+   動能已失效」，同時把先前倉位的獲利鎖住。
+   但單用這個錨有兩個實測出來的破口，故加兩道護欄：
+     ① 上限護欄：加倉點離前一進場位很近時（回落 0.8% 就觸發加倉），算出的
+        止損可能「高於加倉價本身」→ 一成交就被掃出場。故止損必須低於
+        （做多）加倉價至少 minBuffer。
+     ② 距離護欄：價格快速拉開時，錨定在遙遠的前一進場位會讓這筆加倉的
+        止損距離膨脹到數 R（實測第 2 次加倉可達 5.86R），等於加倉反而讓
+        整體風險一直放大。故加倉價到止損的距離設上限 maxDist。
+   兩道護欄皆以 ATR 與原始風險 R 取較大者，隨波動率自適應。
+   最後仍受「止損只往獲利方向前進、絕不後退」約束（willMove）。 */
 function projectScaleInSL(trade, scaleIn, fillPrice) {
   const isLong = trade.direction === 'long';
+  const px     = parseFloat(fillPrice) || 0;
   const done   = (trade.scaleIns || []).filter(s => s.status === 'open' && s !== scaleIn);
   const prevEntry = done.length > 0
     ? (done.at(-1).entryPrice || done.at(-1).entryLevel)
     : trade.entry;
   const adx = trade.adx || 20;
-  const atr = (parseFloat(fillPrice) || 0) * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
-  const sl  = isLong ? prevEntry + atr * 0.8 : prevEntry - atr * 0.8;
+  const atr = px * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
+  // 原始風險 R（主倉進場到最初止損），作為護欄的另一個尺度
+  const origRisk = Math.abs(trade.entry - (trade.baseSl ?? trade.sl)) || atr;
+  const minBuffer = Math.max(atr * 0.6, origRisk * 0.3);   // 護欄①：離加倉價的最小距離
+  const maxDist   = Math.max(atr * 1.5, origRisk * 1.2);   // 護欄②：離加倉價的最大距離
+
+  const anchor = isLong ? prevEntry + atr * 0.8 : prevEntry - atr * 0.8;
+  let sl;
+  if (isLong) {
+    sl = Math.max(anchor, px - maxDist);   // 距離護欄：不讓止損離加倉價太遠
+    sl = Math.min(sl, px - minBuffer);     // 上限護欄：不讓止損貼上/超過加倉價
+  } else {
+    sl = Math.min(anchor, px + maxDist);
+    sl = Math.max(sl, px + minBuffer);
+  }
   const willMove = isLong ? sl > trade.sl : sl < trade.sl;
   return { sl, willMove };
 }
