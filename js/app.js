@@ -267,7 +267,7 @@ function startRefreshCycle() {
     // 先渲染持倉頁面（使用更新前的資料），避免 updateOpenTrades 刪除後顯示空白
     try { if (state.currentPage === 'positions') renderPositionsPage(); } catch(e) {}
     let _cancelled1 = new Set();
-    withCreateLock("alerts", () => checkAndSendAlerts(data));
+    const _pAlerts = withCreateLock("alerts", () => checkAndSendAlerts(data));
     try { _cancelled1 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[refresh] updateOpenTrades 錯誤:', e); }
     verifyIntrabarHits().catch(e => console.warn('[wick-check]', e));
     // 確保宏觀快取就緒，避免掃描時因 _macroCache 為 null 觸發震盪模式封鎖
@@ -277,7 +277,9 @@ function startRefreshCycle() {
         if (_rfg || _rgm) _macroCache = { ...(_rgm || {}), fg: _rfg };
       } catch(_re) {}
     }
-    withCreateLock("scanSignals", () => recordSignalsFromScan(data));
+    const _pScan = withCreateLock("scanSignals", () => recordSignalsFromScan(data));
+    // 非同步建單完成後補一次持倉頁重繪（否則新建的單要切頁才看得到）
+    _rerenderPositionsAfter([_pAlerts, _pScan]);
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
     try { recordLabOpportunities(data); } catch(e) { console.error('[refresh] lab record 錯誤:', e); }
     try { updateLabOpportunities(data); } catch(e) { console.error('[refresh] lab update 錯誤:', e); }
@@ -335,7 +337,7 @@ async function manualRefresh() {
   hideScanBar();
   try { applyFilters(); renderAll(); } catch(e) { console.error('[manualRefresh] renderAll 錯誤:', e); }
   let _cancelled2 = new Set();
-  withCreateLock("alerts", () => checkAndSendAlerts(data));
+  const _mAlerts = withCreateLock("alerts", () => checkAndSendAlerts(data));
   try { _cancelled2 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[manualRefresh] updateOpenTrades 錯誤:', e); }
   // 確保宏觀快取就緒，避免掃描時因 _macroCache 為 null 觸發震盪模式封鎖
   if (!_macroCache) {
@@ -344,7 +346,8 @@ async function manualRefresh() {
       if (_rfg2 || _rgm2) _macroCache = { ...(_rgm2 || {}), fg: _rfg2 };
     } catch(_re2) {}
   }
-  withCreateLock("scanSignals", () => recordSignalsFromScan(data));
+  const _mScan = withCreateLock("scanSignals", () => recordSignalsFromScan(data));
+  _rerenderPositionsAfter([_mAlerts, _mScan]);
   // AI 機會實驗室 + 驗證策略晉升（手動刷新同步執行）
   try { recordLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab record 錯誤:', e); }
   try { updateLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab update 錯誤:', e); }
@@ -9765,7 +9768,7 @@ function triggerRescan() {
     state.data = data; state.dataSource = source;
     state.scanning = false; hideScanBar();
     applyFilters(); renderAll(); checkApiStatus();
-    withCreateLock("scanSignals", () => recordSignalsFromScan(data));
+    _rerenderPositionsAfter([withCreateLock("scanSignals", () => recordSignalsFromScan(data))]);
     updateOpenTrades(data);
     withCreateLock("alerts", () => checkAndSendAlerts(data));
     // AI 機會實驗室：紙上追蹤（獨立於正式交易，不設風控門檻）
@@ -10125,6 +10128,22 @@ function _deviceLabel() {
     return `${os} · ${br}`;
   } catch(_e) { return '未知裝置'; }
 }
+/* ── 建單完成後重繪持倉頁（修「Telegram 跳了、持倉頁卻沒有這筆單」）──
+   checkAndSendAlerts / recordSignalsFromScan 皆為 async 且呼叫端不 await，
+   主流程「掃描完成後重新渲染持倉頁」那行其實在它們建單之前就跑完了；
+   等非同步建單真正完成並送出 Telegram 時，已無人再重繪 → 使用者收到訊號
+   但持倉頁空白，要手動切到別頁再切回來才會出現。
+   此函式在所有建單流程 settle 後補一次重繪。 */
+function _rerenderPositionsAfter(promises) {
+  try {
+    Promise.allSettled(promises.filter(Boolean)).then(() => {
+      try {
+        if (state.currentPage === 'positions') renderPositionsPage();
+      } catch(_e) {}
+    });
+  } catch(_e) {}
+}
+
 function isSignalMaster() {
   try {
     // 雲端可用且已有人宣告 → 以雲端為準（跨裝置唯一主機）
