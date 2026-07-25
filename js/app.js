@@ -4677,7 +4677,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (!ex.telegramSent && !ex.pendingNotify) {
       try {
         const _ns = loadSettings();
-        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId
+            && tgSignalOnce(coin.symbol, direction)) {
           const _exTgSetup = Object.assign({}, ex, _tradeSetupCache[coin.symbol] || {}, {
             sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel,
           });
@@ -4778,7 +4779,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       // ── Telegram 通知（查看幣種詳情頁時新建掛單）──
       try {
         const _ns = loadSettings();
-        if (_btsCommitted && _ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+        if (_btsCommitted && _ns.notifTelegram && _ns.tgToken && _ns.tgChatId
+            && tgSignalOnce(coin.symbol, direction)) {
           // 合併 trade 物件（含 sqGrade/conf 等）和 cache（含 risk/ICT 等）
           const _btsSetup = Object.assign({}, tlog[0] || {}, _tradeSetupCache[coin.symbol] || {}, {
             sqGrade: _sqGrade, sqScore: _sqScore, sqGradeLabel: _sqGradeLabel, sqFactors: _sqFactors,
@@ -9850,6 +9852,34 @@ function _signalledRecently(symbol, direction) {
     e.s === symbol && e.d === direction && (now - (e.ts || 0)) < _DEDUP_WINDOW_MS);
 }
 
+/* ── Telegram 建單訊號發送去重（最後一道保險）──────────────────
+   建單訊號有 4 條發送路徑（掃描建單、詳情頁建單、pendingNotify 補發、
+   既有掛單補發）。其中「既有掛單補發」以 trade.telegramSent 旗標把關，
+   一旦該旗標未能持久化（並行存檔覆蓋、id 對不上等），就會每輪重發一次
+   ——實測表現為同幣種同方向訊息連發多則，價位完全相同、只有 SQ 分數
+   隨每輪重算而變（例：TRB 空單 12:30/12:32/12:33 皆為 $14.5127）。
+   這裡不再依賴任何旗標，改在「送出前」查一本獨立台帳：同幣種同方向於
+   去重窗內已送過就不再送。取消/加倉/止損調整等其他類型訊息不受影響。 */
+const TG_SIGNAL_LEDGER_KEY = 'csp_tg_signal_ledger';
+function tgSignalOnce(symbol, direction) {
+  try {
+    const now = Date.now();
+    const cutoff = now - 24 * 3600 * 1000;
+    let arr = [];
+    try {
+      const raw = JSON.parse(localStorage.getItem(TG_SIGNAL_LEDGER_KEY) || '[]');
+      if (Array.isArray(raw)) arr = raw.filter(e => e && (e.ts || 0) > cutoff);
+    } catch(_e) {}
+    if (arr.some(e => e.s === symbol && e.d === direction && (now - e.ts) < _DEDUP_WINDOW_MS)) {
+      console.log(`[tg-dedup] ${symbol} ${direction} 建單訊號於去重窗內已發送過，略過重複推送`);
+      return false;
+    }
+    arr.unshift({ s: symbol, d: direction, ts: now });
+    localStorage.setItem(TG_SIGNAL_LEDGER_KEY, JSON.stringify(arr.slice(0, 500)));
+    return true;
+  } catch(_e) { return true; }   // 台帳異常時不阻擋通知
+}
+
 function commitNewTrade(newTrade) {
   if (!_acquireTradeLock()) {
     console.log(`[dedup] ${newTrade?.symbol || '?'} 其他分頁正在建單，本分頁略過`);
@@ -11570,7 +11600,8 @@ async function recordSignalsFromScan(data) {
     // 建單即時發送 Telegram（條件在掃描時已完整驗證，不需延遲）
     try {
       const _scanNs = loadSettings();
-      if (_scanNs.notifTelegram && _scanNs.tgToken && _scanNs.tgChatId) {
+      if (_scanNs.notifTelegram && _scanNs.tgToken && _scanNs.tgChatId
+          && tgSignalOnce(coin.symbol, direction)) {
         const _scanTgSetup = Object.assign({}, newTrade, setup,
           { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs,
             conf: newTrade.conf, riskPenalty: _scanRiskPen,
@@ -12516,7 +12547,8 @@ function updateOpenTrades(data) {
 
         // 交易通過最新風控分驗證，推送通知
         // Telegram 通知
-        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId) {
+        if (_ns.notifTelegram && _ns.tgToken && _ns.tgChatId
+            && tgSignalOnce(_pnt.symbol, _pnt.direction)) {
           try {
             const _tgSetup = Object.assign({}, _pnt, _pnt._notifyRisk || {});
             sendTelegramMessage(_ns.tgToken, _ns.tgChatId,
