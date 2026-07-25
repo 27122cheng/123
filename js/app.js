@@ -4737,6 +4737,39 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_canAutoRecord) {
       if (lossStreakGuard().blocked) _canAutoRecord = false;  // 只剩硬停；漸進壓制交給 learnDrag
     }
+    // ── 與掃描建單套用完全相同的門檻（修「打開詳情頁才出現這筆單」）──────
+    // 問題：本路徑原本只檢查 SQ 等級(A)＋風控分 60，缺少掃描路徑的數道關卡，
+    // 於是掃描本身會拒絕的訊號，只要使用者去點開該幣的詳情頁就會被建出來
+    // ——等於「用看的」繞過風控，且持倉內容取決於使用者剛好點了哪些幣。
+    // 補齊四道：自適應門檻（每日配額/連虧會收緊）、R:R≥1.3、同方向集中度
+    // 控管、建單前終審（以監控口徑預演，杜絕建了又被監控取消）。
+    if (_canAutoRecord) try {
+      const _btsGates = getAdaptiveGates();
+      const _btsMinSq = canScaleIn ? 19 : _btsGates.minSq;
+      if (_sqScore < _btsMinSq || conf < _btsGates.minConf) {
+        _canAutoRecord = false;
+        console.log(`[detail-gate] ${coin.symbol} SQ ${_sqScore}/${_btsMinSq}、風控分 ${conf}/${_btsGates.minConf} 未達掃描門檻，不建單`);
+      }
+      if (_canAutoRecord && parseFloat(rr1str) < 1.3) {
+        _canAutoRecord = false;
+        console.log(`[detail-gate] ${coin.symbol} R/R ${rr1str} < 1.3，不建單`);
+      }
+      if (_canAutoRecord) {
+        const _btsDirMsg = sameDirGuard(tlog, direction, _sqScore);
+        if (_btsDirMsg) { _canAutoRecord = false; console.log(`[detail-gate] ${coin.symbol} ${_btsDirMsg}`); }
+      }
+      if (_canAutoRecord) {
+        const _btsAudit = computeSqMonitorScore(
+          { direction, entry, sl, tp1, canScaleIn }, coin, direction === 'long',
+          { wBias: weeklyBiasData?.bias || '', tBias: todayBiasData?.bias || '',
+            btcChg24: (typeof state !== 'undefined' && state.data)
+              ? parseFloat(state.data.find(d => d.symbol === 'BTC/USDT')?.change24h) : NaN });
+        if (_btsAudit.sq < _btsMinSq) {
+          _canAutoRecord = false;
+          console.log(`[detail-gate] ${coin.symbol} 監控口徑評分 ${_btsAudit.sq} < ${_btsMinSq}，不建單（杜絕建了又取消）`);
+        }
+      }
+    } catch(_btsGateE) { console.warn('[detail-gate]', _btsGateE); }
     if (_canAutoRecord) {
       const _btsNewTrade = {
         id: `${coin.symbol}-${Date.now()}`,
@@ -4749,7 +4782,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         rr1: rr1str, rr2: rr2str,  // SQ 監控 computeFullRisk 需要，缺失會被誤判 R/R 過低
         riskScore: _risk.score, riskLevel: _risk.level, riskPenalty: _riskPenBTS,
         riskKeys: _risk.keys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
-        confGate: 60, sqGate: canScaleIn ? 15 : 9,  // 詳情頁建單使用嚴格門檻
+        confGate: getAdaptiveGates().minConf, sqGate: canScaleIn ? 19 : getAdaptiveGates().minSq,  // 與掃描建單同門檻
         hardAdxPenalty, learnPenalty, macroPenalty: macroOpposePenalty, aiTrendPenalty, techPenalty, chipsPenalty,
         entryReason: entryReasons.join('，'), entryReasons: [...entryReasons],
         slReason, tp1Reason, tp2Reason,
