@@ -9821,6 +9821,35 @@ function _releaseTradeLock() {
   } catch(_e) {}
 }
 
+/* ── 訊號發送台帳（根治「取消後下一輪又建一筆」的重複）──────────
+   被取消的掛單會從交易紀錄整筆刪除（updateOpenTrades 的 toDeleteIds），
+   於是「同幣種同方向 30 分鐘內不重複」的去重檢查查無紀錄而放行，下一輪
+   就又建一筆、又發一次 Telegram——實測為相隔約 1 分鐘的兩筆同向訊號。
+   解法：另存一本只增不刪的台帳，記錄每次「實際建立訊號」的幣種/方向/
+   時間。去重改查這本，不受交易紀錄被刪除影響。保留 24 小時後自動清理。 */
+const SIGNAL_LEDGER_KEY = 'csp_signal_ledger';
+function _loadSignalLedger() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(SIGNAL_LEDGER_KEY) || '[]');
+    if (!Array.isArray(arr)) return [];
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    return arr.filter(e => e && (e.ts || 0) > cutoff);
+  } catch(_e) { return []; }
+}
+function _recordSignalLedger(symbol, direction) {
+  try {
+    const arr = _loadSignalLedger();
+    arr.unshift({ s: symbol, d: direction, ts: Date.now() });
+    localStorage.setItem(SIGNAL_LEDGER_KEY, JSON.stringify(arr.slice(0, 500)));
+  } catch(_e) {}
+}
+/* 台帳中是否於去重窗內已發送過同幣種同方向訊號 */
+function _signalledRecently(symbol, direction) {
+  const now = Date.now();
+  return _loadSignalLedger().some(e =>
+    e.s === symbol && e.d === direction && (now - (e.ts || 0)) < _DEDUP_WINDOW_MS);
+}
+
 function commitNewTrade(newTrade) {
   if (!_acquireTradeLock()) {
     console.log(`[dedup] ${newTrade?.symbol || '?'} 其他分頁正在建單，本分頁略過`);
@@ -9837,6 +9866,11 @@ function commitNewTrade(newTrade) {
     // ② 同幣種同方向在去重窗內剛建立過（不論目前狀態，擋重複訊號連發）
     if (log.some(t => t.symbol === sym && t.direction === dir &&
         now - (t.timestamp || 0) < _DEDUP_WINDOW_MS)) return false;
+    // ②b 台帳檢查：即使該單已被取消並從紀錄中刪除，仍不得於窗內重複發送
+    if (_signalledRecently(sym, dir)) {
+      console.log(`[dedup] ${sym} ${dir} 於 ${_DEDUP_WINDOW_MS / 60000} 分鐘內已發送過訊號（含已取消者），略過`);
+      return false;
+    }
     // ③ 進場價指紋重複（同幣種同方向且進場價幾乎相同）
     const _fp = (e) => (parseFloat(e) || 0).toPrecision(6);
     if (newTrade.entry && log.some(t => t.symbol === sym && t.direction === dir &&
@@ -9845,6 +9879,7 @@ function commitNewTrade(newTrade) {
     log.unshift(newTrade);
     if (log.length > 500) log.splice(500);
     saveTradeLog(log);
+    _recordSignalLedger(sym, dir);   // 記入台帳（不隨交易紀錄刪除而消失）
     return true;
   } catch(_e) { return false; }
   finally { _releaseTradeLock(); }
