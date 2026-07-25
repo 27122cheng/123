@@ -12179,7 +12179,8 @@ function updateOpenTrades(data) {
               pendingSI.armedAt = Date.now();
               pendingSI.hiSince = cur; pendingSI.loSince = cur;
               changed = true;
-              sendScaleInArmedNotification(trade, pendingSI, SI_HOLD_MS);
+              sendScaleInArmedNotification(trade, pendingSI, SI_HOLD_MS,
+                projectScaleInSL(trade, pendingSI, pendingSI.entryLevel));
             }
           } else if (pendingSI.beyondSince) {
             pendingSI.beyondSince = null; changed = true;   // 跌回門檻內 → 重新計時
@@ -12201,20 +12202,10 @@ function updateOpenTrades(data) {
           pendingSI.entryPrice = _siLvl;   // 成交價＝加倉位（限價單語意，與實盤掛單一致）
           changed = true;
 
-          // ── 止損往前調（ATR 導向）：移至前一進場位附近，以波動率給緩衝區間 ──
-          // 邏輯：前一進場位是新的「成本底線」，ATR 緩衝讓正常回調不觸發止損
-          const confirmedBefore = trade.scaleIns.filter(s => s.status === 'open' && s !== pendingSI);
-          const prevEntry = confirmedBefore.length > 0
-            ? (confirmedBefore.at(-1).entryPrice || confirmedBefore.at(-1).entryLevel)
-            : trade.entry;
-          // ATR 估算（用進場時保存的 ADX 推算現在波動率）
-          const _siAdx = trade.adx || 20;
-          const _siAtr = cur * (_siAdx > 35 ? 0.018 : _siAdx > 25 ? 0.013 : 0.009);
-          // SL 錨定在前一進場位，再往有利方向加 0.8 ATR 緩衝（避免正常回調觸發）
-          const candidateSL = isLong
-            ? prevEntry + _siAtr * 0.8
-            : prevEntry - _siAtr * 0.8;
-          const slMoved = isLong ? candidateSL > trade.sl : candidateSL < trade.sl;
+          // 止損往前調：與掛單預告共用 projectScaleInSL（成交價＝加倉位，故傳 _siLvl）
+          const _siProj = projectScaleInSL(trade, pendingSI, _siLvl);
+          const candidateSL = _siProj.sl;
+          const slMoved = _siProj.willMove;
           const oldSL   = trade.sl;
           if (slMoved) { trade.sl = candidateSL; changed = true; }
 
@@ -12704,13 +12695,32 @@ function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
 }
 
+/* ── 加倉成交後的主倉止損（掛單預告與實際成交共用同一套數學）──────
+   邏輯：前一進場位是新的「成本底線」，再往有利方向加 0.8 ATR 緩衝，
+   讓正常回調不會觸發止損。ATR 由建單時保存的 ADX 推估。
+   fillPrice 傳入預計成交價（掛單預告用加倉位；實際成交時亦為加倉位）。
+   回傳 { sl, willMove }——willMove=false 代表算出來的位置比現行止損還差，
+   不會採用（止損只往獲利方向推進，絕不後退）。 */
+function projectScaleInSL(trade, scaleIn, fillPrice) {
+  const isLong = trade.direction === 'long';
+  const done   = (trade.scaleIns || []).filter(s => s.status === 'open' && s !== scaleIn);
+  const prevEntry = done.length > 0
+    ? (done.at(-1).entryPrice || done.at(-1).entryLevel)
+    : trade.entry;
+  const adx = trade.adx || 20;
+  const atr = (parseFloat(fillPrice) || 0) * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
+  const sl  = isLong ? prevEntry + atr * 0.8 : prevEntry - atr * 0.8;
+  const willMove = isLong ? sl > trade.sl : sl < trade.sl;
+  return { sl, willMove };
+}
+
 /* 加倉確認需「超過加倉點一段幅度並持續站穩」的時間門檻（過濾假突破插針）*/
 const SI_HOLD_MS = 2 * 60 * 1000;
 
 /* ── 加倉確認・掛單通知 ────────────────────────────────────────
    價格超過加倉點一段幅度並站穩滿 SI_HOLD_MS 後送出：此刻實盤要把限價單
    掛在加倉位，等回踩成交（成交價＝加倉位，不是現價）。 */
-function sendScaleInArmedNotification(trade, scaleIn, holdMs) {
+function sendScaleInArmedNotification(trade, scaleIn, holdMs, proj) {
   try {
     const s = loadSettings();
     if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
@@ -12727,10 +12737,12 @@ function sendScaleInArmedNotification(trade, scaleIn, holdMs) {
       `✅ 價格已${isLong ? '站上' : '站穩'}加倉點上方並持續 ${Math.round((holdMs || SI_HOLD_MS) / 60000)} 分鐘，確認非假突破`,
       ``,
       `🎯 掛限價單於：<b>$${fmt(scaleIn.entryLevel)}</b>（回踩此價成交）`,
-      `🛑 止損：<b>$${fmt(trade.sl)}</b>（整倉共用一個止損，加倉不另設）`,
-      `📌 主倉進場：$${fmt(trade.entry)}`,
       ``,
-      `📝 成交後主倉止損將往獲利方向推進，屆時另行通知`,
+      (proj && proj.willMove
+        ? `🛑 <b>成交後止損改至：$${fmt(proj.sl)}</b>（現行 $${fmt(trade.sl)} → 成交後同步改單）`
+        : `🛑 止損維持：<b>$${fmt(trade.sl)}</b>（成交後不變，無須改單）`),
+      `　整倉共用一個止損，加倉不另設`,
+      `📌 主倉進場：$${fmt(trade.entry)}`,
       ``,
       `⏰ ${ts}`,
       `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #加倉掛單`,
