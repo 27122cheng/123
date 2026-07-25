@@ -757,10 +757,10 @@ function buildDashRow(row) {
   </tr>`;
 }
 
-/* 逐幣數據源小圓點：綠=OKX價格 / 黃=幣安價格（OKX 未上架） */
+/* 逐幣數據源小圓點：綠=OKX價格 / 黃=幣安價格（OKX 無合約） */
 function srcDotHtml(row) {
   if (row.dataSrc === 'okx') return '<span class="src-dot src-p" title="OKX 價格（與實體成交所一致）"></span>';
-  if (row.onOkx === false)   return '<span class="src-dot src-b" title="OKX 未上架 — 幣安價格（與 OKX 報價可能有差異）"></span>';
+  if (row.onOkx === false)   return '<span class="src-dot src-b" title="OKX 無合約 — 幣安價格（與 OKX 報價可能有差異）"></span>';
   if (row.dataSrc === 'binance') return '<span class="src-dot src-b" title="本輪走幣安價格（OKX 暫時不可用）"></span>';
   return '';
 }
@@ -9167,7 +9167,7 @@ async function renderCoinDetail(symbol) {
   document.getElementById('coin-price').textContent   = fmtPrice(coin.price);
   document.getElementById('coin-price-sub').textContent = 'USDT · ' +
     (coin.dataSrc === 'okx' ? 'OKX 價格'
-     : coin.onOkx === false ? '幣安價格（OKX 未上架）'
+     : coin.onOkx === false ? '幣安價格（OKX 無合約）'
      : '幣安價格');
 
   const trendChip = document.getElementById('coin-trend-chip');
@@ -9360,7 +9360,7 @@ function loadTradingViewChart(symbol, interval) {
   container.innerHTML = '';
 
   const base     = symbol.replace('/USDT','').replace('/','').toUpperCase();
-  const tvSymbol = tvExchangePrefix(base) + ':' + base + 'USDT';
+  const tvSymbol = tvFullSymbol(base);
   const ivl      = interval || '15';
 
   // 4 秒後若 widget 未渲染 canvas，自動切換到 iframe 備援
@@ -9426,12 +9426,18 @@ function tvExchangePrefix(base) {
   } catch(_e) {}
   return 'BINANCE';
 }
+/* TradingView 完整代號：OKX 永續合約在 TV 的代號為 BTCUSDT.P（.P = perpetual），
+   與本系統的資料源（USDT 本位永續）一致；退回幣安時用現貨代號。 */
+function tvFullSymbol(base) {
+  const b = String(base || '').toUpperCase();
+  return tvExchangePrefix(b) === 'OKX' ? `OKX:${b}USDT.P` : `BINANCE:${b}USDT`;
+}
 
 function renderFallbackChart(container, symbol, interval) {
   const base = symbol.replace('/USDT','').replace('/','').toUpperCase();
   const ivl  = interval || '15';
   // s.tradingview.com/widgetembed 是官方 CDN 嵌入端點，比 www 更可靠
-  const src = `https://s.tradingview.com/widgetembed/?symbol=${tvExchangePrefix(base)}%3A${base}USDT` +
+  const src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(tvFullSymbol(base))}` +
     `&interval=${ivl}&theme=dark&style=1&locale=zh_TW` +
     `&hidesidetoolbar=0&hidetoptoolbar=0&saveimage=0&withdateranges=1` +
     `&studies=RSI%40tv-basicstudies%2CMACD%40tv-basicstudies%2CVWAP%40tv-basicstudies`;
@@ -9630,10 +9636,10 @@ async function addCustomPair() {
     return;
   }
 
-  // 清單只收 OKX 官方上架的幣（實體交易在 OKX，未上架的幣無法下單）
+  // 清單只收 OKX 有 USDT 永續合約的幣（沒有合約無法開槓桿/做空）
   if (typeof _okxSymbolSet !== 'undefined' && _okxSymbolSet && _okxSymbolSet.size >= 50
       && !_okxSymbolSet.has(binSym)) {
-    showToast(`${sym} 未在 OKX 上架，無法加入（清單只收可實際交易的幣種）`, 'error');
+    showToast(`${sym} 在 OKX 沒有 USDT 永續合約，無法加入（清單只收可做合約交易的幣種）`, 'error');
     return;
   }
 
@@ -18622,25 +18628,25 @@ function renderPairsList() {
   const pairs = loadPairs();
   const pxSet = (typeof _okxSymbolSet !== 'undefined') ? _okxSymbolSet : null;
   const notListed = pxSet ? pairs.filter(p => !pxSet.has(p.s.replace('/', ''))).length : 0;
-  if (count) count.textContent = `共 ${pairs.length}/${MAX_PAIRS} 個交易對` + (notListed ? `（${notListed} 個 OKX 未上架）` : '');
+  if (count) count.textContent = `共 ${pairs.length}/${MAX_PAIRS} 個交易對` + (notListed ? `（${notListed} 個 OKX 無合約）` : '');
   list.innerHTML = pairs.map(p => {
     const unlisted = pxSet && !pxSet.has(p.s.replace('/', ''));
     return `
-    <div class="pair-chip${unlisted ? ' pair-unlisted' : ''}" ${unlisted ? 'title="OKX 未上架，此幣種數據走幣安"' : ''}>
-      <span>${p.s}${unlisted ? ' <em class="unlisted-tag">未上架</em>' : ''}</span>
+    <div class="pair-chip${unlisted ? ' pair-unlisted' : ''}" ${unlisted ? 'title="OKX 無合約，此幣種數據走幣安"' : ''}>
+      <span>${p.s}${unlisted ? ' <em class="unlisted-tag">無合約</em>' : ''}</span>
       <button class="pair-chip-rm" onclick="removePairFromList('${p.s}')" title="移除">×</button>
     </div>`;
   }).join('');
 }
 
-/* 手動同步 OKX 幣種表：強制重抓官方表 → 清理未上架幣種 → 重設月度計時 */
+/* 手動同步 OKX 合約幣種表：重抓官方表 → 雙向同步（補進有合約的、移除沒合約的）*/
 async function syncOkxPairsNow() {
-  showToast('🔄 正在同步 OKX 官方幣種表…', 'info');
+  showToast('🔄 正在同步 OKX 合約幣種表…', 'info');
   try { _okxSymbolsAt = 0; } catch(_e) {}   // 強制略過 6h 快取重新抓
   let set = null;
   try { set = await fetchOkxSymbolSet(); } catch(_e) {}
   if (!set || set.size < 50) {
-    showToast('取得 OKX 幣種表失敗（OKX 連線或代理不可用），未做任何變更', 'error');
+    showToast('取得 OKX 合約幣種表失敗（OKX 連線或代理不可用），未做任何變更', 'error');
     return;
   }
   // 取得最新報價：新增幣種需要初始價格，並依 24h 成交額排序（流動性高的排前面）
@@ -18671,22 +18677,22 @@ async function syncOkxPairsNow() {
   if (!removed.length && !toAdd.length) {
     renderPairsList();
     const _full = kept.length >= MAX_PAIRS ? `（已達上限 ${MAX_PAIRS} 個）` : '';
-    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣皆在 OKX 上架${_full}`, 'success');
+    showToast(`✅ 同步完成：清單 ${pairs.length} 個幣皆有 OKX 合約${_full}`, 'success');
     return;
   }
 
-  const msg = [`OKX 官方現貨表共 ${set.size} 個 USDT 交易對，清單上限 ${MAX_PAIRS} 個。`, ''];
+  const msg = [`OKX 永續合約共 ${set.size} 個 USDT 本位交易對，清單上限 ${MAX_PAIRS} 個。`, ''];
   if (toAdd.length) {
     const preview = toAdd.slice(0, 15).map(x => x.s.replace('/USDT', '')).join('、');
-    msg.push(`➕ 新增 ${toAdd.length} 個（清單缺少、OKX 有上架，依 24h 成交額排序）：`,
+    msg.push(`➕ 新增 ${toAdd.length} 個（清單缺少、OKX 有合約，依 24h 成交額排序）：`,
              `${preview}${toAdd.length > 15 ? ` …等 ${toAdd.length} 個` : ''}`, '');
   }
   if (removed.length) {
-    msg.push(`➖ 移除 ${removed.length} 個（OKX 未上架）：`,
+    msg.push(`➖ 移除 ${removed.length} 個（OKX 無合約）：`,
              removed.map(p => p.s.replace('/USDT', '')).join('、'), '');
   }
   if (skipped > 0) {
-    msg.push(`ℹ️ 另有 ${skipped} 個 OKX 幣種因已達上限 ${MAX_PAIRS} 未加入（成交額較低者）。`, '');
+    msg.push(`ℹ️ 另有 ${skipped} 個 OKX 合約幣種因已達上限 ${MAX_PAIRS} 未加入（成交額較低者）。`, '');
   }
   msg.push(`同步後清單共 ${kept.length + toAdd.length} 個幣種。`, '', '確定套用嗎？');
   if (!confirm(msg.join('\n'))) return;
@@ -18698,7 +18704,7 @@ async function syncOkxPairsNow() {
   try { triggerRescan(); } catch(_e) {}
 }
 
-/* 一鍵移除 OKX 未上架幣種（實體交易在 OKX，無法交易的幣不需要掃描） */
+/* 一鍵移除 OKX 無合約幣種（實體交易在 OKX，無法交易的幣不需要掃描） */
 function removeNonOkxPairs() {
   const pxSet = (typeof _okxSymbolSet !== 'undefined') ? _okxSymbolSet : null;
   if (!pxSet || !pxSet.size) {
@@ -18708,11 +18714,11 @@ function removeNonOkxPairs() {
   const pairs = loadPairs();
   const removed = pairs.filter(p => !pxSet.has(p.s.replace('/', '')));
   if (!removed.length) { showToast('目前清單全部都在 OKX 上架，無需移除', 'info'); return; }
-  if (!confirm(`將移除 ${removed.length} 個 OKX 未上架幣種：\n${removed.map(p => p.s.replace('/USDT','')).join('、')}\n\n確定嗎？`)) return;
+  if (!confirm(`將移除 ${removed.length} 個 OKX 無合約幣種：\n${removed.map(p => p.s.replace('/USDT','')).join('、')}\n\n確定嗎？`)) return;
   savePairs(pairs.filter(p => pxSet.has(p.s.replace('/', ''))));
   removed.forEach(p => { try { purgeSymbolData(p.s); } catch(_e) {} });
   renderPairsList();
-  showToast(`已移除 ${removed.length} 個 OKX 未上架幣種，下輪掃描生效`, 'success');
+  showToast(`已移除 ${removed.length} 個 OKX 無合約幣種，下輪掃描生效`, 'success');
   try { triggerRescan(); } catch(_e) {}
 }
 

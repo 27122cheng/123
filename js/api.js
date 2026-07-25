@@ -121,11 +121,12 @@ function tfToBinanceInterval(tf) {
 let _okxPrices = {};
 let _okxVol24  = {};   // { BTCUSDT: 24h 計價幣成交額 } 供幣種表同步時依流動性排序
 
-/* OKX 現貨行情：GET /api/v5/market/tickers?instType=SPOT
-   回應 { code:"0", data:[{ instId:"BTC-USDT", last:"...", ... }] } */
+/* OKX 永續合約行情：GET /api/v5/market/tickers?instType=SWAP
+   回應 { code:"0", data:[{ instId:"BTC-USDT-SWAP", last, volCcy24h, ... }] }
+   只取 USDT 本位永續（-USDT-SWAP），幣本位（-USD-SWAP）不列入。 */
 async function refreshOkxPrices() {
   try {
-    const r = await okxApiFetch('market/tickers', { instType: 'SPOT' });
+    const r = await okxApiFetch('market/tickers', { instType: 'SWAP' });
     if (!r || !r.json) return;   // 通道全部不可用（診斷已於 okxApiFetch 輸出）
     const arr = r.json?.data;
     if (!Array.isArray(arr) || !arr.length) {
@@ -134,13 +135,14 @@ async function refreshOkxPrices() {
     }
     for (const tk of arr) {
       const inst = String(tk.instId || '');
-      if (!inst) continue;
+      if (!inst.endsWith('-USDT-SWAP')) continue;   // 只收 USDT 本位永續
       const px = parseFloat(tk.last);
       if (!isFinite(px) || px <= 0) continue;
-      const key = inst.replace(/-/g, '');          // BTC-USDT → BTCUSDT
+      const key = inst.replace('-USDT-SWAP', 'USDT');   // BTC-USDT-SWAP → BTCUSDT
       _okxPrices[key] = px;
-      const vq = parseFloat(tk.volCcy24h);          // 24h 計價幣(USDT)成交額
-      if (isFinite(vq) && vq >= 0) _okxVol24[key] = vq;
+      // SWAP 的 volCcy24h 為「基礎幣」數量，換算成 USDT 名目額才能跨幣種比較流動性
+      const vb = parseFloat(tk.volCcy24h);
+      if (isFinite(vb) && vb >= 0) _okxVol24[key] = vb * px;
     }
   } catch(e) {
     console.warn('[OKX] 價格取得失敗:', e?.message || e);
@@ -320,14 +322,17 @@ async function fetchOkxKlines(symbol, interval, limit = 220) {
 function toOkxInstId(symbol) {
   const s = String(symbol || '').replace('/', '').toUpperCase();
   if (!s.endsWith('USDT') || s.length <= 4) return null;
-  return s.slice(0, -4) + '-USDT';
+  return s.slice(0, -4) + '-USDT-SWAP';   // USDT 本位永續合約（實際交易市場）
 }
 
-/* ── OKX 上架幣種表 + 價格精度（public/instruments，6 小時快取）────
-   用途：① 未上架的幣直接走幣安，不浪費失敗請求
-        ② 顯示價格依 OKX 的報價精度（由 tickSz 推導）修整小數位
-        ③ 設定頁標示「OKX 未上架」並提供一鍵移除
-   只收 state==='live' 的現貨交易對（暫停/下架的不算上架）。 */
+/* ── OKX 可交易合約幣種表 + 價格精度（public/instruments，6 小時快取）──
+   幣種清單只收「有合約交易」的幣：instType=SWAP 且 USDT 本位永續
+   （instId 形如 BTC-USDT-SWAP）。只有現貨、沒有合約的幣無法開倉做空／
+   用槓桿，列入清單只是浪費掃描額度。
+   用途：① 沒有合約的幣直接走幣安，不浪費失敗請求
+        ② 顯示價格依合約的報價精度（由 tickSz 推導）修整小數位
+        ③ 設定頁標示「OKX 無合約」並提供一鍵移除
+   只收 state==='live'（暫停/下架/交割中的不算）。 */
 let _okxSymbolSet = null;      // Set('BTCUSDT', ...)
 let _okxPrecision = {};        // { BTCUSDT: 2, ... } 報價小數位
 let _okxSymbolsAt = 0;
@@ -349,16 +354,16 @@ function _tickSzToDecimals(tickSz) {
 async function fetchOkxSymbolSet() {
   if (_okxSymbolSet && Date.now() - _okxSymbolsAt < 6 * 3600 * 1000) return _okxSymbolSet;
   try {
-    const r = await okxApiFetch('public/instruments', { instType: 'SPOT' });
+    const r = await okxApiFetch('public/instruments', { instType: 'SWAP' });
     const arr = r?.json?.data;
     if (Array.isArray(arr) && arr.length > 0) {
       const set = new Set();
       const prec = {};
       for (const it of arr) {
-        if (it.state && it.state !== 'live') continue;     // 非交易中不算上架
+        if (it.state && it.state !== 'live') continue;      // 非交易中不算上架
         const inst = String(it.instId || '');
-        if (!inst.endsWith('-USDT')) continue;             // 只收 USDT 交易對
-        const sym = inst.replace(/-/g, '');                // BTC-USDT → BTCUSDT
+        if (!inst.endsWith('-USDT-SWAP')) continue;         // 只收 USDT 本位永續合約
+        const sym = inst.replace('-USDT-SWAP', 'USDT');     // BTC-USDT-SWAP → BTCUSDT
         set.add(sym);
         const d = _tickSzToDecimals(it.tickSz);
         if (d != null && d >= 0 && d <= 12) prec[sym] = d;
@@ -367,7 +372,7 @@ async function fetchOkxSymbolSet() {
         _okxSymbolSet = set;
         _okxPrecision = prec;
         _okxSymbolsAt = Date.now();
-        console.info(`[OKX] 幣種表已更新：${set.size} 個上架交易對`);
+        console.info(`[OKX] 合約幣種表已更新：${set.size} 個 USDT 本位永續合約`);
       }
     }
   } catch (_e) {}
