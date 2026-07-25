@@ -1236,14 +1236,16 @@ function buildOpenPositionSetup(t, currentPrice) {
     </div>
     ${t.tp1Hit ? '<div style="margin-top:10px;padding:8px 12px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.25);border-radius:8px;font-size:0.82rem;color:#22c55e">✅ 止盈一已觸及，止損已自動移至成本價（保本）</div>' : ''}
     ${(() => {
-      const sis = (t.scaleIns || []).filter(s => s.status === 'open' || s.status === 'pending');
+      const sis = (t.scaleIns || []).filter(s => s.status === 'open' || s.status === 'pending' || s.status === 'armed');
       if (!sis.length) return '';
       const confirmed = sis.filter(s => s.status === 'open').length;
       return `<div class="scalein-section">
         <div class="scalein-title">📈 加倉進度 ${confirmed}/${sis.length}</div>
-        ${sis.map(si => `<div class="scalein-row ${si.status === 'pending' ? 'scalein-pending' : 'scalein-open'}">
+        ${sis.map(si => `<div class="scalein-row ${si.status === 'open' ? 'scalein-open' : 'scalein-pending'}">
           <span class="scalein-num">#${si.seqNum}</span>
-          <span class="scalein-badge">${si.status === 'pending' ? '⏳ 等待回踩' : '✅ 已確認'}</span>
+          <span class="scalein-badge">${si.status === 'pending' ? '⏳ 等站穩確認'
+                                      : si.status === 'armed' ? '📌 已掛單待回踩'
+                                      : '✅ 已成交'}</span>
           <span>進場 ${fmtPrice(si.entryLevel)}</span>
           <span style="color:var(--bear)">止損 ${fmtPrice(si.sl)}</span>
           <span style="color:var(--bull)">止盈 ${fmtPrice(si.tp1)}</span>
@@ -12146,7 +12148,8 @@ function updateOpenTrades(data) {
     if (!trade.scaleIns) { trade.scaleIns = []; changed = true; }
     const MAX_SCALE_INS  = trade.maxScaleIns || 3;
     const confirmedSIs   = trade.scaleIns.filter(s => s.status === 'open');
-    const pendingSI      = trade.scaleIns.find(s => s.status === 'pending');
+    // 'pending' = 等確認、'armed' = 已確認並掛單在加倉位、'open' = 已成交
+    const pendingSI      = trade.scaleIns.find(s => s.status === 'pending' || s.status === 'armed');
 
     // 處理現有等待確認的加倉
     if (pendingSI) {
@@ -12160,16 +12163,43 @@ function updateOpenTrades(data) {
           const touchedLevel = isLong ? cur <= pendingSI.entryLevel : cur >= pendingSI.entryLevel;
           if (touchedLevel) { pendingSI.touched = true; changed = true; }
         }
-        // 步驟2：回踩到位後等反彈確認（ATR 相對幅度，多頭反彈 / 空頭回落）才進場
+        // 步驟2：需「超過加倉點一段幅度並持續站穩 2 分鐘」才算確認（過濾假突破插針）
         const _siRf = reboundFrac(pendingSI.entryLevel, trade.sl);
-        const bounceConfirm = pendingSI.touched && (
-          isLong  ? cur >= pendingSI.entryLevel * (1 + _siRf)
-                  : cur <= pendingSI.entryLevel * (1 - _siRf)
+        const _siLvl = pendingSI.entryLevel;
+        const _beyond = pendingSI.touched && (
+          isLong  ? cur >= _siLvl * (1 + _siRf)
+                  : cur <= _siLvl * (1 - _siRf)
         );
+        if (pendingSI.status === 'pending') {
+          if (_beyond) {
+            if (!pendingSI.beyondSince) {
+              pendingSI.beyondSince = Date.now(); changed = true;   // 開始計時
+            } else if (Date.now() - pendingSI.beyondSince >= SI_HOLD_MS) {
+              // 站穩滿 2 分鐘 → 確認成立，於加倉位掛限價單等回踩成交
+              pendingSI.status  = 'armed';
+              pendingSI.armedAt = Date.now();
+              pendingSI.hiSince = cur; pendingSI.loSince = cur;
+              changed = true;
+              sendScaleInArmedNotification(trade, pendingSI, SI_HOLD_MS);
+            }
+          } else if (pendingSI.beyondSince) {
+            pendingSI.beyondSince = null; changed = true;   // 跌回門檻內 → 重新計時
+          }
+        }
+        // 步驟3：限價單掛在加倉位——價格回到加倉位才成交，成交價＝加倉位（非現價）
+        let bounceConfirm = false;
+        if (pendingSI.status === 'armed') {
+          const _nHi = Math.max(pendingSI.hiSince ?? cur, cur);
+          const _nLo = Math.min(pendingSI.loSince ?? cur, cur);
+          if (_nHi !== pendingSI.hiSince || _nLo !== pendingSI.loSince) {
+            pendingSI.hiSince = _nHi; pendingSI.loSince = _nLo; changed = true;
+          }
+          bounceConfirm = isLong ? pendingSI.loSince <= _siLvl : pendingSI.hiSince >= _siLvl;
+        }
         if (bounceConfirm) {
           pendingSI.status     = 'open';
           pendingSI.entryTime  = Date.now();
-          pendingSI.entryPrice = cur;
+          pendingSI.entryPrice = _siLvl;   // 成交價＝加倉位（限價單語意，與實盤掛單一致）
           changed = true;
 
           // ── 止損往前調（ATR 導向）：移至前一進場位附近，以波動率給緩衝區間 ──
@@ -12670,6 +12700,41 @@ function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
     `若仍看好方向，可重新評估${isLong ? '追多' : '追空'}機會。\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 最新分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+}
+
+/* 加倉確認需「超過加倉點一段幅度並持續站穩」的時間門檻（過濾假突破插針）*/
+const SI_HOLD_MS = 2 * 60 * 1000;
+
+/* ── 加倉確認・掛單通知 ────────────────────────────────────────
+   價格超過加倉點一段幅度並站穩滿 SI_HOLD_MS 後送出：此刻實盤要把限價單
+   掛在加倉位，等回踩成交（成交價＝加倉位，不是現價）。 */
+function sendScaleInArmedNotification(trade, scaleIn, holdMs) {
+  try {
+    const s = loadSettings();
+    if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+    if (!trade.telegramSent) return;
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const sym    = trade.symbol.replace('/USDT', '');
+    const isLong = trade.direction === 'long';
+    const now = new Date();
+    const ts  = now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) + ' ' +
+                now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+    const text = [
+      `📌 <b>加倉確認 #${scaleIn.seqNum}｜請掛單</b> — ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}`,
+      ``,
+      `✅ 價格已${isLong ? '站上' : '站穩'}加倉點上方並持續 ${Math.round((holdMs || SI_HOLD_MS) / 60000)} 分鐘，確認非假突破`,
+      ``,
+      `🎯 掛限價單於：<b>$${fmt(scaleIn.entryLevel)}</b>（回踩此價成交）`,
+      `🛑 此筆止損：$${fmt(scaleIn.sl)}`,
+      `📌 主倉進場：$${fmt(trade.entry)}　主倉止損：$${fmt(trade.sl)}`,
+      ``,
+      `📝 成交後主倉止損將往獲利方向推進，屆時另行通知`,
+      ``,
+      `⏰ ${ts}`,
+      `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #加倉掛單`,
+    ].join('\n');
+    sendTelegramMessage(s.tgToken, s.tgChatId, text);
+  } catch(_e) { console.warn('[scalein-armed-notify]', _e); }
 }
 
 /* ── 加倉訊號成立即時通知 ──────────────────────────────────────
@@ -14882,7 +14947,7 @@ function renderPositionsPage() {
         const siTargets = t.scaleInTargets || [];
         if (!siTargets.length) return '';
         const sisDone    = (t.scaleIns || []).filter(s => s.status === 'open');
-        const siPending  = (t.scaleIns || []).find(s => s.status === 'pending');
+        const siPending  = (t.scaleIns || []).find(s => s.status === 'pending' || s.status === 'armed');
         const finalTP    = t.ltTP || t.tp2;
         const rows = siTargets.map((level, i) => {
           const isDone     = i < sisDone.length;
