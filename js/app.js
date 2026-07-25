@@ -12152,6 +12152,8 @@ function updateOpenTrades(data) {
     if (pendingSI) {
       if (Date.now() - pendingSI.timestamp > 2 * 60 * 60 * 1000) {
         pendingSI.status = 'expired'; changed = true;
+        // 加倉掛單失效 → 立即通知（實盤需撤掉對應的加倉掛單）
+        sendScaleInExpiredNotification(trade, pendingSI);
       } else {
         // 步驟1：等回踩觸及進場位（多頭：現價 ≤ 進場位；空頭：現價 ≥ 進場位）
         if (!pendingSI.touched) {
@@ -12196,8 +12198,11 @@ function updateOpenTrades(data) {
               ? Math.max(trade.sl, trade.entry * 1.001)
               : Math.min(trade.sl, trade.entry * 0.999);
             if (isLong ? protectedSL > trade.sl : protectedSL < trade.sl) {
+              const _slBefore = trade.sl;
               trade.sl = protectedSL;
               changed = true;
+              sendSLChangeNotification(trade, _slBefore, protectedSL,
+                `已加滿 ${MAX_SCALE_INS} 次倉，止損推進至保本位以上`);
             }
           }
         }
@@ -12219,7 +12224,7 @@ function updateOpenTrades(data) {
       if (inProfit && fromPeak > 0.008 && hasTimeGap) {
         const siNum   = confirmedSIs.length + 1;
         const origRisk = Math.abs(trade.entry - trade.sl) || 1;
-        trade.scaleIns.push({
+        const _newSI = {
           id: `${trade.id}-si${siNum}`,
           seqNum: siNum,
           timestamp: Date.now(),
@@ -12232,8 +12237,11 @@ function updateOpenTrades(data) {
           entryPrice: null,
           touched: true, // 建立時現價即為回踩位，標記已觸及，等待反彈確認進場
           conf: trade.conf || 0,
-        });
+        };
+        trade.scaleIns.push(_newSI);
         changed = true;
+        // 加倉訊號成立 → 立即通知（實盤需同步掛加倉單，不能等成交後才知道）
+        sendScaleInSignalNotification(trade, _newSI, MAX_SCALE_INS);
       }
     }
   }
@@ -12662,6 +12670,68 @@ function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
     `若仍看好方向，可重新評估${isLong ? '追多' : '追空'}機會。\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 最新分析 →</a>`;
   sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+}
+
+/* ── 加倉訊號成立即時通知 ──────────────────────────────────────
+   加倉是分兩段的：先「成立訊號」掛單，回踩觸及並反彈確認後才「成交」。
+   原本只有成交時通知，實盤等於慢一步——訊號成立當下就得掛加倉單，
+   否則等收到成交通知時價格早已走掉。此通知於訊號成立當下立即送出。 */
+function sendScaleInSignalNotification(trade, scaleIn, maxScaleIns) {
+  try {
+    const s = loadSettings();
+    if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+    if (!trade.telegramSent) return;   // 建單通知未送出的單不通知加倉
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const sym    = trade.symbol.replace('/USDT', '');
+    const isLong = trade.direction === 'long';
+    const now = new Date();
+    const ts  = now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) + ' ' +
+                now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+    const text = [
+      `➕ <b>加倉訊號 #${scaleIn.seqNum}</b>（共 ${maxScaleIns} 次）— ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}`,
+      ``,
+      `📍 加倉價位：<b>$${fmt(scaleIn.entryLevel)}</b>`,
+      `🛑 此筆止損：$${fmt(scaleIn.sl)}`,
+      `🎯 目標：止盈一 $${fmt(scaleIn.tp1)}　止盈二 $${fmt(scaleIn.tp2)}`,
+      `📌 原始進場：$${fmt(trade.entry)}　主倉止損：$${fmt(trade.sl)}`,
+      ``,
+      `📝 順勢回踩加倉點成立，等反彈確認後視為成交`,
+      `⏳ 逾 2 小時未確認自動失效`,
+      ``,
+      `⏰ ${ts}`,
+      `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #加倉訊號`,
+    ].join('\n');
+    sendTelegramMessage(s.tgToken, s.tgChatId, text);
+  } catch(_e) { console.warn('[scalein-signal-notify]', _e); }
+}
+
+/* ── 加倉掛單失效通知（逾 2 小時未確認）──────────────────────
+   實盤掛著的加倉單需要撤掉，否則會在系統已放棄的價位意外成交。 */
+function sendScaleInExpiredNotification(trade, scaleIn) {
+  try {
+    const s = loadSettings();
+    if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+    if (!trade.telegramSent) return;
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const sym    = trade.symbol.replace('/USDT', '');
+    const isLong = trade.direction === 'long';
+    const now = new Date();
+    const ts  = now.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' }) + ' ' +
+                now.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+    const text = [
+      `⏹️ <b>加倉掛單失效 #${scaleIn.seqNum}</b> — ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}`,
+      ``,
+      `📍 原加倉價位：$${fmt(scaleIn.entryLevel)}`,
+      `📝 逾 2 小時未完成反彈確認，此加倉訊號作廢`,
+      `⚠️ 若實盤已掛加倉單，請撤單`,
+      ``,
+      `📌 主倉不受影響：進場 $${fmt(trade.entry)}　止損 $${fmt(trade.sl)}`,
+      ``,
+      `⏰ ${ts}`,
+      `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #加倉失效`,
+    ].join('\n');
+    sendTelegramMessage(s.tgToken, s.tgChatId, text);
+  } catch(_e) { console.warn('[scalein-expired-notify]', _e); }
 }
 
 function sendScaleInTelegramNotification(trade, scaleIn, oldSL = null, newSL = null) {
