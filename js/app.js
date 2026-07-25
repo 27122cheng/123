@@ -1247,7 +1247,6 @@ function buildOpenPositionSetup(t, currentPrice) {
                                       : si.status === 'armed' ? '📌 已掛單待回踩'
                                       : '✅ 已成交'}</span>
           <span>進場 ${fmtPrice(si.entryLevel)}</span>
-          <span style="color:var(--bear)">止損 ${fmtPrice(si.sl)}</span>
           <span style="color:var(--bull)">止盈 ${fmtPrice(si.tp1)}</span>
         </div>`).join('')}
       </div>`;
@@ -12259,6 +12258,9 @@ function updateOpenTrades(data) {
           seqNum: siNum,
           timestamp: Date.now(),
           entryLevel: cur,
+          // 註：加倉不另設止損——出場判定（updateOpenTrades / verifyIntrabarHits）
+          // 一律只看主倉 trade.sl，整倉共用一個止損。此處保留欄位僅為相容舊記錄，
+          // 各處顯示與通知皆已改用 trade.sl，避免實盤照著掛出不會生效的停損。
           sl: isLong ? cur - origRisk * 0.7 : cur + origRisk * 0.7,
           tp1: trade.tp1,
           tp2: trade.tp2,
@@ -12725,8 +12727,8 @@ function sendScaleInArmedNotification(trade, scaleIn, holdMs) {
       `✅ 價格已${isLong ? '站上' : '站穩'}加倉點上方並持續 ${Math.round((holdMs || SI_HOLD_MS) / 60000)} 分鐘，確認非假突破`,
       ``,
       `🎯 掛限價單於：<b>$${fmt(scaleIn.entryLevel)}</b>（回踩此價成交）`,
-      `🛑 此筆止損：$${fmt(scaleIn.sl)}`,
-      `📌 主倉進場：$${fmt(trade.entry)}　主倉止損：$${fmt(trade.sl)}`,
+      `🛑 止損：<b>$${fmt(trade.sl)}</b>（整倉共用一個止損，加倉不另設）`,
+      `📌 主倉進場：$${fmt(trade.entry)}`,
       ``,
       `📝 成交後主倉止損將往獲利方向推進，屆時另行通知`,
       ``,
@@ -12756,9 +12758,9 @@ function sendScaleInSignalNotification(trade, scaleIn, maxScaleIns) {
       `➕ <b>加倉訊號 #${scaleIn.seqNum}</b>（共 ${maxScaleIns} 次）— ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}`,
       ``,
       `📍 加倉價位：<b>$${fmt(scaleIn.entryLevel)}</b>`,
-      `🛑 此筆止損：$${fmt(scaleIn.sl)}`,
+      `🛑 止損：<b>$${fmt(trade.sl)}</b>（整倉共用一個止損，加倉不另設）`,
       `🎯 目標：止盈一 $${fmt(scaleIn.tp1)}　止盈二 $${fmt(scaleIn.tp2)}`,
-      `📌 原始進場：$${fmt(trade.entry)}　主倉止損：$${fmt(trade.sl)}`,
+      `📌 原始進場：$${fmt(trade.entry)}`,
       ``,
       `📝 順勢回踩加倉點成立，等反彈確認後視為成交`,
       `⏳ 逾 2 小時未確認自動失效`,
