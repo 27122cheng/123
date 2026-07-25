@@ -9773,7 +9773,44 @@ function saveTradeLog(log) {
      3. 相同指紋（幣種+方向+進場價四捨五入）於 30 分鐘內重複 → 拒絕
    回傳 true=已建立（log 已存檔），false=被去重擋下。 */
 const _DEDUP_WINDOW_MS = 30 * 60 * 1000;
+
+/* ── 跨分頁互斥鎖（修「同幣種訊號出現好幾次」的最後一哩）──────────
+   commitNewTrade 的「讀取→檢查→寫入」在單一分頁內是同步的、對事件迴圈
+   為原子操作；但使用者常同時開多個分頁，而 isSignalMaster() 預設為 true，
+   每個分頁都會獨立建單。localStorage 沒有 CAS，跨分頁就出現典型競態：
+     分頁A 讀取(無此幣) → 分頁B 讀取(無此幣) → A 寫入 → B 寫入（重複）
+   且每個分頁各自送 Telegram，使用者就看到同一訊號出現好幾次。
+   解法：以 localStorage 做寫入權杖——寫入後立刻讀回比對，只有讀回值仍是
+   自己 ID 的分頁取得鎖（last-write-wins 下只會有一個贏家）。鎖含時戳，
+   逾時自動失效，避免分頁關閉造成死鎖。 */
+const _TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+const _TRADE_LOCK_KEY = 'csp_trade_lock';
+const _LOCK_TTL_MS = 5000;
+function _acquireTradeLock() {
+  try {
+    const now = Date.now();
+    const raw = localStorage.getItem(_TRADE_LOCK_KEY);
+    if (raw) {
+      const l = JSON.parse(raw);
+      if (l && l.id !== _TAB_ID && (now - (l.ts || 0)) < _LOCK_TTL_MS) return false;  // 他人持有且未逾時
+    }
+    localStorage.setItem(_TRADE_LOCK_KEY, JSON.stringify({ id: _TAB_ID, ts: now }));
+    const back = JSON.parse(localStorage.getItem(_TRADE_LOCK_KEY) || '{}');
+    return back.id === _TAB_ID;   // 讀回仍是自己 → 取得鎖
+  } catch(_e) { return true; }    // localStorage 異常時不阻擋建單
+}
+function _releaseTradeLock() {
+  try {
+    const raw = localStorage.getItem(_TRADE_LOCK_KEY);
+    if (raw && JSON.parse(raw).id === _TAB_ID) localStorage.removeItem(_TRADE_LOCK_KEY);
+  } catch(_e) {}
+}
+
 function commitNewTrade(newTrade) {
+  if (!_acquireTradeLock()) {
+    console.log(`[dedup] ${newTrade?.symbol || '?'} 其他分頁正在建單，本分頁略過`);
+    return false;
+  }
   try {
     if (!newTrade || !newTrade.symbol) return false;
     const log = loadTradeLog();                    // 一律以最新狀態為準，不用呼叫端的舊快照
@@ -9795,6 +9832,7 @@ function commitNewTrade(newTrade) {
     saveTradeLog(log);
     return true;
   } catch(_e) { return false; }
+  finally { _releaseTradeLock(); }
 }
 
 /* ── 分批出場損益（讓帳與「TP1 減倉 60%」的實際操作一致）────────
