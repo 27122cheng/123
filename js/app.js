@@ -10160,17 +10160,33 @@ function _rerenderPositionsAfter(promises) {
 
 function isSignalMaster() {
   try {
-    // 雲端可用且已有人宣告 → 以雲端為準（跨裝置唯一主機）
+    // ① 本裝置開關關閉 → 一律不發送，優先於任何主機宣告。
+    //    這是跨裝置重複的唯一可靠解法：去重台帳與主機宣告都存在 localStorage，
+    //    每台裝置各有一份、互相看不到（實測：同一訊號於手機與電腦各送一次，
+    //    價位與 SQ 全同、僅「今日預測」因兩台各自計算而差 3%）。
+    //    原本此檢查排在最後，只要該裝置曾按過「設為訊號主機」，關掉開關也無效。
+    if (loadSettings().signalMaster === false) return false;
+    // ② 雲端可用且已有人宣告 → 以雲端為準（跨裝置唯一主機）
     if (_cloudOk && _cloudMaster && _cloudMaster.id) return _cloudMaster.id === _TAB_ID;
+    // ③ 退回單機：只有宣告過的那個分頁是主機（僅能協調同瀏覽器的分頁）
     const m = getSignalMasterInfo();
-    if (m) return m.id === _TAB_ID;              // 退回單機：只有該分頁是主機
-    return loadSettings().signalMaster !== false; // 從未宣告 → 維持舊行為
+    if (m) return m.id === _TAB_ID;
+    return true;
   } catch(_e) { return true; }
 }
 /* 設定頁狀態列：顯示目前主機、開啟（宣告）時間，以及本分頁是否為主機 */
 function renderSignalMasterStatus() {
   const el = document.getElementById('signal-master-status');
   if (!el) return;
+  // 本裝置開關關閉時，其餘狀態一律無意義——直接標示不發送
+  let _devOff = false;
+  try { _devOff = loadSettings().signalMaster === false; } catch(_e) {}
+  if (_devOff) {
+    el.innerHTML = `<span style="color:#ef4444;font-weight:700">🔕 本裝置已停止發送訊號</span>`
+      + `<br><span style="color:var(--text3)">上方「📡 本裝置為訊號主機」開關為關閉狀態，`
+      + `本裝置不會建單也不會發送 Telegram。多台裝置時請只在一台開啟。</span>`;
+    return;
+  }
   const cloud = _cloudOk && _cloudMaster && _cloudMaster.id;
   const m = cloud ? _cloudMaster : getSignalMasterInfo();
   const modeLine = _cloudOk

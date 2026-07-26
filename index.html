@@ -720,10 +720,10 @@
         <div class="setting-row" style="margin-top:6px">
           <div>
             <div class="setting-name">📡 本裝置為訊號主機</div>
-            <div class="setting-desc">只有主機會建單與發送 Telegram 通知。多台裝置同時開啟時，請只在一台開啟此選項，其餘關閉（否則同一訊號會重複建單、重複通知）</div>
+            <div class="setting-desc">只有主機會建單與發送 Telegram 通知。<b>多台裝置（手機／電腦）同時開啟時，請只在一台開啟，其餘關閉</b>——各裝置的去重紀錄互相看不到，兩台都開就會收到兩則相同訊號。此開關優先於下方的分頁主機設定。</div>
           </div>
           <label class="toggle-wrap">
-            <input type="checkbox" id="s-master-toggle" />
+            <input type="checkbox" id="s-master-toggle" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
           </label>
         </div>
