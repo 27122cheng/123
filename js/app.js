@@ -1047,7 +1047,7 @@ function buildSQPanelFromTrade(t) {
       ${neg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${neg.length}項）</div>${neg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${warn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${warn.length}項）</div>${warn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
       ${neut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${neut.length}項）</div>${neut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}</div>`).join('')}</div>` : ''}
-      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${cClr}">${conf} 分</strong> / 100　門檻 60分　需 A 級以上（≥10分）方可入場</div>
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${cClr}">${conf} 分</strong> / 100　門檻 60分　需 A 級以上（≥12分）方可入場</div>
     </div>`;
   } catch(e) { return ''; }
 }
@@ -4316,14 +4316,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     if (_cc.delta !== 0) { _sqScore += _cc.delta; _sqFactors.push(_cc.tag); }
   }
 
-  // 分數 floor 為 0，等級校準（28 因子校準，滿分 ≈ 34；SSS≥25/SS≥22/S≥18/A≥10/B≥7/C≥4）
+  // 分數 floor 為 0，等級校準（30 因子＋實驗室加分上限 +5，滿分 ≈ 39）
+  // A 級門檻依使用者設定調為 12 分，其餘等級整體同步 +2 以維持原有級距寬度：
+  // SSS≥28 / SS≥25 / S≥21 / A≥12 / B≥9 / C≥6 / D<6
   _sqScore = Math.max(0, _sqScore);
-  const _sqGrade = _sqScore >= 26 ? 'SSS'
-                 : _sqScore >= 23 ? 'SS'
-                 : _sqScore >= 19 ? 'S'
-                 : _sqScore >= 10 ? 'A'
-                 : _sqScore >= 7  ? 'B'
-                 : _sqScore >= 4  ? 'C' : 'D';
+  const _sqGrade = _sqScore >= 28 ? 'SSS'
+                 : _sqScore >= 25 ? 'SS'
+                 : _sqScore >= 21 ? 'S'
+                 : _sqScore >= 12 ? 'A'
+                 : _sqScore >= 9  ? 'B'
+                 : _sqScore >= 6  ? 'C' : 'D';
   const _sqGradeColor = { SSS:'#ffffff', SS:'#ff6ef7', S:'#f0c040', A:'#22c55e', B:'#60a5fa', C:'#f59e0b', D:'#ef4444' }[_sqGrade];
   const _sqGradeLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_sqGrade];
 
@@ -4333,7 +4335,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _sqNeg  = _sqFactors.filter(f => f.startsWith('❌') || f.startsWith('⚡'));
     const _sqWarn = _sqFactors.filter(f => f.startsWith('⚠️'));
     const _sqNeut = _sqFactors.filter(f => f.startsWith('⬜'));
-    const _sqBarW = Math.round(Math.min(100, (_sqScore / 20) * 100));
+    const _sqBarW = Math.round(Math.min(100, (_sqScore / 22) * 100));
     const _sqBClr = _sqGradeColor || '#9ca3af';
     const _cClr   = conf >= 60 ? '#22c55e' : conf >= 50 ? '#f59e0b' : '#ef4444';
     return `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:12px 14px;margin-bottom:10px">
@@ -4348,7 +4350,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       ${_sqNeg.length  ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#ef4444;font-weight:600;margin-bottom:3px">❌ 逆向扣分（${_sqNeg.length}項）</div>${_sqNeg.map(f=>`<div style="font-size:0.73rem;color:#fca5a5;padding:1px 0;line-height:1.6">${f}${sqEvidenceBadge(f)}</div>`).join('')}</div>` : ''}
       ${_sqWarn.length ? `<div style="margin-bottom:7px"><div style="font-size:0.7rem;color:#f59e0b;font-weight:600;margin-bottom:3px">⚠️ 偏弱警告（${_sqWarn.length}項）</div>${_sqWarn.map(f=>`<div style="font-size:0.73rem;color:#fcd34d;padding:1px 0;line-height:1.6">${f}${sqEvidenceBadge(f)}</div>`).join('')}</div>` : ''}
       ${_sqNeut.length ? `<div><div style="font-size:0.7rem;color:var(--text3);font-weight:600;margin-bottom:3px">⬜ 未觸發（${_sqNeut.length}項）</div>${_sqNeut.map(f=>`<div style="font-size:0.73rem;color:var(--text3);padding:1px 0;line-height:1.6">${f}${sqEvidenceBadge(f)}</div>`).join('')}</div>` : ''}
-      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 60分　需 SQ≥A（≥10分）方可入場</div>
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06);font-size:0.7rem;color:var(--text3)">風控分 <strong style="color:${_cClr}">${conf}分</strong> / 100　門檻 60分　需 SQ≥A（≥12分）方可入場</div>
     </div>`;
   } catch(_sqPE) { return ''; } })();
 
@@ -4732,7 +4734,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
           && !weeklyOpposed
           && ['SSS','SS','S'].includes(_sqGrade);
       } else {
-        // 短線單 / 震盪單：SQ≥A（≥10分）且風控分≥60 方可自動建倉
+        // 短線單 / 震盪單：SQ≥A（≥12分）且風控分≥60 方可自動建倉（實際門檻取自適應值）
         _canAutoRecord = conf >= 60 && ['SSS','SS','S','A'].includes(_sqGrade);
       }
     }
@@ -4748,7 +4750,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // 控管、建單前終審（以監控口徑預演，杜絕建了又被監控取消）。
     if (_canAutoRecord) try {
       const _btsGates = getAdaptiveGates();
-      const _btsMinSq = canScaleIn ? 19 : _btsGates.minSq;
+      const _btsMinSq = canScaleIn ? 21 : _btsGates.minSq;
       if (_sqScore < _btsMinSq || conf < _btsGates.minConf) {
         _canAutoRecord = false;
         console.log(`[detail-gate] ${coin.symbol} SQ ${_sqScore}/${_btsMinSq}、風控分 ${conf}/${_btsGates.minConf} 未達掃描門檻，不建單`);
@@ -4785,7 +4787,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         rr1: rr1str, rr2: rr2str,  // SQ 監控 computeFullRisk 需要，缺失會被誤判 R/R 過低
         riskScore: _risk.score, riskLevel: _risk.level, riskPenalty: _riskPenBTS,
         riskKeys: _risk.keys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
-        confGate: getAdaptiveGates().minConf, sqGate: canScaleIn ? 19 : getAdaptiveGates().minSq,  // 與掃描建單同門檻
+        confGate: getAdaptiveGates().minConf, sqGate: canScaleIn ? 21 : getAdaptiveGates().minSq,  // 與掃描建單同門檻
         hardAdxPenalty, learnPenalty, macroPenalty: macroOpposePenalty, aiTrendPenalty, techPenalty, chipsPenalty,
         entryReason: entryReasons.join('，'), entryReasons: [...entryReasons],
         slReason, tp1Reason, tp2Reason,
@@ -10266,14 +10268,14 @@ function countSignalsToday() {
 function relaxedCohortUnderperforms() {
   try {
     const closed = loadTradeLog().filter(t =>
-      t.status === 'closed' && (t.gateRelaxed === true || (t.sqGate ?? 10) < 9));
+      t.status === 'closed' && (t.gateRelaxed === true || (t.sqGate ?? 12) < 11));
     if (closed.length < 12) return false;
     const _wr = winRateOf(closed);   // 平手(be)不計入分母，避免換防單把放寬組誤判為劣績
     return _wr != null && _wr < 45;
   } catch(_e) { return false; }
 }
 function getAdaptiveGates() {
-  const strict = { minConf: 60, minSq: 10, relaxed: false, label: '' };
+  const strict = { minConf: 60, minSq: 12, relaxed: false, label: '' };
   try {
     // 連續止損 ≥3 筆時，停止一切配額性放寬（壞行情裡強湊每日訊號 = 送人頭）
     if (globalLossStreak().streak >= 3) return strict;
@@ -10281,8 +10283,8 @@ function getAdaptiveGates() {
     if (n >= DAILY_SIGNAL_TARGET) return strict;
     if (relaxedCohortUnderperforms()) return strict;  // 放寬單歷史勝率不佳 → 熔斷
     const h = new Date().getHours();  // 本地時間
-    if (h >= 18) return { minConf: 55, minSq: 8, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬（SQ≥8、風控分≥55）` };
-    if (h >= 12) return { minConf: 58, minSq: 9, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥9、風控分≥58）` };
+    if (h >= 18) return { minConf: 55, minSq: 10, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬（SQ≥10、風控分≥55）` };
+    if (h >= 12) return { minConf: 58, minSq: 11, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥11、風控分≥58）` };
     return strict;
   } catch(_e) { return strict; }
 }
@@ -11039,12 +11041,12 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
 
     // 分數 floor 0，使用與 buildTradeSetup 完全相同的等級門檻（28 因子，滿分 ≈ 34）
     _sqRC = Math.max(0, _sqRC);
-    const _rcGrade = _sqRC >= 26 ? 'SSS'
-                   : _sqRC >= 23 ? 'SS'
-                   : _sqRC >= 19 ? 'S'
-                   : _sqRC >= 10 ? 'A'
-                   : _sqRC >= 7  ? 'B'
-                   : _sqRC >= 4  ? 'C' : 'D';
+    const _rcGrade = _sqRC >= 28 ? 'SSS'
+                   : _sqRC >= 25 ? 'SS'
+                   : _sqRC >= 21 ? 'S'
+                   : _sqRC >= 12 ? 'A'
+                   : _sqRC >= 9  ? 'B'
+                   : _sqRC >= 6  ? 'C' : 'D';
     const _rcGradeLabel = { SSS:'神級', SS:'完美', S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_rcGrade];
     return { sq: _sqRC, grade: _rcGrade, gradeLabel: _rcGradeLabel, learn: _rcLearn };
 }
@@ -11578,12 +11580,12 @@ async function recordSignalsFromScan(data) {
 
     // 分數 floor 0，等級門檻與 buildTradeSetup 完全一致（28 因子校準，滿分 ≈ 34）
     _scanSqScore = Math.max(0, _scanSqScore);
-    const _scanSqGrade = _scanSqScore >= 26 ? 'SSS'
-                       : _scanSqScore >= 23 ? 'SS'
-                       : _scanSqScore >= 19 ? 'S'
-                       : _scanSqScore >= 10 ? 'A'
-                       : _scanSqScore >= 7  ? 'B'
-                       : _scanSqScore >= 4  ? 'C' : 'D';
+    const _scanSqGrade = _scanSqScore >= 28 ? 'SSS'
+                       : _scanSqScore >= 25 ? 'SS'
+                       : _scanSqScore >= 21 ? 'S'
+                       : _scanSqScore >= 12 ? 'A'
+                       : _scanSqScore >= 9  ? 'B'
+                       : _scanSqScore >= 6  ? 'C' : 'D';
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 長線單 S 以上；短線單以自適應 SQ 門檻判斷（預設 9/A 級，未達每日配額時放寬）
     // 若長線單 SQ 未達 S 級但達短線門檻，降格為短線單繼續建單
@@ -11622,7 +11624,7 @@ async function recordSignalsFromScan(data) {
     try {
       const _auditTrade = { direction, entry: setup.entry, sl: setup.sl, tp1: setup.tp1, canScaleIn };
       const _audit = computeSqMonitorScore(_auditTrade, coin, isLong, { wBias, tBias, btcChg24: _btcChg24 });
-      const _auditSqGate = canScaleIn ? 19 : _scanGates.minSq;
+      const _auditSqGate = canScaleIn ? 21 : _scanGates.minSq;
       if (_audit.sq < _auditSqGate) {
         console.log(`[pre-audit] ${coin.symbol} 監控口徑評分 ${_audit.sq} < ${_auditSqGate}，不建單（杜絕建了又取消）`);
         continue;
@@ -11758,7 +11760,7 @@ async function recordSignalsFromScan(data) {
     // 長線單門檻 S（17分）；短線單門檻 = 建單時存的 sqGate（預設 10/A 級）− 2 分緩衝
     // 緩衝目的：臨界分數的正常波動不應反覆觸發建立→取消
     // 長線單 SQ 降至短線門檻以上但 < S → 降級為短線單繼續持有；低於短線門檻才取消
-    const _rcSqGate = Math.max(4, (trade.sqGate ?? 10) - 2);
+    const _rcSqGate = Math.max(6, (trade.sqGate ?? 12) - 2);
     const _rcSqPass = trade.canScaleIn ? _sqRC >= 19 : _sqRC >= _rcSqGate;
     if (!_rcSqPass) {
       if (trade.canScaleIn && _sqRC >= _rcSqGate) {
@@ -15579,8 +15581,8 @@ function buildWinRateBreakdown(closed) {
   };
   const groups = [
     { title: '建單門檻', rows: [
-      seg('嚴格門檻單', closed.filter(t => !(t.gateRelaxed === true || (t.sqGate ?? 10) < 9))),
-      seg('放寬門檻單', closed.filter(t => t.gateRelaxed === true || (t.sqGate ?? 10) < 9)),
+      seg('嚴格門檻單', closed.filter(t => !(t.gateRelaxed === true || (t.sqGate ?? 12) < 11))),
+      seg('放寬門檻單', closed.filter(t => t.gateRelaxed === true || (t.sqGate ?? 12) < 11)),
     ]},
     { title: '方向', rows: [
       seg('做多', closed.filter(t => t.direction === 'long')),
@@ -17806,7 +17808,7 @@ async function checkAndSendAlerts(data) {
           const _aTrade = { direction: dir, entry: notifSetup.entry, sl: notifSetup.sl, tp1: notifSetup.tp1,
                             canScaleIn: notifSetup.isLongTerm === true };
           const _aRes = computeSqMonitorScore(_aTrade, coin, dir === 'long', _aCtx);
-          const _aGate = _aTrade.canScaleIn ? 19 : _alertGates.minSq;
+          const _aGate = _aTrade.canScaleIn ? 21 : _alertGates.minSq;
           if (_aRes.sq < _aGate) {
             _alertAuditPass = false;
             console.log(`[pre-audit] ${coin.symbol} 通知路徑監控口徑評分 ${_aRes.sq} < ${_aGate}，不建單`);
