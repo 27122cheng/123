@@ -10158,8 +10158,36 @@ function _rerenderPositionsAfter(promises) {
   } catch(_e) {}
 }
 
+/* ── 閒置自動停發（防「忘記關的分頁還在偷偷發訊號」）──────────────
+   跨裝置的去重無法只靠 localStorage（各裝置一份、互相看不到），若使用者
+   在別台電腦／舊瀏覽器留了一個沒關的分頁，那台會持續發送重複訊號而不自知。
+   忘記關的分頁共同特徵是「長時間無人操作」，故以最後互動時間為準：
+   超過設定時數未互動即停止建單與發送；使用者一回到該分頁（切回、點擊、
+   按鍵）立即自動恢復，不需任何手動操作。
+   設定 idleStopHours=0 可關閉此保護（供長期無人值守的專用機器使用）。 */
+const IDLE_STOP_DEFAULT_H = 6;
+let _lastInteractAt = Date.now();
+function _markInteract() { _lastInteractAt = Date.now(); }
+try {
+  ['pointerdown', 'keydown', 'focus', 'touchstart'].forEach(ev =>
+    window.addEventListener(ev, _markInteract, { passive: true }));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) _markInteract(); });
+} catch(_e) {}
+/* 回傳 { idle, hours, idleForMs }；hours=0 代表使用者已關閉此保護 */
+function deviceIdleState() {
+  let hours = IDLE_STOP_DEFAULT_H;
+  try {
+    const v = loadSettings().idleStopHours;
+    if (v != null && isFinite(v)) hours = Math.max(0, parseFloat(v));
+  } catch(_e) {}
+  const idleForMs = Date.now() - _lastInteractAt;
+  return { idle: hours > 0 && idleForMs > hours * 3600 * 1000, hours, idleForMs };
+}
+
 function isSignalMaster() {
   try {
+    // ⓪ 閒置過久 → 停止發送（忘記關的分頁不會繼續重複發訊號）
+    if (deviceIdleState().idle) return false;
     // ① 本裝置開關關閉 → 一律不發送，優先於任何主機宣告。
     //    這是跨裝置重複的唯一可靠解法：去重台帳與主機宣告都存在 localStorage，
     //    每台裝置各有一份、互相看不到（實測：同一訊號於手機與電腦各送一次，
@@ -10185,6 +10213,14 @@ function renderSignalMasterStatus() {
     el.innerHTML = `<span style="color:#ef4444;font-weight:700">🔕 本裝置已停止發送訊號</span>`
       + `<br><span style="color:var(--text3)">上方「📡 本裝置為訊號主機」開關為關閉狀態，`
       + `本裝置不會建單也不會發送 Telegram。多台裝置時請只在一台開啟。</span>`;
+    return;
+  }
+  const _idleSt = deviceIdleState();
+  if (_idleSt.idle) {
+    const h = Math.floor(_idleSt.idleForMs / 3600000);
+    el.innerHTML = `<span style="color:#f59e0b;font-weight:700">😴 閒置停發中（已 ${h} 小時無操作）</span>`
+      + `<br><span style="color:var(--text3)">超過 ${_idleSt.hours} 小時無操作即自動停止發送，`
+      + `避免忘記關的分頁重複發訊號。點一下畫面即可立即恢復。</span>`;
     return;
   }
   const cloud = _cloudOk && _cloudMaster && _cloudMaster.id;
@@ -18967,6 +19003,8 @@ function populateSettingsPage() {
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
   const masterToggle = document.getElementById('s-master-toggle');
   if (masterToggle) masterToggle.checked = s.signalMaster !== false;  // 預設開啟
+  const idleInput = document.getElementById('s-idle-stop');
+  if (idleInput) idleInput.value = (s.idleStopHours != null ? s.idleStopHours : IDLE_STOP_DEFAULT_H);
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
@@ -18986,6 +19024,8 @@ function saveAllSettings() {
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
     notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
     signalMaster:    document.getElementById('s-master-toggle')?.checked ?? true,
+    idleStopHours:   (() => { const v = parseFloat(document.getElementById('s-idle-stop')?.value);
+                              return isFinite(v) && v >= 0 ? v : IDLE_STOP_DEFAULT_H; })(),
     tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,

@@ -728,6 +728,19 @@
           </label>
         </div>
 
+        <!-- 閒置自動停發 -->
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">😴 閒置自動停發</div>
+            <div class="setting-desc">超過設定時數無操作即自動停止建單與發送，避免在別台電腦忘記關的分頁持續發重複訊號。回到該分頁點一下即立即恢復。設為 0 表示不自動停止（無人值守的專用機器適用）</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" id="s-idle-stop" class="setting-input" min="0" max="72" step="1"
+              style="width:70px;text-align:center" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
+            <span style="color:var(--text3);font-size:0.82rem">小時</span>
+          </div>
+        </div>
+
         <!-- Telegram -->
         <div class="setting-row vertical" style="gap:10px;margin-top:6px">
           <div style="display:flex;justify-content:space-between;align-items:center">
