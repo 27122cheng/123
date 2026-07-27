@@ -16648,12 +16648,18 @@ function clearTradeLog() {
    涵蓋所有 csp_* 鍵（交易紀錄、設定、AI 記憶、冷卻狀態…）+ AI 預測學習資料。
    防止清除瀏覽器資料時遺失交易歷史與學習引擎記憶，也可用於跨裝置搬移。 */
 const _BACKUP_EXTRA_KEYS = ['ai_bias_learning'];
+/* 不納入備份的鍵：裝置專屬或短暫狀態，還原到另一台會造成誤判 */
+const _BACKUP_SKIP_KEYS = new Set([
+  'csp_signal_master',   // 訊號主機身分（綁分頁 ID，還原後必為無效身分）
+  'csp_trade_lock',      // 跨分頁互斥鎖（短暫狀態，秒級失效）
+  'csp_tab_id',          // 分頁識別碼
+]);
 function exportFullBackup() {
   try {
     const backup = { _type: 'csp_full_backup', _version: 1, _exportedAt: new Date().toISOString(), data: {} };
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && (k.startsWith('csp_') || _BACKUP_EXTRA_KEYS.includes(k))) {
+      if (k && !_BACKUP_SKIP_KEYS.has(k) && (k.startsWith('csp_') || _BACKUP_EXTRA_KEYS.includes(k))) {
         // 實驗室：只備份已完結樣本（統計/規則所需）；追蹤中、未入場、過期、錯過的不備份
         if (k === AI_LAB_KEY) {
           try {
@@ -16683,7 +16689,10 @@ function exportFullBackup() {
     a.download = `csp_full_backup_${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`完整備份已匯出（${Object.keys(backup.data).length} 個項目，含 ${_pairCount} 個幣種）`, 'success');
+    let _scalpCount = 0;
+    try { _scalpCount = (JSON.parse(backup.data[SCALP_LOG_KEY] || '[]') || []).length; } catch(_e) {}
+    showToast(`完整備份已匯出（${Object.keys(backup.data).length} 個項目，含 ${_pairCount} 個幣種`
+      + `${_scalpCount ? `、${_scalpCount} 筆自動交易紀錄` : ''}）`, 'success');
   } catch(_e) { showToast('備份匯出失敗：' + _e.message, 'error'); }
 }
 function importFullBackup() {
@@ -19537,17 +19546,30 @@ const SCALP_MAX        = 500;
 
 /* 快進快出參數（集中管理，方便試跑後調整）*/
 const SCALP_CFG = {
-  slAtrMult:   0.6,    // 止損 = 0.6 × ATR（比主系統緊，換取快速出場）
+  // ── 進場（突破邏輯）──
+  tf:           '5m',  // 專用時框：只對通過初篩的少數幣抓，成本低
+  breakLookback: 20,   // 突破回看根數
+  minBreakPct:  0.0015,// 最小突破幅度 0.15%（濾掉貼邊雜訊）
+  volMult:      1.5,   // 突破當根需 ≥ 均量 1.5 倍
+  requireOI:    false, // true=必須 OI 新錢同向；false=只擋「回補/平倉推動」
+  rsiCap:       72,    // 做多 RSI 上限（做空鏡像 28）
+  killZoneOnly: true,  // 只在主力時段做（冷門時段假突破比例最高）
+  maxRiskPct:   0.012, // 單筆風險上限 1.2%（追太遠不做）
+  // ── 出場（快週轉）──
+  slAtrMult:   0.6,    // 止損放突破點另一側 0.6 × ATR
   tp1R:        1.0,    // 止盈一 1.0R（減倉 60%）
   tp2R:        1.8,    // 止盈二 1.8R
   tp1Frac:     0.6,    // 觸及 TP1 減倉比例
   trailGiveR:  0.5,    // TP1 後移動停利回吐上限（鎖峰值 −0.5R）
-  timeStopMin: 45,     // 停滯時間止損（分鐘，±0.3R 內）
-  maxHoldMin:  120,    // 最長持有（分鐘），到期一律市價出場
-  minAdx:      20,     // 最低 ADX（完全無趨勢不做）
+  timeStopMin: 20,     // 停滯出場（分鐘）：突破沒延續代表論點已破
+  maxHoldMin:  60,     // 最長持有（分鐘）
+  minAdx:      20,     // 最低 ADX
   cooldownMin: 30,     // 同幣種同方向冷卻
-  maxActive:   6,      // 同時最多持有筆數
+  maxActive:   8,      // 同時最多持有筆數
+  maxSameDir:  5,      // 同方向上限（避免全同向被大盤一次掃掉）
 };
+/* 快進快出專用 5m K 線快取：只對「通過初篩」的幣抓，數量少不佔限速 */
+const _scalpKlineCache = {};
 
 function loadScalpLog() {
   try { const a = JSON.parse(localStorage.getItem(SCALP_LOG_KEY) || '[]'); return Array.isArray(a) ? a : []; }
@@ -19584,28 +19606,72 @@ function _scalpRecordLedger(sym, dir) {
 function buildScalpSetup(coin, isLong) {
   const price = parseFloat(coin.price) || 0;
   if (!price) return null;
-  const adx = parseFloat(coin.adx) || 0;
-  if (adx < SCALP_CFG.minAdx) return null;
-  const rsi = parseFloat(coin.rsi);
-  if (isFinite(rsi) && (isLong ? rsi >= 72 : rsi <= 28)) return null;   // 過熱不追
-  const macd = parseFloat(coin.macdHist) || 0;
-  if (isLong ? macd <= 0 : macd >= 0) return null;                      // 動能需同向
-  const h1 = coin.h1Signal || '';
-  if (isLong ? !h1.includes('bull') : !h1.includes('bear')) return null; // 1H 需同向
 
-  // ATR 估算（沿用主系統的 ADX→波動率推算，維持一致）
+  // ── ① 突破觸發：價格站上／跌破近 N 根 K 棒的極值 ──────────────
+  //    快進快出的獲利來源是「突破後的短時間動能延續」，與主系統「等回踩」
+  //    互為互補：主系統怕回踩變破位，本系統怕假突破，失敗情境不重疊。
+  const raw = _scalpKlineCache[coin.symbol];
+  if (!raw || raw.length < SCALP_CFG.breakLookback + 2) return null;
+  const bars = raw.slice(-(SCALP_CFG.breakLookback + 1));
+  const prev = bars.slice(0, -1);                       // 不含當根，避免自我比較
+  const last = bars[bars.length - 1];
+  const hi = Math.max(...prev.map(b => parseFloat(b[2])));
+  const lo = Math.min(...prev.map(b => parseFloat(b[3])));
+  const close = parseFloat(last[4]);
+  const broke = isLong ? close > hi : close < lo;
+  if (!broke) return null;
+  // 突破幅度需有意義（避免貼著邊界的雜訊觸發）
+  const extent = isLong ? (close - hi) / hi : (lo - close) / lo;
+  if (!(extent >= SCALP_CFG.minBreakPct)) return null;
+
+  // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
+  const vols = prev.map(b => parseFloat(b[5]) || 0);
+  const avgVol = vols.reduce((a, b) => a + b, 0) / (vols.length || 1);
+  const curVol = parseFloat(last[5]) || 0;
+  if (!(avgVol > 0 && curVol >= avgVol * SCALP_CFG.volMult)) return null;
+
+  // ── ③ 未平倉量確認（最強的真假突破分辨器）────────────────────
+  //    價漲+OI增=新多進場（真突破）；價漲+OI減=空頭回補（假突破嫌疑）。
+  //    突破若由平倉盤推動，動能一到就沒有後續，正是快進快出最怕的情境。
+  let oiState = 'none';
+  try { oiState = oiAlignment(coin.symbol, isLong).state; } catch(_e) {}
+  if (oiState === 'unfavorable') return null;           // 回補/平倉推動 → 直接不做
+  if (SCALP_CFG.requireOI && oiState !== 'favorable') return null;
+
+  // ── ④ VWAP 同側：站在機構成本線正確一側才順勢 ─────────────────
+  try {
+    const vwap = _footprintCache[coin.symbol]?.vwap;
+    if (vwap > 0) { if (isLong ? price < vwap : price > vwap) return null; }
+  } catch(_e) {}
+
+  // ── ⑤ 基本過濾：動能未耗盡、不逆 BTC、需在主力時段 ──────────────
+  const rsi = parseFloat(coin.rsi);
+  if (isFinite(rsi) && (isLong ? rsi >= SCALP_CFG.rsiCap : rsi <= 100 - SCALP_CFG.rsiCap)) return null;
+  if (coin.symbol !== 'BTC/USDT' && typeof _btcH4Dir !== 'undefined' && _btcH4Dir !== 'neutral') {
+    if (isLong ? _btcH4Dir === 'bear' : _btcH4Dir === 'bull') return null;   // 山寨日內幾乎完全跟 BTC
+  }
+  if (SCALP_CFG.killZoneOnly) {
+    try { if (computeKillZone()?.quality === 'low') return null; } catch(_e) {}
+  }
+
+  // ── 價位：止損放突破點另一側（論點失效即出場，虧損小且明確）──────
+  const adx = parseFloat(coin.adx) || 20;
   const atr = price * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
-  const risk = atr * SCALP_CFG.slAtrMult;
-  if (!(risk > 0)) return null;
-  const entry = price;                                    // 市價進場
-  const sl  = isLong ? entry - risk : entry + risk;
+  const level = isLong ? hi : lo;                       // 突破點＝新的支撐/壓力
+  const slRaw = isLong ? level - atr * SCALP_CFG.slAtrMult : level + atr * SCALP_CFG.slAtrMult;
+  const entry = price;                                  // 市價進場（突破追擊）
+  const risk  = Math.abs(entry - slRaw);
+  if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return null;  // 追太遠不做
   const tp1 = isLong ? entry + risk * SCALP_CFG.tp1R : entry - risk * SCALP_CFG.tp1R;
   const tp2 = isLong ? entry + risk * SCALP_CFG.tp2R : entry - risk * SCALP_CFG.tp2R;
-  return { entry, sl, tp1, tp2, atr, risk, adx, rsi, macd };
+  return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi,
+           macd: parseFloat(coin.macdHist) || 0,
+           breakLevel: level, breakExtent: +(extent * 100).toFixed(2),
+           volRatio: +(curVol / avgVol).toFixed(2), oiState };
 }
 
 /* 掃描產生快進快出訊號（獨立於 recordSignalsFromScan） */
-function recordScalpSignals(data) {
+async function recordScalpSignals(data) {
   try {
     if (!isSignalMaster()) return;
     const s = loadSettings();
@@ -19617,15 +19683,40 @@ function recordScalpSignals(data) {
     let room = SCALP_CFG.maxActive - active.length;
     let changed = false;
 
+    // ── 初篩（用已抓好的幣安資料，零額外請求）──────────────────
+    //    只有通過初篩的少數幣才去抓 5m K 線，避免佔用 OKX/幣安限速。
+    const cands = [];
     for (const coin of data) {
-      if (room <= 0) break;
       if (!coin || coin.score === 50) continue;
       const isLong = coin.score > 50;
       const dir = isLong ? 'long' : 'short';
-      // 15m 方向以 score 為準（與主系統一致）
       if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) continue;
       if (_scalpSignalledRecently(coin.symbol, dir)) continue;
+      if ((parseFloat(coin.adx) || 0) < SCALP_CFG.minAdx) continue;
+      const macd = parseFloat(coin.macdHist) || 0;
+      if (isLong ? macd <= 0 : macd >= 0) continue;       // 動能需同向
+      // 同方向集中度：避免全部同向被大盤一次掃掉（回撤主因）
+      const sameDir = active.filter(t => t.direction === dir).length
+                    + cands.filter(c => c.dir === dir).length;
+      if (sameDir >= SCALP_CFG.maxSameDir) continue;
+      cands.push({ coin, isLong, dir });
+      if (cands.length >= room * 4) break;                // 初篩上限，控制抓取量
+    }
+    if (!cands.length) return;
 
+    // ── 對候選幣抓 5m K 線（突破判定需要真正的短週期資料）─────────
+    await Promise.allSettled(cands.map(async c => {
+      try {
+        const sym = c.coin.symbol.replace('/', '');
+        const k = await (typeof fetchKlinesExec === 'function'
+          ? fetchKlinesExec(sym, SCALP_CFG.tf, SCALP_CFG.breakLookback + 5)
+          : fetchKlines(sym, SCALP_CFG.tf, SCALP_CFG.breakLookback + 5));
+        if (k && k.length) _scalpKlineCache[c.coin.symbol] = k;
+      } catch(_e) {}
+    }));
+
+    for (const { coin, isLong, dir } of cands) {
+      if (room <= 0) break;
       const setup = buildScalpSetup(coin, isLong);
       if (!setup) continue;
 
@@ -19649,8 +19740,10 @@ function recordScalpSignals(data) {
         status: 'open', outcome: null, tp1Hit: false,
         exitPrice: null, exitTime: null, pnlR: null,
         rsi: setup.rsi, adx: setup.adx, macdHist: setup.macd,
+        breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
+        volRatio: setup.volRatio, oiState: setup.oiState,
         riskScore, riskLevel, riskRecs, conf,
-        note: '快進快出（自動交易試跑）',
+        note: '快進快出（突破追擊）',
       };
       try {
         if (typeof toOkxLevels === 'function')
@@ -19757,6 +19850,8 @@ function sendScalpTelegram(t, kind) {
         `🛑 止損：$${fmt(t.sl)}`,
         `🎯 止盈一：$${fmt(t.tp1)}（${SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
         `🚀 止盈二：$${fmt(t.tp2)}（${SCALP_CFG.tp2R}R）`,
+        `📐 突破 ${SCALP_CFG.breakLookback} 根 ${SCALP_CFG.tf} 高低點 $${fmt(t.breakLevel)}（幅度 ${t.breakExtent}%）`,
+        `📊 量能 ${t.volRatio}× 均量｜OI ${t.oiState === 'favorable' ? '新錢同向 ✅' : t.oiState === 'neutral' ? '中性' : '—'}`,
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
         t.conf != null ? `📶 風控分：${t.conf} 分（風險 ${t.riskScore ?? '--'}／${t.riskLevel || '--'}）` : '',
         t.riskRecs && t.riskRecs.length ? `💡 ${t.riskRecs[0]}` : '',
