@@ -413,11 +413,50 @@ function _klineCacheSet(key, rows) {
   _klineCache.set(key, { ts: Date.now(), rows });
 }
 
-/* 只有「交易關鍵週期」走 OKX（進場/止損/插針判定需與實際成交所一致）。
-   1h 以上僅用於判斷趨勢方向，交易所間的微小價差無影響 → 一律走幣安。
-   這讓每輪 OKX 請求由「幣數×5」降為「幣數×1」，在 40 次/2 秒的硬限制下
-   把掃描時間從約 30 秒壓到約 6 秒（此前頁面卡在載入畫面的主因）。 */
-const OKX_PRECISION_INTERVALS = new Set(['1m', '3m', '5m', '15m', '30m']);
+/* ── 資料源分工：分析走幣安、確切幣價與成交判定走 OKX ──────────────
+   趨勢／動能／結構這類判斷看的是形態與比例，兩所價差 <0.1% 不影響結論，
+   且幣安限速寬鬆 → 掃描分析一律走幣安。
+   真正需要「OKX 確切價格」的只有三件事：
+     ① 顯示與比較用的即時幣價 → refreshOkxPrices() 一個請求拿回全部幣種
+     ② 進場／止盈／止損價位   → 以幣安結構算出後，用即時價比例換算為 OKX 價
+     ③ 有沒有入場（成交判定） → fetchKlinesExec() 取 OKX 1m K 棒逐棒驗證，
+        僅對「已有掛單／持倉」的少數幣執行
+   效果：每輪 OKX K 線請求由約 220 筆降到只剩活躍單的數筆，限速隊列不再
+   塞爆（先前頁面卡死的主因），同時價格精度保留在真正需要的地方。 */
+const OKX_PRECISION_INTERVALS = new Set();   // 掃描分析不再佔用 OKX 額度
+
+/* 執行面專用：強制 OKX 優先（成交判定／插針驗證），失敗才退幣安。
+   只給「已有掛單或持倉」的幣使用，數量少，不會壓垮限速。 */
+async function fetchKlinesExec(symbol, interval, limit = 30) {
+  const ck = `${symbol}|EXEC|${interval}|${limit}`;
+  const hit = _klineCacheGet(ck, interval);
+  if (hit) { _klineSrcCount.cache++; return hit; }
+  if (!_okxSymbolSet || _okxSymbolSet.has(symbol)) {
+    const k = await fetchOkxKlines(symbol, interval, limit);
+    if (k && k.length) { _klineCacheSet(ck, k); _klineSrcCount.okx++; return k; }
+  }
+  const b = await fetchKlines(symbol, interval, limit);
+  if (b && b.length) { _klineCacheSet(ck, b); _klineSrcCount.binance++; }
+  return b;
+}
+
+/* 幣安結構價位 → OKX 價位換算（以同一時刻的兩所即時價比例縮放）。
+   levels 為要換算的欄位；比率偏離 ±10% 視為資料異常，原樣不動以策安全。 */
+function toOkxLevels(symbol, binanceRefPrice, obj, fields) {
+  try {
+    const ref = parseFloat(binanceRefPrice) || 0;
+    if (!ref) return false;
+    const okx = _okxPrices[String(symbol).replace('/', '').toUpperCase()];
+    if (!okx || okx <= 0) return false;
+    const k = okx / ref;
+    if (!(k > 0.9 && k < 1.1)) return false;
+    for (const f of fields) {
+      const v = parseFloat(obj[f]);
+      if (isFinite(v) && v > 0) obj[f] = v * k;
+    }
+    return true;
+  } catch(_e) { return false; }
+}
 
 async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) {
   const _ck = `${symbol}|${interval}|${limit}`;
