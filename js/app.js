@@ -285,6 +285,12 @@ function startRefreshCycle() {
     try { updateLabOpportunities(data); } catch(e) { console.error('[refresh] lab update 錯誤:', e); }
     try { updateSLTightnessWatch(data); } catch(e) {}
     try { recordProvenStrategyTrades(data); } catch(e) { console.error('[refresh] proven 錯誤:', e); }
+    // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
+    try { updateScalpTrades(data); recordScalpSignals(data); } catch(e) { console.warn('[scalp]', e); }
+    try {
+      if (state.currentPage === 'scalppos') renderScalpPositionsPage();
+      if (state.currentPage === 'scalplog') renderScalpLogPage();
+    } catch(e) {}
     try { maybeAuditPenaltyFactors(); } catch(e) {}
     try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
     try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
@@ -504,6 +510,8 @@ function navigateTo(page, coinSymbol) {
     renderReversalCards();
   }
   if (page === 'settings') { populateSettingsPage(); renderSignalMasterStatus(); }
+  if (page === 'scalppos') { try { renderScalpPositionsPage(); } catch(e) { console.warn('[scalp]', e); } }
+  if (page === 'scalplog') { try { renderScalpLogPage(); }       catch(e) { console.warn('[scalp]', e); } }
   // 實驗室：僅隨主掃描刷新（進頁先渲染一次；後續由主掃描迴圈的 renderLabPage 掛鉤更新）
   if (page === 'lab') { try { renderLabPage(); } catch(e) {} }
   if (page === 'positions') {
@@ -19005,6 +19013,14 @@ function populateSettingsPage() {
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
   const masterToggle = document.getElementById('s-master-toggle');
   if (masterToggle) masterToggle.checked = s.signalMaster !== false;  // 預設開啟
+  const scalpTgl = document.getElementById('s-scalp-toggle');
+  if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
+  const scalpTg = document.getElementById('s-scalp-tg-toggle');
+  if (scalpTg) scalpTg.checked = s.notifScalp === true;
+  const tk2 = document.getElementById('s-tg-token2');
+  if (tk2) tk2.value = s.tgToken2 || '';
+  const ci2 = document.getElementById('s-tg-chatid2');
+  if (ci2) ci2.value = s.tgChatId2 || '';
   const idleInput = document.getElementById('s-idle-stop');
   if (idleInput) idleInput.value = (s.idleStopHours != null ? s.idleStopHours : IDLE_STOP_DEFAULT_H);
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
@@ -19026,6 +19042,10 @@ function saveAllSettings() {
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
     notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
     signalMaster:    document.getElementById('s-master-toggle')?.checked ?? true,
+    scalpEnabled:    document.getElementById('s-scalp-toggle')?.checked ?? false,
+    notifScalp:      document.getElementById('s-scalp-tg-toggle')?.checked ?? false,
+    tgToken2:        document.getElementById('s-tg-token2')?.value.trim()  || '',
+    tgChatId2:       document.getElementById('s-tg-chatid2')?.value.trim() || '',
     idleStopHours:   (() => { const v = parseFloat(document.getElementById('s-idle-stop')?.value);
                               return isFinite(v) && v >= 0 ? v : IDLE_STOP_DEFAULT_H; })(),
     tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
@@ -19489,3 +19509,410 @@ function buildCapitalFlowEventsWidget() {
   ${body}`;
 }
 // v20260617q
+
+/* ══════════════════════════════════════════════════════════════════
+   快進快出（自動交易）訊號系統 — 完全獨立於原有交易系統
+   ------------------------------------------------------------------
+   目的：試跑一套「短持有、小目標」的訊號，用勝率／回撤等數據評估它
+   適不適合拿來自動交易。與原本的長線／短線單完全隔離：
+     • 獨立儲存鍵 SCALP_LOG_KEY，不寫入 TRADE_LOG_KEY
+     • 獨立去重台帳、獨立 Telegram 機器人
+     • 風控評估與止損建議「共用同一套函式」但僅作參考與扣分，
+       不回寫、不影響原系統的任何統計
+   ══════════════════════════════════════════════════════════════════ */
+const SCALP_LOG_KEY    = 'csp_scalp_log';
+const SCALP_LEDGER_KEY = 'csp_scalp_ledger';
+const SCALP_MAX        = 500;
+
+/* 快進快出參數（集中管理，方便試跑後調整）*/
+const SCALP_CFG = {
+  slAtrMult:   0.6,    // 止損 = 0.6 × ATR（比主系統緊，換取快速出場）
+  tp1R:        1.0,    // 止盈一 1.0R（減倉 60%）
+  tp2R:        1.8,    // 止盈二 1.8R
+  tp1Frac:     0.6,    // 觸及 TP1 減倉比例
+  trailGiveR:  0.5,    // TP1 後移動停利回吐上限（鎖峰值 −0.5R）
+  timeStopMin: 45,     // 停滯時間止損（分鐘，±0.3R 內）
+  maxHoldMin:  120,    // 最長持有（分鐘），到期一律市價出場
+  minAdx:      20,     // 最低 ADX（完全無趨勢不做）
+  cooldownMin: 30,     // 同幣種同方向冷卻
+  maxActive:   6,      // 同時最多持有筆數
+};
+
+function loadScalpLog() {
+  try { const a = JSON.parse(localStorage.getItem(SCALP_LOG_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+function saveScalpLog(log) {
+  try { localStorage.setItem(SCALP_LOG_KEY, JSON.stringify(log.slice(0, SCALP_MAX))); }
+  catch(_e) { console.warn('[scalp] 儲存失敗', _e); }
+}
+function _scalpSignalledRecently(sym, dir) {
+  try {
+    const now = Date.now(), cut = now - 24 * 3600 * 1000;
+    const arr = (JSON.parse(localStorage.getItem(SCALP_LEDGER_KEY) || '[]') || []).filter(e => e && e.ts > cut);
+    return arr.some(e => e.s === sym && e.d === dir && (now - e.ts) < SCALP_CFG.cooldownMin * 60000);
+  } catch(_e) { return false; }
+}
+function _scalpRecordLedger(sym, dir) {
+  try {
+    const cut = Date.now() - 24 * 3600 * 1000;
+    const arr = (JSON.parse(localStorage.getItem(SCALP_LEDGER_KEY) || '[]') || []).filter(e => e && e.ts > cut);
+    arr.unshift({ s: sym, d: dir, ts: Date.now() });
+    localStorage.setItem(SCALP_LEDGER_KEY, JSON.stringify(arr.slice(0, 300)));
+  } catch(_e) {}
+}
+
+/* ── 快進快出訊號產生 ────────────────────────────────────────────
+   進場條件（比主系統簡潔，重反應速度而非多重確認）：
+     1. 15m 與 1H 同向（快進快出不看週線/日線，避免反應遲鈍）
+     2. ADX ≥ minAdx（完全無趨勢的盤整不做）
+     3. MACD 動能同向
+     4. RSI 未過熱（做多 <72、做空 >28，不追極端）
+   風控：共用 computeFullRisk 與止損建議，僅作參考與扣分，不影響原系統。
+   進場即市價成交（快進快出的本質；不等回踩，故無掛單狀態）。 */
+function buildScalpSetup(coin, isLong) {
+  const price = parseFloat(coin.price) || 0;
+  if (!price) return null;
+  const adx = parseFloat(coin.adx) || 0;
+  if (adx < SCALP_CFG.minAdx) return null;
+  const rsi = parseFloat(coin.rsi);
+  if (isFinite(rsi) && (isLong ? rsi >= 72 : rsi <= 28)) return null;   // 過熱不追
+  const macd = parseFloat(coin.macdHist) || 0;
+  if (isLong ? macd <= 0 : macd >= 0) return null;                      // 動能需同向
+  const h1 = coin.h1Signal || '';
+  if (isLong ? !h1.includes('bull') : !h1.includes('bear')) return null; // 1H 需同向
+
+  // ATR 估算（沿用主系統的 ADX→波動率推算，維持一致）
+  const atr = price * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
+  const risk = atr * SCALP_CFG.slAtrMult;
+  if (!(risk > 0)) return null;
+  const entry = price;                                    // 市價進場
+  const sl  = isLong ? entry - risk : entry + risk;
+  const tp1 = isLong ? entry + risk * SCALP_CFG.tp1R : entry - risk * SCALP_CFG.tp1R;
+  const tp2 = isLong ? entry + risk * SCALP_CFG.tp2R : entry - risk * SCALP_CFG.tp2R;
+  return { entry, sl, tp1, tp2, atr, risk, adx, rsi, macd };
+}
+
+/* 掃描產生快進快出訊號（獨立於 recordSignalsFromScan） */
+function recordScalpSignals(data) {
+  try {
+    if (!isSignalMaster()) return;
+    const s = loadSettings();
+    if (s.scalpEnabled !== true) return;                  // 預設關閉，需在設定頁開啟
+    if (!Array.isArray(data) || !data.length) return;
+    let log = loadScalpLog();
+    const active = log.filter(t => t.status === 'open');
+    if (active.length >= SCALP_CFG.maxActive) return;
+    let room = SCALP_CFG.maxActive - active.length;
+    let changed = false;
+
+    for (const coin of data) {
+      if (room <= 0) break;
+      if (!coin || coin.score === 50) continue;
+      const isLong = coin.score > 50;
+      const dir = isLong ? 'long' : 'short';
+      // 15m 方向以 score 為準（與主系統一致）
+      if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) continue;
+      if (_scalpSignalledRecently(coin.symbol, dir)) continue;
+
+      const setup = buildScalpSetup(coin, isLong);
+      if (!setup) continue;
+
+      // 風控參考（共用主系統函式，只讀不寫）
+      let riskScore = null, riskLevel = '', riskRecs = [], conf = null;
+      try {
+        const r = computeFullRisk(coin, { entry: setup.entry, sl: setup.sl, tp1: setup.tp1,
+          conf: 70, rr1: SCALP_CFG.tp1R }, isLong);
+        riskScore = r.score; riskLevel = r.level; riskRecs = r.recs || [];
+        conf = Math.max(0, 100 - calcRiskPenalty(r.score));
+      } catch(_e) {}
+
+      const now = Date.now();
+      const t = {
+        id: `scalp-${coin.symbol}-${now}`,
+        symbol: coin.symbol, direction: dir,
+        timestamp: now, entryTime: now,          // 市價成交：建立即進場
+        entry: setup.entry, sl: setup.sl, baseSl: setup.sl,
+        tp1: setup.tp1, tp2: setup.tp2,
+        entryPrice: setup.entry, peakPrice: setup.entry,
+        status: 'open', outcome: null, tp1Hit: false,
+        exitPrice: null, exitTime: null, pnlR: null,
+        rsi: setup.rsi, adx: setup.adx, macdHist: setup.macd,
+        riskScore, riskLevel, riskRecs, conf,
+        note: '快進快出（自動交易試跑）',
+      };
+      log.unshift(t); changed = true; room--;
+      _scalpRecordLedger(coin.symbol, dir);
+      sendScalpTelegram(t, 'open');
+    }
+    if (changed) saveScalpLog(log);
+  } catch(e) { console.warn('[scalp] 訊號產生錯誤', e); }
+}
+
+/* ── 快進快出持倉管理（快速出場邏輯）────────────────────────────
+   出場優先序：止盈二 → 止盈一(減倉並鎖利) → 移動停利/止損 → 停滯止損 → 最長持有
+   損益採與主系統相同的分批加權（TP1 落袋 60% + 尾倉 40%），含手續費。 */
+function updateScalpTrades(data) {
+  try {
+    if (!Array.isArray(data)) return;
+    const log = loadScalpLog();
+    let changed = false;
+    for (const t of log) {
+      if (t.status !== 'open') continue;
+      const coin = data.find(d => d.symbol === t.symbol);
+      if (!coin) continue;
+      const cur = parseFloat(coin.price) || 0;
+      if (!cur) continue;
+      const isLong = t.direction === 'long';
+      const baseRisk = Math.abs(t.entry - (t.baseSl ?? t.sl)) || 1;
+      const heldMin  = (Date.now() - (t.entryTime || t.timestamp)) / 60000;
+      let outcome = null;
+
+      // ① 最長持有：到期一律出場（快進快出不留隔夜）
+      if (heldMin >= SCALP_CFG.maxHoldMin) {
+        t.exitPrice = cur; t.maxHoldExit = true;
+        const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
+        outcome = r > 0.05 ? 'tp1' : r < -0.05 ? 'sl' : 'be';
+      }
+      // ② 停滯止損：持有超過 timeStopMin 仍在 ±0.3R 內
+      if (!outcome && heldMin >= SCALP_CFG.timeStopMin) {
+        const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
+        if (Math.abs(r) < 0.3) { t.timeStopped = true; t.exitPrice = cur; outcome = 'be'; }
+      }
+      // ③ TP1 後移動停利（鎖峰值 −trailGiveR，地板為 +0.5R）
+      if (!outcome && t.tp1Hit) {
+        t.peakPrice = isLong ? Math.max(t.peakPrice ?? cur, cur) : Math.min(t.peakPrice ?? cur, cur);
+        const peakR = (isLong ? (t.peakPrice - t.entry) : (t.entry - t.peakPrice)) / baseRisk;
+        const lockR = Math.max(0.5, peakR - SCALP_CFG.trailGiveR);
+        const trail = isLong ? t.entry + lockR * baseRisk : t.entry - lockR * baseRisk;
+        if (isLong ? trail > t.sl : trail < t.sl) { t.sl = trail; changed = true; }
+      }
+      // ④ 止盈／止損判定
+      if (!outcome) {
+        const hitTp2 = isLong ? cur >= t.tp2 : cur <= t.tp2;
+        const hitTp1 = !t.tp1Hit && (isLong ? cur >= t.tp1 : cur <= t.tp1);
+        const hitSl  = isLong ? cur <= t.sl  : cur >= t.sl;
+        if (hitTp2)      { outcome = 'tp2'; t.exitPrice = t.tp2; }
+        else if (hitSl)  {
+          t.exitPrice = t.sl;
+          outcome = isLong ? (t.sl > t.entry ? 'tp1' : t.sl < t.entry ? 'sl' : 'be')
+                           : (t.sl < t.entry ? 'tp1' : t.sl > t.entry ? 'sl' : 'be');
+        }
+        else if (hitTp1) {
+          // 觸及止盈一：減倉並把止損鎖到 +0.5R（與主系統同邏輯）
+          t.tp1Hit = true;
+          t.sl = isLong ? t.entry + baseRisk * 0.5 : t.entry - baseRisk * 0.5;
+          changed = true;
+          sendScalpTelegram(t, 'tp1');
+        }
+      }
+
+      if (outcome) {
+        t.status = 'closed'; t.outcome = outcome; t.exitTime = Date.now();
+        t.holdMin = +heldMin.toFixed(1);
+        // 分批加權損益（與主系統共用同一函式，含手續費）
+        t.pnlR = computeTradePnlR(t, t.exitPrice, baseRisk, isLong);
+        changed = true;
+        sendScalpTelegram(t, 'close');
+      }
+    }
+    if (changed) saveScalpLog(log);
+  } catch(e) { console.warn('[scalp] 持倉更新錯誤', e); }
+}
+
+/* ── 快進快出專用 Telegram（獨立機器人，與主訊號分流）────────── */
+function sendScalpTelegram(t, kind) {
+  try {
+    const s = loadSettings();
+    if (!s.notifScalp || !s.tgToken2 || !s.tgChatId2) return;
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const sym = t.symbol.replace('/USDT', '');
+    const isLong = t.direction === 'long';
+    const dir = isLong ? '▲ 做多' : '▼ 做空';
+    const now = new Date();
+    const ts = `${now.toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'})} `
+             + `${now.toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'})}`;
+    let text;
+    if (kind === 'open') {
+      text = [
+        `⚡ <b>快進快出訊號</b> — ${sym} ${dir}`,
+        ``,
+        `📍 進場：<b>$${fmt(t.entry)}</b>（市價）`,
+        `🛑 止損：$${fmt(t.sl)}`,
+        `🎯 止盈一：$${fmt(t.tp1)}（${SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
+        `🚀 止盈二：$${fmt(t.tp2)}（${SCALP_CFG.tp2R}R）`,
+        `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
+        t.conf != null ? `📶 風控分：${t.conf} 分（風險 ${t.riskScore ?? '--'}／${t.riskLevel || '--'}）` : '',
+        t.riskRecs && t.riskRecs.length ? `💡 ${t.riskRecs[0]}` : '',
+        ``,
+        `⏰ ${ts}`,
+        `#${sym.toLowerCase()} #scalp #${isLong ? 'long' : 'short'} #自動交易`,
+      ].filter(Boolean).join('\n');
+    } else if (kind === 'tp1') {
+      text = [`🎯 <b>快進快出｜觸及止盈一</b> — ${sym} ${dir}`, ``,
+        `減倉 ${SCALP_CFG.tp1Frac * 100}%，止損上移至 <b>$${fmt(t.sl)}</b>（鎖 +0.5R）`,
+        ``, `⏰ ${ts}`, `#${sym.toLowerCase()} #scalp #止盈一`].join('\n');
+    } else {
+      const win = t.outcome === 'tp1' || t.outcome === 'tp2';
+      const label = t.outcome === 'tp2' ? '止盈二達標' : t.outcome === 'tp1' ? '獲利了結'
+                  : t.outcome === 'be' ? (t.timeStopped ? '停滯換防' : t.maxHoldExit ? '到期平倉' : '保本出場') : '止損';
+      text = [
+        `${win ? '✅' : t.outcome === 'be' ? '⚖️' : '🛑'} <b>快進快出｜${label}</b> — ${sym} ${dir}`,
+        ``,
+        `進場 $${fmt(t.entry)} → 出場 $${fmt(t.exitPrice)}`,
+        `📊 損益：<b>${t.pnlR > 0 ? '+' : ''}${t.pnlR}R</b>　持有 ${t.holdMin} 分鐘`,
+        ``, `⏰ ${ts}`,
+        `#${sym.toLowerCase()} #scalp #${win ? '獲利' : t.outcome === 'be' ? '平手' : '止損'}`,
+      ].join('\n');
+    }
+    sendTelegramMessage(s.tgToken2, s.tgChatId2, text);
+  } catch(e) { console.warn('[scalp] 通知錯誤', e); }
+}
+
+/* ── 快進快出績效統計（評估自動交易訊號好壞的依據）──────────────
+   最大回撤以「累積 R 曲線的峰值到谷底最大跌幅」計算（按時間序）。 */
+function scalpStats() {
+  const log = loadScalpLog();
+  const closed = log.filter(t => t.status === 'closed')
+    .sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+  const open = log.filter(t => t.status === 'open');
+  const wins = closed.filter(isWinTrade), losses = closed.filter(isLossTrade);
+  const flats = closed.filter(isFlatTrade);
+  const wr = winRateOf(closed);
+  let cum = 0, peak = 0, maxDD = 0;
+  const curve = [];
+  for (const t of closed) {
+    cum += parseFloat(t.pnlR) || 0;
+    curve.push(+cum.toFixed(2));
+    if (cum > peak) peak = cum;
+    const dd = peak - cum;
+    if (dd > maxDD) maxDD = dd;
+  }
+  const avgWin  = wins.length   ? wins.reduce((s,t)=>s+parseFloat(t.pnlR||0),0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((s,t)=>s+parseFloat(t.pnlR||0),0) / losses.length : 0;
+  const avgHold = closed.length ? closed.reduce((s,t)=>s+(t.holdMin||0),0) / closed.length : 0;
+  const grossW = wins.reduce((s,t)=>s+parseFloat(t.pnlR||0),0);
+  const grossL = Math.abs(losses.reduce((s,t)=>s+parseFloat(t.pnlR||0),0));
+  return {
+    total: closed.length, openCount: open.length,
+    wins: wins.length, losses: losses.length, flats: flats.length,
+    winRate: wr, netR: +cum.toFixed(2), maxDD: +maxDD.toFixed(2), peak: +peak.toFixed(2),
+    avgWin: +avgWin.toFixed(2), avgLoss: +avgLoss.toFixed(2), avgHold: +avgHold.toFixed(1),
+    profitFactor: grossL > 0 ? +(grossW / grossL).toFixed(2) : (grossW > 0 ? Infinity : 0),
+    curve, closed, open,
+  };
+}
+
+/* 快進快出：持倉／紀錄共用的統計卡片 */
+function _scalpStatCards(st) {
+  const wrC = st.winRate == null ? 'var(--text3)' : st.winRate >= 55 ? '#22c55e' : st.winRate >= 45 ? '#f59e0b' : '#ef4444';
+  const rC  = st.netR > 0 ? '#22c55e' : st.netR < 0 ? '#ef4444' : 'var(--text3)';
+  return `<div class="tl-stats">
+    <div class="tl-stat-card"><div class="tl-stat-val">${st.openCount}</div><div class="tl-stat-lbl">持倉中</div></div>
+    <div class="tl-stat-card"><div class="tl-stat-val">${st.total}</div><div class="tl-stat-lbl">已完結</div></div>
+    <div class="tl-stat-card"><div class="tl-stat-val" style="color:${wrC}">${st.winRate == null ? '--' : st.winRate.toFixed(1) + '%'}</div><div class="tl-stat-lbl">勝率</div></div>
+    <div class="tl-stat-card"><div class="tl-stat-val" style="color:${rC}">${st.netR > 0 ? '+' : ''}${st.netR} R</div><div class="tl-stat-lbl">累計 R</div></div>
+    <div class="tl-stat-card"><div class="tl-stat-val" style="color:#ef4444">-${st.maxDD} R</div><div class="tl-stat-lbl">最大回撤</div></div>
+    <div class="tl-stat-card"><div class="tl-stat-val">${st.profitFactor === Infinity ? '∞' : st.profitFactor}</div><div class="tl-stat-lbl">獲利因子</div></div>
+    <div class="tl-stat-card"><div class="tl-stat-val">${st.avgHold} 分</div><div class="tl-stat-lbl">平均持有</div></div>
+  </div>`;
+}
+
+/* 快進快出：單筆列 */
+function _scalpRow(t, showResult) {
+  const isLong = t.direction === 'long';
+  const sym = t.symbol.replace('/USDT', '');
+  const dirC = isLong ? 'var(--bull)' : 'var(--bear)';
+  const r = parseFloat(t.pnlR);
+  const rC = r > 0 ? '#22c55e' : r < 0 ? '#ef4444' : 'var(--text3)';
+  const oLabel = { tp2: '止盈二', tp1: '獲利了結', be: '平手', sl: '止損' }[t.outcome] || '—';
+  return `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 10px;
+      border-bottom:1px solid var(--border);font-size:0.8rem">
+    <span style="font-weight:700;min-width:64px">${sym}</span>
+    <span style="color:${dirC};font-weight:600;min-width:44px">${isLong ? '▲多' : '▼空'}</span>
+    <span style="color:var(--text3)">進 ${fmtPrice(t.entry)}</span>
+    <span style="color:var(--bear)">損 ${fmtPrice(t.sl)}</span>
+    <span style="color:var(--bull)">盈 ${fmtPrice(t.tp1)}</span>
+    ${showResult
+      ? `<span style="color:${rC};font-weight:700;margin-left:auto">${oLabel}　${r > 0 ? '+' : ''}${t.pnlR}R</span>
+         <span style="color:var(--text3)">${t.holdMin ?? '--'} 分</span>`
+      : `<span style="margin-left:auto;color:${t.tp1Hit ? '#22c55e' : 'var(--text3)'}">${t.tp1Hit ? '✅ 已達止盈一' : '持倉中'}</span>
+         <span style="color:var(--text3)">${Math.round((Date.now() - (t.entryTime || t.timestamp)) / 60000)} 分</span>`}
+  </div>`;
+}
+
+/* ── 頁面：自動交易持倉 ─────────────────────────────────────── */
+function renderScalpPositionsPage() {
+  const el = document.getElementById('scalp-positions-content');
+  if (!el) return;
+  const st = scalpStats();
+  const s  = loadSettings();
+  const onOff = s.scalpEnabled === true;
+  el.innerHTML = `
+    <div class="page-header"><div>
+      <h1 class="page-title">⚡ 自動交易持倉（快進快出）</h1>
+      <p class="page-subtitle">獨立試跑用訊號，與長線／短線單完全隔離，不影響原有交易紀錄與統計。
+        止損 ${SCALP_CFG.slAtrMult}×ATR、止盈 ${SCALP_CFG.tp1R}R/${SCALP_CFG.tp2R}R、
+        停滯 ${SCALP_CFG.timeStopMin} 分出場、最長持有 ${SCALP_CFG.maxHoldMin} 分。</p>
+    </div></div>
+    <div style="margin-bottom:10px;padding:8px 12px;border-radius:8px;
+        background:${onOff ? 'rgba(34,197,94,.08)' : 'rgba(245,158,11,.08)'};
+        border-left:3px solid ${onOff ? '#22c55e' : '#f59e0b'};font-size:0.82rem">
+      ${onOff ? '✅ 快進快出訊號<b>已啟用</b>，掃描時會自動產生並推送至專用 Telegram 機器人'
+              : '⏸️ 快進快出訊號<b>未啟用</b> — 請至設定頁開啟「⚡ 快進快出訊號（自動交易）」'}
+    </div>
+    ${_scalpStatCards(st)}
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:12px">
+      <div style="padding:9px 12px;font-weight:700;font-size:0.84rem;border-bottom:1px solid var(--border)">
+        持倉中（${st.open.length}/${SCALP_CFG.maxActive}）</div>
+      ${st.open.length ? st.open.map(t => _scalpRow(t, false)).join('')
+        : '<div style="padding:16px;text-align:center;color:var(--text3);font-size:0.84rem">目前無持倉</div>'}
+    </div>`;
+}
+
+/* ── 頁面：自動交易紀錄 ─────────────────────────────────────── */
+function renderScalpLogPage() {
+  const el = document.getElementById('scalp-log-content');
+  if (!el) return;
+  const st = scalpStats();
+  const recent = st.closed.slice().reverse().slice(0, 100);
+  // 累積 R 曲線（簡易 SVG 走勢）
+  let curveSvg = '';
+  if (st.curve.length >= 2) {
+    const w = 600, h = 90, min = Math.min(0, ...st.curve), max = Math.max(0, ...st.curve);
+    const rng = (max - min) || 1;
+    const pts = st.curve.map((v, i) =>
+      `${(i / (st.curve.length - 1) * w).toFixed(1)},${(h - (v - min) / rng * h).toFixed(1)}`).join(' ');
+    const zeroY = (h - (0 - min) / rng * h).toFixed(1);
+    curveSvg = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:0.82rem;font-weight:700;margin-bottom:6px">📈 累積 R 曲線（峰值 ${st.peak}R／最大回撤 -${st.maxDD}R）</div>
+      <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:90px;overflow:visible">
+        <line x1="0" y1="${zeroY}" x2="${w}" y2="${zeroY}" stroke="var(--border)" stroke-dasharray="3 3"/>
+        <polyline points="${pts}" fill="none" stroke="${st.netR >= 0 ? '#22c55e' : '#ef4444'}" stroke-width="2"/>
+      </svg></div>`;
+  }
+  el.innerHTML = `
+    <div class="page-header"><div>
+      <h1 class="page-title">⚡ 自動交易紀錄（快進快出）</h1>
+      <p class="page-subtitle">試跑數據：勝率、累計 R、最大回撤、獲利因子。用來判斷這套自動交易訊號是否值得採用。
+        與原有交易紀錄完全獨立。</p>
+    </div></div>
+    ${_scalpStatCards(st)}
+    ${curveSvg}
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:0.8rem;color:var(--text2)">
+      <b>判讀建議</b>：獲利因子 &gt;1.3 且最大回撤 &lt; 累計 R 的一半，才算堪用；
+      勝率高但獲利因子 &lt;1 代表賺小賠大，仍不可用。樣本建議累積 ≥50 筆再下結論
+      （目前 ${st.total} 筆）。
+    </div>
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <div style="padding:9px 12px;font-weight:700;font-size:0.84rem;border-bottom:1px solid var(--border)">
+        已完結（最近 ${recent.length} 筆）</div>
+      ${recent.length ? recent.map(t => _scalpRow(t, true)).join('')
+        : '<div style="padding:16px;text-align:center;color:var(--text3);font-size:0.84rem">尚無已完結紀錄</div>'}
+    </div>
+    <div style="text-align:center;margin-top:14px">
+      <button class="btn-ghost" style="font-size:0.8rem;color:var(--bear)"
+        onclick="if(confirm('確定清空自動交易試跑紀錄？（不影響原有交易紀錄）')){localStorage.removeItem(SCALP_LOG_KEY);renderScalpLogPage();renderScalpPositionsPage();}">
+        🗑 清空試跑紀錄</button>
+    </div>`;
+}

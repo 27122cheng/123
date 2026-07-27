@@ -64,6 +64,14 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
           交易記錄
         </a>
+        <a class="nav-link" data-page="scalppos" onclick="navigateTo('scalppos')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          自動持倉
+        </a>
+        <a class="nav-link" data-page="scalplog" onclick="navigateTo('scalplog')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/><line x1="2" y1="22" x2="22" y2="22"/></svg>
+          自動紀錄
+        </a>
         <a class="nav-link" data-page="report" onclick="navigateTo('report')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
           策略報表
@@ -576,6 +584,16 @@
       <div id="tradelog-content"><div class="adv-loading">載入中...</div></div>
     </section>
 
+    <!-- ═════════════════ 自動交易（快進快出）持倉 ═════════════════ -->
+    <section class="page" id="page-scalppos">
+      <div id="scalp-positions-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
+    <!-- ═════════════════ 自動交易（快進快出）紀錄 ═════════════════ -->
+    <section class="page" id="page-scalplog">
+      <div id="scalp-log-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
     <!-- ═══════════════════════ 策略報表頁面 ══════════════════════ -->
     <section class="page" id="page-report">
       <div id="report-content"><div class="adv-loading">載入中...</div></div>
@@ -726,6 +744,39 @@
             <input type="checkbox" id="s-master-toggle" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
           </label>
+        </div>
+
+        <!-- 快進快出（自動交易） -->
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">⚡ 快進快出訊號（自動交易）</div>
+            <div class="setting-desc">獨立試跑用訊號，與長線／短線單完全隔離、不影響原有交易紀錄與統計。啟用後掃描時自動產生，推送至下方專用 Telegram 機器人。可於「自動紀錄」頁查看勝率、最大回撤等試跑數據</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-scalp-toggle" onchange="try{saveAllSettings()}catch(e){};try{renderScalpPositionsPage()}catch(e){}" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+        <div class="setting-row vertical" style="gap:10px;margin-top:6px">
+          <div>
+            <div class="setting-name">🤖 快進快出專用 Telegram 機器人</div>
+            <div class="setting-desc">與主訊號分流：長線／短線單走原本的機器人，快進快出訊號走這一個。留空則不推送</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label class="toggle-wrap" style="flex-shrink:0">
+              <input type="checkbox" id="s-scalp-tg-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+            <span style="font-size:0.82rem;color:var(--text3)">啟用推送</span>
+          </div>
+          <div>
+            <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">Bot Token</div>
+            <input id="s-tg-token2" type="password" class="setting-input" placeholder="1234567890:ABCD..." autocomplete="off" />
+          </div>
+          <div>
+            <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">Chat ID</div>
+            <input id="s-tg-chatid2" type="text" class="setting-input" placeholder="123456789" autocomplete="off" />
+          </div>
         </div>
 
         <!-- 閒置自動停發 -->
