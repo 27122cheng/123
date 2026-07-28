@@ -19715,7 +19715,8 @@ const SCALP_CFG = {
   minAdx:      20,     // 最低 ADX
   cooldownMin: 30,     // 同幣種同方向冷卻
   maxActive:   8,      // 同時最多持有筆數
-  maxSameDir:  5,      // 同方向上限（避免全同向被大盤一次掃掉）
+  maxSameDir:  5,      // 同方向持倉上限（避免全同向被大盤一次掃掉）
+  maxCandidates: 40,   // 每輪最多評估幾個候選（決定 5m K 線抓取量）
 };
 /* 快進快出專用 5m K 線快取：只對「通過初篩」的幣抓，數量少不佔限速 */
 const _scalpKlineCache = {};
@@ -19862,12 +19863,11 @@ async function recordScalpSignals(data) {
       if ((parseFloat(coin.adx) || 0) < SCALP_CFG.minAdx) { _sr('ADX過低'); continue; }
       const macd = parseFloat(coin.macdHist) || 0;
       if (isLong ? macd <= 0 : macd >= 0) { _sr('MACD逆向'); continue; }
-      // 同方向集中度：避免全部同向被大盤一次掃掉（回撤主因）
-      const sameDir = active.filter(t => t.direction === dir).length
-                    + cands.filter(c => c.dir === dir).length;
-      if (sameDir >= SCALP_CFG.maxSameDir) { _sr('同方向已達上限'); continue; }
+      // 註：同方向上限改於「實際建倉」時才把關。若在此就擋掉，同方向只要湊滿
+      //     名額，後面的幣連突破都不會被檢查——那 5 個若都沒突破就會是 0 訊號，
+      //     即使第 6 個是完美突破也看不到（實測診斷發現的設計錯誤）。
       cands.push({ coin, isLong, dir });
-      if (cands.length >= room * 4) break;                // 初篩上限，控制抓取量
+      if (cands.length >= SCALP_CFG.maxCandidates) break;  // 控制 5m 抓取量
     }
     if (!cands.length) return;
 
@@ -19886,6 +19886,10 @@ async function recordScalpSignals(data) {
       if (room <= 0) break;
       const setup = buildScalpSetup(coin, isLong);
       if (!setup) continue;
+      // 同方向集中度：避免全部同向被大盤一次掃掉（回撤主因）——於此把關，
+      // 確保每個幣都完整評估過突破條件，只在真的要建倉時才受名額限制
+      const _curSameDir = loadScalpLog().filter(t => t.status === 'open' && t.direction === dir).length;
+      if (_curSameDir >= SCALP_CFG.maxSameDir) { _sr('同方向已達上限'); continue; }
 
       // 風控參考（共用主系統函式，只讀不寫）
       let riskScore = null, riskLevel = '', riskRecs = [], conf = null;
