@@ -19066,6 +19066,39 @@ async function testTelegramNotif() {
   }
 }
 
+/* 快進快出專用機器人測試發送——與主機器人分開驗證，確認訊號分流正確 */
+async function testScalpTelegram() {
+  const token  = document.getElementById('s-tg-token2')?.value.trim();
+  const chatId = document.getElementById('s-tg-chatid2')?.value.trim();
+  if (!token || !chatId) { showToast('請先填入快進快出機器人的 Token 和 Chat ID', 'error'); return; }
+  showToast('正在發送測試訊息...', 'info');
+  const text = [
+    '⚡ <b>快進快出（自動交易）測試訊息</b>',
+    '',
+    '此機器人專門接收快進快出訊號，與長線／短線單分流。',
+    '你將會收到以下四種通知：',
+    '　⚡ 進場訊號（含數量、名目、風險金額）',
+    '　🎯 觸及止盈一（減倉並上移止損）',
+    '　🚀 ✅ 🛑 ⚖️ ⏱️ 交易結束（含結束原因）',
+    '',
+    `目前設定：止損 ${SCALP_CFG.slAtrMult}×ATR、止盈 ${SCALP_CFG.tp1R}R/${SCALP_CFG.tp2R}R、`
+      + `停滯 ${SCALP_CFG.timeStopMin} 分、最長 ${SCALP_CFG.maxHoldMin} 分`,
+    `單筆風險 ${SCALP_CFG.riskPerTradePct}%　·　同時持倉上限 ${SCALP_CFG.maxActive} 筆`,
+    '',
+    '#scalp #測試',
+  ].join('\n');
+  const ok = await sendTelegramMessage(token, chatId, text);
+  if (ok) {
+    saveSettings({ notifScalp: true, tgToken2: token, tgChatId2: chatId });
+    state.settings = loadSettings();
+    const tgl = document.getElementById('s-scalp-tg-toggle');
+    if (tgl) tgl.checked = true;
+    showToast('快進快出機器人測試成功！已啟用並儲存', 'success');
+  } else {
+    showToast('發送失敗，請確認 Token 和 Chat ID 是否正確', 'error');
+  }
+}
+
 function renderPairsList() {
   const list  = document.getElementById('custom-pairs-list');
   const count = document.getElementById('pairs-count');
