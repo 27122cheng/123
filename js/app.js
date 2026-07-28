@@ -10204,6 +10204,32 @@ function deviceIdleState() {
   return { idle: hours > 0 && idleForMs > hours * 3600 * 1000, hours, idleForMs };
 }
 
+/* 本裝置為何沒在發送訊號——逐項判斷，回傳可行動的具體原因（無阻礙則 null）*/
+function signalMasterBlockReason() {
+  try {
+    const idle = deviceIdleState();
+    if (idle.idle) {
+      const h = Math.floor(idle.idleForMs / 3600000);
+      return { why: `閒置停發：已 ${h} 小時無操作（超過 ${idle.hours} 小時自動停發）`,
+               fix: '在本頁點一下即可立即恢復；或到設定頁把「😴 閒置自動停發」設為 0 關閉此保護' };
+    }
+    if (loadSettings().signalMaster === false) {
+      return { why: '設定頁的「📡 本裝置為訊號主機」開關為關閉',
+               fix: '到設定頁把該開關打開（多台裝置時請只留一台開啟）' };
+    }
+    if (_cloudOk && _cloudMaster && _cloudMaster.id && _cloudMaster.id !== _TAB_ID) {
+      return { why: `雲端訊號主機是另一台裝置（${_cloudMaster.ua || '—'}）`,
+               fix: '若要改由本裝置發送，請按下方按鈕接手' , canClaim: true };
+    }
+    const m = getSignalMasterInfo();
+    if (m && m.id !== _TAB_ID) {
+      return { why: '訊號主機是「另一個分頁」——分頁識別碼存於 sessionStorage，開新分頁或新視窗就會變成不同身分',
+               fix: '按下方按鈕讓本分頁接手', canClaim: true };
+    }
+    return null;
+  } catch(_e) { return null; }
+}
+
 function isSignalMaster() {
   try {
     // ⓪ 閒置過久 → 停止發送（忘記關的分頁不會繼續重複發訊號）
@@ -20124,10 +20150,19 @@ function buildScalpPositionsHtml() {
         .sort((a, b) => b[1] - a[1]);
       const scanned = (_scalpReject && _scalpReject._scanned) || 0;
       const blocked = _scalpReject && _scalpReject._blocked;
-      if (blocked) return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
-        background:rgba(239,68,68,.10);border-left:3px solid #ef4444;font-size:0.84rem">
-        <b style="color:#ef4444">⛔ 本輪未執行掃描</b><br>
-        <span style="color:var(--text2)">原因：${blocked}</span></div>`;
+      if (blocked) {
+        const br = (typeof signalMasterBlockReason === 'function') ? signalMasterBlockReason() : null;
+        return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
+          background:rgba(239,68,68,.10);border-left:3px solid #ef4444;font-size:0.84rem">
+          <b style="color:#ef4444">⛔ 本輪未執行掃描</b><br>
+          <span style="color:var(--text2)">原因：${br ? br.why : blocked}</span>
+          ${br ? `<br><span style="color:var(--text3);font-size:0.8rem">➡️ ${br.fix}</span>` : ''}
+          ${br && br.canClaim ? `<div style="margin-top:8px">
+            <button class="btn-ghost" style="font-size:0.82rem;color:#00e676"
+              onclick="claimSignalMaster().then(()=>renderPositionsPage())">📡 讓本分頁接手訊號主機</button>
+          </div>` : ''}
+        </div>`;
+      }
       if (!scanned) return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
         background:rgba(148,163,184,.08);font-size:0.82rem;color:var(--text3)">
         尚未執行掃描 — 等下一輪掃描後會顯示各條件的擋下統計</div>`;
