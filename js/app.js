@@ -19630,10 +19630,19 @@ function buildScalpSetup(coin, isLong) {
   if (!(extent >= SCALP_CFG.minBreakPct)) return _sr('突破幅度不足');
 
   // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
+  //    注意：last 是「形成中」的 K 棒，成交量只累積了一部分。直接拿它與
+  //    20 根完整棒的均量比較並要求 ≥1.5 倍，在棒剛開始的前一兩分鐘幾乎
+  //    永遠不可能達標——這是先前「完全沒有訊號」的系統性主因。
+  //    改為依已經過的時間比例縮放門檻（等價於把當根量外推為整根預估量），
+  //    並設 25% 下限避免棒剛開盤時因基數過小而誤判放量。
   const vols = prev.map(b => parseFloat(b[5]) || 0);
   const avgVol = vols.reduce((a, b) => a + b, 0) / (vols.length || 1);
   const curVol = parseFloat(last[5]) || 0;
-  if (!(avgVol > 0 && curVol >= avgVol * SCALP_CFG.volMult)) return _sr('突破未放量');
+  const barMs = (prev.length >= 2 ? (parseFloat(prev[1][0]) - parseFloat(prev[0][0])) : 3e5) || 3e5;
+  const elapsed = Math.min(barMs, Math.max(1, Date.now() - parseFloat(last[0])));
+  const frac = Math.max(0.15, elapsed / barMs);        // 已完成比例（下限 15%≈45秒，防開盤瞬間誤判）
+  const needVol = avgVol * SCALP_CFG.volMult * frac;
+  if (!(avgVol > 0 && curVol >= needVol)) return _sr('突破未放量');
 
   // ── ③ 未平倉量確認（最強的真假突破分辨器）────────────────────
   //    價漲+OI增=新多進場（真突破）；價漲+OI減=空頭回補（假突破嫌疑）。
