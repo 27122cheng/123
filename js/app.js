@@ -19721,7 +19721,80 @@ const SCALP_CFG = {
   maxActive:   8,      // 同時最多持有筆數
   maxSameDir:  5,      // 同方向持倉上限（避免全同向被大盤一次掃掉）
   maxCandidates: 40,   // 每輪最多評估幾個候選（決定 5m K 線抓取量）
+  // ── 量化資金管理（把「訊號」變成可機械執行的交易）──────────────
+  equity:              1000,  // 模擬帳戶權益（USDT）——僅供計算部位大小
+  riskPerTradePct:     1.0,   // 單筆風險：權益的 %（固定分數法）
+  maxPortfolioRiskPct: 4.0,   // 同時在市的總風險上限（未實現風險加總）
+  dailyLossLimitPct:   3.0,   // 單日虧損上限 → 觸及當日停止開倉
+  maxDrawdownPct:      15.0,  // 最大回撤上限 → 觸及全面停止開倉
+  minNotional:         5,     // 最小名目價值（低於此不下單，避免碎單）
 };
+
+/* ── 量化帳戶狀態：權益曲線、當日損益、回撤、在市風險 ──────────────
+   全部以「R 乘上單筆風險金額」換算成資金，讓部位大小與風控門檻都是
+   可直接執行的數字，而非僅供參考的評分。 */
+function scalpAccount() {
+  const cfg = SCALP_CFG;
+  const riskAmt = cfg.equity * cfg.riskPerTradePct / 100;   // 每筆固定風險金額
+  const log = loadScalpLog();
+  const closed = log.filter(t => t.status === 'closed')
+    .sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+  const open = log.filter(t => t.status === 'open');
+
+  let equity = cfg.equity, peak = cfg.equity, maxDD = 0;
+  const curve = [];
+  for (const t of closed) {
+    equity += (parseFloat(t.pnlR) || 0) * riskAmt;
+    curve.push(+equity.toFixed(2));
+    if (equity > peak) peak = equity;
+    const dd = peak > 0 ? (peak - equity) / peak * 100 : 0;
+    if (dd > maxDD) maxDD = dd;
+  }
+  const ddNow = peak > 0 ? (peak - equity) / peak * 100 : 0;
+
+  // 當日已實現損益
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+  const todayR = closed.filter(t => (t.exitTime || 0) >= d0.getTime())
+    .reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0);
+  const todayPnlPct = cfg.equity > 0 ? (todayR * riskAmt) / cfg.equity * 100 : 0;
+
+  // 在市風險：每筆未實現的最大可能虧損（現行止損已鎖利者風險為 0）
+  let openRisk = 0;
+  for (const t of open) {
+    const e = parseFloat(t.entry) || 0, sl = parseFloat(t.sl) || 0;
+    const base = Math.abs(e - (t.baseSl ?? sl)) || 1;
+    const stillRisk = (t.direction === 'long' ? (e - sl) : (sl - e)) / base;   // >0 表示仍有虧損風險
+    openRisk += Math.max(0, stillRisk) * riskAmt;
+  }
+  const openRiskPct = cfg.equity > 0 ? openRisk / cfg.equity * 100 : 0;
+
+  return { riskAmt, equity: +equity.toFixed(2), peak: +peak.toFixed(2),
+           maxDD: +maxDD.toFixed(2), ddNow: +ddNow.toFixed(2),
+           todayR: +todayR.toFixed(2), todayPnlPct: +todayPnlPct.toFixed(2),
+           openRisk: +openRisk.toFixed(2), openRiskPct: +openRiskPct.toFixed(2),
+           curve, closed, open };
+}
+
+/* 開倉前的資金管理閘門——回傳阻擋原因，null 表示可開倉 */
+function scalpRiskGate(acct) {
+  const cfg = SCALP_CFG;
+  if (acct.ddNow >= cfg.maxDrawdownPct)
+    return `回撤熔斷：目前回撤 ${acct.ddNow}% ≥ 上限 ${cfg.maxDrawdownPct}%，停止開倉`;
+  if (acct.todayPnlPct <= -cfg.dailyLossLimitPct)
+    return `單日虧損上限：今日 ${acct.todayPnlPct}% ≤ -${cfg.dailyLossLimitPct}%，當日停止開倉`;
+  if (acct.openRiskPct >= cfg.maxPortfolioRiskPct)
+    return `在市風險已滿：${acct.openRiskPct}% ≥ 上限 ${cfg.maxPortfolioRiskPct}%`;
+  return null;
+}
+
+/* 部位大小：固定分數法 qty = 風險金額 / 每單位風險 */
+function scalpPositionSize(entry, sl, riskAmt) {
+  const per = Math.abs(entry - sl);
+  if (!(per > 0)) return null;
+  const qty = riskAmt / per;
+  const notional = qty * entry;
+  return { qty, notional, perUnitRisk: per };
+}
 /* 快進快出專用 5m K 線快取：只對「通過初篩」的幣抓，數量少不佔限速 */
 const _scalpKlineCache = {};
 /* 各道條件的擋下次數（每輪重置）——沒有訊號時用來看是卡在哪一關，
@@ -19853,6 +19926,10 @@ async function recordScalpSignals(data) {
     if (active.length >= SCALP_CFG.maxActive) {
       _scalpReject._blocked = `持倉已達上限（${active.length}/${SCALP_CFG.maxActive}）`; return;
     }
+    // 量化資金管理閘門：回撤熔斷／單日虧損上限／在市風險上限
+    const _acct = scalpAccount();
+    const _gate = scalpRiskGate(_acct);
+    if (_gate) { _scalpReject._blocked = _gate; return; }
     let room = SCALP_CFG.maxActive - active.length;
     let changed = false;
 
@@ -19906,6 +19983,15 @@ async function recordScalpSignals(data) {
         conf = Math.max(0, 100 - calcRiskPenalty(r.score));
       } catch(_e) {}
 
+      // 部位大小（固定分數法）＋ 名目下限與組合風險額度檢查
+      const _sz = scalpPositionSize(setup.entry, setup.sl, _acct.riskAmt);
+      if (!_sz) { _sr('部位計算失敗'); continue; }
+      if (_sz.notional < SCALP_CFG.minNotional) { _sr('名目價值過小'); continue; }
+      const _riskAfterPct = _acct.openRiskPct
+        + (SCALP_CFG.equity > 0 ? _acct.riskAmt / SCALP_CFG.equity * 100 : 0);
+      if (_riskAfterPct > SCALP_CFG.maxPortfolioRiskPct) { _sr('超出組合風險上限'); continue; }
+      _acct.openRiskPct = _riskAfterPct;   // 本輪內累計，避免同輪一次開太多
+
       const now = Date.now();
       const t = {
         id: `scalp-${coin.symbol}-${now}`,
@@ -19919,6 +20005,8 @@ async function recordScalpSignals(data) {
         rsi: setup.rsi, adx: setup.adx, macdHist: setup.macd,
         breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
         volRatio: setup.volRatio, oiState: setup.oiState,
+        qty: +_sz.qty.toPrecision(8), notional: +_sz.notional.toFixed(2),
+        riskAmt: +_acct.riskAmt.toFixed(2), riskPct: SCALP_CFG.riskPerTradePct,
         riskScore, riskLevel, riskRecs, conf,
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
         note: '快進快出（突破追擊）',
@@ -20039,6 +20127,7 @@ function sendScalpTelegram(t, kind) {
         ``,
         `📍 進場：<b>$${fmt(t.entry)}</b>（市價）`,
         `🛑 止損：$${fmt(t.sl)}`,
+        t.qty ? `📦 數量：<b>${t.qty}</b>　名目 $${t.notional}　風險 $${t.riskAmt}（${t.riskPct}% 權益）` : '',
         `🎯 止盈一：$${fmt(t.tp1)}（${SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
         `🚀 止盈二：$${fmt(t.tp2)}（${SCALP_CFG.tp2R}R）`,
         `📐 突破 ${SCALP_CFG.breakLookback} 根 ${SCALP_CFG.tf} 高低點 $${fmt(t.breakLevel)}（幅度 ${t.breakExtent}%）`,
@@ -20105,6 +20194,83 @@ function scalpStats() {
   };
 }
 
+/* ── 量化績效指標（判斷策略是否具備正期望值）────────────────────
+   期望值 expectancy：每筆平均賺賠幾 R——策略能不能用，最終看這個。
+   夏普比（每筆）：平均 R ÷ R 的標準差，衡量報酬的穩定度。
+   連續虧損 maxLossStreak：資金曲線最痛的部分，決定所需的心理與資金緩衝。 */
+function scalpQuantMetrics() {
+  const acct = scalpAccount();
+  const rs = acct.closed.map(t => parseFloat(t.pnlR) || 0);
+  const n = rs.length;
+  if (!n) return { n: 0, acct };
+  const mean = rs.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(rs.reduce((a, r) => a + (r - mean) ** 2, 0) / n) || 0;
+  const wins = rs.filter(r => r > 0), losses = rs.filter(r => r < 0);
+  const grossW = wins.reduce((a, b) => a + b, 0);
+  const grossL = Math.abs(losses.reduce((a, b) => a + b, 0));
+  let streak = 0, maxLossStreak = 0;
+  for (const r of rs) { if (r < 0) { streak++; if (streak > maxLossStreak) maxLossStreak = streak; } else streak = 0; }
+  return {
+    n, acct,
+    expectancy: +mean.toFixed(3),
+    sharpe: sd > 0 ? +(mean / sd).toFixed(2) : null,
+    profitFactor: grossL > 0 ? +(grossW / grossL).toFixed(2) : (grossW > 0 ? Infinity : 0),
+    winRate: n ? +(wins.length / n * 100).toFixed(1) : null,
+    avgWin: wins.length ? +(grossW / wins.length).toFixed(2) : 0,
+    avgLoss: losses.length ? +(-grossL / losses.length).toFixed(2) : 0,
+    maxLossStreak,
+  };
+}
+
+/* 量化帳戶面板（自動持倉／自動紀錄共用）*/
+function _scalpAccountPanel() {
+  try {
+    const m = scalpQuantMetrics();
+    const a = m.acct, cfg = SCALP_CFG;
+    const gate = scalpRiskGate(a);
+    const bar = (val, max, color) => `<div style="height:5px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden">
+      <div style="height:100%;width:${Math.min(100, Math.abs(val) / max * 100).toFixed(0)}%;background:${color}"></div></div>`;
+    const eqC = a.equity >= cfg.equity ? '#22c55e' : '#ef4444';
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-top:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:8px">🤖 量化資金管理</div>
+      ${gate ? `<div style="padding:7px 10px;border-radius:6px;background:rgba(239,68,68,.12);
+        border-left:3px solid #ef4444;font-size:0.8rem;color:#ef4444;margin-bottom:8px">
+        ⛔ ${gate}</div>` : ''}
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;font-size:0.8rem">
+        <div><div style="color:var(--text3);font-size:0.74rem">帳戶權益</div>
+          <div style="font-weight:700;color:${eqC}">$${a.equity} <span style="font-size:0.72rem;color:var(--text3)">/ 初始 $${cfg.equity}</span></div></div>
+        <div><div style="color:var(--text3);font-size:0.74rem">單筆風險</div>
+          <div style="font-weight:700">$${a.riskAmt.toFixed(2)} <span style="font-size:0.72rem;color:var(--text3)">（${cfg.riskPerTradePct}%）</span></div></div>
+        <div><div style="color:var(--text3);font-size:0.74rem">在市風險 / 上限</div>
+          <div style="font-weight:700;color:${a.openRiskPct >= cfg.maxPortfolioRiskPct ? '#ef4444' : 'var(--text1)'}">${a.openRiskPct}% / ${cfg.maxPortfolioRiskPct}%</div>
+          ${bar(a.openRiskPct, cfg.maxPortfolioRiskPct, a.openRiskPct >= cfg.maxPortfolioRiskPct ? '#ef4444' : '#22d3ee')}</div>
+        <div><div style="color:var(--text3);font-size:0.74rem">今日損益 / 停損線</div>
+          <div style="font-weight:700;color:${a.todayPnlPct < 0 ? '#ef4444' : '#22c55e'}">${a.todayPnlPct > 0 ? '+' : ''}${a.todayPnlPct}% / -${cfg.dailyLossLimitPct}%</div>
+          ${bar(Math.min(0, a.todayPnlPct), cfg.dailyLossLimitPct, '#ef4444')}</div>
+        <div><div style="color:var(--text3);font-size:0.74rem">目前回撤 / 熔斷</div>
+          <div style="font-weight:700;color:${a.ddNow >= cfg.maxDrawdownPct ? '#ef4444' : 'var(--text1)'}">${a.ddNow}% / ${cfg.maxDrawdownPct}%</div>
+          ${bar(a.ddNow, cfg.maxDrawdownPct, a.ddNow >= cfg.maxDrawdownPct ? '#ef4444' : '#f59e0b')}</div>
+        <div><div style="color:var(--text3);font-size:0.74rem">歷史最大回撤</div>
+          <div style="font-weight:700">${a.maxDD}%</div></div>
+      </div>
+      ${m.n ? `<div style="margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.06);
+        display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;font-size:0.8rem">
+        <div><span style="color:var(--text3);font-size:0.74rem">期望值</span><br>
+          <b style="color:${m.expectancy > 0 ? '#22c55e' : '#ef4444'}">${m.expectancy > 0 ? '+' : ''}${m.expectancy} R</b></div>
+        <div><span style="color:var(--text3);font-size:0.74rem">獲利因子</span><br>
+          <b style="color:${m.profitFactor >= 1.3 ? '#22c55e' : m.profitFactor >= 1 ? '#f59e0b' : '#ef4444'}">${m.profitFactor === Infinity ? '∞' : m.profitFactor}</b></div>
+        <div><span style="color:var(--text3);font-size:0.74rem">夏普(每筆)</span><br><b>${m.sharpe ?? '--'}</b></div>
+        <div><span style="color:var(--text3);font-size:0.74rem">平均賺 / 賠</span><br><b>+${m.avgWin} / ${m.avgLoss}</b></div>
+        <div><span style="color:var(--text3);font-size:0.74rem">最長連虧</span><br><b>${m.maxLossStreak} 筆</b></div>
+        <div><span style="color:var(--text3);font-size:0.74rem">樣本數</span><br><b>${m.n}</b></div>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:7px">
+        期望值 &gt;0 且獲利因子 &gt;1.3 才具備正期望；期望值為負代表這套規則長期必虧，
+        調參數之前應先確認樣本 ≥50 筆。</div>` : ''}
+    </div>`;
+  } catch(e) { return ''; }
+}
+
 /* 快進快出：持倉／紀錄共用的統計卡片 */
 function _scalpStatCards(st) {
   const wrC = st.winRate == null ? 'var(--text3)' : st.winRate >= 55 ? '#22c55e' : st.winRate >= 45 ? '#f59e0b' : '#ef4444';
@@ -20167,6 +20333,7 @@ function buildScalpPositionsHtml() {
               : '⏸️ 快進快出訊號<b>未啟用</b> — 請至設定頁開啟「⚡ 快進快出訊號（自動交易）」'}
     </div>
     ${_scalpStatCards(st)}
+    ${_scalpAccountPanel()}
     ${(() => { try {
       // ── 訊號診斷：沒有交易時，直接顯示卡在哪一道條件 ──
       const r = Object.entries(_scalpReject || {}).filter(([k]) => !k.startsWith('_'))
@@ -20257,6 +20424,7 @@ function buildScalpLogHtml() {
         與原有交易紀錄完全獨立。</p>
     </div></div>
     ${_scalpStatCards(st)}
+    ${_scalpAccountPanel()}
     ${curveSvg}
     ${(() => {
       const byKz = {};
