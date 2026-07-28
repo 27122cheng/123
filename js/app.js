@@ -288,8 +288,9 @@ function startRefreshCycle() {
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
     try { updateScalpTrades(data); recordScalpSignals(data); } catch(e) { console.warn('[scalp]', e); }
     try {
-      if (state.currentPage === 'scalppos') renderScalpPositionsPage();
-      if (state.currentPage === 'scalplog') renderScalpLogPage();
+      // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
+      if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
+      if (state.currentPage === 'tradelog'  && _tlTab  === 'auto') renderTradeLogPage();
     } catch(e) {}
     try { maybeAuditPenaltyFactors(); } catch(e) {}
     try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
@@ -19807,20 +19808,23 @@ function buildScalpSetup(coin, isLong) {
 
 /* 掃描產生快進快出訊號（獨立於 recordSignalsFromScan） */
 async function recordScalpSignals(data) {
+  // 診斷必須在所有提前 return 之前重置並記錄原因，否則整段卡在哪一道都看不到
+  _scalpReject = {};
   try {
-    if (!isSignalMaster()) return;
+    if (!isSignalMaster()) { _scalpReject._blocked = '本裝置未在發送訊號（非訊號主機／裝置開關關閉／閒置停發）'; return; }
     const s = loadSettings();
-    if (s.scalpEnabled !== true) return;                  // 預設關閉，需在設定頁開啟
-    if (!Array.isArray(data) || !data.length) return;
+    if (s.scalpEnabled !== true) { _scalpReject._blocked = '快進快出訊號未啟用（設定頁開啟）'; return; }
+    if (!Array.isArray(data) || !data.length) { _scalpReject._blocked = '本輪無掃描資料'; return; }
     let log = loadScalpLog();
     const active = log.filter(t => t.status === 'open');
-    if (active.length >= SCALP_CFG.maxActive) return;
+    if (active.length >= SCALP_CFG.maxActive) {
+      _scalpReject._blocked = `持倉已達上限（${active.length}/${SCALP_CFG.maxActive}）`; return;
+    }
     let room = SCALP_CFG.maxActive - active.length;
     let changed = false;
 
     // ── 初篩（用已抓好的幣安資料，零額外請求）──────────────────
     //    只有通過初篩的少數幣才去抓 5m K 線，避免佔用 OKX/幣安限速。
-    _scalpReject = {};                       // 每輪重置
     _scalpReject._scanned = data.length;
     const cands = [];
     for (const coin of data) {
@@ -20119,6 +20123,11 @@ function buildScalpPositionsHtml() {
       const r = Object.entries(_scalpReject || {}).filter(([k]) => k !== '_scanned')
         .sort((a, b) => b[1] - a[1]);
       const scanned = (_scalpReject && _scalpReject._scanned) || 0;
+      const blocked = _scalpReject && _scalpReject._blocked;
+      if (blocked) return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
+        background:rgba(239,68,68,.10);border-left:3px solid #ef4444;font-size:0.84rem">
+        <b style="color:#ef4444">⛔ 本輪未執行掃描</b><br>
+        <span style="color:var(--text2)">原因：${blocked}</span></div>`;
       if (!scanned) return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
         background:rgba(148,163,184,.08);font-size:0.82rem;color:var(--text3)">
         尚未執行掃描 — 等下一輪掃描後會顯示各條件的擋下統計</div>`;
