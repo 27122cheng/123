@@ -19703,8 +19703,14 @@ const SCALP_CFG = {
   //    B 動能延續：順勢貼均線 + MACD 同向擴張 → 抓趨勢中段（突破罕見，
   //      只靠 A 幾乎沒有量，這是先前長期無訊號的結構性原因之一）
   tf:           '5m',  // 專用時框：只對通過初篩的少數幣抓，成本低
-  enableBreakout:   true,
-  enableMomentum:   true,
+  // 四種進場模式（可個別開關；分模式統計勝率，用數據淘汰表現差的）
+  enableBreakout:   true,   // A 突破：動能啟動（勝率中等、賠率高）
+  enableMomentum:   true,   // B 順勢動能：趨勢中段（勝率中等、量最多）
+  enableRetest:     true,   // C 突破回踩確認：等回踩守住才進（勝率最高、量少）
+  enableTrap:       true,   // D 假突破反轉：刺破後收回，反手（勝率高、賠率佳）
+  retestMaxDist:    0.004,  // C：回踩後距突破位的最大距離 0.4%
+  trapMaxBars:      2,      // D：假突破需於幾根內收回
+  trapMinPierce:    0.0008, // D：至少刺破 0.08% 才算誘多/誘空
   breakLookback: 10,   // 突破回看根數（20→10，約 50 分鐘區間，較易觸發）
   minBreakPct:  0.0005,// 最小突破幅度 0.05%（0.15%→0.05%）
   volMult:      1.15,  // 突破當根量能倍數（1.5→1.15，依已過時間比例縮放）
@@ -19875,8 +19881,51 @@ function buildScalpSetup(coin, isLong) {
       modeB = sideOk && push;
     }
   }
-  if (!modeA && !modeB) return _sr('無突破也無順勢動能');
-  const mode = modeA ? 'breakout' : 'momentum';
+  // ── 模式 C：突破回踩確認（本家族中勝率最高的進場）────────────────
+  //    突破當下追價會遇到大量假突破；等價格回踩到被突破的那條線、且守住
+  //    不再跌破，代表該線已由壓力轉為支撐——論點被市場驗證過一次才進場，
+  //    勝率明顯優於直接追突破，代價是機會較少。
+  let modeC = false, retestLevel = null;
+  if (!modeA && SCALP_CFG.enableRetest && prev.length >= 8) {
+    const older = prev.slice(0, -3);                 // 較早的區間（不含最近 3 根）
+    const recent = prev.slice(-3);                   // 最近 3 根：突破發生在此
+    const lvlHi = Math.max(...older.map(b => parseFloat(b[2])).filter(isFinite));
+    const lvlLo = Math.min(...older.map(b => parseFloat(b[3])).filter(isFinite));
+    if (isLong) {
+      const brokeUp = recent.some(b => parseFloat(b[4]) > lvlHi);   // 曾收在壓力之上
+      const pulled  = close >= lvlHi && (close - lvlHi) / lvlHi <= SCALP_CFG.retestMaxDist;
+      const held    = parseFloat(last[3]) >= lvlHi * 0.999;         // 本根低點未失守
+      if (brokeUp && pulled && held) { modeC = true; retestLevel = lvlHi; }
+    } else {
+      const brokeDn = recent.some(b => parseFloat(b[4]) < lvlLo);
+      const pulled  = close <= lvlLo && (lvlLo - close) / lvlLo <= SCALP_CFG.retestMaxDist;
+      const held    = parseFloat(last[2]) <= lvlLo * 1.001;
+      if (brokeDn && pulled && held) { modeC = true; retestLevel = lvlLo; }
+    }
+  }
+
+  // ── 模式 D：假突破反轉（誘多／誘空後反手）────────────────────────
+  //    價格刺破區間邊界隨即被打回、收在區間內＝突破方向的參與者被套牢，
+  //    他們的停損就是反向行情的燃料。這類「陷阱」型態勝率高且賠率佳。
+  //    方向必須與本次訊號方向一致：做空＝上緣假突破、做多＝下緣假突破。
+  let modeD = false, trapLevel = null;
+  if (!modeA && !modeC && SCALP_CFG.enableTrap && prev.length >= 6) {
+    const base = prev.slice(0, -SCALP_CFG.trapMaxBars);
+    const chk  = bars.slice(-(SCALP_CFG.trapMaxBars + 1));   // 最近數根（含當根）
+    const bHi = Math.max(...base.map(b => parseFloat(b[2])).filter(isFinite));
+    const bLo = Math.min(...base.map(b => parseFloat(b[3])).filter(isFinite));
+    if (!isLong) {
+      const pierced = chk.some(b => (parseFloat(b[2]) - bHi) / bHi >= SCALP_CFG.trapMinPierce);
+      if (pierced && close < bHi) { modeD = true; trapLevel = bHi; }   // 刺破上緣又收回 → 做空
+    } else {
+      const pierced = chk.some(b => (bLo - parseFloat(b[3])) / bLo >= SCALP_CFG.trapMinPierce);
+      if (pierced && close > bLo) { modeD = true; trapLevel = bLo; }   // 刺破下緣又收回 → 做多
+    }
+  }
+
+  if (!modeA && !modeB && !modeC && !modeD) return _sr('無符合的進場型態');
+  // 優先序：回踩確認 > 假突破 > 突破 > 順勢動能（勝率高者優先）
+  const mode = modeC ? 'retest' : modeD ? 'trap' : modeA ? 'breakout' : 'momentum';
 
   // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
   //    注意：last 是「形成中」的 K 棒，成交量只累積了一部分。直接拿它與
@@ -19890,9 +19939,12 @@ function buildScalpSetup(coin, isLong) {
   const barMs = (prev.length >= 2 ? (parseFloat(prev[1][0]) - parseFloat(prev[0][0])) : 3e5) || 3e5;
   const elapsed = Math.min(barMs, Math.max(1, Date.now() - parseFloat(last[0])));
   const frac = Math.max(0.15, elapsed / barMs);        // 已完成比例（下限 15%≈45秒，防開盤瞬間誤判）
-  const _vm = modeA ? SCALP_CFG.volMult : SCALP_CFG.momVolMult;
-  const needVol = avgVol * _vm * frac;
-  if (!(avgVol > 0 && curVol >= needVol)) return _sr(modeA ? '突破未放量' : '動能量能不足');
+  //    回踩確認與假突破反轉本就不該放量（回踩縮量反而是好事），故不設量能門檻
+  if (mode === 'breakout' || mode === 'momentum') {
+    const _vm = modeA ? SCALP_CFG.volMult : SCALP_CFG.momVolMult;
+    const needVol = avgVol * _vm * frac;
+    if (!(avgVol > 0 && curVol >= needVol)) return _sr(modeA ? '突破未放量' : '動能量能不足');
+  }
 
   // ── ③ 未平倉量確認（最強的真假突破分辨器）────────────────────
   //    價漲+OI增=新多進場（真突破）；價漲+OI減=空頭回補（假突破嫌疑）。
@@ -19924,7 +19976,10 @@ function buildScalpSetup(coin, isLong) {
   // 止損錨點：突破模式用突破點；動能模式用近期擺動低/高點（皆為論點失效位）
   const swingLo = Math.min(...prev.slice(-6).map(b => parseFloat(b[3])).filter(isFinite));
   const swingHi = Math.max(...prev.slice(-6).map(b => parseFloat(b[2])).filter(isFinite));
-  const level = modeA ? (isLong ? hi : lo) : (isLong ? swingLo : swingHi);
+  const level = mode === 'retest' ? retestLevel
+              : mode === 'trap'   ? trapLevel
+              : modeA             ? (isLong ? hi : lo)
+              :                     (isLong ? swingLo : swingHi);
   const slRaw = isLong ? level - atr * SCALP_CFG.slAtrMult : level + atr * SCALP_CFG.slAtrMult;
   const entry = price;                                  // 市價進場（突破追擊）
   const risk  = Math.abs(entry - slRaw);
@@ -20301,6 +20356,71 @@ function _scalpAccountPanel() {
   } catch(e) { return ''; }
 }
 
+/* ── 分模式績效（回答「哪一種進場方式勝率高」）─────────────────────
+   四種模式的獲利來源不同，混在一起看總勝率會互相掩蓋。分開統計後即可
+   用數據關掉表現差的模式（設定 SCALP_CFG.enableXxx = false），
+   而不是靠猜測調參數。 */
+const SCALP_MODE_LABEL = {
+  retest:   'C 突破回踩確認',
+  trap:     'D 假突破反轉',
+  breakout: 'A 突破追擊',
+  momentum: 'B 順勢動能',
+};
+function scalpModeStats() {
+  const closed = loadScalpLog().filter(t => t.status === 'closed');
+  const by = {};
+  for (const t of closed) {
+    const k = t.mode || 'unknown';
+    by[k] = by[k] || { n: 0, w: 0, l: 0, r: 0 };
+    by[k].n++;
+    if (isWinTrade(t)) by[k].w++; else if (isLossTrade(t)) by[k].l++;
+    by[k].r += parseFloat(t.pnlR) || 0;
+  }
+  return Object.entries(by).map(([mode, v]) => ({
+    mode, label: SCALP_MODE_LABEL[mode] || mode,
+    n: v.n, wins: v.w,
+    winRate: (v.w + v.l) > 0 ? +(v.w / (v.w + v.l) * 100).toFixed(1) : null,
+    netR: +v.r.toFixed(2),
+    expectancy: v.n ? +(v.r / v.n).toFixed(3) : 0,
+    enabled: SCALP_CFG['enable' + mode.charAt(0).toUpperCase() + mode.slice(1)] !== false,
+  })).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1));
+}
+/* 分模式績效面板 */
+function _scalpModePanel() {
+  try {
+    const rows = scalpModeStats();
+    const cfgRow = (m, label) => {
+      const on = SCALP_CFG[m] !== false;
+      return `<span style="font-size:0.74rem;padding:2px 8px;border-radius:12px;margin-right:5px;
+        background:${on ? 'rgba(34,197,94,.12)' : 'rgba(148,163,184,.12)'};
+        color:${on ? '#22c55e' : 'var(--text3)'}">${label} ${on ? '啟用' : '停用'}</span>`;
+    };
+    const head = `<div style="margin-bottom:7px">
+      ${cfgRow('enableRetest', 'C 回踩')}${cfgRow('enableTrap', 'D 假突破')}
+      ${cfgRow('enableBreakout', 'A 突破')}${cfgRow('enableMomentum', 'B 動能')}</div>`;
+    if (!rows.length) return `<div style="background:var(--card);border:1px solid var(--border);
+      border-radius:10px;padding:10px 12px;margin-top:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🎯 分模式勝率</div>${head}
+      <div style="font-size:0.8rem;color:var(--text3)">尚無已完結樣本 — 累積後可看出哪種進場方式勝率最高，
+      再把表現差的模式關掉（SCALP_CFG.enableXxx = false）。</div></div>`;
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-top:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🎯 分模式勝率（哪種進場方式最準）</div>${head}
+      ${rows.map(r => {
+        const wc = r.winRate == null ? 'var(--text3)' : r.winRate >= 55 ? '#22c55e' : r.winRate >= 45 ? '#f59e0b' : '#ef4444';
+        return `<div style="display:flex;gap:10px;align-items:center;font-size:0.8rem;padding:4px 0;
+            border-top:1px solid rgba(255,255,255,.05)">
+          <span style="min-width:130px;font-weight:600">${r.label}</span>
+          <span style="color:var(--text3);min-width:52px">${r.n} 筆</span>
+          <span style="color:${wc};font-weight:700;min-width:76px">勝率 ${r.winRate ?? '--'}%</span>
+          <span style="color:${r.netR >= 0 ? '#22c55e' : '#ef4444'};min-width:74px">${r.netR > 0 ? '+' : ''}${r.netR}R</span>
+          <span style="color:${r.expectancy > 0 ? '#22c55e' : '#ef4444'}">期望 ${r.expectancy > 0 ? '+' : ''}${r.expectancy}R</span>
+        </div>`; }).join('')}
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:7px">
+        樣本 ≥20 筆後，把期望值為負的模式關掉即可在不減少總量的前提下拉高整體勝率。</div>
+    </div>`;
+  } catch(_e) { return ''; }
+}
+
 /* 快進快出：持倉／紀錄共用的統計卡片 */
 function _scalpStatCards(st) {
   const wrC = st.winRate == null ? 'var(--text3)' : st.winRate >= 55 ? '#22c55e' : st.winRate >= 45 ? '#f59e0b' : '#ef4444';
@@ -20364,6 +20484,7 @@ function buildScalpPositionsHtml() {
     </div>
     ${_scalpStatCards(st)}
     ${_scalpAccountPanel()}
+    ${_scalpModePanel()}
     ${(() => { try {
       // ── 訊號診斷：沒有交易時，直接顯示卡在哪一道條件 ──
       const r = Object.entries(_scalpReject || {}).filter(([k]) => !k.startsWith('_'))
@@ -20455,6 +20576,7 @@ function buildScalpLogHtml() {
     </div></div>
     ${_scalpStatCards(st)}
     ${_scalpAccountPanel()}
+    ${_scalpModePanel()}
     ${curveSvg}
     ${(() => {
       const byKz = {};
