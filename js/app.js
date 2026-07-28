@@ -9971,15 +9971,9 @@ function commitNewTrade(newTrade) {
     if (newTrade.entry && log.some(t => t.symbol === sym && t.direction === dir &&
         t.entry && _fp(t.entry) === _fp(newTrade.entry) &&
         now - (t.timestamp || 0) < _DEDUP_WINDOW_MS)) return false;
-    // 價位換算為 OKX 實際報價：分析與結構位以幣安 K 線計算，但使用者實單掛在
-    // OKX，故於寫入前用同一時刻兩所即時價的比例縮放，確保進場/止損/止盈與
-    // 成交判定（OKX 1m K 棒）在同一個價格尺度上。
-    try {
-      if (typeof toOkxLevels === 'function') {
-        newTrade.okxAdjusted = toOkxLevels(sym, newTrade.entryPrice,
-          newTrade, ['entry', 'sl', 'tp1', 'tp2', 'baseSl', 'ltTP', 'ltPartialTP', 'entryPrice']);
-      }
-    } catch(_e) {}
+    // 註：K 線已在 fetchKlinesSmart 統一對齊到 OKX 價格空間，故此處不再換算，
+    // 否則會二次縮放。所有價位（進場/止損/止盈）與成交判定天生同尺度。
+    newTrade.okxAdjusted = true;
     log.unshift(newTrade);
     if (log.length > 500) log.splice(500);
     saveTradeLog(log);
@@ -20094,11 +20088,7 @@ async function recordScalpSignals(data) {
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
         note: setup.mode === 'momentum' ? '快進快出（順勢動能）' : '快進快出（突破追擊）',
       };
-      try {
-        if (typeof toOkxLevels === 'function')
-          t.okxAdjusted = toOkxLevels(coin.symbol, t.entryPrice, t,
-            ['entry', 'sl', 'baseSl', 'tp1', 'tp2', 'entryPrice', 'peakPrice']);
-      } catch(_e) {}
+      t.okxAdjusted = true;   // 資料層已對齊 OKX 價格空間，無需再換算
       log.unshift(t); changed = true; room--;
       _scalpRecordLedger(coin.symbol, dir);
       sendScalpTelegram(t, 'open');

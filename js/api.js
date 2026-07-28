@@ -466,11 +466,42 @@ async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) 
     if (trackKey && _klineSrcBySymbol[trackKey] == null) _klineSrcBySymbol[trackKey] = 'cache';
     return _cached;
   }
+  /* ── 幣安 K 線對齊到 OKX 價格空間 ───────────────────────────
+     分析改走幣安後，價格、指標、結構位、進場/止損全都是「幣安價格尺度」，
+     與使用者實際下單的 OKX 報價對不上（使用者回報：價格沒有對齊 OKX）。
+     解法：取回幣安 K 線後，以「OKX 即時價 ÷ 幣安最後收盤」為比例整體縮放
+     OHLC——最後一根收盤會恰好等於 OKX 現價，下游一切自然落在 OKX 價格空間，
+     不需要在每個使用點各自換算（也就不會有換算遺漏或重複換算）。
+     _okxPrices 由一個 tickers 請求取回全部幣種，成本極低。
+     比例偏離 ±10% 視為資料異常，原樣不動以策安全。 */
+  const _alignToOkx = (rows) => {
+    try {
+      if (!rows || !rows.length) return rows;
+      const okx = _okxPrices[String(symbol).replace('/', '').toUpperCase()];
+      if (!okx || okx <= 0) return rows;                  // 該幣無 OKX 報價 → 維持幣安
+      const lastClose = parseFloat(rows[rows.length - 1][4]);
+      if (!(lastClose > 0)) return rows;
+      const k = okx / lastClose;
+      if (!(k > 0.9 && k < 1.1)) return rows;             // 比例異常 → 不動
+      if (Math.abs(k - 1) < 1e-9) return rows;
+      return rows.map(r => {
+        const o = r.slice();
+        o[1] = String(parseFloat(r[1]) * k);
+        o[2] = String(parseFloat(r[2]) * k);
+        o[3] = String(parseFloat(r[3]) * k);
+        o[4] = String(parseFloat(r[4]) * k);
+        o[7] = String((parseFloat(r[7]) || 0) * k);       // 計價幣成交額同步縮放
+        return o;
+      });
+    } catch(_e) { return rows; }
+  };
   const _fin = (rows, src) => {
     if (rows) {
-      _klineCacheSet(_ck, rows);
+      const out = (src === 'binance') ? _alignToOkx(rows) : rows;
+      _klineCacheSet(_ck, out);
       _klineSrcCount[src]++;
       if (trackKey) _klineSrcBySymbol[trackKey] = src;
+      return out;
     }
     return rows;
   };
@@ -641,7 +672,8 @@ async function fetchAllFromBinance(timeframe) {
         // 數據源標記 + 價格小數位對齊 OKX 報價精度（quotePrecision）
         const _src  = _klineSrcBySymbol[pair.s] || 'binance';
         const _prec = _okxPrecision[sym];
-        const _pxFinal = (_src === 'okx' && _prec != null)
+        // K 線已於 fetchKlinesSmart 對齊 OKX 價格空間，故一律套用 OKX 報價精度
+        const _pxFinal = (_prec != null)
           ? parseFloat((+analysed.price).toFixed(_prec)) : analysed.price;
         results[idx] = {
           ...analysed,
