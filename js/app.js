@@ -19698,16 +19698,22 @@ const SCALP_MAX        = 500;
 
 /* 快進快出參數（集中管理，方便試跑後調整）*/
 const SCALP_CFG = {
-  // ── 進場（突破邏輯）──
+  // ── 進場：兩種模式（任一成立即可，機會集比單一突破大得多）──
+  //    A 突破：站上/跌破近 N 根高低點 + 放量  → 抓動能啟動
+  //    B 動能延續：順勢貼均線 + MACD 同向擴張 → 抓趨勢中段（突破罕見，
+  //      只靠 A 幾乎沒有量，這是先前長期無訊號的結構性原因之一）
   tf:           '5m',  // 專用時框：只對通過初篩的少數幣抓，成本低
-  breakLookback: 20,   // 突破回看根數
-  minBreakPct:  0.0015,// 最小突破幅度 0.15%（濾掉貼邊雜訊）
-  volMult:      1.5,   // 突破當根需 ≥ 均量 1.5 倍
+  enableBreakout:   true,
+  enableMomentum:   true,
+  breakLookback: 10,   // 突破回看根數（20→10，約 50 分鐘區間，較易觸發）
+  minBreakPct:  0.0005,// 最小突破幅度 0.05%（0.15%→0.05%）
+  volMult:      1.15,  // 突破當根量能倍數（1.5→1.15，依已過時間比例縮放）
+  momVolMult:   0.9,   // 動能延續模式的量能要求（不需放量，但不可明顯萎縮）
   requireOI:    false, // true=必須 OI 新錢同向；false=只擋「回補/平倉推動」
-  rsiCap:       72,    // 做多 RSI 上限（做空鏡像 28）
-  killZoneOnly: false, // 先關閉：一天會擋掉 15/24 小時。改為記錄各單的時段品質，
-                       // 等試跑數據顯示冷門時段確實較差再開啟（見自動紀錄頁時段統計）
-  maxRiskPct:   0.012, // 單筆風險上限 1.2%（追太遠不做）
+  rsiCap:       78,    // 做多 RSI 上限（做空鏡像 22）
+  requireVwap:  false, // VWAP 由硬性條件改為僅供參考（原本擋掉大量機會）
+  killZoneOnly: false, // 一天會擋掉 15/24 小時；改為記錄時段品質，用數據再決定
+  maxRiskPct:   0.025, // 單筆風險上限 2.5%（1.2%→2.5%，避免波動幣全被擋）
   // ── 出場（快週轉）──
   slAtrMult:   0.6,    // 止損放突破點另一側 0.6 × ATR
   tp1R:        1.0,    // 止盈一 1.0R（減倉 60%）
@@ -19716,8 +19722,8 @@ const SCALP_CFG = {
   trailGiveR:  0.5,    // TP1 後移動停利回吐上限（鎖峰值 −0.5R）
   timeStopMin: 20,     // 停滯出場（分鐘）：突破沒延續代表論點已破
   maxHoldMin:  60,     // 最長持有（分鐘）
-  minAdx:      20,     // 最低 ADX
-  cooldownMin: 30,     // 同幣種同方向冷卻
+  minAdx:      12,     // 最低 ADX（20→12，只排除完全無方向的死盤）
+  cooldownMin: 15,     // 同幣種同方向冷卻（30→15 分）
   maxActive:   8,      // 同時最多持有筆數
   maxSameDir:  5,      // 同方向持倉上限（避免全同向被大盤一次掃掉）
   maxCandidates: 40,   // 每輪最多評估幾個候選（決定 5m K 線抓取量）
@@ -19850,10 +19856,27 @@ function buildScalpSetup(coin, isLong) {
   const lo = Math.min(...prev.map(b => parseFloat(b[3])));
   const close = parseFloat(last[4]);
   const broke = isLong ? close > hi : close < lo;
-  if (!broke) return _sr('未突破區間');
-  // 突破幅度需有意義（避免貼著邊界的雜訊觸發）
   const extent = isLong ? (close - hi) / hi : (lo - close) / lo;
-  if (!(extent >= SCALP_CFG.minBreakPct)) return _sr('突破幅度不足');
+  const modeA = SCALP_CFG.enableBreakout && broke && extent >= SCALP_CFG.minBreakPct;
+
+  // ── 模式 B：動能延續（突破罕見，僅靠模式 A 幾乎沒有交易量）──────
+  //    條件：順勢站在 5m EMA20 正確一側、且最近 3 根呈同向推進。
+  //    抓的是「趨勢中段」而非啟動點，與模式 A 互補。
+  let modeB = false;
+  if (!modeA && SCALP_CFG.enableMomentum) {
+    const closes = bars.map(b => parseFloat(b[4])).filter(isFinite);
+    if (closes.length >= 6) {
+      const k = 2 / (Math.min(20, closes.length) + 1);
+      let ema = closes[0];
+      for (let i = 1; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
+      const sideOk = isLong ? close > ema : close < ema;
+      const c1 = closes[closes.length - 1], c2 = closes[closes.length - 2], c3 = closes[closes.length - 3];
+      const push = isLong ? (c1 > c3 && c1 >= c2 * 0.999) : (c1 < c3 && c1 <= c2 * 1.001);
+      modeB = sideOk && push;
+    }
+  }
+  if (!modeA && !modeB) return _sr('無突破也無順勢動能');
+  const mode = modeA ? 'breakout' : 'momentum';
 
   // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
   //    注意：last 是「形成中」的 K 棒，成交量只累積了一部分。直接拿它與
@@ -19867,8 +19890,9 @@ function buildScalpSetup(coin, isLong) {
   const barMs = (prev.length >= 2 ? (parseFloat(prev[1][0]) - parseFloat(prev[0][0])) : 3e5) || 3e5;
   const elapsed = Math.min(barMs, Math.max(1, Date.now() - parseFloat(last[0])));
   const frac = Math.max(0.15, elapsed / barMs);        // 已完成比例（下限 15%≈45秒，防開盤瞬間誤判）
-  const needVol = avgVol * SCALP_CFG.volMult * frac;
-  if (!(avgVol > 0 && curVol >= needVol)) return _sr('突破未放量');
+  const _vm = modeA ? SCALP_CFG.volMult : SCALP_CFG.momVolMult;
+  const needVol = avgVol * _vm * frac;
+  if (!(avgVol > 0 && curVol >= needVol)) return _sr(modeA ? '突破未放量' : '動能量能不足');
 
   // ── ③ 未平倉量確認（最強的真假突破分辨器）────────────────────
   //    價漲+OI增=新多進場（真突破）；價漲+OI減=空頭回補（假突破嫌疑）。
@@ -19879,7 +19903,7 @@ function buildScalpSetup(coin, isLong) {
   if (SCALP_CFG.requireOI && oiState !== 'favorable') return _sr('OI非新錢同向');
 
   // ── ④ VWAP 同側：站在機構成本線正確一側才順勢 ─────────────────
-  try {
+  if (SCALP_CFG.requireVwap) try {
     const vwap = _footprintCache[coin.symbol]?.vwap;
     if (vwap > 0) { if (isLong ? price < vwap : price > vwap) return _sr('VWAP逆側'); }
   } catch(_e) {}
@@ -19897,16 +19921,19 @@ function buildScalpSetup(coin, isLong) {
   // ── 價位：止損放突破點另一側（論點失效即出場，虧損小且明確）──────
   const adx = parseFloat(coin.adx) || 20;
   const atr = price * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
-  const level = isLong ? hi : lo;                       // 突破點＝新的支撐/壓力
+  // 止損錨點：突破模式用突破點；動能模式用近期擺動低/高點（皆為論點失效位）
+  const swingLo = Math.min(...prev.slice(-6).map(b => parseFloat(b[3])).filter(isFinite));
+  const swingHi = Math.max(...prev.slice(-6).map(b => parseFloat(b[2])).filter(isFinite));
+  const level = modeA ? (isLong ? hi : lo) : (isLong ? swingLo : swingHi);
   const slRaw = isLong ? level - atr * SCALP_CFG.slAtrMult : level + atr * SCALP_CFG.slAtrMult;
   const entry = price;                                  // 市價進場（突破追擊）
   const risk  = Math.abs(entry - slRaw);
   if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return _sr('風險超限(追太遠)');
   const tp1 = isLong ? entry + risk * SCALP_CFG.tp1R : entry - risk * SCALP_CFG.tp1R;
   const tp2 = isLong ? entry + risk * SCALP_CFG.tp2R : entry - risk * SCALP_CFG.tp2R;
-  return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi,
+  return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi, mode,
            macd: parseFloat(coin.macdHist) || 0,
-           breakLevel: level, breakExtent: +(extent * 100).toFixed(2),
+           breakLevel: level, breakExtent: +(Math.max(0, extent) * 100).toFixed(2),
            volRatio: +(curVol / avgVol).toFixed(2), oiState };
 }
 
@@ -20003,13 +20030,14 @@ async function recordScalpSignals(data) {
         status: 'open', outcome: null, tp1Hit: false,
         exitPrice: null, exitTime: null, pnlR: null,
         rsi: setup.rsi, adx: setup.adx, macdHist: setup.macd,
+        mode: setup.mode,
         breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
         volRatio: setup.volRatio, oiState: setup.oiState,
         qty: +_sz.qty.toPrecision(8), notional: +_sz.notional.toFixed(2),
         riskAmt: +_acct.riskAmt.toFixed(2), riskPct: SCALP_CFG.riskPerTradePct,
         riskScore, riskLevel, riskRecs, conf,
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
-        note: '快進快出（突破追擊）',
+        note: setup.mode === 'momentum' ? '快進快出（順勢動能）' : '快進快出（突破追擊）',
       };
       try {
         if (typeof toOkxLevels === 'function')
@@ -20130,7 +20158,9 @@ function sendScalpTelegram(t, kind) {
         t.qty ? `📦 數量：<b>${t.qty}</b>　名目 $${t.notional}　風險 $${t.riskAmt}（${t.riskPct}% 權益）` : '',
         `🎯 止盈一：$${fmt(t.tp1)}（${SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
         `🚀 止盈二：$${fmt(t.tp2)}（${SCALP_CFG.tp2R}R）`,
-        `📐 突破 ${SCALP_CFG.breakLookback} 根 ${SCALP_CFG.tf} 高低點 $${fmt(t.breakLevel)}（幅度 ${t.breakExtent}%）`,
+        t.mode === 'momentum'
+          ? `📐 順勢動能延續（貼 ${SCALP_CFG.tf} EMA20，止損錨定近期擺動點 $${fmt(t.breakLevel)}）`
+          : `📐 突破 ${SCALP_CFG.breakLookback} 根 ${SCALP_CFG.tf} 高低點 $${fmt(t.breakLevel)}（幅度 ${t.breakExtent}%）`,
         `📊 量能 ${t.volRatio}× 均量｜OI ${t.oiState === 'favorable' ? '新錢同向 ✅' : t.oiState === 'neutral' ? '中性' : '—'}`,
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
         t.conf != null ? `📶 風控分：${t.conf} 分（風險 ${t.riskScore ?? '--'}／${t.riskLevel || '--'}）` : '',
