@@ -15135,6 +15135,15 @@ function updatePosTabSummary() {
 }
 
 function renderPositionsPage() {
+  // 子分頁：原持倉 / 自動持倉（自動交易獨立資料，僅切換顯示內容）
+  {
+    const _c = document.getElementById('positions-content');
+    if (_c && _posView === 'auto') {
+      _c.innerHTML = _subTabBar(_posView, [['main', '持倉中'], ['auto', '⚡ 自動持倉']], 'setPosView')
+                   + buildScalpPositionsHtml();
+      return;
+    }
+  }
   const container = document.getElementById('positions-content');
   if (!container) return;
 
@@ -15142,7 +15151,7 @@ function renderPositionsPage() {
   const open    = tlog.filter(t => t.status === 'open' && t.entry);
   const pending = tlog.filter(t => t.status === 'pending' && t.entry);
   if (open.length === 0 && pending.length === 0) {
-    container.innerHTML = `
+    container.innerHTML = _subTabBar(_posView, [['main','持倉中'],['auto','⚡ 自動持倉']], 'setPosView') + `
       <div class="page-header"><div>
         <h1 class="page-title">持倉中</h1>
         <p class="page-subtitle">目前進行中的交易推薦</p>
@@ -15416,7 +15425,7 @@ function renderPositionsPage() {
   const _prevSearchVal   = _prevSearchEl?.value || '';
   const _prevSearchFocus = document.activeElement === _prevSearchEl;
 
-  container.innerHTML = `
+  container.innerHTML = _subTabBar(_posView, [['main','持倉中'],['auto','⚡ 自動持倉']], 'setPosView') + `
     <div class="page-header"><div>
       <h1 class="page-title">持倉中</h1>
       <p class="page-subtitle">目前進行中的交易推薦（${open.length} 筆）</p>
@@ -16444,6 +16453,15 @@ function renderLabPage() {
 let _tlFilter = 'all';
 
 function renderTradeLogPage() {
+  // 子分頁：交易記錄 / 自動紀錄（自動交易獨立資料）
+  {
+    const _c = document.getElementById('tradelog-content');
+    if (_c && _tlTab === 'auto') {
+      _c.innerHTML = _subTabBar(_tlTab, [['main', '交易記錄'], ['auto', '⚡ 自動紀錄']], 'setTlTab')
+                   + buildScalpLogHtml();
+      return;
+    }
+  }
   const container = document.getElementById('tradelog-content');
   if (!container) return;
   const trades  = loadTradeLog();
@@ -16459,11 +16477,16 @@ function renderTradeLogPage() {
     ? closed.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0).toFixed(2)
     : '0.0';
 
-  // 只顯示已結束的交易，按篩選器過濾
-  let display = closed;
-  if (_tlFilter === 'tp') display = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
-  if (_tlFilter === 'sl') display = closed.filter(t => t.outcome === 'sl');
-  if (_tlFilter === 'be') display = closed.filter(t => t.outcome === 'be');
+  // 細項只顯示「所選那一天」的已完結交易（一天一頁，共 TL_MAX_DAYS 頁）；
+  // 上方統計卡與下方勝率分析、AI 學習仍以全部資料計算，不受分頁影響。
+  const _dayR = _tlDayRange(_tlDay);
+  let display = closed.filter(t => {
+    const ts = t.exitTime || t.timestamp || 0;
+    return ts >= _dayR.start && ts < _dayR.end;
+  });
+  if (_tlFilter === 'tp') display = display.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
+  if (_tlFilter === 'sl') display = display.filter(t => t.outcome === 'sl');
+  if (_tlFilter === 'be') display = display.filter(t => t.outcome === 'be');
 
   const netRNum = parseFloat(netR);
   const statsHtml = `<div class="tl-stats">
@@ -16605,29 +16628,127 @@ function renderTradeLogPage() {
       <span style="color:var(--text3);font-size:0.7rem">（網站更新/清除記錄均不影響）</span>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn-ghost" onclick="exportFullBackup()" style="font-size:0.8rem">💾 完整備份</button>
-      <button class="btn-ghost" onclick="importFullBackup()" style="font-size:0.8rem">📂 還原備份</button>
+
       <button class="btn-ghost" onclick="exportAIMemory()" style="font-size:0.8rem">📤 匯出 AI 記憶</button>
       <button class="btn-ghost" onclick="importAIMemory()" style="font-size:0.8rem">📥 匯入 AI 記憶</button>
       <button class="tl-clear-btn" onclick="clearTradeLog()">清除記錄</button>
     </div>
   </div>`;
 
-  container.innerHTML = `
+  // 備份按鈕：依需求置於「細項」與「勝率分析」之間
+  const backupHtml = `<div class="tl-actions-row" style="justify-content:center;gap:8px;margin:14px 0">
+    <button class="btn-ghost" onclick="exportFullBackup()" style="font-size:0.8rem">💾 完整備份</button>
+    <button class="btn-ghost" onclick="importFullBackup()" style="font-size:0.8rem">📂 還原備份</button>
+  </div>`;
+  container.innerHTML =
+    _subTabBar(_tlTab, [['main', '交易記錄'], ['auto', '⚡ 自動紀錄']], 'setTlTab') + `
     <div class="page-header">
       <div>
         <h1 class="page-title">交易記錄</h1>
-        <p class="page-subtitle">自動記錄每一個交易信號與結果追蹤</p>
+        <p class="page-subtitle">自動記錄每一個交易信號與結果追蹤（依日分頁，保留 ${TL_MAX_DAYS} 天；
+          超過 ${TL_MAX_DAYS} 天的交易每月自動精簡詳情，勝率分析與 AI 學習不受影響）</p>
       </div>
     </div>
     ${statsHtml}
-    ${buildWinRateBreakdown(closed)}
+    ${_tlDayPager(closed)}
     ${filterHtml}
     ${tableHtml}
+    ${backupHtml}
+    ${buildWinRateBreakdown(closed)}
     ${learnHtml}
     ${clearHtml}
   `;
 }
+
+
+/* ── 子分頁與交易紀錄分日檢視 ─────────────────────────────────── */
+let _posView = 'main';  // 'main' 原持倉 / 'auto' 自動持倉（與既有的 _posTab 篩選分頁無關）
+let _tlTab  = 'main';   // 'main' 交易紀錄 / 'auto' 自動紀錄
+let _tlDay  = 0;        // 0=今天，最多回看 TL_MAX_DAYS-1 天
+const TL_MAX_DAYS = 30;
+
+function setPosView(t) { _posView = t; renderPositionsPage(); }
+function setTlTab(t)  { _tlTab  = t; renderTradeLogPage(); }
+function setTlDay(d)  { _tlDay = Math.max(0, Math.min(TL_MAX_DAYS - 1, d)); renderTradeLogPage(); }
+
+/* 子分頁列（兩頁共用） */
+function _subTabBar(cur, tabs, fnName) {
+  return `<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+    ${tabs.map(([k, label]) => `<button onclick="${fnName}('${k}')"
+      style="font-size:0.84rem;font-weight:${cur === k ? '700' : '500'};padding:6px 16px;border-radius:20px;cursor:pointer;
+        border:1px solid ${cur === k ? 'var(--accent,#6366f1)' : 'var(--border)'};
+        background:${cur === k ? 'rgba(99,102,241,.15)' : 'transparent'};
+        color:${cur === k ? 'var(--text1)' : 'var(--text3)'}">${label}</button>`).join('')}
+  </div>`;
+}
+
+/* 指定第 d 天（0=今天）的起訖時間 */
+function _tlDayRange(d) {
+  const s = new Date(); s.setHours(0, 0, 0, 0); s.setDate(s.getDate() - d);
+  const e = new Date(s); e.setDate(e.getDate() + 1);
+  return { start: s.getTime(), end: e.getTime(), label: `${s.getMonth() + 1}/${s.getDate()}` };
+}
+
+/* 分日頁籤（30 天） */
+function _tlDayPager(closed) {
+  const cnt = {};
+  for (const t of closed) {
+    const ts = t.exitTime || t.timestamp || 0;
+    for (let d = 0; d < TL_MAX_DAYS; d++) {
+      const r = _tlDayRange(d);
+      if (ts >= r.start && ts < r.end) { cnt[d] = (cnt[d] || 0) + 1; break; }
+    }
+  }
+  const r = _tlDayRange(_tlDay);
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <span style="font-size:0.84rem;font-weight:700">📅 ${r.label}（第 ${_tlDay + 1}/${TL_MAX_DAYS} 頁）</span>
+      <span style="display:flex;gap:6px">
+        <button class="btn-ghost" style="font-size:0.78rem" onclick="setTlDay(${_tlDay + 1})" ${_tlDay >= TL_MAX_DAYS - 1 ? 'disabled' : ''}>← 前一天</button>
+        <button class="btn-ghost" style="font-size:0.78rem" onclick="setTlDay(${_tlDay - 1})" ${_tlDay <= 0 ? 'disabled' : ''}>後一天 →</button>
+      </span>
+    </div>
+    <div style="display:flex;gap:3px;flex-wrap:wrap">
+      ${Array.from({ length: TL_MAX_DAYS }, (_, d) => {
+        const dr = _tlDayRange(d), n = cnt[d] || 0, on = d === _tlDay;
+        return `<button onclick="setTlDay(${d})" title="${dr.label}：${n} 筆"
+          style="font-size:0.68rem;min-width:34px;padding:2px 4px;border-radius:5px;cursor:pointer;
+            border:1px solid ${on ? 'var(--accent,#6366f1)' : 'var(--border)'};
+            background:${on ? 'rgba(99,102,241,.2)' : n ? 'rgba(148,163,184,.10)' : 'transparent'};
+            color:${on ? 'var(--text1)' : n ? 'var(--text2)' : 'var(--text3)'}">${dr.label}${n ? `<br><b>${n}</b>` : ''}</button>`;
+      }).join('')}
+    </div></div>`;
+}
+
+/* ── 每月細項清理 ─────────────────────────────────────────────
+   只刪除「幣種交易的詳情」這類佔空間又不再需要的長文字欄位；
+   勝率分析、風控與止損建議所依賴的欄位（outcome / pnlR / 時間 / 等級 /
+   riskKeys / 各項扣分）一律保留，因此所有統計與 AI 學習完全不受影響。
+   每月執行一次，處理超過 TL_MAX_DAYS 天的已完結交易。 */
+const TL_PRUNE_KEY = 'csp_tl_prune_at';
+function pruneTradeDetailsMonthly() {
+  try {
+    const last = parseInt(localStorage.getItem(TL_PRUNE_KEY) || '0') || 0;
+    if (Date.now() - last < 30 * 24 * 3600 * 1000) return;
+    const cutoff = Date.now() - TL_MAX_DAYS * 24 * 3600 * 1000;
+    const log = loadTradeLog();
+    let n = 0;
+    for (const t of log) {
+      if (t.status !== 'closed' && t.status !== 'expired') continue;
+      if ((t.exitTime || t.timestamp || 0) >= cutoff) continue;
+      if (t._pruned) continue;
+      // 僅移除詳情類欄位（不影響任何統計與學習）
+      t.sqFactors = undefined; t.entryReasons = undefined; t.riskFactors = undefined;
+      t.riskRecs = undefined;  t.aiScaleReason = undefined; t.analysis = undefined;
+      t.defenseChecks = undefined; t.slReason = undefined; t.tp1Reason = undefined; t.tp2Reason = undefined;
+      t.entryReason = (t.entryReason || '').slice(0, 60);
+      t._pruned = true; n++;
+    }
+    localStorage.setItem(TL_PRUNE_KEY, String(Date.now()));
+    if (n) { saveTradeLog(log); console.info(`[清理] 已精簡 ${n} 筆超過 ${TL_MAX_DAYS} 天的交易詳情（統計與學習不受影響）`); }
+  } catch(e) { console.warn('[清理]', e); }
+}
+try { setTimeout(pruneTradeDetailsMonthly, 8000); } catch(_e) {}
 
 function setTlFilter(f) {
   _tlFilter = f;
@@ -19972,11 +20093,14 @@ function _scalpRow(t, showResult) {
 /* ── 頁面：自動交易持倉 ─────────────────────────────────────── */
 function renderScalpPositionsPage() {
   const el = document.getElementById('scalp-positions-content');
-  if (!el) return;
+  if (el) el.innerHTML = buildScalpPositionsHtml();
+}
+/* 產生「自動持倉」內容（供持倉頁子分頁嵌入）*/
+function buildScalpPositionsHtml() {
   const st = scalpStats();
   const s  = loadSettings();
   const onOff = s.scalpEnabled === true;
-  el.innerHTML = `
+  return `
     <div class="page-header"><div>
       <h1 class="page-title">⚡ 自動交易持倉（快進快出）</h1>
       <p class="page-subtitle">獨立試跑用訊號，與長線／短線單完全隔離，不影響原有交易紀錄與統計。
@@ -20020,7 +20144,10 @@ function renderScalpPositionsPage() {
 /* ── 頁面：自動交易紀錄 ─────────────────────────────────────── */
 function renderScalpLogPage() {
   const el = document.getElementById('scalp-log-content');
-  if (!el) return;
+  if (el) el.innerHTML = buildScalpLogHtml();
+}
+/* 產生「自動紀錄」內容（供交易紀錄頁子分頁嵌入）*/
+function buildScalpLogHtml() {
   const st = scalpStats();
   const recent = st.closed.slice().reverse().slice(0, 100);
   // 累積 R 曲線（簡易 SVG 走勢）
@@ -20038,7 +20165,7 @@ function renderScalpLogPage() {
         <polyline points="${pts}" fill="none" stroke="${st.netR >= 0 ? '#22c55e' : '#ef4444'}" stroke-width="2"/>
       </svg></div>`;
   }
-  el.innerHTML = `
+  return `
     <div class="page-header"><div>
       <h1 class="page-title">⚡ 自動交易紀錄（快進快出）</h1>
       <p class="page-subtitle">試跑數據：勝率、累計 R、最大回撤、獲利因子。用來判斷這套自動交易訊號是否值得採用。
