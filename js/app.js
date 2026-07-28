@@ -19081,7 +19081,10 @@ async function testScalpTelegram() {
     '　🎯 觸及止盈一（減倉並上移止損）',
     '　🚀 ✅ 🛑 ⚖️ ⏱️ 交易結束（含結束原因）',
     '',
-    `目前設定：止損 ${SCALP_CFG.slAtrMult}×ATR、止盈 ${SCALP_CFG.tp1R}R/${SCALP_CFG.tp2R}R、`
+    `目前設定：止損 ${(() => { try { const L = scalpSlLearn();
+        return L.ready ? `${L.mult}×ATR（🤖 學習自 ${L.n} 筆，原始 ${L.base}）` : `${L.base}×ATR（學習中）`;
+      } catch(_e) { return SCALP_CFG.slAtrMult + '×ATR'; } })()}、`
+      + `止盈 ${SCALP_CFG.tp1R}R/${SCALP_CFG.tp2R}R、`
       + `停滯 ${SCALP_CFG.timeStopMin} 分、最長 ${SCALP_CFG.maxHoldMin} 分`,
     `單筆風險 ${SCALP_CFG.riskPerTradePct}%　·　同時持倉上限 ${SCALP_CFG.maxActive} 筆`,
     '',
@@ -19771,7 +19774,20 @@ const SCALP_CFG = {
   killZoneOnly: false, // 一天會擋掉 15/24 小時；改為記錄時段品質，用數據再決定
   maxRiskPct:   0.025, // 單筆風險上限 2.5%（1.2%→2.5%，避免波動幣全被擋）
   // ── 出場（快週轉）──
-  slAtrMult:   0.6,    // 止損放突破點另一側 0.6 × ATR
+  slAtrMult:   0.6,    // 止損放突破點另一側 0.6 × ATR（機器人學習止損的起始值）
+  // ── 機器人學習止損：從自己已完結的紀錄反推「止損到底該放多寬」──────
+  //    只用快進快出自己的樣本學習，不碰主系統的止損記憶。
+  slLearn:         true,  // 啟用學習止損（false = 一律用上面的固定 slAtrMult）
+  slLearnMinN:     15,    // 全域最少已完結樣本（不足時用固定值）
+  slLearnMinModeN: 10,    // 分模式最少樣本（不足時退回全域學習值）
+  slMaePct:        85,    // 目標：讓 85% 的獲利單不會在途中被洗出場
+  slMaeMargin:     1.10,  // 需求距離再留 10% 餘裕（K 棒影線的雜訊緩衝）
+  slMultMin:       0.35,  // 學習後的下限（再緊就是純雜訊止損）
+  slMultMax:       1.60,  // 學習後的上限（再寬單筆風險過大、R/R 崩壞）
+  slStepMax:       0.15,  // 單次調整幅度上限：現值的 ±15%（避免樣本一變就大跳）
+  slImmMin:        5,     // 「秒損」定義：進場 ≤5 分鐘就被止損
+  slImmLbCap:      0.35,  // 秒損率 Wilson 下界 > 35% → 判定止損過緊，強制放寬
+  slLooseSlRate:   0.25,  // 止損率下界 < 25% 且獲利單 MAE 很淺 → 判定過寬，收緊
   tp1R:        1.0,    // 止盈一 1.0R（減倉 60%）
   tp2R:        1.8,    // 止盈二 1.8R
   tp1Frac:     0.6,    // 觸及 TP1 減倉比例
@@ -19857,6 +19873,174 @@ function scalpPositionSize(entry, sl, riskAmt) {
   const notional = qty * entry;
   return { qty, notional, perUnitRisk: per };
 }
+/* ══════════════════════════════════════════════════════════════════
+   機器人學習止損（快進快出專用）
+   ------------------------------------------------------------------
+   問題：0.6×ATR 是拍腦袋定的。太緊 → 一進場就被影線掃掉（秒損），
+   明明方向對了卻拿不到；太寬 → 單筆虧損變大、R/R 崩壞。到底該多寬，
+   只有自己的成交紀錄知道。
+
+   學習依據（全部以 ATR 為單位，跨幣種可直接比較）：
+     · maeAtr（最大不利偏移）：這筆單在存活期間「最多逆走幾個 ATR」。
+       獲利單的 maeAtr = 當初至少需要多寬的止損才不會被洗掉。
+     · mfeAtr（最大有利偏移）：止損單在被掃之前曾經賺到幾個 ATR。
+     · 秒損率：≤5 分鐘就被止損的比例——止損過緊最直接的證據。
+
+   學習規則：
+     ① 取獲利單 maeAtr 的第 85 百分位 × 1.1 餘裕 = 需要的「總止損距離」
+     ② 減去進場點到止損錨點的距離中位數，即為需要的 ATR 倍數
+     ③ 秒損率 Wilson 下界 > 35% → 再強制放寬一級（樣本偏誤補償，見下）
+     ④ 止損率下界 < 25% 且獲利單幾乎不回撤 → 判定過寬，收緊
+     ⑤ 夾在 [slMultMin, slMultMax]，且單次調整不超過現值 ±15%
+
+   已知偏誤並已補償：只有「沒被止損的單」才有完整 maeAtr，被掃掉的單
+   MAE 一律等於止損距離本身，用它們學習會低估需求（倖存者偏誤）。因此
+   規則 ③ 用秒損率當作「本來會贏卻被洗掉」的代理指標，單向施加放寬壓力。
+   ══════════════════════════════════════════════════════════════════ */
+function _scalpPct(arr, p) {
+  const a = arr.filter(isFinite).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const i = (a.length - 1) * (p / 100);
+  const lo = Math.floor(i), hi = Math.ceil(i);
+  return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (i - lo);
+}
+
+let _scalpSlCache = null, _scalpSlCacheKey = '';
+function invalidateScalpSlLearn() { _scalpSlCache = null; _scalpSlCacheKey = ''; }
+
+/* 回傳學習結果（含推導過程，供 UI 逐項核對）*/
+function scalpSlLearn() {
+  const cfg = SCALP_CFG;
+  const log = loadScalpLog();
+  const closed = log.filter(t => t.status === 'closed');
+  const key = `${closed.length}|${closed[0]?.exitTime || 0}|${cfg.slAtrMult}`;
+  if (_scalpSlCache && _scalpSlCacheKey === key) return _scalpSlCache;
+
+  const base = cfg.slAtrMult;
+  const out = {
+    ready: false, n: closed.length, base, mult: base, src: 'default',
+    reasons: [], byMode: {}, warn: null,
+  };
+
+  if (!cfg.slLearn) {
+    out.warn = '學習止損已關閉（SCALP_CFG.slLearn = false），使用固定倍數';
+    _scalpSlCache = out; _scalpSlCacheKey = key; return out;
+  }
+  if (closed.length < cfg.slLearnMinN) {
+    out.warn = `樣本 ${closed.length}/${cfg.slLearnMinN} 筆，尚在累積中 — `
+             + `樣本不足時擅自調整止損只是對雜訊過擬合，先用固定 ${base}×ATR`;
+    _scalpSlCache = out; _scalpSlCacheKey = key; return out;
+  }
+
+  /* 目前實際在用的倍數（最近幾筆單採用值的中位數）。步進上限要相對於「現值」，
+     不能相對於原始設定值 — 否則倍數永遠被鎖在 0.6±15% 之內，再多樣本也走不到
+     資料真正指向的位置，等於學了不算。以現值為錨點才能逐輪收斂。 */
+  const anchorOf = (set) => {
+    const ms = set.slice(0, 10).map(t => parseFloat(t.slMult)).filter(v => isFinite(v) && v > 0);
+    const med = _scalpPct(ms, 50);
+    return med != null ? med : base;
+  };
+
+  /* 單一樣本集合的推導（全域與各模式共用）*/
+  const derive = (set, label) => {
+    const anchor = anchorOf(set);
+    const wins   = set.filter(isWinTrade);
+    const stops  = set.filter(t => t.outcome === 'sl');
+    const reasons = [];
+    // 進場點→止損錨點的距離（ATR），學習出的倍數要疊在這之上
+    const gaps = set.map(t => parseFloat(t.levelGapAtr)).filter(isFinite);
+    const gapMed = _scalpPct(gaps, 50);
+    // ① 獲利單的 MAE 分佈 → 需要的總止損距離
+    const maes = wins.map(t => parseFloat(t.maeAtr)).filter(v => isFinite(v) && v >= 0);
+    let want = null;
+    if (maes.length >= 5 && gapMed != null) {
+      const p = _scalpPct(maes, cfg.slMaePct);
+      const needDist = p * cfg.slMaeMargin;
+      want = needDist - gapMed;
+      reasons.push(`獲利單 MAE 第 ${cfg.slMaePct} 百分位 ${p.toFixed(2)}×ATR`
+        + `（${maes.length} 筆）×${cfg.slMaeMargin} 餘裕 = 需要 ${needDist.toFixed(2)}×ATR 總距離，`
+        + `扣掉錨點距離中位數 ${gapMed.toFixed(2)} → ${want.toFixed(2)}×ATR`);
+    } else {
+      reasons.push(`獲利單 MAE 樣本 ${maes.length} 筆（需 ≥5）不足以推導距離，維持現值`);
+    }
+    let mult = want != null && isFinite(want) ? want : anchor;
+
+    // ② 秒損率：止損過緊最直接的證據（補償倖存者偏誤，只單向放寬）
+    //    分母必須是「全部交易」而非「止損單」。快進快出的止損本來就放得近，
+    //    被掃到時幾乎一定很快，所以「秒損佔止損的比例」天生就接近 100%，
+    //    拿它當依據會每輪都判定過緊，一路把止損推到上限為止（實測到的錯誤）。
+    //    改看「秒損單佔全部交易的比例」：只有真的常常一進場就被掃才會超標。
+    const immN = stops.filter(t => (t.holdMin ?? 999) <= cfg.slImmMin).length;
+    const immLb = set.length >= 10 ? wilsonLB(immN, set.length) : null;
+    if (immLb != null && immLb > cfg.slImmLbCap) {
+      const forced = Math.max(mult, anchor * (1 + cfg.slStepMax));
+      reasons.push(`秒損單佔全部交易 ${(immN / set.length * 100).toFixed(0)}%（${immN}/${set.length}）`
+        + `，下界 ${(immLb * 100).toFixed(0)}% > ${cfg.slImmLbCap * 100}% → 判定止損過緊，`
+        + `強制放寬至 ≥${forced.toFixed(2)}×ATR`);
+      mult = forced;
+    } else if (immLb != null) {
+      reasons.push(`秒損單佔全部交易 ${(immN / set.length * 100).toFixed(0)}%（${immN}/${set.length}），`
+        + `下界 ${(immLb * 100).toFixed(0)}% 未超過 ${cfg.slImmLbCap * 100}%，不強制放寬`);
+    }
+
+    // ③ 止損率極低且獲利單幾乎不回撤 → 止損放太寬，收緊換取更好的 R/R
+    const slLb = set.length >= 10 ? wilsonLB(stops.length, set.length) : null;
+    const maeMed = _scalpPct(maes, 50);
+    if (slLb != null && slLb < cfg.slLooseSlRate && maeMed != null && gapMed != null
+        && maeMed < gapMed + mult * 0.55) {
+      const tight = Math.max(cfg.slMultMin, mult * (1 - cfg.slStepMax));
+      reasons.push(`止損率下界僅 ${(slLb * 100).toFixed(0)}% 且獲利單 MAE 中位數 ${maeMed.toFixed(2)}`
+        + ` 遠淺於止損距離 → 判定過寬，收緊至 ${tight.toFixed(2)}×ATR（換取更好的 R/R）`);
+      mult = tight;
+    }
+
+    // ④ 夾邊界 + 限制單次調整幅度（避免樣本一變倍數就大跳）
+    const capped = Math.max(anchor * (1 - cfg.slStepMax), Math.min(anchor * (1 + cfg.slStepMax), mult));
+    if (Math.abs(capped - mult) > 1e-6) {
+      reasons.push(`單次調整上限：相對目前在用的 ${anchor.toFixed(2)}×ATR 一次最多動 ±${cfg.slStepMax * 100}%`
+        + `，${mult.toFixed(2)} → ${capped.toFixed(2)}（下一批單再依新樣本繼續逼近）`);
+      mult = capped;
+    }
+    const bounded = Math.max(cfg.slMultMin, Math.min(cfg.slMultMax, mult));
+    if (Math.abs(bounded - mult) > 1e-6) {
+      reasons.push(`夾在允許範圍 [${cfg.slMultMin}, ${cfg.slMultMax}]：${mult.toFixed(2)} → ${bounded.toFixed(2)}`);
+      mult = bounded;
+    }
+    return {
+      label, n: set.length, wins: wins.length, stops: stops.length, anchor: +anchor.toFixed(2),
+      immN, immRate: set.length ? +(immN / set.length * 100).toFixed(1) : null,
+      slRate: set.length ? +(stops.length / set.length * 100).toFixed(1) : null,
+      maeP: maes.length >= 5 ? +_scalpPct(maes, cfg.slMaePct).toFixed(2) : null,
+      maeMed: maeMed != null ? +maeMed.toFixed(2) : null,
+      gapMed: gapMed != null ? +gapMed.toFixed(2) : null,
+      mult: +mult.toFixed(2), reasons,
+    };
+  };
+
+  const g = derive(closed, '全域');
+  out.ready = true; out.mult = g.mult; out.src = 'global';
+  out.reasons = g.reasons; out.global = g;
+
+  // 分模式學習：不同進場方式的失敗形態不同（回踩該緊、假突破該寬）
+  for (const m of Object.keys(SCALP_MODE_LABEL)) {
+    const sub = closed.filter(t => t.mode === m);
+    if (sub.length >= cfg.slLearnMinModeN) out.byMode[m] = derive(sub, SCALP_MODE_LABEL[m]);
+  }
+  _scalpSlCache = out; _scalpSlCacheKey = key;
+  return out;
+}
+
+/* 取這筆單該用的 ATR 倍數：分模式 > 全域 > 固定值 */
+function scalpSlMult(mode) {
+  try {
+    const L = scalpSlLearn();
+    if (!L.ready) return { mult: L.base, src: 'default', why: L.warn || '固定倍數' };
+    const m = L.byMode[mode];
+    if (m) return { mult: m.mult, src: 'mode', why: `${m.label} ${m.n} 筆學習（秒損率 ${m.immRate ?? '--'}%）` };
+    return { mult: L.mult, src: 'global', why: `全域 ${L.n} 筆學習（秒損率 ${L.global?.immRate ?? '--'}%）` };
+  } catch(_e) { return { mult: SCALP_CFG.slAtrMult, src: 'default', why: '學習失敗，用固定倍數' }; }
+}
+
 /* 快進快出專用 5m K 線快取：只對「通過初篩」的幣抓，數量少不佔限速 */
 const _scalpKlineCache = {};
 /* 各道條件的擋下次數（每輪重置）——沒有訊號時用來看是卡在哪一關，
@@ -19871,6 +20055,8 @@ function loadScalpLog() {
 function saveScalpLog(log) {
   try { localStorage.setItem(SCALP_LOG_KEY, JSON.stringify(log.slice(0, SCALP_MAX))); }
   catch(_e) { console.warn('[scalp] 儲存失敗', _e); }
+  // 紀錄一變動就讓學習止損重算，避免拿舊樣本推導出的倍數去開新單
+  try { invalidateScalpSlLearn(); } catch(_e) {}
 }
 function _scalpSignalledRecently(sym, dir) {
   try {
@@ -20030,7 +20216,9 @@ function buildScalpSetup(coin, isLong) {
               : mode === 'trap'   ? trapLevel
               : modeA             ? (isLong ? hi : lo)
               :                     (isLong ? swingLo : swingHi);
-  const slRaw = isLong ? level - atr * SCALP_CFG.slAtrMult : level + atr * SCALP_CFG.slAtrMult;
+  // 止損倍數改由「機器人學習止損」決定（樣本不足時等同原本的固定 0.6×ATR）
+  const _slL = scalpSlMult(mode);
+  const slRaw = isLong ? level - atr * _slL.mult : level + atr * _slL.mult;
   const entry = price;                                  // 市價進場（突破追擊）
   const risk  = Math.abs(entry - slRaw);
   if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return _sr('風險超限(追太遠)');
@@ -20039,7 +20227,11 @@ function buildScalpSetup(coin, isLong) {
   return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi, mode,
            macd: parseFloat(coin.macdHist) || 0,
            breakLevel: level, breakExtent: +(Math.max(0, extent) * 100).toFixed(2),
-           volRatio: +(curVol / avgVol).toFixed(2), oiState };
+           volRatio: +(curVol / avgVol).toFixed(2), oiState,
+           // 學習止損的存證：倍數、來源、理由，以及回頭學習所需的 ATR 標準化欄位
+           slMult: +_slL.mult.toFixed(3), slMultSrc: _slL.src, slMultWhy: _slL.why,
+           levelGapAtr: atr > 0 ? +(Math.abs(entry - level) / atr).toFixed(3) : null,
+           slDistAtr:   atr > 0 ? +(risk / atr).toFixed(3) : null };
 }
 
 /* 掃描產生快進快出訊號（獨立於 recordSignalsFromScan） */
@@ -20136,6 +20328,10 @@ async function recordScalpSignals(data) {
         exitPrice: null, exitTime: null, pnlR: null,
         rsi: setup.rsi, adx: setup.adx, macdHist: setup.macd,
         mode: setup.mode,
+        // 機器人學習止損：本筆採用的倍數與來源，以及回頭學習用的 ATR 標準化欄位
+        atrAtEntry: setup.atr, slMult: setup.slMult, slMultSrc: setup.slMultSrc,
+        slMultWhy: setup.slMultWhy, levelGapAtr: setup.levelGapAtr, slDistAtr: setup.slDistAtr,
+        maeAtr: 0, mfeAtr: 0,     // 最大不利／有利偏移（ATR 單位），持倉期間即時更新
         breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
         volRatio: setup.volRatio, oiState: setup.oiState,
         qty: +_sz.qty.toPrecision(8), notional: +_sz.notional.toFixed(2),
@@ -20184,6 +20380,17 @@ function updateScalpTrades(data) {
       const baseRisk = Math.abs(t.entry - (t.baseSl ?? t.sl)) || 1;
       const heldMin  = (Date.now() - (t.entryTime || t.timestamp)) / 60000;
       let outcome = null;
+
+      // ⓪ 記錄最大不利／有利偏移（ATR 單位）——機器人學習止損的唯一資料來源。
+      //    必須在任何出場判定「之前」更新，否則被止損那一刻的逆走幅度會漏記。
+      if (t.atrAtEntry > 0) {
+        const adv = ((cur - t.entry) * (isLong ? 1 : -1)) / t.atrAtEntry;   // >0 有利、<0 不利
+        const mae = Math.max(t.maeAtr || 0, -Math.min(0, adv));
+        const mfe = Math.max(t.mfeAtr || 0,  Math.max(0, adv));
+        if (mae !== t.maeAtr || mfe !== t.mfeAtr) {
+          t.maeAtr = +mae.toFixed(3); t.mfeAtr = +mfe.toFixed(3); changed = true;
+        }
+      }
 
       // ① 最長持有：到期一律出場（快進快出不留隔夜）
       if (heldMin >= SCALP_CFG.maxHoldMin) {
@@ -20255,7 +20462,9 @@ function sendScalpTelegram(t, kind) {
         `⚡ <b>快進快出訊號</b> — ${sym} ${dir}`,
         ``,
         `📍 進場：<b>$${fmt(t.entry)}</b>（市價）`,
-        `🛑 止損：$${fmt(t.sl)}`,
+        `🛑 止損：$${fmt(t.sl)}`
+          + (t.slMult ? `（${t.slMult}×ATR${t.slMultSrc === 'default' ? '，固定值' : '，🤖 機器人學習'}）` : ''),
+        t.slMultWhy && t.slMultSrc !== 'default' ? `　└ ${t.slMultWhy}` : '',
         t.qty ? `📦 數量：<b>${t.qty}</b>　名目 $${t.notional}　風險 $${t.riskAmt}（${t.riskPct}% 權益）` : '',
         `🎯 止盈一：$${fmt(t.tp1)}（${SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
         `🚀 止盈二：$${fmt(t.tp2)}（${SCALP_CFG.tp2R}R）`,
@@ -20328,6 +20537,12 @@ function sendScalpTelegram(t, kind) {
         `📊 損益：<b>${t.pnlR > 0 ? '+' : ''}${t.pnlR}R</b>${money}`,
         `⏱️ 持有 ${t.holdMin} 分鐘　·　進場模式：${modeLabel}`,
         t.tp1Hit ? `✔️ 期間曾觸及止盈一並減倉 ${SCALP_CFG.tp1Frac * 100}%` : '',
+        // 學習止損回饋：這筆的逆走幅度會回去校正下一批單的止損寬度
+        (t.slMult && t.maeAtr != null) ? `🤖 學習止損：本筆用 ${t.slMult}×ATR（總距離 ${t.slDistAtr ?? '--'}×ATR）`
+          + `，途中最大逆走 ${t.maeAtr}×ATR`
+          + (t.outcome === 'sl' && (t.holdMin ?? 999) <= SCALP_CFG.slImmMin
+              ? '　⚠️ 秒損（≤' + SCALP_CFG.slImmMin + '分），已計入放寬依據'
+              : win ? '　→ 已作為「該留多少空間」的樣本' : '') : '',
         ``,
         `⏰ ${ts}`,
         `#${sym.toLowerCase()} #scalp #交易結束 #${win ? '獲利' : t.outcome === 'be' ? '平手' : '止損'}`,
@@ -20513,6 +20728,77 @@ function _scalpModePanel() {
   } catch(_e) { return ''; }
 }
 
+/* ── 機器人學習止損面板（自動持倉／自動紀錄共用）────────────────
+   把推導過程逐條列出，讓「為什麼止損變寬／變緊」可以被核對，而不是
+   一個沒有來源的數字。 */
+function _scalpSlLearnPanel() {
+  try {
+    const L = scalpSlLearn();
+    const cfg = SCALP_CFG;
+    const box = inner => `<div style="background:var(--card);border:1px solid var(--border);
+      border-radius:10px;padding:10px 12px;margin-top:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🤖 機器人學習止損</div>${inner}</div>`;
+
+    if (!L.ready) {
+      return box(`<div style="font-size:0.8rem;color:var(--text3)">
+        目前使用固定 <b>${L.base}×ATR</b>。${L.warn || ''}<br>
+        累積足夠已完結樣本後，系統會用「獲利單途中最多逆走多少」與「秒損率」
+        自動推導該放多寬，並在這裡列出完整推導過程。</div>`);
+    }
+
+    const g = L.global;
+    const delta = L.mult - L.base;
+    const dC = Math.abs(delta) < 0.005 ? 'var(--text3)' : delta > 0 ? '#f59e0b' : '#22c55e';
+    const dTxt = Math.abs(delta) < 0.005 ? '維持不變'
+      : delta > 0 ? `放寬 +${delta.toFixed(2)}（減少被雜訊掃損）`
+                  : `收緊 ${delta.toFixed(2)}（換取更好的 R/R）`;
+
+    const stat = (lbl, val, color) => `<div style="min-width:104px">
+      <div style="font-size:0.72rem;color:var(--text3)">${lbl}</div>
+      <div style="font-size:0.92rem;font-weight:700;color:${color || 'var(--text1)'}">${val}</div></div>`;
+
+    const modeRows = Object.entries(L.byMode).map(([m, v]) => {
+      const d = v.mult - L.base;
+      return `<div style="display:flex;gap:10px;align-items:center;font-size:0.78rem;padding:4px 0;
+          border-top:1px solid rgba(255,255,255,.05)">
+        <span style="min-width:130px;font-weight:600">${v.label}</span>
+        <span style="color:var(--text3);min-width:48px">${v.n} 筆</span>
+        <span style="font-weight:700;min-width:88px">${v.mult}×ATR</span>
+        <span style="color:${d > 0 ? '#f59e0b' : d < 0 ? '#22c55e' : 'var(--text3)'};min-width:60px">
+          ${d > 0 ? '+' : ''}${d.toFixed(2)}</span>
+        <span style="color:var(--text3)">秒損 ${v.immRate ?? '--'}%　止損率 ${v.slRate ?? '--'}%</span>
+      </div>`;
+    }).join('');
+
+    return box(`
+      <div style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:8px">
+        ${stat('目前採用', `${L.mult}×ATR`, '#00e676')}
+        ${stat('前一批用的', `${g.anchor}×ATR`)}
+        ${stat('原始設定', `${L.base}×ATR`)}
+        ${stat('調整', dTxt, dC)}
+        ${stat('學習樣本', `${L.n} 筆`)}
+        ${stat('秒損率', `${g.immRate ?? '--'}%`, (g.immRate ?? 0) > cfg.slImmLbCap * 100 ? '#ef4444' : 'var(--text1)')}
+        ${stat('止損率', `${g.slRate ?? '--'}%`)}
+      </div>
+      <div style="font-size:0.78rem;color:var(--text2);line-height:1.65">
+        ${g.reasons.map(r => `<div>· ${r}</div>`).join('')}
+      </div>
+      ${modeRows ? `<div style="margin-top:9px">
+        <div style="font-size:0.8rem;font-weight:700;margin-bottom:2px">分模式止損寬度（樣本 ≥${cfg.slLearnMinModeN} 筆才獨立學習）</div>
+        ${modeRows}</div>` : `<div style="font-size:0.74rem;color:var(--text3);margin-top:7px">
+        各模式樣本皆未達 ${cfg.slLearnMinModeN} 筆，全部沿用全域學習值。</div>`}
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:8px;line-height:1.6">
+        推導方式：取獲利單「途中最大逆走幅度（MAE）」的第 ${cfg.slMaePct} 百分位 ×${cfg.slMaeMargin} 餘裕，
+        即為讓 ${cfg.slMaePct}% 的贏單不被洗掉所需的止損距離；扣掉進場點到止損錨點的距離後即為 ATR 倍數。
+        被止損的單 MAE 一律等於止損距離本身（倖存者偏誤，會低估需求），因此另以
+        <b>秒損率下界 &gt;${cfg.slImmLbCap * 100}%</b> 作為「本來會贏卻被洗掉」的代理指標單向施加放寬壓力。
+        每次調整以「目前在用的倍數」為錨點，一次最多動 ±${cfg.slStepMax * 100}%，並夾在
+        [${cfg.slMultMin}, ${cfg.slMultMax}]；資料若持續指向同一方向，會逐輪走過去而不是一次跳到底。
+        止損放寬不會提高單筆虧損金額 — 部位大小為固定分數法，止損變寬只會等比例減少數量。
+      </div>`);
+  } catch(e) { return ''; }
+}
+
 /* 快進快出：持倉／紀錄共用的統計卡片 */
 function _scalpStatCards(st) {
   const wrC = st.winRate == null ? 'var(--text3)' : st.winRate >= 55 ? '#22c55e' : st.winRate >= 45 ? '#f59e0b' : '#ef4444';
@@ -20542,6 +20828,10 @@ function _scalpRow(t, showResult) {
     <span style="color:${dirC};font-weight:600;min-width:44px">${isLong ? '▲多' : '▼空'}</span>
     <span style="color:var(--text3)">進 ${fmtPrice(t.entry)}</span>
     <span style="color:var(--bear)">損 ${fmtPrice(t.sl)}</span>
+    ${t.slMult ? `<span style="font-size:0.72rem;padding:1px 6px;border-radius:10px;
+        background:${t.slMultSrc === 'default' ? 'rgba(148,163,184,.12)' : 'rgba(0,230,118,.12)'};
+        color:${t.slMultSrc === 'default' ? 'var(--text3)' : '#00e676'}"
+        title="${t.slMultWhy || ''}">${t.slMultSrc === 'default' ? '' : '🤖 '}${t.slMult}×ATR</span>` : ''}
     <span style="color:var(--bull)">盈 ${fmtPrice(t.tp1)}</span>
     ${showResult
       ? `<span style="color:${rC};font-weight:700;margin-left:auto">${oLabel}　${r > 0 ? '+' : ''}${t.pnlR}R</span>
@@ -20565,7 +20855,10 @@ function buildScalpPositionsHtml() {
     <div class="page-header"><div>
       <h1 class="page-title">⚡ 自動交易持倉（快進快出）</h1>
       <p class="page-subtitle">獨立試跑用訊號，與長線／短線單完全隔離，不影響原有交易紀錄與統計。
-        止損 ${SCALP_CFG.slAtrMult}×ATR、止盈 ${SCALP_CFG.tp1R}R/${SCALP_CFG.tp2R}R、
+        止損 ${(() => { try { const L = scalpSlLearn();
+          return L.ready ? `${L.mult}×ATR（🤖 機器人學習，原始 ${L.base}）` : `${L.base}×ATR（學習中）`;
+        } catch(_e) { return SCALP_CFG.slAtrMult + '×ATR'; } })()}、
+        止盈 ${SCALP_CFG.tp1R}R/${SCALP_CFG.tp2R}R、
         停滯 ${SCALP_CFG.timeStopMin} 分出場、最長持有 ${SCALP_CFG.maxHoldMin} 分。</p>
     </div></div>
     <div style="margin-bottom:10px;padding:8px 12px;border-radius:8px;
@@ -20576,6 +20869,7 @@ function buildScalpPositionsHtml() {
     </div>
     ${_scalpStatCards(st)}
     ${_scalpAccountPanel()}
+    ${_scalpSlLearnPanel()}
     ${_scalpModePanel()}
     ${(() => { try {
       // ── 訊號診斷：沒有交易時，直接顯示卡在哪一道條件 ──
@@ -20668,6 +20962,7 @@ function buildScalpLogHtml() {
     </div></div>
     ${_scalpStatCards(st)}
     ${_scalpAccountPanel()}
+    ${_scalpSlLearnPanel()}
     ${_scalpModePanel()}
     ${curveSvg}
     ${(() => {
