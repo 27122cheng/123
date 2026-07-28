@@ -286,7 +286,11 @@ function startRefreshCycle() {
     try { updateSLTightnessWatch(data); } catch(e) {}
     try { recordProvenStrategyTrades(data); } catch(e) { console.error('[refresh] proven 錯誤:', e); }
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
-    try { updateScalpTrades(data); recordScalpSignals(data); } catch(e) { console.warn('[scalp]', e); }
+    try {
+      updateScalpTrades(data);
+      recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e));
+      console.debug('[scalp] 已觸發掃描，幣數', Array.isArray(data) ? data.length : 0);
+    } catch(e) { console.warn('[scalp]', e); }
     try {
       // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
@@ -19834,9 +19838,11 @@ function buildScalpSetup(coin, isLong) {
 }
 
 /* 掃描產生快進快出訊號（獨立於 recordSignalsFromScan） */
+let _scalpLastRun = 0;      // 上次執行 recordScalpSignals 的時間（診斷用）
 async function recordScalpSignals(data) {
   // 診斷必須在所有提前 return 之前重置並記錄原因，否則整段卡在哪一道都看不到
   _scalpReject = {};
+  _scalpLastRun = Date.now();
   try {
     if (!isSignalMaster()) { _scalpReject._blocked = '本裝置未在發送訊號（非訊號主機／裝置開關關閉／閒置停發）'; return; }
     const s = loadSettings();
@@ -19928,6 +19934,19 @@ async function recordScalpSignals(data) {
     }
     if (changed) saveScalpLog(log);
   } catch(e) { console.warn('[scalp] 訊號產生錯誤', e); }
+}
+
+/* 手動立即執行一次快進快出掃描——用來區分「條件不符」與「排程根本沒呼叫」*/
+async function scalpRunNow() {
+  try {
+    const data = (typeof state !== 'undefined' && Array.isArray(state.data)) ? state.data : [];
+    if (!data.length) { showToast('目前沒有掃描資料，請等主掃描完成後再試', 'warning'); return; }
+    await recordScalpSignals(data);
+    renderPositionsPage();
+    const n = Object.entries(_scalpReject).filter(([k]) => !k.startsWith('_'))
+      .reduce((a, [, v]) => a + v, 0);
+    showToast(`已執行：掃描 ${_scalpReject._scanned || 0} 幣，${n} 筆被條件擋下`, 'info');
+  } catch(e) { showToast('執行失敗：' + e.message, 'error'); console.error('[scalp-run]', e); }
 }
 
 /* ── 快進快出持倉管理（快速出場邏輯）────────────────────────────
@@ -20148,9 +20167,9 @@ function buildScalpPositionsHtml() {
               : '⏸️ 快進快出訊號<b>未啟用</b> — 請至設定頁開啟「⚡ 快進快出訊號（自動交易）」'}
     </div>
     ${_scalpStatCards(st)}
-    ${(() => {
+    ${(() => { try {
       // ── 訊號診斷：沒有交易時，直接顯示卡在哪一道條件 ──
-      const r = Object.entries(_scalpReject || {}).filter(([k]) => k !== '_scanned')
+      const r = Object.entries(_scalpReject || {}).filter(([k]) => !k.startsWith('_'))
         .sort((a, b) => b[1] - a[1]);
       const scanned = (_scalpReject && _scalpReject._scanned) || 0;
       const blocked = _scalpReject && _scalpReject._blocked;
@@ -20167,9 +20186,18 @@ function buildScalpPositionsHtml() {
           </div>` : ''}
         </div>`;
       }
+      const _lr = _scalpLastRun
+        ? new Date(_scalpLastRun).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        : null;
       if (!scanned) return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
-        background:rgba(148,163,184,.08);font-size:0.82rem;color:var(--text3)">
-        尚未執行掃描 — 等下一輪掃描後會顯示各條件的擋下統計</div>`;
+        background:rgba(245,158,11,.10);border-left:3px solid #f59e0b;font-size:0.84rem">
+        <b style="color:#f59e0b">⚠️ 尚未執行過掃描</b><br>
+        <span style="color:var(--text2)">上次執行：${_lr || '從未執行'}</span><br>
+        <span style="color:var(--text3);font-size:0.8rem">
+          主掃描每輪會自動執行；若這裡長期顯示「從未執行」，代表排程未呼叫到，
+          可先按下方按鈕手動跑一次確認。</span>
+        <div style="margin-top:8px"><button class="btn-ghost" style="font-size:0.82rem;color:#00e676"
+          onclick="scalpRunNow()">🔄 立即執行一次</button></div></div>`;
       return `<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px">
         <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🔍 本輪訊號診斷（掃描 ${scanned} 幣）</div>
         ${r.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${r.map(([k, v]) =>
@@ -20177,10 +20205,19 @@ function buildScalpPositionsHtml() {
               background:rgba(245,158,11,.12);color:#f59e0b">${k} <b>${v}</b></span>`).join('')}</div>`
           : '<div style="font-size:0.8rem;color:#22c55e">本輪無條件擋下</div>'}
         <div style="font-size:0.72rem;color:var(--text3);margin-top:7px">
-          數字最大的那項就是目前的主要瓶頸。若「未突破區間」最多屬正常（多數時候本來就沒有突破）；
+          上次執行：${_lr || '—'}　·　數字最大的那項就是目前的主要瓶頸。
+          若「未突破區間」最多屬正常（多數時候本來就沒有突破）；
           若集中在某一道過濾條件，代表該條件可能過嚴，可調整 SCALP_CFG 對應參數。</div>
+        <div style="margin-top:6px"><button class="btn-ghost" style="font-size:0.8rem"
+          onclick="scalpRunNow()">🔄 立即執行一次</button></div>
       </div>`;
-    })()}
+    } catch(_e) {
+      return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
+        background:rgba(239,68,68,.10);font-size:0.82rem;color:#ef4444">
+        診斷區渲染失敗：${_e.message}
+        <div style="margin-top:6px"><button class="btn-ghost" style="font-size:0.8rem"
+          onclick="scalpRunNow()">🔄 立即執行一次</button></div></div>`;
+    } })()}
     <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:12px">
       <div style="padding:9px 12px;font-weight:700;font-size:0.84rem;border-bottom:1px solid var(--border)">
         持倉中（${st.open.length}/${SCALP_CFG.maxActive}）</div>
