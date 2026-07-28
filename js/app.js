@@ -19553,7 +19553,8 @@ const SCALP_CFG = {
   volMult:      1.5,   // 突破當根需 ≥ 均量 1.5 倍
   requireOI:    false, // true=必須 OI 新錢同向；false=只擋「回補/平倉推動」
   rsiCap:       72,    // 做多 RSI 上限（做空鏡像 28）
-  killZoneOnly: true,  // 只在主力時段做（冷門時段假突破比例最高）
+  killZoneOnly: false, // 先關閉：一天會擋掉 15/24 小時。改為記錄各單的時段品質，
+                       // 等試跑數據顯示冷門時段確實較差再開啟（見自動紀錄頁時段統計）
   maxRiskPct:   0.012, // 單筆風險上限 1.2%（追太遠不做）
   // ── 出場（快週轉）──
   slAtrMult:   0.6,    // 止損放突破點另一側 0.6 × ATR
@@ -19570,6 +19571,10 @@ const SCALP_CFG = {
 };
 /* 快進快出專用 5m K 線快取：只對「通過初篩」的幣抓，數量少不佔限速 */
 const _scalpKlineCache = {};
+/* 各道條件的擋下次數（每輪重置）——沒有訊號時用來看是卡在哪一關，
+   而不是憑猜測調參數。顯示於「自動持倉」頁。 */
+let _scalpReject = {};
+function _sr(k) { _scalpReject[k] = (_scalpReject[k] || 0) + 1; return null; }
 
 function loadScalpLog() {
   try { const a = JSON.parse(localStorage.getItem(SCALP_LOG_KEY) || '[]'); return Array.isArray(a) ? a : []; }
@@ -19611,7 +19616,7 @@ function buildScalpSetup(coin, isLong) {
   //    快進快出的獲利來源是「突破後的短時間動能延續」，與主系統「等回踩」
   //    互為互補：主系統怕回踩變破位，本系統怕假突破，失敗情境不重疊。
   const raw = _scalpKlineCache[coin.symbol];
-  if (!raw || raw.length < SCALP_CFG.breakLookback + 2) return null;
+  if (!raw || raw.length < SCALP_CFG.breakLookback + 2) return _sr('5m資料不足');
   const bars = raw.slice(-(SCALP_CFG.breakLookback + 1));
   const prev = bars.slice(0, -1);                       // 不含當根，避免自我比較
   const last = bars[bars.length - 1];
@@ -19619,39 +19624,39 @@ function buildScalpSetup(coin, isLong) {
   const lo = Math.min(...prev.map(b => parseFloat(b[3])));
   const close = parseFloat(last[4]);
   const broke = isLong ? close > hi : close < lo;
-  if (!broke) return null;
+  if (!broke) return _sr('未突破區間');
   // 突破幅度需有意義（避免貼著邊界的雜訊觸發）
   const extent = isLong ? (close - hi) / hi : (lo - close) / lo;
-  if (!(extent >= SCALP_CFG.minBreakPct)) return null;
+  if (!(extent >= SCALP_CFG.minBreakPct)) return _sr('突破幅度不足');
 
   // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
   const vols = prev.map(b => parseFloat(b[5]) || 0);
   const avgVol = vols.reduce((a, b) => a + b, 0) / (vols.length || 1);
   const curVol = parseFloat(last[5]) || 0;
-  if (!(avgVol > 0 && curVol >= avgVol * SCALP_CFG.volMult)) return null;
+  if (!(avgVol > 0 && curVol >= avgVol * SCALP_CFG.volMult)) return _sr('突破未放量');
 
   // ── ③ 未平倉量確認（最強的真假突破分辨器）────────────────────
   //    價漲+OI增=新多進場（真突破）；價漲+OI減=空頭回補（假突破嫌疑）。
   //    突破若由平倉盤推動，動能一到就沒有後續，正是快進快出最怕的情境。
   let oiState = 'none';
   try { oiState = oiAlignment(coin.symbol, isLong).state; } catch(_e) {}
-  if (oiState === 'unfavorable') return null;           // 回補/平倉推動 → 直接不做
-  if (SCALP_CFG.requireOI && oiState !== 'favorable') return null;
+  if (oiState === 'unfavorable') return _sr('OI回補平倉推動');   // 假突破嫌疑
+  if (SCALP_CFG.requireOI && oiState !== 'favorable') return _sr('OI非新錢同向');
 
   // ── ④ VWAP 同側：站在機構成本線正確一側才順勢 ─────────────────
   try {
     const vwap = _footprintCache[coin.symbol]?.vwap;
-    if (vwap > 0) { if (isLong ? price < vwap : price > vwap) return null; }
+    if (vwap > 0) { if (isLong ? price < vwap : price > vwap) return _sr('VWAP逆側'); }
   } catch(_e) {}
 
   // ── ⑤ 基本過濾：動能未耗盡、不逆 BTC、需在主力時段 ──────────────
   const rsi = parseFloat(coin.rsi);
-  if (isFinite(rsi) && (isLong ? rsi >= SCALP_CFG.rsiCap : rsi <= 100 - SCALP_CFG.rsiCap)) return null;
+  if (isFinite(rsi) && (isLong ? rsi >= SCALP_CFG.rsiCap : rsi <= 100 - SCALP_CFG.rsiCap)) return _sr('RSI過熱');
   if (coin.symbol !== 'BTC/USDT' && typeof _btcH4Dir !== 'undefined' && _btcH4Dir !== 'neutral') {
-    if (isLong ? _btcH4Dir === 'bear' : _btcH4Dir === 'bull') return null;   // 山寨日內幾乎完全跟 BTC
+    if (isLong ? _btcH4Dir === 'bear' : _btcH4Dir === 'bull') return _sr('逆BTC 4H');
   }
   if (SCALP_CFG.killZoneOnly) {
-    try { if (computeKillZone()?.quality === 'low') return null; } catch(_e) {}
+    try { if (computeKillZone()?.quality === 'low') return _sr('非主力時段'); } catch(_e) {}
   }
 
   // ── 價位：止損放突破點另一側（論點失效即出場，虧損小且明確）──────
@@ -19661,7 +19666,7 @@ function buildScalpSetup(coin, isLong) {
   const slRaw = isLong ? level - atr * SCALP_CFG.slAtrMult : level + atr * SCALP_CFG.slAtrMult;
   const entry = price;                                  // 市價進場（突破追擊）
   const risk  = Math.abs(entry - slRaw);
-  if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return null;  // 追太遠不做
+  if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return _sr('風險超限(追太遠)');
   const tp1 = isLong ? entry + risk * SCALP_CFG.tp1R : entry - risk * SCALP_CFG.tp1R;
   const tp2 = isLong ? entry + risk * SCALP_CFG.tp2R : entry - risk * SCALP_CFG.tp2R;
   return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi,
@@ -19685,20 +19690,22 @@ async function recordScalpSignals(data) {
 
     // ── 初篩（用已抓好的幣安資料，零額外請求）──────────────────
     //    只有通過初篩的少數幣才去抓 5m K 線，避免佔用 OKX/幣安限速。
+    _scalpReject = {};                       // 每輪重置
+    _scalpReject._scanned = data.length;
     const cands = [];
     for (const coin of data) {
       if (!coin || coin.score === 50) continue;
       const isLong = coin.score > 50;
       const dir = isLong ? 'long' : 'short';
-      if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) continue;
-      if (_scalpSignalledRecently(coin.symbol, dir)) continue;
-      if ((parseFloat(coin.adx) || 0) < SCALP_CFG.minAdx) continue;
+      if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) { _sr('已有持倉'); continue; }
+      if (_scalpSignalledRecently(coin.symbol, dir)) { _sr('冷卻期內'); continue; }
+      if ((parseFloat(coin.adx) || 0) < SCALP_CFG.minAdx) { _sr('ADX過低'); continue; }
       const macd = parseFloat(coin.macdHist) || 0;
-      if (isLong ? macd <= 0 : macd >= 0) continue;       // 動能需同向
+      if (isLong ? macd <= 0 : macd >= 0) { _sr('MACD逆向'); continue; }
       // 同方向集中度：避免全部同向被大盤一次掃掉（回撤主因）
       const sameDir = active.filter(t => t.direction === dir).length
                     + cands.filter(c => c.dir === dir).length;
-      if (sameDir >= SCALP_CFG.maxSameDir) continue;
+      if (sameDir >= SCALP_CFG.maxSameDir) { _sr('同方向已達上限'); continue; }
       cands.push({ coin, isLong, dir });
       if (cands.length >= room * 4) break;                // 初篩上限，控制抓取量
     }
@@ -19743,6 +19750,7 @@ async function recordScalpSignals(data) {
         breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
         volRatio: setup.volRatio, oiState: setup.oiState,
         riskScore, riskLevel, riskRecs, conf,
+        kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
         note: '快進快出（突破追擊）',
       };
       try {
@@ -19973,6 +19981,25 @@ function renderScalpPositionsPage() {
               : '⏸️ 快進快出訊號<b>未啟用</b> — 請至設定頁開啟「⚡ 快進快出訊號（自動交易）」'}
     </div>
     ${_scalpStatCards(st)}
+    ${(() => {
+      // ── 訊號診斷：沒有交易時，直接顯示卡在哪一道條件 ──
+      const r = Object.entries(_scalpReject || {}).filter(([k]) => k !== '_scanned')
+        .sort((a, b) => b[1] - a[1]);
+      const scanned = (_scalpReject && _scalpReject._scanned) || 0;
+      if (!scanned) return `<div style="margin-top:12px;padding:10px 12px;border-radius:8px;
+        background:rgba(148,163,184,.08);font-size:0.82rem;color:var(--text3)">
+        尚未執行掃描 — 等下一輪掃描後會顯示各條件的擋下統計</div>`;
+      return `<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px">
+        <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🔍 本輪訊號診斷（掃描 ${scanned} 幣）</div>
+        ${r.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${r.map(([k, v]) =>
+            `<span style="font-size:0.76rem;padding:3px 9px;border-radius:20px;
+              background:rgba(245,158,11,.12);color:#f59e0b">${k} <b>${v}</b></span>`).join('')}</div>`
+          : '<div style="font-size:0.8rem;color:#22c55e">本輪無條件擋下</div>'}
+        <div style="font-size:0.72rem;color:var(--text3);margin-top:7px">
+          數字最大的那項就是目前的主要瓶頸。若「未突破區間」最多屬正常（多數時候本來就沒有突破）；
+          若集中在某一道過濾條件，代表該條件可能過嚴，可調整 SCALP_CFG 對應參數。</div>
+      </div>`;
+    })()}
     <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:12px">
       <div style="padding:9px 12px;font-weight:700;font-size:0.84rem;border-bottom:1px solid var(--border)">
         持倉中（${st.open.length}/${SCALP_CFG.maxActive}）</div>
@@ -20010,6 +20037,31 @@ function renderScalpLogPage() {
     </div></div>
     ${_scalpStatCards(st)}
     ${curveSvg}
+    ${(() => {
+      const byKz = {};
+      for (const t of st.closed) {
+        const k = t.kzQuality || 'unknown';
+        byKz[k] = byKz[k] || { n: 0, w: 0, r: 0 };
+        byKz[k].n++; if (isWinTrade(t)) byKz[k].w++;
+        byKz[k].r += parseFloat(t.pnlR) || 0;
+      }
+      const rows = Object.entries(byKz);
+      if (!rows.length) return '';
+      const label = { high: '主力時段（倫敦/紐約）', medium: '亞洲時段', low: '冷門時段', unknown: '未記錄' };
+      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px">
+        <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🕐 時段別表現（決定是否要限制交易時段）</div>
+        ${rows.map(([k, v]) => {
+          const wr = v.n ? (v.w / v.n * 100) : 0;
+          return `<div style="display:flex;gap:10px;font-size:0.8rem;padding:3px 0">
+            <span style="min-width:150px">${label[k] || k}</span>
+            <span style="color:var(--text3)">${v.n} 筆</span>
+            <span style="color:${wr >= 50 ? '#22c55e' : '#ef4444'}">勝率 ${wr.toFixed(0)}%</span>
+            <span style="color:${v.r >= 0 ? '#22c55e' : '#ef4444'}">${v.r > 0 ? '+' : ''}${v.r.toFixed(2)}R</span>
+          </div>`; }).join('')}
+        <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
+          若冷門時段明顯較差，可將 SCALP_CFG.killZoneOnly 設為 true 只做主力時段。</div>
+      </div>`;
+    })()}
     <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:0.8rem;color:var(--text2)">
       <b>判讀建議</b>：獲利因子 &gt;1.3 且最大回撤 &lt; 累計 R 的一半，才算堪用；
       勝率高但獲利因子 &lt;1 代表賺小賠大，仍不可用。樣本建議累積 ≥50 筆再下結論
