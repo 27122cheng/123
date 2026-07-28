@@ -645,13 +645,36 @@ function updateDataSrcBadge() {
     return;
   }
 
+  // 價格對齊健康度：K 線一律走幣安，再以 OKX 即時價縮放對齊。這份即時價
+  // 一旦取得失敗，價格會靜默退回幣安尺度、與 OKX 對不上，必須明確顯示。
+  const _ph = (typeof okxPriceHealth === 'function') ? okxPriceHealth() : null;
+  if (_ph && !_ph.ok) {
+    el.classList.add('src-binance');
+    el.textContent = '⚠️ 價格未對齊 OKX';
+    el.title = `OKX 即時報價取得失敗，價格目前為幣安尺度、與 OKX 掛單價會有落差。\n`
+             + `已取得幣種數：${_ph.count}\n`
+             + (_ph.err ? `錯誤：${_ph.err}\n` : '')
+             + `K 線來源：OKX ${p} / 幣安 ${b} / 快取 ${cc}`;
+    return;
+  }
   const parts = [];
-  if (p)  parts.push(`OKX ${p}`);
+  if (_ph) parts.push(`OKX報價 ${_ph.count}`);
+  if (p)  parts.push(`OKX線 ${p}`);
   if (b)  parts.push(`幣安 ${b}`);
   if (cc) parts.push(`快取 ${cc}`);
   el.textContent = parts.join('／') || '偵測中…';
 
-  const detail = `本輪 K 線來源：\n`
+  let _missing = [];
+  try {
+    _missing = loadPairs().map(x => x.s.replace('/', ''))
+      .filter(sym => !(typeof _okxPrices !== 'undefined' && _okxPrices[sym] > 0));
+  } catch(_e) {}
+  const detail = (_ph ? `OKX 即時報價：${_ph.count} 個幣種（K 線價格已對齊 OKX）\n`
+                      + (_missing.length ? `⚠️ 清單中 ${_missing.length} 個幣無 OKX 報價，仍為幣安價：`
+                          + `${_missing.slice(0, 8).join('、')}${_missing.length > 8 ? '…' : ''}\n`
+                          + `　可到設定頁按「🔄 同步 OKX 合約幣種表」清理\n` : '')
+                      : '')
+    + `本輪 K 線來源：\n`
     + `• OKX ${p} 筆（${chLabel}）— 交易關鍵週期 15m/5m/1m，進場・止損・插針判定與實際成交所一致\n`
     + `• 幣安 ${b} 筆 — 1H 以上僅判斷趨勢方向，交易所微小價差無影響，走幣安可避開 OKX 40次/2秒限速\n`
     + `• 快取 ${cc} 筆 — 效期內未重抓（日線/週線一輪之間不會變）\n`

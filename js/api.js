@@ -120,6 +120,14 @@ function tfToBinanceInterval(tf) {
 /* ---------- OKX 顯示價格快取 ---------- */
 let _okxPrices = {};
 let _okxVol24  = {};   // { BTCUSDT: 24h 計價幣成交額 } 供幣種表同步時依流動性排序
+/* 報價健康度：K 線價格對齊 OKX 完全依賴這份即時價，一旦取得失敗會靜默
+   退回幣安價（畫面看不出來、但價格就對不上 OKX）。記錄筆數與時間供 UI 檢查。 */
+let _okxPricesAt = 0, _okxPricesCount = 0, _okxPricesErr = '';
+function okxPriceHealth() {
+  const ageMs = _okxPricesAt ? Date.now() - _okxPricesAt : Infinity;
+  return { count: _okxPricesCount, at: _okxPricesAt, ageMs, err: _okxPricesErr,
+           ok: _okxPricesCount > 0 && ageMs < 5 * 60 * 1000 };
+}
 
 /* OKX 永續合約行情：GET /api/v5/market/tickers?instType=SWAP
    回應 { code:"0", data:[{ instId:"BTC-USDT-SWAP", last, volCcy24h, ... }] }
@@ -130,6 +138,7 @@ async function refreshOkxPrices() {
     if (!r || !r.json) return;   // 通道全部不可用（診斷已於 okxApiFetch 輸出）
     const arr = r.json?.data;
     if (!Array.isArray(arr) || !arr.length) {
+      _okxPricesErr = 'OKX 行情回應為空或格式異常';
       console.warn('[OKX] 行情回應格式異常');
       return;
     }
@@ -144,7 +153,11 @@ async function refreshOkxPrices() {
       const vb = parseFloat(tk.volCcy24h);
       if (isFinite(vb) && vb >= 0) _okxVol24[key] = vb * px;
     }
+    _okxPricesCount = Object.keys(_okxPrices).length;
+    _okxPricesAt = Date.now();
+    _okxPricesErr = '';
   } catch(e) {
+    _okxPricesErr = String(e?.message || e);
     console.warn('[OKX] 價格取得失敗:', e?.message || e);
   }
 }
