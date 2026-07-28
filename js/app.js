@@ -20242,17 +20242,63 @@ function sendScalpTelegram(t, kind) {
         `減倉 ${SCALP_CFG.tp1Frac * 100}%，止損上移至 <b>$${fmt(t.sl)}</b>（鎖 +0.5R）`,
         ``, `⏰ ${ts}`, `#${sym.toLowerCase()} #scalp #止盈一`].join('\n');
     } else {
+      // ── 交易結束報告：明確說明「為什麼結束」與實際結果 ────────────
       const win = t.outcome === 'tp1' || t.outcome === 'tp2';
-      const label = t.outcome === 'tp2' ? '止盈二達標' : t.outcome === 'tp1' ? '獲利了結'
-                  : t.outcome === 'be' ? (t.timeStopped ? '停滯換防' : t.maxHoldExit ? '到期平倉' : '保本出場') : '止損';
+      const isLong2 = t.direction === 'long';
+      // 結束原因：依實際觸發的機制判定，而非只給結果代碼
+      let icon, label, why;
+      // 先判斷「觸發機制」再判斷結果代碼：到期平倉／停滯換防即使結束在獲利
+      // 狀態，outcome 也會是 tp1，若只看 outcome 會誤標為「獲利了結」。
+      if (t.maxHoldExit) {
+        icon = win ? '⏱️' : '⚖️'; label = '到期平倉';
+        why = `已達最長持有 ${SCALP_CFG.maxHoldMin} 分鐘，依快進快出規則一律市價平倉`
+            + `（${win ? '結束於獲利狀態' : t.outcome === 'sl' ? '結束於虧損狀態' : '結束於損益兩平'}）`;
+      } else if (t.timeStopped) {
+        icon = '⚖️'; label = '停滯換防';
+        why = `持有 ${SCALP_CFG.timeStopMin} 分鐘仍在 ±0.3R 內原地踏步，`
+            + `判定動能已失效，主動平倉換防（避免佔用名額並等到反轉）`;
+      } else if (t.outcome === 'tp2') {
+        icon = '🚀'; label = '止盈二達標';
+        why = `價格觸及止盈二 $${fmt(t.tp2)}，全數獲利了結`;
+      } else if (t.outcome === 'tp1') {
+        icon = '✅';
+        if (t.trailExit || (isLong2 ? t.sl > t.entry : t.sl < t.entry)) {
+          label = '移動停利出場';
+          why = `觸及止盈一後止損已上移至獲利區，價格回落觸及 $${fmt(t.sl)}，鎖住獲利出場`;
+        } else { label = '獲利了結'; why = `觸及止盈一 $${fmt(t.tp1)} 出場`; }
+      } else if (t.outcome === 'be') {
+        icon = '⚖️'; label = '保本出場';
+        why = `止損位於成本價，價格回落觸及保本位出場`;
+      } else {
+        icon = '🛑'; label = '觸及止損';
+        why = `價格${isLong2 ? '跌破' : '漲破'}止損 $${fmt(t.sl)}，`
+            + `${t.mode === 'breakout' ? '突破失敗（假突破）' :
+                t.mode === 'retest'   ? '回踩未守住，該價位已失效' :
+                t.mode === 'trap'     ? '反轉未成立，價格續往原方向' :
+                                        '順勢動能中斷'}，依規則停損離場`;
+      }
+      // 金額換算（以量化資金管理的單筆風險金額為基準）
+      let money = '';
+      try {
+        const a = scalpAccount();
+        const amt = (parseFloat(t.pnlR) || 0) * a.riskAmt;
+        money = `　≈ ${amt >= 0 ? '+' : ''}$${amt.toFixed(2)}`;
+      } catch(_e) {}
+      const modeLabel = (typeof SCALP_MODE_LABEL !== 'undefined' && SCALP_MODE_LABEL[t.mode]) || t.mode || '—';
       text = [
-        `${win ? '✅' : t.outcome === 'be' ? '⚖️' : '🛑'} <b>快進快出｜${label}</b> — ${sym} ${dir}`,
+        `${icon} <b>快進快出｜交易結束 — ${label}</b>`,
+        `${sym} ${dir}`,
         ``,
-        `進場 $${fmt(t.entry)} → 出場 $${fmt(t.exitPrice)}`,
-        `📊 損益：<b>${t.pnlR > 0 ? '+' : ''}${t.pnlR}R</b>　持有 ${t.holdMin} 分鐘`,
-        ``, `⏰ ${ts}`,
-        `#${sym.toLowerCase()} #scalp #${win ? '獲利' : t.outcome === 'be' ? '平手' : '止損'}`,
-      ].join('\n');
+        `📝 <b>結束原因</b>：${why}`,
+        ``,
+        `📍 進場 $${fmt(t.entry)} → 出場 <b>$${fmt(t.exitPrice)}</b>`,
+        `📊 損益：<b>${t.pnlR > 0 ? '+' : ''}${t.pnlR}R</b>${money}`,
+        `⏱️ 持有 ${t.holdMin} 分鐘　·　進場模式：${modeLabel}`,
+        t.tp1Hit ? `✔️ 期間曾觸及止盈一並減倉 ${SCALP_CFG.tp1Frac * 100}%` : '',
+        ``,
+        `⏰ ${ts}`,
+        `#${sym.toLowerCase()} #scalp #交易結束 #${win ? '獲利' : t.outcome === 'be' ? '平手' : '止損'}`,
+      ].filter(Boolean).join('\n');
     }
     sendTelegramMessage(s.tgToken2, s.tgChatId2, text);
   } catch(e) { console.warn('[scalp] 通知錯誤', e); }
