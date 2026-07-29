@@ -21347,6 +21347,21 @@ async function recordScalpSignals(data) {
     if (!Array.isArray(data) || !data.length) { _scalpReject._blocked = '本輪無掃描資料'; return; }
     let log = loadScalpLog();
     const active = log.filter(t => t.status === 'open');
+
+    // 先替「持倉中」的幣補上最新 5m K 線：MAE/MFE 需要棒內的最高／最低價才準，
+    // 而持倉中的幣會被候選初篩排除（已有持倉），不主動抓就永遠只有進場當下那份。
+    // 必須放在下面所有提前 return（持倉上限、回撤熔斷…）之前——熔斷期間仍有
+    // 未平倉部位要管理，那時更不能讓 MAE 停止更新。
+    if (active.length) {
+      await Promise.allSettled(active.map(async t => {
+        try {
+          const k = await (typeof fetchKlinesExec === 'function'
+            ? fetchKlinesExec(t.symbol.replace('/', ''), SCALP_CFG.tf, 24)
+            : fetchKlines(t.symbol.replace('/', ''), SCALP_CFG.tf, 24));
+          if (k && k.length) _scalpKlineCache[t.symbol] = k;
+        } catch(_e) {}
+      }));
+    }
     if (active.length >= SCALP_CFG.maxActive) {
       _scalpReject._blocked = `持倉已達上限（${active.length}/${SCALP_CFG.maxActive}）`; return;
     }
@@ -21546,10 +21561,35 @@ function updateScalpTrades(data) {
 
       // ⓪ 記錄最大不利／有利偏移（ATR 單位）——機器人學習止損的唯一資料來源。
       //    必須在任何出場判定「之前」更新，否則被止損那一刻的逆走幅度會漏記。
+      //
+      //    ⚠️ 只用 coin.price 這個「掃描當下的快照」是不夠的：兩次掃描之間
+      //    價格可能先insert探到 -0.8ATR 再拉回，快照完全看不到，MAE 會被系統性低估。
+      //    低估的後果很具體——學習止損會據此判定「止損可以放很緊」而一路收到
+      //    下限，實際上那個緊止損在真實波動下會被掃掉。實測畫面出現「獲利單
+      //    MAE 中位數 0.00」（半數獲利單從頭到尾沒有一刻逆走）就是這個徵兆。
+      //    因此改為優先用 5m K 棒的最高／最低價還原棒內波動，快照只作為補充。
+      let maeNow = 0, mfeNow = 0;
       if (t.atrAtEntry > 0) {
-        const adv = ((cur - t.entry) * (isLong ? 1 : -1)) / t.atrAtEntry;   // >0 有利、<0 不利
-        const mae = Math.max(t.maeAtr || 0, -Math.min(0, adv));
-        const mfe = Math.max(t.mfeAtr || 0,  Math.max(0, adv));
+        const snap = ((cur - t.entry) * (isLong ? 1 : -1)) / t.atrAtEntry;
+        maeNow = -Math.min(0, snap); mfeNow = Math.max(0, snap);
+        try {
+          const bars = _scalpKlineCache[t.symbol];
+          const t0 = t.entryTime || t.timestamp || 0;
+          if (Array.isArray(bars)) {
+            for (const bar of bars) {
+              const bt = parseFloat(bar[0]);
+              if (!isFinite(bt) || bt + 300000 < t0) continue;   // 完全在進場之前的棒略過
+              const hi = parseFloat(bar[2]), lo = parseFloat(bar[3]);
+              if (!isFinite(hi) || !isFinite(lo)) continue;
+              const advWorst = ((isLong ? lo : hi) - t.entry) * (isLong ? 1 : -1) / t.atrAtEntry;
+              const advBest  = ((isLong ? hi : lo) - t.entry) * (isLong ? 1 : -1) / t.atrAtEntry;
+              maeNow = Math.max(maeNow, -Math.min(0, advWorst));
+              mfeNow = Math.max(mfeNow,  Math.max(0, advBest));
+            }
+          }
+        } catch(_e) {}
+        const mae = Math.max(t.maeAtr || 0, maeNow);
+        const mfe = Math.max(t.mfeAtr || 0, mfeNow);
         if (mae !== t.maeAtr || mfe !== t.mfeAtr) {
           t.maeAtr = +mae.toFixed(3); t.mfeAtr = +mfe.toFixed(3); changed = true;
         }
@@ -21764,8 +21804,12 @@ function scalpStats() {
   const avgWin  = wins.length   ? wins.reduce((s,t)=>s+parseFloat(t.pnlR||0),0) / wins.length : 0;
   const avgLoss = losses.length ? losses.reduce((s,t)=>s+parseFloat(t.pnlR||0),0) / losses.length : 0;
   const avgHold = closed.length ? closed.reduce((s,t)=>s+(t.holdMin||0),0) / closed.length : 0;
-  const grossW = wins.reduce((s,t)=>s+parseFloat(t.pnlR||0),0);
-  const grossL = Math.abs(losses.reduce((s,t)=>s+parseFloat(t.pnlR||0),0));
+  // 獲利因子必須含平手單：原本 wins/losses 用 outcome 標記，平手單的損益
+  // （停滯出場常是 -0.3R）在分子分母都被忽略，算出來的獲利因子會偏高，
+  // 與量化面板用損益正負算出來的數字不一致——同一畫面兩個「獲利因子」對不上。
+  const _rsAll = closed.map(t => parseFloat(t.pnlR) || 0);
+  const grossW = _rsAll.filter(r => r > 0).reduce((a, b) => a + b, 0);
+  const grossL = Math.abs(_rsAll.filter(r => r < 0).reduce((a, b) => a + b, 0));
   return {
     total: closed.length, openCount: open.length,
     wins: wins.length, losses: losses.length, flats: flats.length,
@@ -22033,6 +22077,61 @@ function _scalpSlLearnPanel() {
   } catch(e) { return ''; }
 }
 
+/* ── 出場原因分佈 ──────────────────────────────────────────────
+   勝率與期望值互相矛盾時，光看總表看不出錢從哪裡漏掉。把每一種出場方式
+   的筆數與累計損益攤開，才知道該修的是進場、止盈、還是停滯出場的設定。 */
+function scalpExitBreakdown(trades) {
+  const rows = {};
+  const add = (k, t) => {
+    rows[k] = rows[k] || { k, n: 0, r: 0 };
+    rows[k].n++; rows[k].r += parseFloat(t.pnlR) || 0;
+  };
+  for (const t of trades) {
+    if (t.maxHoldExit)        add('到期平倉', t);
+    else if (t.timeStopped)   add('停滯換防', t);
+    else if (t.outcome === 'tp2') add('止盈二', t);
+    else if (t.outcome === 'tp1') {
+      const isLong = t.direction === 'long';
+      add((t.beArmed || (isLong ? t.sl > t.entry : t.sl < t.entry)) ? '移動停利／保本以上' : '止盈一', t);
+    }
+    else if (t.outcome === 'be')  add('保本出場', t);
+    else if (t.outcome === 'sl')  add('觸及止損', t);
+    else add('其他', t);
+  }
+  return Object.values(rows).sort((a, b) => a.r - b.r);
+}
+function _scalpExitPanel() {
+  try {
+    const closed = loadScalpLog().filter(t => t.status === 'closed');
+    if (closed.length < 5) return '';
+    const rows = scalpExitBreakdown(closed);
+    const total = closed.length;
+    const worst = rows[0];
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:10px 12px;margin-top:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🚪 出場原因分佈（錢從哪裡漏掉）</div>
+      ${rows.map(r => {
+        const pct = (r.n / total * 100).toFixed(0);
+        return `<div style="display:flex;gap:10px;align-items:center;font-size:0.79rem;padding:3px 0;
+            border-top:1px solid rgba(255,255,255,.05)">
+          <span style="min-width:132px;font-weight:600">${r.k}</span>
+          <span style="color:var(--text3);min-width:74px">${r.n} 筆（${pct}%）</span>
+          <span style="min-width:78px;font-weight:700;color:${r.r >= 0 ? '#22c55e' : '#ef4444'}">${r.r > 0 ? '+' : ''}${r.r.toFixed(2)}R</span>
+          <span style="color:var(--text3)">平均 ${(r.r / r.n) > 0 ? '+' : ''}${(r.r / r.n).toFixed(3)}R</span>
+        </div>`; }).join('')}
+      ${worst && worst.r < 0 ? `<div style="font-size:0.73rem;color:var(--text2);margin-top:7px;line-height:1.6">
+        目前最大的失血來源是<b style="color:#ef4444">${worst.k}</b>（${worst.n} 筆、${worst.r.toFixed(2)}R）。
+        ${worst.k === '停滯換防'
+          ? `這代表多數單子進場後根本沒有走出方向——問題在<b>進場品質</b>，不在止盈止損；
+             把停滯時間拉長只會讓虧損變大，該做的是提高進場門檻或關掉表現差的模式。`
+          : worst.k === '觸及止損'
+            ? '止損被打到是主要虧損來源，可到量化實驗室看止損倍數掃描是否偏緊。'
+            : '可到量化實驗室用重放檢查對應參數。'}
+      </div>` : ''}
+    </div>`;
+  } catch(_e) { return ''; }
+}
+
 /* 快進快出：持倉／紀錄共用的統計卡片 */
 function _scalpStatCards(st) {
   const wrC = st.winRate == null ? 'var(--text3)' : st.winRate >= 55 ? '#22c55e' : st.winRate >= 45 ? '#f59e0b' : '#ef4444';
@@ -22040,7 +22139,18 @@ function _scalpStatCards(st) {
   return `<div class="tl-stats">
     <div class="tl-stat-card"><div class="tl-stat-val">${st.openCount}</div><div class="tl-stat-lbl">持倉中</div></div>
     <div class="tl-stat-card"><div class="tl-stat-val">${st.total}</div><div class="tl-stat-lbl">已完結</div></div>
-    <div class="tl-stat-card"><div class="tl-stat-val" style="color:${wrC}">${st.winRate == null ? '--' : st.winRate.toFixed(1) + '%'}</div><div class="tl-stat-lbl">勝率</div></div>
+    <div class="tl-stat-card"><div class="tl-stat-val" style="color:${wrC}">${st.winRate == null ? '--' : st.winRate.toFixed(1) + '%'}</div><div class="tl-stat-lbl">勝率（不含平手）</div></div>
+    ${(() => {
+      // 依「損益正負」直接算的獲利筆數比例：不受 tp1/be/sl 標記影響，
+      // 與勝率落差大就代表有大量被標成平手、實際上在虧錢的單
+      const _p = st.closed.filter(t => (parseFloat(t.pnlR) || 0) > 0).length;
+      const _pr = st.total ? _p / st.total * 100 : null;
+      const _c = _pr == null ? 'var(--text3)' : _pr >= 50 ? '#22c55e' : _pr >= 40 ? '#f59e0b' : '#ef4444';
+      const _gap = (st.winRate != null && _pr != null) ? st.winRate - _pr : 0;
+      return `<div class="tl-stat-card" title="以實際損益正負計算，不看 tp1/be/sl 標記">
+        <div class="tl-stat-val" style="color:${_c}">${_pr == null ? '--' : _pr.toFixed(1) + '%'}</div>
+        <div class="tl-stat-lbl">實際獲利筆數${_gap >= 10 ? ` <span style="color:#f59e0b">↓${_gap.toFixed(0)}</span>` : ''}</div></div>`;
+    })()}
     <div class="tl-stat-card"><div class="tl-stat-val" style="color:${rC}">${st.netR > 0 ? '+' : ''}${st.netR} R</div><div class="tl-stat-lbl">累計 R</div></div>
     <div class="tl-stat-card"><div class="tl-stat-val" style="color:#ef4444">-${st.maxDD} R</div><div class="tl-stat-lbl">最大回撤</div></div>
     <div class="tl-stat-card"><div class="tl-stat-val">${st.profitFactor === Infinity ? '∞' : st.profitFactor}</div><div class="tl-stat-lbl">獲利因子</div></div>
@@ -22103,6 +22213,7 @@ function buildScalpPositionsHtml() {
     </div>
     ${_scalpStatCards(st)}
     ${_scalpAccountPanel()}
+    ${_scalpExitPanel()}
     ${_scalpSlLearnPanel()}
     ${_scalpModePanel()}
     ${(() => { try {
@@ -22204,6 +22315,7 @@ function buildScalpLogHtml() {
     </div></div>
     ${_scalpStatCards(st)}
     ${_scalpAccountPanel()}
+    ${_scalpExitPanel()}
     ${_scalpSlLearnPanel()}
     ${_scalpModePanel()}
     ${curveSvg}
