@@ -20936,21 +20936,46 @@ function scalpRiskMult(mode, riskScore) {
 
    順勢家族：15m/1H 至少 mtfMinAlign 個同向，且 1H 不可明確逆向。
    回歸家族：反轉的對象不能是「更大週期正在推的趨勢」——逆著 1H 明確方向
-             做反轉，就是站在火車前面撿硬幣，也是回撤的主要來源。 */
+             做反轉，就是站在火車前面撿硬幣，也是回撤的主要來源。
+
+   ⚠️ 必須區分「沒有資料」與「資料顯示不同向」：
+   analyzeTimeframeSignal 在 K 線抓取失敗或不足 30 根時回傳 null，coin.h1Signal
+   / signal15m 就會是 null。掃 100 個幣時難免有幾個的 1H 抓失敗，若把 null 當成
+   「不同向」，就變成因為抓不到資料而擋單，而不是因為行情不支持——那是假的
+   技術面判斷。全站其餘 5 處在 signal15m 缺失時都會退回以 score 推估方向，
+   這裡沿用同一套，並把兩種情況在診斷上分開顯示。 */
 function scalpMtfCheck(coin, isLong, family) {
   if (!SCALP_CFG.requireMtf) return { ok: true, why: '未啟用多週期確認', n: 0 };
   const bull = isLong ? 'bull' : 'bear', bear = isLong ? 'bear' : 'bull';
-  const s15 = String(coin.signal15m || ''), s1h = String(coin.h1Signal || '');
-  const has = (s, k) => s.includes(k);
+  const has = (s, k) => String(s || '').includes(k);
+  // 15m 缺資料 → 沿用全站一致的 score 推估；1H 缺資料 → 視為未知，不當成逆向
+  const est15 = isLong ? ((coin.score || 50) >= 55 ? 'bull' : '')
+                       : ((coin.score || 50) <= 45 ? 'bear' : '');
+  const raw15 = coin.signal15m, raw1h = coin.h1Signal;
+  const s15 = raw15 || est15;
+  const s1h = raw1h || '';
+  const have1h = !!raw1h, have15 = !!raw15 || !!est15;
+  const missAll = !have1h && !have15;
+
   if (family === 'trend') {
-    if (has(s1h, bear)) return { ok: false, why: '1H 明確逆向' };
+    if (have1h && has(s1h, bear)) return { ok: false, why: '1H 明確逆向' };
     const n = (has(s15, bull) ? 1 : 0) + (has(s1h, bull) ? 1 : 0);
-    if (n < SCALP_CFG.mtfMinAlign) return { ok: false, why: `15m/1H 同向數 ${n} < ${SCALP_CFG.mtfMinAlign}` };
-    return { ok: true, why: `15m/1H 同向 ${n} 個`, n };
+    if (n >= SCALP_CFG.mtfMinAlign) {
+      return { ok: true, n,
+        why: `15m/1H 同向 ${n} 個${!raw15 && has(s15, bull) ? '（15m 無資料，以評分推估）' : ''}` };
+    }
+    // 完全沒有多週期資料時，這道檢查提供不了任何資訊——擋下等於「因為不知道所以拒絕」，
+    // 只會在資料抓取不穩時憑空少掉交易。放行但標記，讓診斷看得出是資料問題。
+    if (missAll) return { ok: true, n: 0, degraded: true, why: '多週期資料缺失，本項無法判定（已放行並記錄）' };
+    return { ok: false, degraded: false,
+      why: `15m/1H 同向數 ${n} < ${SCALP_CFG.mtfMinAlign}`
+         + `（15m ${raw15 || '無資料'}、1H ${raw1h || '無資料'}）` };
   }
   // 回歸：isLong 代表「反轉方向」，被反轉的是相反方向的推進
-  if (has(s1h, bear)) return { ok: false, why: '1H 正在推反方向，不逆大週期做反轉' };
-  return { ok: true, why: '1H 未逆向，可做回歸', n: has(s15, bull) ? 1 : 0 };
+  if (have1h && has(s1h, bear)) return { ok: false, why: '1H 正在推反方向，不逆大週期做反轉' };
+  return { ok: true, n: has(s15, bull) ? 1 : 0,
+    why: have1h ? '1H 未逆向，可做回歸' : '1H 無資料，未發現逆向（已放行並記錄）',
+    degraded: !have1h };
 }
 
 /* 真實 ATR（Wilder）：5m K 線已經抓下來了，直接算比用 ADX 猜精準得多。
@@ -21191,6 +21216,8 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   // 多週期確認：只靠 5m 型態進場是勝率偏低的主因，這裡補上 15m/1H 的技術面支持
   const _mtf = scalpMtfCheck(coin, isLong, family);
   if (!_mtf.ok) return _sr(`多週期未支持(${_mtf.why})`);
+  // 資料缺失而放行的情況另外計數，才分得出「行情不支持」與「資料沒抓到」
+  if (_mtf.degraded) { try { _scalpReject._mtfDegraded = (_scalpReject._mtfDegraded || 0) + 1; } catch(_e) {} }
 
   // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
   //    注意：last 是「形成中」的 K 棒，成交量只累積了一部分。直接拿它與
@@ -22086,7 +22113,15 @@ function buildScalpPositionsHtml() {
         <div style="margin-top:8px"><button class="btn-ghost" style="font-size:0.82rem;color:#00e676"
           onclick="scalpRunNow()">🔄 立即執行一次</button></div></div>`;
       return `<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px">
-        <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🔍 本輪訊號診斷（掃描 ${scanned} 幣）</div>
+        <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🔍 本輪訊號診斷（掃描 ${scanned} 幣，
+          評估 ${(_scalpReject && _scalpReject._cands) || 0} 個候選）</div>
+        <div style="font-size:0.72rem;color:var(--text3);margin-bottom:6px">
+          擋下筆數會多於幣數是正常的：同一個幣最多會被評估 3 次
+          （順勢 1 次 + 回歸的做多／做空各 1 次），每次都可能各自被不同條件擋下。
+          ${(_scalpReject && _scalpReject._mtfDegraded)
+            ? `<br><span style="color:#f59e0b">⚠️ 本輪有 ${_scalpReject._mtfDegraded} 個候選因 15m/1H 資料缺失而略過多週期檢查（已放行，非擋下）。
+               若這個數字經常偏高，代表 1H K 線抓取不穩，而不是行情不支持。</span>` : ''}
+        </div>
         ${r.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${r.map(([k, v]) =>
             `<span style="font-size:0.76rem;padding:3px 9px;border-radius:20px;
               background:rgba(245,158,11,.12);color:#f59e0b">${k} <b>${v}</b></span>`).join('')}</div>`
