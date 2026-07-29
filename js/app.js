@@ -15807,8 +15807,14 @@ function auditPenaltyFactors() {
   // 證據池：正式已完結交易 + 實驗室已完結機會 + 快進快出已完結（樣本量最大的來源）
   const realAll = loadTradeLog().filter(t => t.status === 'closed');
   const labAll  = loadAILab().filter(o => o.status === 'closed');
+  // 用封存 ∪ 目前紀錄，讓扣分條件的學習不受 500 筆滾動視窗限制
   let scalpAll = [];
-  try { scalpAll = loadScalpLog().filter(t => t.status === 'closed'); } catch(_e) {}
+  try {
+    const m = new Map();
+    for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
+    for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
+    scalpAll = [...m.values()];
+  } catch(_e) {}
   const all = [
     ...realAll.filter(t => Array.isArray(t.riskKeys))
       .map(t => ({ keys: t.riskKeys, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
@@ -16881,15 +16887,73 @@ function qlabRun(trades, o) {
   };
 }
 
-/* 可重放的樣本（必須有 MAE/MFE，舊資料沒有這些欄位） */
+/* ── 重放樣本封存 ────────────────────────────────────────────────
+   問題：csp_scalp_log 有 500 筆上限，滿了就從尾端丟掉最舊的。快進快出是
+   高頻策略，幾週就會滿——一旦滾動掉，那些樣本就永久消失，連備份也救不回來
+   （備份只能存下當下還在的東西）。對一個「靠累積樣本才能學習」的系統來說，
+   500 筆的滾動視窗等於學習能力有天花板。
+
+   解法：另存一份精簡封存，只保留「重放與統計需要的欄位」，丟掉顯示用的細節
+   （訊號文字、風控建議、原因說明等）。單筆體積小很多，因此能存 6 倍的量，
+   且不影響原本的持倉／紀錄頁行為。封存鍵一樣是 csp_ 開頭，完整備份會自動涵蓋。 */
+const QLAB_ARCHIVE_KEY = 'csp_qlab_archive';
+const QLAB_ARCHIVE_MAX = 3000;
+/* 只留這些欄位：重放（MAE/MFE/ATR/錨點距離）、分群（模式/時段/ADX/量能）、
+   結果（損益/出場）、以及扣分條件學習需要的 riskKeys */
+const QLAB_KEEP_FIELDS = [
+  'id', 'symbol', 'mode', 'family', 'direction', 'timestamp', 'exitTime', 'holdMin',
+  'outcome', 'pnlR', 'entry', 'exitPrice', 'atrAtEntry', 'levelGapAtr', 'slDistAtr',
+  'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality',
+  'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed',
+];
+function _qlabSlim(t) {
+  const o = {};
+  for (const k of QLAB_KEEP_FIELDS) if (t[k] !== undefined) o[k] = t[k];
+  o.status = 'closed';
+  return o;
+}
+function loadQlabArchive() {
+  try { const a = JSON.parse(localStorage.getItem(QLAB_ARCHIVE_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+/* 把已完結的交易併入封存（以 id 去重，新的覆蓋舊的） */
+function archiveClosedScalpTrades(log) {
+  try {
+    const closed = (log || []).filter(t => t && t.status === 'closed' && t.id);
+    if (!closed.length) return;
+    const arch = loadQlabArchive();
+    const byId = new Map(arch.map(t => [t.id, t]));
+    let added = 0;
+    for (const t of closed) { if (!byId.has(t.id)) added++; byId.set(t.id, _qlabSlim(t)); }
+    if (!added) return;                                    // 沒有新樣本就不必寫入
+    let out = [...byId.values()].sort((a, b) => (b.exitTime || 0) - (a.exitTime || 0))
+                                .slice(0, QLAB_ARCHIVE_MAX);
+    // localStorage 寫入可能因配額不足而整個失敗；縮減後重試，寧可少存也不要壞掉
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { localStorage.setItem(QLAB_ARCHIVE_KEY, JSON.stringify(out)); return; }
+      catch(_e) { out = out.slice(0, Math.floor(out.length / 2)); }
+    }
+    console.warn('[qlab] 封存寫入失敗（儲存空間不足）');
+  } catch(e) { console.warn('[qlab] 封存錯誤', e); }
+}
+
+/* 可重放的樣本：封存 ∪ 目前紀錄（以 id 去重）
+   必須有 MAE/MFE，「機器人學習止損」上線前的舊資料沒有這些欄位，無法重放。 */
 function qlabSamples(mode) {
   try {
-    return loadScalpLog().filter(t => t.status === 'closed'
-      && isFinite(parseFloat(t.maeAtr)) && isFinite(parseFloat(t.mfeAtr))
+    const byId = new Map();
+    for (const t of loadQlabArchive()) if (t && t.id) byId.set(t.id, t);
+    for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') byId.set(t.id, t);
+    return [...byId.values()].filter(t =>
+         isFinite(parseFloat(t.maeAtr)) && isFinite(parseFloat(t.mfeAtr))
       && isFinite(parseFloat(t.levelGapAtr)) && parseFloat(t.atrAtEntry) > 0
       && (!mode || t.mode === mode));
   } catch(_e) { return []; }
 }
+
+/* 啟動時把目前紀錄裡已完結的樣本補進封存——既有使用者不必等下一筆成交
+   才開始累積，且避免下次 saveScalpLog 截斷時就先丟掉一批。 */
+try { setTimeout(() => { try { archiveClosedScalpTrades(loadScalpLog()); } catch(_e) {} }, 6000); } catch(_e) {}
 
 /* 目前實際採用的參數（作為比較基準） */
 function qlabCurrent(mode) {
@@ -17050,6 +17114,19 @@ function buildQuantLabHtml() {
         color:${_qlabMode === k ? 'var(--text1)' : 'var(--text3)'}">${l}</button>`).join('')}
   </div>`;
 
+  const archN = loadQlabArchive().length;
+  const liveN = (() => { try { return loadScalpLog().filter(t => t.status === 'closed').length; } catch(_e) { return 0; } })();
+  const archCard = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:9px 12px;margin-bottom:12px;font-size:0.78rem;color:var(--text2);line-height:1.65">
+    <b>🗄️ 重放樣本封存</b>　封存 <b style="color:var(--text1)">${archN}</b> 筆
+    　·　目前紀錄 ${liveN} 筆已完結　·　可重放 <b style="color:#22c55e">${all.length}</b> 筆
+    <div style="font-size:0.71rem;color:var(--text3);margin-top:4px">
+      交易紀錄本身有 ${SCALP_MAX} 筆上限，滿了會從最舊的開始丟掉。封存另存一份精簡樣本
+      （只留重放與統計需要的欄位，上限 ${QLAB_ARCHIVE_MAX} 筆），讓分析用的樣本不會隨著滾動視窗流失。
+      封存包含在「完整備份」內，還原後可重放的樣本會一起回來。
+    </div>
+  </div>`;
+
   const caveat = `<div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;
       border-radius:8px;padding:9px 12px;margin-bottom:12px;font-size:0.76rem;color:var(--text2);line-height:1.6">
     <b>⚠️ 這套方法的先天限制（請一併理解再採用建議）</b><br>
@@ -17060,7 +17137,7 @@ function buildQuantLabHtml() {
   </div>`;
 
   if (trades.length < QLAB_MIN) {
-    return head + modeBar + caveat + `
+    return head + modeBar + archCard + caveat + `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
           text-align:center;color:var(--text3);font-size:0.86rem">
         可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
@@ -17239,7 +17316,7 @@ function buildQuantLabHtml() {
       避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
   </div>`;
 
-  return head + modeBar + caveat + bestCard + wfCard
+  return head + modeBar + archCard + caveat + bestCard + wfCard
     + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
         '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
     + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
@@ -17385,10 +17462,12 @@ function exportFullBackup() {
     a.download = `csp_full_backup_${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    let _scalpCount = 0;
+    let _scalpCount = 0, _qlabCount = 0;
     try { _scalpCount = (JSON.parse(backup.data[SCALP_LOG_KEY] || '[]') || []).length; } catch(_e) {}
+    try { _qlabCount  = (JSON.parse(backup.data[QLAB_ARCHIVE_KEY] || '[]') || []).length; } catch(_e) {}
     showToast(`完整備份已匯出（${Object.keys(backup.data).length} 個項目，含 ${_pairCount} 個幣種`
-      + `${_scalpCount ? `、${_scalpCount} 筆自動交易紀錄` : ''}）`, 'success');
+      + `${_scalpCount ? `、${_scalpCount} 筆自動交易紀錄` : ''}`
+      + `${_qlabCount ? `、${_qlabCount} 筆量化實驗室重放樣本` : ''}）`, 'success');
   } catch(_e) { showToast('備份匯出失敗：' + _e.message, 'error'); }
 }
 function importFullBackup() {
@@ -20658,6 +20737,8 @@ function loadScalpLog() {
   catch(_e) { return []; }
 }
 function saveScalpLog(log) {
+  // 先封存再截斷：截斷後才封存的話，被 SCALP_MAX 滾掉的那些樣本就永遠進不了封存
+  try { archiveClosedScalpTrades(log); } catch(_e) {}
   try { localStorage.setItem(SCALP_LOG_KEY, JSON.stringify(log.slice(0, SCALP_MAX))); }
   catch(_e) { console.warn('[scalp] 儲存失敗', _e); }
   // 紀錄一變動就讓學習止損重算，避免拿舊樣本推導出的倍數去開新單
