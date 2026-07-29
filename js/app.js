@@ -9842,6 +9842,9 @@ const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內
 function loadTradeLog() { try { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); } catch(e) { return []; } }
 function saveTradeLog(log) {
   try { globalLossStreak._cache = null; } catch(_c) {}  // 交易紀錄變動 → 連虧統計快取失效
+  // 先封存再寫入：下方 catch 的救援路徑會直接裁到 250 筆並砍欄位，
+  // 若等到那時才封存，被裁掉的樣本就永遠回不來了
+  try { archiveClosedTrades(log); } catch(_a) {}
   try { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
   catch(e) {
     // localStorage 空間不足：裁剪已完結交易的大型文字欄位與筆數後重試，避免整頁卡死
@@ -14372,7 +14375,8 @@ function monthlyTradePrune() {
 }
 
 function computeLearnProfile() {
-  const closed = loadTradeLog().filter(t => t.status === 'closed');
+  // 封存 ∪ 目前紀錄：正常情況下兩者相同，只有紀錄被裁切過才會補回差額
+  const closed = learnSamples().filter(t => t.status === 'closed');
   if (closed.length < 2) return { ready: false, closed: closed.length };
 
   const losses = closed.filter(isLossTrade);   // 平手(be)不算敗仗，避免學習系統把「主動換防」當失敗情境
@@ -15724,6 +15728,8 @@ function buildWinRateBreakdown(closed) {
 const AI_LAB_KEY = 'csp_ai_lab';
 function loadAILab() { try { return JSON.parse(localStorage.getItem(AI_LAB_KEY) || '[]'); } catch(e) { return []; } }
 function saveAILab(list) {
+  // 同上：空間不足時下方會裁到 150 筆，必須先封存
+  try { archiveClosedLab(list); } catch(_a) {}
   try { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list)); }
   catch(e) {
     // 空間不足：砍半保留最新記錄後重試
@@ -15805,8 +15811,8 @@ const RISK_KEY_LABELS = {
    現在改為相對比較 + 可達到的樣本門檻（25 筆），且雙向調整。 */
 function auditPenaltyFactors() {
   // 證據池：正式已完結交易 + 實驗室已完結機會 + 快進快出已完結（樣本量最大的來源）
-  const realAll = loadTradeLog().filter(t => t.status === 'closed');
-  const labAll  = loadAILab().filter(o => o.status === 'closed');
+  const realAll = learnSamples().filter(t => t.status === 'closed');
+  const labAll  = labSamples();
   // 用封存 ∪ 目前紀錄，讓扣分條件的學習不受 500 筆滾動視窗限制
   let scalpAll = [];
   try {
@@ -16912,29 +16918,98 @@ function _qlabSlim(t) {
   o.status = 'closed';
   return o;
 }
-function loadQlabArchive() {
-  try { const a = JSON.parse(localStorage.getItem(QLAB_ARCHIVE_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+/* ── 通用封存機制（快進快出／正式交易／實驗室共用）──────────────
+   同一個問題出現在三個地方，因此抽成一份：
+     · 快進快出紀錄：固定 500 筆滾動上限，滿了從最舊的丟
+     · 正式交易紀錄：平常不設限，但 localStorage 一滿就在 catch 裡直接
+       裁到 250 筆並砍欄位——是懸崖不是滑坡，而且發生在 fallback 路徑，
+       使用者不會收到任何提示
+     · 實驗室紀錄：同上，一滿裁到 150 筆
+   任何一種情況發生，統計與學習的樣本就永久少一大塊，備份也救不回來
+   （備份只能存下當下還在的東西）。封存只留「統計與學習需要的欄位」，
+   體積小很多，因此能在同樣的空間裡撐住多好幾倍的樣本。 */
+function _loadArchive(key) {
+  try { const a = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(a) ? a : []; }
   catch(_e) { return []; }
 }
-/* 把已完結的交易併入封存（以 id 去重，新的覆蓋舊的） */
-function archiveClosedScalpTrades(log) {
+/* 併入封存（以 id 去重，新的覆蓋舊的）；空間不足時縮減重試，絕不向外拋例外 */
+function _archiveMerge(key, max, slimFn, items, tag) {
   try {
-    const closed = (log || []).filter(t => t && t.status === 'closed' && t.id);
-    if (!closed.length) return;
-    const arch = loadQlabArchive();
-    const byId = new Map(arch.map(t => [t.id, t]));
+    const src = (items || []).filter(t => t && t.id && (t.status === 'closed' || t.status === 'expired'));
+    if (!src.length) return;
+    const byId = new Map(_loadArchive(key).map(t => [t.id, t]));
     let added = 0;
-    for (const t of closed) { if (!byId.has(t.id)) added++; byId.set(t.id, _qlabSlim(t)); }
+    for (const t of src) { if (!byId.has(t.id)) added++; byId.set(t.id, slimFn(t)); }
     if (!added) return;                                    // 沒有新樣本就不必寫入
-    let out = [...byId.values()].sort((a, b) => (b.exitTime || 0) - (a.exitTime || 0))
-                                .slice(0, QLAB_ARCHIVE_MAX);
-    // localStorage 寫入可能因配額不足而整個失敗；縮減後重試，寧可少存也不要壞掉
+    let out = [...byId.values()]
+      .sort((a, b) => (b.exitTime || b.timestamp || 0) - (a.exitTime || a.timestamp || 0))
+      .slice(0, max);
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { localStorage.setItem(QLAB_ARCHIVE_KEY, JSON.stringify(out)); return; }
+      try { localStorage.setItem(key, JSON.stringify(out)); return; }
       catch(_e) { out = out.slice(0, Math.floor(out.length / 2)); }
     }
-    console.warn('[qlab] 封存寫入失敗（儲存空間不足）');
-  } catch(e) { console.warn('[qlab] 封存錯誤', e); }
+    console.warn(`[${tag}] 封存寫入失敗（儲存空間不足）`);
+  } catch(e) { console.warn(`[${tag}] 封存錯誤`, e); }
+}
+function _slimBy(fields) {
+  return (t) => {
+    const o = {};
+    for (const k of fields) if (t[k] !== undefined) o[k] = t[k];
+    o.status = t.status === 'expired' ? 'expired' : 'closed';
+    return o;
+  };
+}
+function loadQlabArchive() { return _loadArchive(QLAB_ARCHIVE_KEY); }
+function archiveClosedScalpTrades(log) {
+  _archiveMerge(QLAB_ARCHIVE_KEY, QLAB_ARCHIVE_MAX, _qlabSlim, log, 'qlab');
+}
+
+/* ── 正式交易的學習封存 ────────────────────────────────────────
+   欄位以「computeLearnProfile 與 auditPenaltyFactors 實際讀到的」為準，
+   刻意不含 sqFactors / entryReasons / riskRecs 等顯示用長文字。 */
+const LEARN_ARCHIVE_KEY = 'csp_learn_archive';
+const LEARN_ARCHIVE_MAX = 3000;
+const LEARN_KEEP_FIELDS = [
+  'id', 'symbol', 'direction', 'timestamp', 'exitTime', 'outcome', 'pnlR', 'grade',
+  'rsi', 'adx', 'conf', 'learnPenalty', 'riskPenalty', 'riskScore', 'riskKeys',
+  'entryAbovePOC', 'entryWhaleBias', 'entryVolDivergence', 'entryMTFAlign',
+  'entryMacdHist', 'entryVolStrength', 'entryH4Aligned', 'entryScoreStrength',
+  'entryKillZone', 'entryVolBreakout', 'immediateStop', 'slReversal',
+];
+const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
+function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
+function archiveClosedTrades(log) {
+  _archiveMerge(LEARN_ARCHIVE_KEY, LEARN_ARCHIVE_MAX, _learnSlim, log, 'learn');
+}
+/* 學習用樣本：封存 ∪ 目前紀錄（以 id 去重）。
+   正常情況下封存 ⊆ 目前紀錄，兩者合併後與原本完全相同——只有在紀錄被
+   裁切過之後才會補回差額，因此不會改變任何既有的顯示數字。 */
+function learnSamples() {
+  try {
+    const byId = new Map();
+    for (const t of loadLearnArchive()) if (t && t.id) byId.set(t.id, t);
+    for (const t of loadTradeLog()) if (t && t.id && (t.status === 'closed' || t.status === 'expired')) byId.set(t.id, t);
+    return [...byId.values()];
+  } catch(_e) { try { return loadTradeLog().filter(t => t.status === 'closed'); } catch(_e2) { return []; } }
+}
+
+/* ── 實驗室封存（只收已完結；備份本來就只存已完結，兩者一致）── */
+const LAB_ARCHIVE_KEY = 'csp_lab_archive';
+const LAB_ARCHIVE_MAX = 3000;
+const LAB_KEEP_FIELDS = ['id', 'symbol', 'direction', 'timestamp', 'exitTime',
+  'pnlR', 'tags', 'riskKeys', 'refLearnPen', 'conf', 'grade', 'outcome'];
+const _labSlim = _slimBy(LAB_KEEP_FIELDS);
+function loadLabArchive() { return _loadArchive(LAB_ARCHIVE_KEY); }
+function archiveClosedLab(list) {
+  _archiveMerge(LAB_ARCHIVE_KEY, LAB_ARCHIVE_MAX, _labSlim, list, 'lab');
+}
+function labSamples() {
+  try {
+    const byId = new Map();
+    for (const o of loadLabArchive()) if (o && o.id) byId.set(o.id, o);
+    for (const o of loadAILab()) if (o && o.id && o.status === 'closed') byId.set(o.id, o);
+    return [...byId.values()];
+  } catch(_e) { try { return loadAILab().filter(o => o.status === 'closed'); } catch(_e2) { return []; } }
 }
 
 /* 可重放的樣本：封存 ∪ 目前紀錄（以 id 去重）
@@ -16953,7 +17028,11 @@ function qlabSamples(mode) {
 
 /* 啟動時把目前紀錄裡已完結的樣本補進封存——既有使用者不必等下一筆成交
    才開始累積，且避免下次 saveScalpLog 截斷時就先丟掉一批。 */
-try { setTimeout(() => { try { archiveClosedScalpTrades(loadScalpLog()); } catch(_e) {} }, 6000); } catch(_e) {}
+try { setTimeout(() => {
+  try { archiveClosedScalpTrades(loadScalpLog()); } catch(_e) {}
+  try { archiveClosedTrades(loadTradeLog()); } catch(_e) {}
+  try { archiveClosedLab(loadAILab()); } catch(_e) {}
+}, 6000); } catch(_e) {}
 
 /* 目前實際採用的參數（作為比較基準） */
 function qlabCurrent(mode) {
@@ -17462,12 +17541,16 @@ function exportFullBackup() {
     a.download = `csp_full_backup_${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    let _scalpCount = 0, _qlabCount = 0;
-    try { _scalpCount = (JSON.parse(backup.data[SCALP_LOG_KEY] || '[]') || []).length; } catch(_e) {}
-    try { _qlabCount  = (JSON.parse(backup.data[QLAB_ARCHIVE_KEY] || '[]') || []).length; } catch(_e) {}
+    const _cnt = (k) => { try { return (JSON.parse(backup.data[k] || '[]') || []).length; } catch(_e) { return 0; } };
+    const _scalpCount = _cnt(SCALP_LOG_KEY);
+    const _arch = [
+      [_cnt(QLAB_ARCHIVE_KEY),  '量化重放'],
+      [_cnt(LEARN_ARCHIVE_KEY), '交易學習'],
+      [_cnt(LAB_ARCHIVE_KEY),   '實驗室'],
+    ].filter(([n]) => n > 0);
     showToast(`完整備份已匯出（${Object.keys(backup.data).length} 個項目，含 ${_pairCount} 個幣種`
       + `${_scalpCount ? `、${_scalpCount} 筆自動交易紀錄` : ''}`
-      + `${_qlabCount ? `、${_qlabCount} 筆量化實驗室重放樣本` : ''}）`, 'success');
+      + `${_arch.length ? `；封存樣本 ${_arch.map(([n, l]) => `${l} ${n} 筆`).join('、')}` : ''}）`, 'success');
   } catch(_e) { showToast('備份匯出失敗：' + _e.message, 'error'); }
 }
 function importFullBackup() {
