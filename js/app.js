@@ -15737,12 +15737,46 @@ function saveAILab(list) {
    樣本 ≥30 且成立時勝率不低於未成立時 → 該條件對結果無預測力 → 豁免（不扣分）。
    若之後數據劣化（成立時勝率低於未成立 5 個百分點以上）→ 自動恢復扣分。 */
 const RISK_MUTE_KEY = 'csp_risk_mute';
+const RISK_W_KEY    = 'csp_risk_weights';   // 學習出來的每個扣分條件權重
+/* 學習門檻：原本「樣本 ≥100 且成立時勝率 ≥80% 才豁免」有兩個問題——
+   ① 只能往下（豁免），無法把「真的很準」的條件加重，等於扣分權重永遠是寫死的常數；
+   ② 勝率低的時候沒有任何條件到得了 80%，整套審查形同從未執行過。
+   改為雙向學習，門檻改成「相對比較 + Wilson 區間」，樣本需求也拉回可達到的範圍。 */
+const RISK_LEARN_MIN_N = 25;   // 條件成立的最少樣本
+const RISK_W_MIN = 0, RISK_W_MAX = 1.8;
+
+/* Wilson 95% 信賴上界（下界的鏡像）：用於保守比較兩組勝率 */
+function wilsonUB(w, n, z = 1.96) {
+  if (!n) return 100;
+  const p = w / n, z2 = z * z;
+  return Math.min(1, (p + z2 / (2 * n) + z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n)) / (1 + z2 / n));
+}
+
+let _riskWCache = null, _riskWCacheTs = 0;
+function _getRiskWeights() {
+  const now = Date.now();
+  if (_riskWCache && now - _riskWCacheTs < 60 * 1000) return _riskWCache;
+  try { _riskWCache = JSON.parse(localStorage.getItem(RISK_W_KEY) || '{}') || {}; }
+  catch(_e) { _riskWCache = {}; }
+  _riskWCacheTs = now;
+  return _riskWCache;
+}
+/* 條件的學習權重：1 = 未學習／維持原扣分；>1 = 實測確實預測虧損，加重；0 = 無預測力，豁免 */
+function riskFactorWeight(key) {
+  const w = _getRiskWeights()[key];
+  return (w && isFinite(w.w)) ? w.w : 1;
+}
 let _riskMuteCache = null, _riskMuteCacheTs = 0;
 function _getRiskMuteSet() {
   const now = Date.now();
   if (_riskMuteCache && now - _riskMuteCacheTs < 60 * 1000) return _riskMuteCache;
-  try { _riskMuteCache = new Set(Object.keys(JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'))); }
-  catch(_e) { _riskMuteCache = new Set(); }
+  try {
+    // 權重被學成 0 的條件＝豁免；保留舊的 mute 鍵以相容既有資料
+    const s = new Set(Object.keys(JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}')));
+    const W = JSON.parse(localStorage.getItem(RISK_W_KEY) || '{}') || {};
+    for (const k of Object.keys(W)) { if (W[k] && W[k].w === 0) s.add(k); else s.delete(k); }
+    _riskMuteCache = s;
+  } catch(_e) { _riskMuteCache = new Set(); }
   _riskMuteCacheTs = now;
   return _riskMuteCache;
 }
@@ -15755,67 +15789,110 @@ const RISK_KEY_LABELS = {
   f17_rot: '資金輪動逆風（BTC季做多山寨）',
   learn_drag: '止損風控扣分（止損建議整體）',
 };
+/* ── 扣分條件權重學習（雙向）─────────────────────────────────────
+   對每個扣分條件，比較「條件成立」與「條件未成立」兩組的實際勝率，
+   並用 Wilson 區間做保守比較（避免樣本少時被運氣帶著跑）：
+
+     未成立勝率下界 − 成立勝率上界 = gap
+       gap 越大 → 這個條件確實在預測虧損 → 加重扣分（最高 1.8×）
+     成立勝率下界 − 未成立勝率上界 = rev
+       rev > 0 → 條件成立時反而表現更好 → 扣它是冤枉 → 減輕甚至歸零
+
+   與舊版的差別（舊版是使用者反映「沒有在學習」的原因）：
+     · 舊版只能「豁免」，無法把真正準的條件加重 → 權重永遠是寫死的常數
+     · 舊版要求樣本 ≥100 且成立時絕對勝率 ≥80% 才動作；帳戶整體勝率偏低時，
+       沒有任何條件到得了 80%，整套審查等於從來沒有生效過
+   現在改為相對比較 + 可達到的樣本門檻（25 筆），且雙向調整。 */
 function auditPenaltyFactors() {
-  // 證據池：正式已完結交易 + 實驗室已完結機會
+  // 證據池：正式已完結交易 + 實驗室已完結機會 + 快進快出已完結（樣本量最大的來源）
   const realAll = loadTradeLog().filter(t => t.status === 'closed');
   const labAll  = loadAILab().filter(o => o.status === 'closed');
-  const real = realAll.filter(t => Array.isArray(t.riskKeys));
-  const labC = labAll.filter(o => Array.isArray(o.riskKeys));
+  let scalpAll = [];
+  try { scalpAll = loadScalpLog().filter(t => t.status === 'closed'); } catch(_e) {}
   const all = [
-    ...real.map(t => ({ keys: t.riskKeys, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
-    ...labC.map(o => ({ keys: o.riskKeys, win: (o.pnlR || 0) > 0 })),
+    ...realAll.filter(t => Array.isArray(t.riskKeys))
+      .map(t => ({ keys: t.riskKeys, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
+    ...labAll.filter(o => Array.isArray(o.riskKeys))
+      .map(o => ({ keys: o.riskKeys, win: (o.pnlR || 0) > 0 })),
+    ...scalpAll.filter(t => Array.isArray(t.riskKeys))
+      .map(t => ({ keys: t.riskKeys, win: (parseFloat(t.pnlR) || 0) > 0 })),
   ];
-  let mute = {};
-  try { mute = JSON.parse(localStorage.getItem(RISK_MUTE_KEY) || '{}'); } catch(_e) {}
+  let W = {};
+  try { W = JSON.parse(localStorage.getItem(RISK_W_KEY) || '{}') || {}; } catch(_e) {}
   const report = [];
-  // 風控分因子（f1~f17）與止損建議整體（learn_drag）皆用 mode 'abs'：
-  //  樣本 ≥100 且「成立時絕對勝率」≥80% → 豁免不扣分；成立時勝率跌破 75% 自動恢復扣分。
-  //  （條件成立卻仍維持 80% 高勝率 = 扣它純屬冤枉好訊號）
-  const judge = (key, label, withF, wrO, mode) => {
-    const wrW = withF.length ? withF.filter(s => s.win).length / withF.length * 100 : 0;
-    const wasMuted = !!mute[key];
-    // 豁免門檻（首次豁免）：樣本 ≥100 且勝率達標；維持門檻（含 5pp 遲滯，避免臨界反覆）稍寬
-    const meetsExempt = mode === 'abs'
-      ? (withF.length >= 100 && wrW >= 80)
-      : (withF.length >= 100 && wrW >= wrO);
-    const meetsStay = mode === 'abs'
-      ? (withF.length >= 100 && wrW >= 75)
-      : (withF.length >= 100 && wrW >= wrO - 5);
-    // 統一重算：已豁免者「必須持續符合維持門檻」才留豁免，否則一律撤銷（含樣本掉回 <100、
-    // 或舊標準遺留的殘留豁免）；未豁免者符合豁免門檻才豁免。
-    let muted = wasMuted;
-    if (wasMuted && !meetsStay) {
-      delete mute[key]; muted = false;
-      console.log(`[risk-audit] 恢復扣分「${label}」：不再符合維持門檻（樣本 ${withF.length}、成立時勝率 ${wrW.toFixed(1)}%）`);
-    } else if (!wasMuted && meetsExempt) {
-      mute[key] = { mutedAt: Date.now(), n: withF.length, wrWith: +wrW.toFixed(1), mode };
-      muted = true;
-      console.log(`[risk-audit] 豁免「${label}」：成立時勝率 ${wrW.toFixed(1)}%${mode === 'abs' ? ' ≥ 80%' : ` ≥ 未成立 ${wrO.toFixed(1)}%`}（樣本 ${withF.length} ≥ 100）`);
+
+  const judge = (key, label, withF, without) => {
+    const nW = withF.length, nO = without.length;
+    const winW = withF.filter(s => s.win).length, winO = without.filter(s => s.win).length;
+    const wrW = nW ? winW / nW * 100 : 0;
+    const wrO = nO ? winO / nO * 100 : 0;
+    const prev = (W[key] && isFinite(W[key].w)) ? W[key].w : 1;
+    let w = prev, why = '';
+
+    if (nW < RISK_LEARN_MIN_N || nO < 10) {
+      w = 1;
+      why = `樣本 ${nW}/${RISK_LEARN_MIN_N}，尚不足以判斷，維持原扣分`;
+    } else {
+      const gap = (wilsonLB(winO, nO) - wilsonUB(winW, nW)) * 100;   // 條件確實在預測虧損
+      const rev = (wilsonLB(winW, nW) - wilsonUB(winO, nO)) * 100;   // 條件成立反而更好
+      if (rev > 0) {
+        w = 0;
+        why = `條件成立時勝率 ${wrW.toFixed(0)}% 反而優於未成立 ${wrO.toFixed(0)}%（下界仍高 ${rev.toFixed(0)}pp）→ 豁免不扣分`;
+      } else if (gap >= 20) { w = 1.8; why = `成立時勝率顯著較低（保守估計仍差 ${gap.toFixed(0)}pp）→ 扣分加重至 1.8×`; }
+      else if (gap >= 12)   { w = 1.5; why = `成立時勝率明顯較低（差 ${gap.toFixed(0)}pp）→ 加重至 1.5×`; }
+      else if (gap >= 6)    { w = 1.2; why = `成立時勝率略低（差 ${gap.toFixed(0)}pp）→ 加重至 1.2×`; }
+      // 尚未達統計顯著時「方向」仍然重要：成立時勝率確實比較低就維持原扣分。
+      // 不能因為「還沒證明」就把它減輕——那等於在樣本累積期間反過來放行壞條件
+      // （實測到的錯誤：成立時 35%、未成立 50%，區間重疊，舊邏輯竟把扣分減半）。
+      else if (wrW < wrO - 2) { w = 1.0; why = `成立時勝率 ${wrW.toFixed(0)}% 低於未成立 ${wrO.toFixed(0)}%，方向正確但尚未達統計顯著 → 維持原扣分`; }
+      else                    { w = 0.7; why = `成立時勝率 ${wrW.toFixed(0)}% 並不低於未成立 ${wrO.toFixed(0)}%，看不出預測力 → 減輕至 0.7×`; }
+      // 平滑：一次最多往目標移動一半，避免樣本剛過門檻就大跳
+      const target = w;
+      w = +(prev + (target - prev) * 0.5).toFixed(2);
+      if (w < 0.08) w = 0;                       // 貼近 0 直接歸零（等同豁免）
+      w = Math.max(RISK_W_MIN, Math.min(RISK_W_MAX, w));
+      // 說明必須反映「這輪實際套用的權重」，而不是還沒走到的目標值
+      if (Math.abs(w - target) > 0.01) why += `；本輪平滑後實際套用 ×${w}（每次移動一半，將逐輪逼近 ×${target}）`;
     }
-    if (!withF.length && !muted) return;  // 無樣本且未豁免 → 不顯示
-    report.push({ key, label, n: withF.length, wrWith: wrW, wrWithout: wrO, muted, mode });
+    W[key] = { w, n: nW, wrW: +wrW.toFixed(1), wrO: +wrO.toFixed(1), at: Date.now(), why };
+    if (!nW && w === 1) return;
+    report.push({ key, label, n: nW, wrWith: wrW, wrWithout: wrO, w, why, muted: w === 0 });
   };
-  // 風控分因子（絕對勝率 ≥80% 標準）
+
   for (const key of Object.keys(RISK_KEY_LABELS)) {
     if (key === 'learn_drag') continue;  // 特殊條件另行處理
-    const withF   = all.filter(s => s.keys.includes(key));
-    const without = all.filter(s => !s.keys.includes(key));
-    const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
-    judge(key, RISK_KEY_LABELS[key], withF, wrO, 'abs');
+    judge(key, RISK_KEY_LABELS[key],
+      all.filter(s => s.keys.includes(key)), all.filter(s => !s.keys.includes(key)));
   }
-  // 止損建議整體（絕對勝率 ≥80% 標準，與風控分因子相同；豁免後 calcLearnDrag 直接歸零）
+  // 止損建議整體：以「學習扣分是否觸發」為條件（豁免後 calcLearnDrag 直接歸零）
   {
-    const learnPool = [
+    const pool = [
       ...realAll.map(t => ({ fired: (t.learnPenalty || 0) >= 5, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
       ...labAll.map(o => ({ fired: (o.refLearnPen || 0) >= 5, win: (o.pnlR || 0) > 0 })),
     ];
-    const withF = learnPool.filter(s => s.fired);
-    const without = learnPool.filter(s => !s.fired);
-    const wrO = without.length ? without.filter(s => s.win).length / without.length * 100 : 0;
-    judge('learn_drag', RISK_KEY_LABELS.learn_drag, withF, wrO, 'abs');
+    judge('learn_drag', RISK_KEY_LABELS.learn_drag, pool.filter(s => s.fired), pool.filter(s => !s.fired));
   }
-  try { localStorage.setItem(RISK_MUTE_KEY, JSON.stringify(mute)); _riskMuteCache = null; } catch(_e) {}
-  return report;
+  try { localStorage.setItem(RISK_W_KEY, JSON.stringify(W)); _riskWCache = null; _riskMuteCache = null; } catch(_e) {}
+  return report.sort((a, b) => b.w - a.w || b.n - a.n);
+}
+
+/* ── 止損建議條件的個別成效 ────────────────────────────────────
+   風控面板會列出一串「建議」（recs），但過去從來沒有回頭檢查過哪一條建議
+   真的和結果有關。這裡以建議所屬的扣分條件 key 為單位統計成立時的實際勝率，
+   讓每一條建議都帶著自己的實測命中率，而不是永遠只是一句話。
+
+   注意：這裡只讀「上一次審查已經算好並存起來」的權重表，不重跑審查。
+   computeFullRisk 會對每個幣的每個條件呼叫它，重跑審查等於每輪掃描做上百次
+   全量統計 + 寫入 localStorage，會直接把頁面卡死。 */
+function riskRecEffectiveness() {
+  try {
+    const W = _getRiskWeights(), out = {};
+    for (const k of Object.keys(W)) {
+      const r = W[k];
+      if (r && r.n >= RISK_LEARN_MIN_N) out[k] = { n: r.n, wrWith: r.wrW, wrWithout: r.wrO, w: r.w };
+    }
+    return out;
+  } catch(_e) { return {}; }
 }
 let _lastFactorAuditTs = 0;
 function maybeAuditPenaltyFactors() {
@@ -16453,23 +16530,32 @@ function renderLabPage() {
     if (auditShown.length) {
       auditHtml = `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
-        <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:8px">🔬 風控扣分條件有效性審查（AI 自動篩選）</div>
+        <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:8px">🔬 風控扣分條件有效性審查（雙向學習：準的加重、不準的減輕）</div>
         <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
           <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
             <th style="padding:4px 6px">扣分條件</th><th style="padding:4px 6px;text-align:right">樣本</th>
-            <th style="padding:4px 6px;text-align:right">成立時勝率</th><th style="padding:4px 6px;text-align:right">豁免門檻</th>
-            <th style="padding:4px 6px;text-align:right">狀態</th></tr></thead>
-          <tbody>${auditShown.map(a => `<tr>
+            <th style="padding:4px 6px;text-align:right">成立時勝率</th><th style="padding:4px 6px;text-align:right">未成立</th>
+            <th style="padding:4px 6px;text-align:right">學習權重</th>
+            <th style="padding:4px 6px">依據</th></tr></thead>
+          <tbody>${auditShown.map(a => {
+            const wc = a.w === 0 ? '#22d3ee' : a.w > 1 ? '#ef4444' : a.w < 1 ? '#f59e0b' : 'var(--text2)';
+            const wl = a.w === 0 ? '♻️ 豁免' : `×${a.w}`;
+            return `<tr>
             <td style="padding:4px 6px">${a.label}</td>
-            <td style="padding:4px 6px;text-align:right;color:${a.n >= 100 ? 'var(--text2)' : 'var(--text3)'}">${a.n}${a.n >= 100 ? '' : '/100'}</td>
+            <td style="padding:4px 6px;text-align:right;color:${a.n >= RISK_LEARN_MIN_N ? 'var(--text2)' : 'var(--text3)'}">${a.n}${a.n >= RISK_LEARN_MIN_N ? '' : '/' + RISK_LEARN_MIN_N}</td>
             <td style="padding:4px 6px;text-align:right;font-weight:600">${a.wrWith != null ? a.wrWith.toFixed(0) + '%' : '--'}</td>
-            <td style="padding:4px 6px;text-align:right;color:var(--text3)">≥80%</td>
-            <td style="padding:4px 6px;text-align:right;font-weight:700;color:${a.muted ? '#22d3ee' : '#f59e0b'}">${a.muted ? '♻️ 已豁免' : '扣分中'}</td>
-          </tr>`).join('')}</tbody>
+            <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.wrWithout != null ? a.wrWithout.toFixed(0) + '%' : '--'}</td>
+            <td style="padding:4px 6px;text-align:right;font-weight:700;color:${wc}">${wl}</td>
+            <td style="padding:4px 6px;color:var(--text3);font-size:0.7rem">${a.why || ''}</td>
+          </tr>`; }).join('')}</tbody>
         </table></div>
         <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">
-          <div>🛡️ <b>風控分因子</b>（f1~f17）／<b>止損建議整體</b>：樣本 ≥100 且「成立時勝率」<b>≥80%</b> → 豁免不扣分（成立時仍 80% 高勝率 = 扣它純屬冤枉）；跌破 75% 自動恢復扣分。</div>
-          <div style="margin-top:2px">樣本來源：正式交易 + 實驗室完結記錄。</div>
+          <div>🛡️ 比較「條件成立」與「條件未成立」兩組的實際勝率，並以 Wilson 區間保守比較：
+            成立時勝率確實較低 → <b>加重扣分</b>（最高 1.8×）；證明不了有預測力 → 減輕；
+            成立時反而表現更好 → <b>豁免不扣分</b>。權重每次最多往目標移動一半，避免剛過門檻就大跳。</div>
+          <div style="margin-top:2px">樣本門檻 ${RISK_LEARN_MIN_N} 筆（舊版要求 100 筆且成立時勝率 ≥80% 才動作，
+            帳戶勝率偏低時沒有任何條件到得了，等於整套審查從未生效）。</div>
+          <div style="margin-top:2px">樣本來源：正式交易 + 實驗室完結記錄 + 快進快出完結記錄。</div>
         </div>
       </div>`;
     }
@@ -18280,10 +18366,21 @@ function computeFullRisk(coin, params, isLong) {
   // addF：條件成立即記錄 key（供有效性審查追蹤）；被 AI 審查豁免的條件僅顯示、不扣分
   const addF = (key, pts, factorText, recText) => {
     keys.push(key);
-    if (_muted.has(key)) { factors.push(`♻️ ${factorText}（AI 審查豁免，不扣分）`); return; }
-    score += pts;
-    factors.push(factorText);
-    if (recText) recs.push(recText);
+    // 扣分權重由實測勝率學習而來（雙向）：1 = 未學習／原值，>1 = 實測確實預測虧損，0 = 豁免
+    const _w = (typeof riskFactorWeight === 'function') ? riskFactorWeight(key) : 1;
+    if (_muted.has(key) || _w === 0) { factors.push(`♻️ ${factorText}（AI 審查豁免，不扣分）`); return; }
+    score += pts * _w;
+    factors.push(_w > 1 ? `${factorText}（實測較準，扣分 ×${_w}）`
+               : _w < 1 ? `${factorText}（實測預測力弱，扣分 ×${_w}）` : factorText);
+    if (recText) {
+      // 建議帶上這個條件的實測勝率，讓「建議」是可驗證的，而不是永遠只是一句話
+      let stat = '';
+      try {
+        const e = riskRecEffectiveness()[key];
+        if (e) stat = `（此條件歷史成立 ${e.n} 筆，勝率 ${e.wrWith}%，未成立 ${e.wrWithout}%）`;
+      } catch(_e) {}
+      recs.push(recText + stat);
+    }
   };
 
   // ── 去重（2026-07）：f1_conf / f2_adx / f3_macro / f4_ai / f5_learn / f12_sq
@@ -18379,7 +18476,7 @@ function computeFullRisk(coin, params, isLong) {
       '此組合歷史上一進場就被掃損的比例偏高，建議等更好進場點或縮小倉位');
   } catch(_e) {}
 
-  score = Math.min(100, score);
+  score = Math.min(100, Math.round(score));   // 學習權重會產生小數，統一取整
   const level      = score >= 75 ? '極高風險' : score >= 60 ? '高風險' : score >= 28 ? '中風險' : '低風險';
   const levelColor = score >= 75 ? '#ef4444'  : score >= 60 ? '#f97316' : score >= 28 ? '#f59e0b' : '#22c55e';
   if (factors.length === 0) { factors.push('各項指標正常，無明顯風險'); recs.push('可按計劃正常倉位進場'); }
@@ -19832,13 +19929,27 @@ const SCALP_CFG = {
   //    單一標的看錯的殺傷力下降 → 交易數增加的同時回撤反而更平順。
   riskPerTradePct:     0.6,   // 單筆風險：權益的 %（固定分數法）
   maxPortfolioRiskPct: 4.5,   // 同時在市的總風險上限（未實現風險加總）→ 可容納 7 筆
-  dailyLossLimitPct:   3.0,   // 單日虧損上限 → 觸及當日停止開倉
+  dailyLossLimitPct:   5.0,   // 單日虧損上限 → 觸及當日停止開倉
+                              //（必須大於 maxPortfolioRiskPct，否則一次同向逆風就必定熔斷）
   maxDrawdownPct:      15.0,  // 最大回撤上限 → 觸及全面停止開倉
   minNotional:         5,     // 最小名目價值（低於此不下單，避免碎單）
 
   // ── 勝率／回撤改善（與「增加交易量」互相制衡的另一半）──────────────
   //    重點認知：回撤主要不是進場問題，是「相關性 + 部位大小 + 出場」問題。
   //    只加進場模式而不動這幾項，交易變多只會讓回撤同步變大。
+  // 風控硬閘門：原本風險分只用來縮小部位，再高的風險照樣進場——極高風險的單
+  // 就算只下 0.6 倍部位，虧損機率仍然偏高，累積起來就是連續虧損與熔斷。
+  maxRiskScore:     60,    // 風險分 ≥ 此值直接不做（60 = 主系統的「高風險」起點）
+  minConf:          55,    // 風控分低於此不做
+  // 多週期確認：原本的註解寫著「15m 與 1H 同向」，但程式碼從來沒有檢查過。
+  // 這些欄位主掃描早就算好放在 coin 上，用它是零成本的技術面支持。
+  requireMtf:       true,
+  mtfMinAlign:      1,     // 順勢家族：15m/1H 至少幾個同向
+  // 熔斷：原本單日上限 3.0% 低於組合風險上限 4.5%，代表「一次正常的同向逆風」
+  // 就必定觸發熔斷——熔斷應該是在真正的壞日子才啟動，不是每天例行公事。
+  // 另外加上「軟熔斷」：接近上限先減碼，而不是二元的全開／全關。
+  dailySoftPct:     2.5,   // 當日虧損達此值 → 部位減半（仍可交易）
+  ddSoftPct:        8.0,   // 回撤達此值 → 部位 ×0.6
   autoPruneModes:   true,  // 用實測期望值自動停用表現差的模式（附探索額度，可翻身）
   pruneMinN:        20,    // 至少幾筆已完結才有資格被停用（樣本不足不下結論）
   pruneWrLbFloor:   38,    // 勝率 Wilson 下界低於此且期望值為負 → 停用
@@ -20197,10 +20308,44 @@ function scalpRiskMult(mode, riskScore) {
       why.push(`連續 ${streak} 敗 → ×${cfg.lossStreakMult}（出現一筆獲利即恢復）`);
       m *= cfg.lossStreakMult;
     }
+    // 軟熔斷：接近單日／回撤上限時先減碼，而不是等到硬熔斷才二元地全部停掉。
+    // 硬熔斷一觸發就整天不能交易，反而讓策略沒有機會把當天賺回來。
+    const a = scalpAccount();
+    if (a.todayPnlPct <= -cfg.dailySoftPct) {
+      why.push(`當日已虧 ${a.todayPnlPct}%（軟熔斷 -${cfg.dailySoftPct}%）→ ×0.5`);
+      m *= 0.5;
+    }
+    if (a.ddNow >= cfg.ddSoftPct) {
+      why.push(`回撤 ${a.ddNow}%（軟熔斷 ${cfg.ddSoftPct}%）→ ×0.6`);
+      m *= 0.6;
+    }
   } catch(_e) {}
   m = Math.max(cfg.sizeMinMult, Math.min(cfg.sizeMaxMult, m));
   if (!why.length) why.push('各項正常，標準倉位');
   return { mult: +m.toFixed(2), why };
+}
+
+/* ── 多週期確認（技術面支持）──────────────────────────────────
+   主掃描已經把 15m / 1H / 4H 的訊號算好放在 coin 上，快進快出過去完全沒用，
+   等於每一筆單只靠 5m 的型態就進場——這是勝率偏低最直接的原因之一。
+
+   順勢家族：15m/1H 至少 mtfMinAlign 個同向，且 1H 不可明確逆向。
+   回歸家族：反轉的對象不能是「更大週期正在推的趨勢」——逆著 1H 明確方向
+             做反轉，就是站在火車前面撿硬幣，也是回撤的主要來源。 */
+function scalpMtfCheck(coin, isLong, family) {
+  if (!SCALP_CFG.requireMtf) return { ok: true, why: '未啟用多週期確認', n: 0 };
+  const bull = isLong ? 'bull' : 'bear', bear = isLong ? 'bear' : 'bull';
+  const s15 = String(coin.signal15m || ''), s1h = String(coin.h1Signal || '');
+  const has = (s, k) => s.includes(k);
+  if (family === 'trend') {
+    if (has(s1h, bear)) return { ok: false, why: '1H 明確逆向' };
+    const n = (has(s15, bull) ? 1 : 0) + (has(s1h, bull) ? 1 : 0);
+    if (n < SCALP_CFG.mtfMinAlign) return { ok: false, why: `15m/1H 同向數 ${n} < ${SCALP_CFG.mtfMinAlign}` };
+    return { ok: true, why: `15m/1H 同向 ${n} 個`, n };
+  }
+  // 回歸：isLong 代表「反轉方向」，被反轉的是相反方向的推進
+  if (has(s1h, bear)) return { ok: false, why: '1H 正在推反方向，不逆大週期做反轉' };
+  return { ok: true, why: '1H 未逆向，可做回歸', n: has(s15, bull) ? 1 : 0 };
 }
 
 /* 真實 ATR（Wilder）：5m K 線已經抓下來了，直接算比用 ADX 猜精準得多。
@@ -20438,6 +20583,10 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   const _gate = scalpModeGate(mode);
   if (!_gate.allow) return _sr(`模式已停用(${SCALP_MODE_LABEL[mode] || mode})`);
 
+  // 多週期確認：只靠 5m 型態進場是勝率偏低的主因，這裡補上 15m/1H 的技術面支持
+  const _mtf = scalpMtfCheck(coin, isLong, family);
+  if (!_mtf.ok) return _sr(`多週期未支持(${_mtf.why})`);
+
   // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
   //    注意：last 是「形成中」的 K 棒，成交量只累積了一部分。直接拿它與
   //    20 根完整棒的均量比較並要求 ≥1.5 倍，在棒剛開始的前一兩分鐘幾乎
@@ -20535,6 +20684,7 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
            breakLevel: level, breakExtent: +(Math.max(0, extent) * 100).toFixed(2),
            volRatio: +(curVol / avgVol).toFixed(2), oiState,
            tp1R: _t1R, tp2R: +_rr.toFixed(2), revTarget: _revTarget || null,
+           mtfWhy: _mtf.why, mtfAlign: _mtf.n,
            // 學習止損的存證：倍數、來源、理由，以及回頭學習所需的 ATR 標準化欄位
            slMult: +_slL.mult.toFixed(3), slMultSrc: _slL.src, slMultWhy: _slL.why,
            levelGapAtr: atr > 0 ? +(Math.abs(entry - level) / atr).toFixed(3) : null,
@@ -20641,14 +20791,22 @@ async function recordScalpSignals(data) {
       // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
       if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) { _sr('同幣本輪已建倉'); continue; }
 
-      // 風控參考（共用主系統函式，只讀不寫）
-      let riskScore = null, riskLevel = '', riskRecs = [], conf = null;
+      // 風控評估（共用主系統函式，只讀不寫）
+      let riskScore = null, riskLevel = '', riskRecs = [], conf = null, riskKeys = [];
       try {
         const r = computeFullRisk(coin, { entry: setup.entry, sl: setup.sl, tp1: setup.tp1,
           conf: 70, rr1: setup.tp1R || SCALP_CFG.tp1R }, isLong);
-        riskScore = r.score; riskLevel = r.level; riskRecs = r.recs || [];
+        riskScore = r.score; riskLevel = r.level; riskRecs = r.recs || []; riskKeys = r.keys || [];
         conf = Math.max(0, 100 - calcRiskPenalty(r.score));
       } catch(_e) {}
+
+      // 風控硬閘門：原本只把風險分拿來「縮小部位」，再高的風險照樣進場。
+      // 這是回撤高、容易觸發熔斷的直接原因之一——極高風險的單即使只下 0.6 倍
+      // 部位，虧損機率仍然偏高，累積起來就是連續虧損。改為超過門檻直接不做。
+      if (riskScore != null && riskScore >= SCALP_CFG.maxRiskScore) {
+        _sr(`風險分過高(${riskScore}≥${SCALP_CFG.maxRiskScore})`); continue;
+      }
+      if (conf != null && conf < SCALP_CFG.minConf) { _sr(`風控分過低(${conf}<${SCALP_CFG.minConf})`); continue; }
 
       // 品質加權部位：期望值高的模式加碼、風險大的減碼、連敗中砍半
       const _qm = scalpRiskMult(setup.mode, riskScore);
@@ -20687,6 +20845,7 @@ async function recordScalpSignals(data) {
         rsi: setup.rsi, adx: setup.adx, macdHist: setup.macd,
         mode: setup.mode, family: setup.family,
         tp1RUsed: setup.tp1R, tp2RUsed: setup.tp2R, revTarget: setup.revTarget,
+        mtfWhy: setup.mtfWhy, mtfAlign: setup.mtfAlign,
         // 機器人學習止損：本筆採用的倍數與來源，以及回頭學習用的 ATR 標準化欄位
         atrAtEntry: setup.atr, slMult: setup.slMult, slMultSrc: setup.slMultSrc,
         slMultWhy: setup.slMultWhy, levelGapAtr: setup.levelGapAtr, slDistAtr: setup.slDistAtr,
@@ -20697,6 +20856,7 @@ async function recordScalpSignals(data) {
         riskAmt: +_riskAmt.toFixed(2), riskPct: +(SCALP_CFG.riskPerTradePct * _qm.mult).toFixed(3),
         sizeMult: _qm.mult, sizeWhy: _qm.why,
         riskScore, riskLevel, riskRecs, conf,
+        riskKeys,                 // 建單時成立的風險條件 → 讓快進快出也回饋扣分條件的學習
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
         note: `快進快出（${SCALP_MODE_LABEL[setup.mode] || setup.mode}）`,
       };
@@ -20847,9 +21007,11 @@ function sendScalpTelegram(t, kind) {
         `📐 ${SCALP_MODE_LABEL[t.mode] || t.mode}`
           + `（${t.family === 'revert' ? '回歸家族' : '順勢家族'}，止損錨點 $${fmt(t.breakLevel)}）`,
         `📊 量能 ${t.volRatio}× 均量｜OI ${t.oiState === 'favorable' ? '新錢同向 ✅' : t.oiState === 'neutral' ? '中性' : '—'}`,
+        t.mtfWhy ? `🕐 多週期：${t.mtfWhy}（15m/1H）` : '',
+        (t.riskScore != null) ? `🛡️ 風險分 ${t.riskScore}／${t.riskLevel}（門檻 <${SCALP_CFG.maxRiskScore}）`
+          + `　風控分 ${t.conf}（門檻 ≥${SCALP_CFG.minConf}）` : '',
         SCALP_CFG.beStop ? `🛡️ 浮盈達 +${SCALP_CFG.beTriggerR}R 自動移到保本` : '',
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
-        t.conf != null ? `📶 風控分：${t.conf} 分（風險 ${t.riskScore ?? '--'}／${t.riskLevel || '--'}）` : '',
         t.riskRecs && t.riskRecs.length ? `💡 ${t.riskRecs[0]}` : '',
         ``,
         `⏰ ${ts}`,
