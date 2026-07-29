@@ -10046,9 +10046,18 @@ function computeTradePnlR(trade, exitPrice, baseRisk, isLong) {
      • 學習系統把「主動換防」當失敗情境學習
    改為三分類：勝(tp1/tp2)、負(sl)、平手(be，不計入勝率分子分母)。
    （連虧熔斷 globalLossStreak 早已正確排除 be，此處統一其餘統計口徑） */
+/* 判定「真的平手」的容差（R）。
+   停滯出場原本把 ±0.3R 內一律標成平手，但 0.3R 是整整三成的止損幅度，
+   那是實實在在的虧損，不是平手。而平手不計入勝率分母，於是會出現
+   「勝率 100%、期望值卻是負的」這種自相矛盾的數字——帳面勝率被灌水。
+   到期平倉那條路徑本來就是用 ±0.05R 判定，兩邊標準不一致；統一到這個常數，
+   以後也不會再各自漂移。 */
+const FLAT_R_EPS = 0.05;
 function isWinTrade(t)  { return t.outcome === 'tp1' || t.outcome === 'tp2'; }
 function isLossTrade(t) { return t.outcome === 'sl'; }
 function isFlatTrade(t) { return t.outcome === 'be'; }
+/* 依實際損益判定出場結果（供各停滯／到期出場路徑共用） */
+function outcomeByR(r) { return r > FLAT_R_EPS ? 'tp1' : r < -FLAT_R_EPS ? 'sl' : 'be'; }
 /* 勝率 = 勝 /(勝+負)，平手不計入分母；無有效樣本回傳 null */
 function winRateOf(arr) {
   const w = arr.filter(isWinTrade).length;
@@ -12488,7 +12497,9 @@ function updateOpenTrades(data) {
     if (!trade.canScaleIn && trade.entryTime
         && Date.now() - trade.entryTime > 16 * 3600 * 1000) {
       const _uRt = ((cur - entry) * (isLong ? 1 : -1)) / baseRisk;
-      if (Math.abs(_uRt) < 0.3) { trade.timeStopped = true; outcome = 'be'; }
+      // 觸發條件仍是「在 ±0.3R 內原地踏步」，但結果要照實際損益標記：
+      // 在 -0.29R 出場是虧損，標成平手會讓它被排除在勝率分母外，帳面勝率灌水
+      if (Math.abs(_uRt) < 0.3) { trade.timeStopped = true; outcome = outcomeByR(_uRt); }
     }
 
     // ── TP1 後移動停利（優化）：鎖住峰值後方 0.8R，只往獲利方向棘輪不回落 ──
@@ -21548,12 +21559,13 @@ function updateScalpTrades(data) {
       if (heldMin >= SCALP_CFG.maxHoldMin) {
         t.exitPrice = cur; t.maxHoldExit = true;
         const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
-        outcome = r > 0.05 ? 'tp1' : r < -0.05 ? 'sl' : 'be';
+        outcome = outcomeByR(r);
       }
       // ② 停滯止損：持有超過 timeStopMin 仍在 ±0.3R 內
       if (!outcome && heldMin >= SCALP_CFG.timeStopMin) {
         const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
-        if (Math.abs(r) < 0.3) { t.timeStopped = true; t.exitPrice = cur; outcome = 'be'; }
+        // 同上：觸發門檻不變，但結果照實際損益標記
+        if (Math.abs(r) < 0.3) { t.timeStopped = true; t.exitPrice = cur; outcome = outcomeByR(r); }
       }
       // ②-b 提早保本：達 +beTriggerR 就把止損移到成本價。
       //     把一部分「本來會變成虧損」的單改為平手，回撤明顯下降。
@@ -21871,15 +21883,19 @@ function scalpModeStats() {
   const by = {};
   for (const t of closed) {
     const k = t.mode || 'unknown';
-    by[k] = by[k] || { n: 0, w: 0, l: 0, r: 0 };
+    by[k] = by[k] || { n: 0, w: 0, l: 0, r: 0, fr: 0 };
     by[k].n++;
-    if (isWinTrade(t)) by[k].w++; else if (isLossTrade(t)) by[k].l++;
-    by[k].r += parseFloat(t.pnlR) || 0;
+    const _r = parseFloat(t.pnlR) || 0;
+    if (isWinTrade(t)) by[k].w++;
+    else if (isLossTrade(t)) by[k].l++;
+    else by[k].fr += _r;      // 平手單的實際損益（勝率不含它們，期望值含）
+    by[k].r += _r;
   }
   return Object.entries(by).map(([mode, v]) => ({
     mode, label: SCALP_MODE_LABEL[mode] || mode,
     family: SCALP_MODE_FAMILY[mode] || '—',
-    n: v.n, wins: v.w,
+    n: v.n, wins: v.w, losses: v.l,
+    flats: v.n - v.w - v.l, flatR: +(v.fr || 0).toFixed(2),
     winRate: (v.w + v.l) > 0 ? +(v.w / (v.w + v.l) * 100).toFixed(1) : null,
     netR: +v.r.toFixed(2),
     expectancy: v.n ? +(v.r / v.n).toFixed(3) : 0,
@@ -21928,9 +21944,17 @@ function _scalpModePanel() {
           <span style="color:${wc};font-weight:700;min-width:76px">勝率 ${r.winRate ?? '--'}%</span>
           <span style="color:${r.netR >= 0 ? '#22c55e' : '#ef4444'};min-width:74px">${r.netR > 0 ? '+' : ''}${r.netR}R</span>
           <span style="color:${r.expectancy > 0 ? '#22c55e' : '#ef4444'}">期望 ${r.expectancy > 0 ? '+' : ''}${r.expectancy}R</span>
+          ${r.flats ? `<span style="font-size:0.72rem;color:#f59e0b"
+             title="平手單不計入勝率分母，但計入淨 R 與期望值——這是勝率與期望值方向不一致的原因">
+             平手 ${r.flats} 筆（${r.flatR > 0 ? '+' : ''}${r.flatR}R）</span>` : ''}
           ${!g.allow ? `<span style="font-size:0.7rem;color:#ef4444">⛔ 已自動停用</span>` : ''}
         </div>`; }).join('')}
       <div style="font-size:0.72rem;color:var(--text3);margin-top:7px">
+        <b>勝率 100% 卻是負期望值？</b>勝率的分母只算勝與負、<b>不含平手</b>，但淨 R 與期望值
+        <b>包含平手</b>。過去停滯出場只要在 ±0.3R 內就一律標成平手——在 -0.29R 出場其實是虧損，
+        卻被排除在勝率分母外，帳面勝率因此被灌水。已修正為依實際損益標記
+        （僅 |R| &lt; ${FLAT_R_EPS} 才算平手），但<b>已完結的舊紀錄維持原標記不更動</b>，
+        所以舊資料仍可能看到這種落差 —— 這時以<b>期望值</b>為準。<br>
         樣本 ≥${SCALP_CFG.pruneMinN} 筆後，期望值 ≤0 且勝率下界 &lt;${SCALP_CFG.pruneWrLbFloor}% 的模式會
         <b>自動停用</b>，不必手動去關；但每 ${SCALP_CFG.pruneRetestHours} 小時仍放行一筆探索單持續驗證，
         表現回升就自動恢復。這是「加了很多模式」之後還能維持勝率的關鍵機制。</div>
