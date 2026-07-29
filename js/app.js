@@ -19761,6 +19761,30 @@ const SCALP_CFG = {
   enableMomentum:   true,   // B 順勢動能：趨勢中段（勝率中等、量最多）
   enableRetest:     true,   // C 突破回踩確認：等回踩守住才進（勝率最高、量少）
   enableTrap:       true,   // D 假突破反轉：刺破後收回，反手（勝率高、賠率佳）
+  // ── 新增模式：A~D 全屬「順勢家族」，都要求 ADX≥minAdx 且 MACD 同向，
+  //    等於把「盤整」整段時間排除在外——那卻是市場最常見的狀態，也是
+  //    交易量一直上不來的結構性原因。以下補上回歸家族與更好的順勢進場點。
+  enablePullback:   true,   // F 均線回踩（順勢）：等回踩 EMA20 再進，不追價 → 進場價更好
+  enableRange:      true,   // E 區間邊緣反轉（回歸）：盤整區上下緣帶拒絕影線反手
+  enableVwapRev:    true,   // G VWAP 回歸（回歸）：過度偏離機構成本線後的均值回歸
+  enableExhaust:    true,   // H 衰竭反轉（回歸）：連續同向推進但力道遞減後反手
+  // 回歸家族專用門檻（順勢家族的 ADX/MACD 條件在此不適用）
+  revertAdxMax:     26,     // 回歸模式只在「非強趨勢」時啟用（逆勢做反轉是最大的爆倉來源）
+  revertRsiHi:      68,     // 反轉做空需 RSI ≥ 此值（做多鏡像 100-此值）
+  rangeMinBars:     10,     // 判定區間所需的最少 K 棒
+  rangeMaxWidthPct: 0.035,  // 區間寬度上限 3.5%（過寬就不是盤整了）
+  rangeEdgePct:     0.18,   // 影線觸及上/下緣 18% 內才算到邊
+  rangeCloseEdge:   0.15,   // 收盤也要仍在該側 15% 內。這個數字是被幾何限制決定的，不是隨手調的：
+                            // 目標是區間中軸（距邊緣 0.5×寬），若進場已離邊緣 0.35×寬，
+                            // 剩餘空間只有 0.15×寬，卻要承擔「回到邊緣外」的止損 → R/R 恆小於 1，
+                            // 數學上不可能成立。收在 0.15×寬內才有 1.5 以上的 R/R。
+  rangeWickRatio:   0.5,    // 拒絕影線需佔該根全幅的 50% 以上
+  rangeSlSpanFrac:  0.15,   // 區間模式的止損緩衝上限＝區間寬度的 15%
+                            //（窄區間裡 ATR 可能接近整個區間寬，照 ATR 放會讓 R 大到做不成）
+  vwapDevMin:       0.022,  // VWAP 偏離 ≥2.2% 才視為過度延伸
+  exhaustBars:      3,      // 連續同向棒數
+  revertTp1R:       0.8,    // 回歸模式的止盈較近（目標是回到均值，不是追延續）
+  revertTp2R:       1.3,
   retestMaxDist:    0.004,  // C：回踩後距突破位的最大距離 0.4%
   trapMaxBars:      2,      // D：假突破需於幾根內收回
   trapMinPierce:    0.0008, // D：至少刺破 0.08% 才算誘多/誘空
@@ -19801,11 +19825,40 @@ const SCALP_CFG = {
   maxCandidates: 40,   // 每輪最多評估幾個候選（決定 5m K 線抓取量）
   // ── 量化資金管理（把「訊號」變成可機械執行的交易）──────────────
   equity:              1000,  // 模擬帳戶權益（USDT）——僅供計算部位大小
-  riskPerTradePct:     1.0,   // 單筆風險：權益的 %（固定分數法）
-  maxPortfolioRiskPct: 4.0,   // 同時在市的總風險上限（未實現風險加總）
+  //    單筆風險與組合上限必須互相搭配：原本單筆 1.0%、組合上限 4.0%，
+  //    代表最多只可能有 4 筆同時在市，maxActive 設 8 根本到不了——這是
+  //    「交易量上不來」的另一個隱形天花板，且與加進場模式無關。
+  //    改為「更小的注、更多筆」：總曝險沒有變大，但持倉更分散，
+  //    單一標的看錯的殺傷力下降 → 交易數增加的同時回撤反而更平順。
+  riskPerTradePct:     0.6,   // 單筆風險：權益的 %（固定分數法）
+  maxPortfolioRiskPct: 4.5,   // 同時在市的總風險上限（未實現風險加總）→ 可容納 7 筆
   dailyLossLimitPct:   3.0,   // 單日虧損上限 → 觸及當日停止開倉
   maxDrawdownPct:      15.0,  // 最大回撤上限 → 觸及全面停止開倉
   minNotional:         5,     // 最小名目價值（低於此不下單，避免碎單）
+
+  // ── 勝率／回撤改善（與「增加交易量」互相制衡的另一半）──────────────
+  //    重點認知：回撤主要不是進場問題，是「相關性 + 部位大小 + 出場」問題。
+  //    只加進場模式而不動這幾項，交易變多只會讓回撤同步變大。
+  autoPruneModes:   true,  // 用實測期望值自動停用表現差的模式（附探索額度，可翻身）
+  pruneMinN:        20,    // 至少幾筆已完結才有資格被停用（樣本不足不下結論）
+  pruneWrLbFloor:   38,    // 勝率 Wilson 下界低於此且期望值為負 → 停用
+  pruneRetestHours: 8,     // 被停用的模式每隔幾小時仍放行一筆「探索單」重新驗證
+  // 相關性控管：同方向持倉本質上是同一筆賭注，大盤一動全部一起中止損。
+  // 以「同向風險金額佔權益的 %」取代單純的筆數上限，才真正控得住回撤。
+  maxSameDirRiskPct: 2.4,  // 同方向未實現風險上限（權益 %）→ 單邊最多約 4 筆
+  // 品質加權部位：期望值高的模式加碼、風險分高的減碼
+  qualitySizing:    true,
+  sizeMaxMult:      1.25,  // 部位上限倍數
+  sizeMinMult:      0.40,  // 部位下限倍數
+  // 連續虧損降檔：連敗代表當下市場狀態與策略不合，先縮小再說
+  lossStreakCut:    3,     // 連續幾敗後啟動降檔
+  lossStreakMult:   0.5,   // 降檔倍數（直到出現一筆獲利才恢復）
+  // 提早保本：達 +beTriggerR 就把止損移到成本價
+  //   會把一部分「本來會變成虧損」的單改為平手 → 回撤明顯下降。
+  //   代價：也會提早出掉一部分本來會續漲的單，淨 R 可能略降；
+  //   且平手不計入勝率分母，會讓帳面勝率看起來變好，判讀時需一併看淨 R。
+  beStop:           true,
+  beTriggerR:       0.6,
 };
 
 /* ── 量化帳戶狀態：權益曲線、當日損益、回撤、在市風險 ──────────────
@@ -20074,15 +20127,117 @@ function _scalpRecordLedger(sym, dir) {
   } catch(_e) {}
 }
 
+/* ── 模式自動淘汰：讓數據關掉賠錢的模式 ──────────────────────────
+   加了 8 種進場模型後，交易量會上來，但其中必然有幾種是賠錢的。若只是
+   「面板顯示期望值為負，請自行關掉」，實務上不會有人天天去看——那些負
+   期望的模式就會持續拉低整體勝率、墊高回撤。改為自動判定：
+
+     樣本 ≥pruneMinN 且 期望值 ≤0 且 勝率 Wilson 下界 <pruneWrLbFloor
+       → 停用該模式
+
+   但完全封殺是危險的：市場狀態會變，今天不適用的模式下個月可能正好。
+   因此保留「探索額度」——被停用的模式每隔 pruneRetestHours 仍會放行一筆，
+   持續蒐集樣本。表現回升後期望值轉正即自動恢復。 */
+function scalpModeGate(mode) {
+  const cfg = SCALP_CFG;
+  try {
+    if (SCALP_CFG[SCALP_MODE_CFGKEY[mode]] === false) return { allow: false, why: '手動停用' };
+    if (!cfg.autoPruneModes) return { allow: true };
+    const all = loadScalpLog();
+    const closed = all.filter(t => t.status === 'closed' && t.mode === mode);
+    if (closed.length < cfg.pruneMinN) return { allow: true, why: `樣本 ${closed.length}/${cfg.pruneMinN}，續觀察` };
+    const rs = closed.map(t => parseFloat(t.pnlR) || 0);
+    const exp = rs.reduce((a, b) => a + b, 0) / rs.length;
+    const w = closed.filter(isWinTrade).length, l = closed.filter(isLossTrade).length;
+    const wrLb = (w + l) > 0 ? wilsonLB(w, w + l) * 100 : 0;
+    if (exp > 0 || wrLb >= cfg.pruneWrLbFloor) return { allow: true, exp, wrLb };
+    // 已達停用標準 → 只放行週期性的探索單
+    const lastTs = Math.max(0, ...all.filter(t => t.mode === mode).map(t => t.timestamp || 0));
+    const hrs = (Date.now() - lastTs) / 3600000;
+    if (hrs >= cfg.pruneRetestHours) {
+      return { allow: true, explore: true, exp, wrLb,
+               why: `已停用，但距上次 ${hrs.toFixed(1)} 小時 → 放行一筆探索單重新驗證` };
+    }
+    return { allow: false, exp, wrLb,
+             why: `期望值 ${exp.toFixed(3)}R、勝率下界 ${wrLb.toFixed(0)}% < ${cfg.pruneWrLbFloor}% → 自動停用`
+                 + `（${cfg.pruneRetestHours} 小時後放行一筆探索單）` };
+  } catch(_e) { return { allow: true }; }
+}
+
+/* ── 部位大小的品質加權與降檔 ──────────────────────────────────
+   固定 1% 風險意味著「最爛的訊號和最好的訊號下一樣的注」。回撤要壓下來，
+   最有效的不是少做，而是把注碼分配對：
+     · 模式實測期望值高 → 加碼（上限 1.25×）
+     · 風控分高（風險大）→ 減碼
+     · 連續虧損中 → 直接砍半，直到出現一筆獲利才恢復
+   回傳倍數與逐項理由，訊號上會一併說明為什麼是這個大小。 */
+function scalpRiskMult(mode, riskScore) {
+  const cfg = SCALP_CFG;
+  const why = [];
+  if (!cfg.qualitySizing) return { mult: 1, why: ['品質加權未啟用'] };
+  let m = 1;
+  try {
+    const st = scalpModeStats().find(s => s.mode === mode);
+    if (st && st.n >= 10) {
+      const f = st.expectancy >= 0.25 ? 1.25 : st.expectancy >= 0.05 ? 1.0 : 0.6;
+      if (f !== 1) why.push(`${SCALP_MODE_LABEL[mode] || mode} 實測期望 ${st.expectancy}R（${st.n} 筆）→ ×${f}`);
+      m *= f;
+    }
+    if (riskScore != null) {
+      const f = riskScore >= 60 ? 0.6 : riskScore >= 40 ? 0.85 : 1;
+      if (f !== 1) why.push(`風險分 ${riskScore} → ×${f}`);
+      m *= f;
+    }
+    // 連續虧損降檔（依出場時間排序，從最近一筆往回數）
+    const closed = loadScalpLog().filter(t => t.status === 'closed')
+      .sort((a, b) => (b.exitTime || 0) - (a.exitTime || 0));
+    let streak = 0;
+    for (const t of closed) { if (isLossTrade(t)) streak++; else if (isWinTrade(t)) break; }
+    if (streak >= cfg.lossStreakCut) {
+      why.push(`連續 ${streak} 敗 → ×${cfg.lossStreakMult}（出現一筆獲利即恢復）`);
+      m *= cfg.lossStreakMult;
+    }
+  } catch(_e) {}
+  m = Math.max(cfg.sizeMinMult, Math.min(cfg.sizeMaxMult, m));
+  if (!why.length) why.push('各項正常，標準倉位');
+  return { mult: +m.toFixed(2), why };
+}
+
+/* 真實 ATR（Wilder）：5m K 線已經抓下來了，直接算比用 ADX 猜精準得多。
+   止損寬度、學習止損的 ATR 標準化、部位大小全都建立在這個數字上，
+   原本用 price×固定百分比estimate 會讓不同波動度的幣拿到同樣寬的止損。 */
+function _scalpAtr(bars, period = 14) {
+  if (!bars || bars.length < 3) return null;
+  const trs = [];
+  for (let i = 1; i < bars.length; i++) {
+    const h = parseFloat(bars[i][2]), l = parseFloat(bars[i][3]), pc = parseFloat(bars[i - 1][4]);
+    if (![h, l, pc].every(isFinite)) continue;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  if (!trs.length) return null;
+  const use = trs.slice(-period);
+  return use.reduce((a, b) => a + b, 0) / use.length;
+}
+
 /* ── 快進快出訊號產生 ────────────────────────────────────────────
-   進場條件（比主系統簡潔，重反應速度而非多重確認）：
-     1. 15m 與 1H 同向（快進快出不看週線/日線，避免反應遲鈍）
-     2. ADX ≥ minAdx（完全無趨勢的盤整不做）
-     3. MACD 動能同向
-     4. RSI 未過熱（做多 <72、做空 >28，不追極端）
+   八種進場模型，分成兩個家族：
+
+   順勢家族（趨勢市場）——需 ADX ≥ minAdx 且 MACD 同向
+     A breakout 突破追擊　　B momentum 順勢動能
+     C retest   突破回踩　　D trap     假突破反轉
+     F pullback 均線回踩（新）：等回踩 EMA20 再進，進場價比追突破好一截
+
+   回歸家族（盤整市場）——需 ADX ≤ revertAdxMax，方向由型態決定而非 score
+     E range   區間邊緣反轉（新）　G vwapRev VWAP 回歸（新）
+     H exhaust 衰竭反轉（新）
+
+   為什麼要有回歸家族：A~D 全都要求趨勢條件，等於把「盤整」整段時間
+   排除在外，但那是市場最常出現的狀態——這正是交易量一直上不來的
+   結構性原因，而不是門檻調得不夠鬆。
+
    風控：共用 computeFullRisk 與止損建議，僅作參考與扣分，不影響原系統。
    進場即市價成交（快進快出的本質；不等回踩，故無掛單狀態）。 */
-function buildScalpSetup(coin, isLong) {
+function buildScalpSetup(coin, isLong, family = 'trend') {
   const price = parseFloat(coin.price) || 0;
   if (!price) return null;
 
@@ -20099,13 +20254,14 @@ function buildScalpSetup(coin, isLong) {
   const close = parseFloat(last[4]);
   const broke = isLong ? close > hi : close < lo;
   const extent = isLong ? (close - hi) / hi : (lo - close) / lo;
-  const modeA = SCALP_CFG.enableBreakout && broke && extent >= SCALP_CFG.minBreakPct;
+  const isTrendFam = family === 'trend';
+  const modeA = isTrendFam && SCALP_CFG.enableBreakout && broke && extent >= SCALP_CFG.minBreakPct;
 
   // ── 模式 B：動能延續（突破罕見，僅靠模式 A 幾乎沒有交易量）──────
   //    條件：順勢站在 5m EMA20 正確一側、且最近 3 根呈同向推進。
   //    抓的是「趨勢中段」而非啟動點，與模式 A 互補。
   let modeB = false;
-  if (!modeA && SCALP_CFG.enableMomentum) {
+  if (isTrendFam && !modeA && SCALP_CFG.enableMomentum) {
     const closes = bars.map(b => parseFloat(b[4])).filter(isFinite);
     if (closes.length >= 6) {
       const k = 2 / (Math.min(20, closes.length) + 1);
@@ -20122,7 +20278,7 @@ function buildScalpSetup(coin, isLong) {
   //    不再跌破，代表該線已由壓力轉為支撐——論點被市場驗證過一次才進場，
   //    勝率明顯優於直接追突破，代價是機會較少。
   let modeC = false, retestLevel = null;
-  if (!modeA && SCALP_CFG.enableRetest && prev.length >= 8) {
+  if (isTrendFam && !modeA && SCALP_CFG.enableRetest && prev.length >= 8) {
     const older = prev.slice(0, -3);                 // 較早的區間（不含最近 3 根）
     const recent = prev.slice(-3);                   // 最近 3 根：突破發生在此
     const lvlHi = Math.max(...older.map(b => parseFloat(b[2])).filter(isFinite));
@@ -20145,7 +20301,7 @@ function buildScalpSetup(coin, isLong) {
   //    他們的停損就是反向行情的燃料。這類「陷阱」型態勝率高且賠率佳。
   //    方向必須與本次訊號方向一致：做空＝上緣假突破、做多＝下緣假突破。
   let modeD = false, trapLevel = null;
-  if (!modeA && !modeC && SCALP_CFG.enableTrap && prev.length >= 6) {
+  if (isTrendFam && !modeA && !modeC && SCALP_CFG.enableTrap && prev.length >= 6) {
     const base = prev.slice(0, -SCALP_CFG.trapMaxBars);
     const chk  = bars.slice(-(SCALP_CFG.trapMaxBars + 1));   // 最近數根（含當根）
     const bHi = Math.max(...base.map(b => parseFloat(b[2])).filter(isFinite));
@@ -20159,9 +20315,128 @@ function buildScalpSetup(coin, isLong) {
     }
   }
 
-  if (!modeA && !modeB && !modeC && !modeD) return _sr('無符合的進場型態');
-  // 優先序：回踩確認 > 假突破 > 突破 > 順勢動能（勝率高者優先）
-  const mode = modeC ? 'retest' : modeD ? 'trap' : modeA ? 'breakout' : 'momentum';
+  // ── 模式 F：均線回踩（順勢家族，新增）──────────────────────────
+  //    A/B 都是在價格已經跑掉之後才進場（追價），進場價差就是勝率差。
+  //    改等趨勢中的回踩：EMA20 明確順向傾斜、價格回落觸及 EMA20 附近後，
+  //    本根又收回趨勢方向 → 用同樣的趨勢論點拿到便宜得多的進場價，
+  //    止損只要放在回踩低點下方，R 更小、R/R 更好。
+  let modeF = false, pullbackLevel = null;
+  if (isTrendFam && !modeA && !modeC && !modeD && SCALP_CFG.enablePullback && bars.length >= 8) {
+    const closes = bars.map(b => parseFloat(b[4])).filter(isFinite);
+    const k = 2 / (Math.min(20, closes.length) + 1);
+    let ema = closes[0]; const emaSeq = [ema];
+    for (let i = 1; i < closes.length; i++) { ema = closes[i] * k + ema * (1 - k); emaSeq.push(ema); }
+    const emaNow = emaSeq[emaSeq.length - 1], emaPast = emaSeq[Math.max(0, emaSeq.length - 5)];
+    const sloped = isLong ? emaNow > emaPast * 1.0005 : emaNow < emaPast * 0.9995;  // 均線確實在走
+    const sideOk = isLong ? close > emaNow : close < emaNow;                        // 仍站在正確一側
+    // 最近 3 根曾回踩到 EMA20（碰到或穿過），代表這是回踩而非續攻
+    const touched = bars.slice(-3).some(b => isLong
+      ? parseFloat(b[3]) <= emaNow * 1.0015
+      : parseFloat(b[2]) >= emaNow * 0.9985);
+    // 本根收回趨勢方向（收盤 > 開盤，做空鏡像）＝回踩結束的確認
+    const reclaim = isLong ? close > parseFloat(last[1]) : close < parseFloat(last[1]);
+    if (sloped && sideOk && touched && reclaim) {
+      modeF = true;
+      // 止損錨點：回踩的極值（論點＝這次回踩不該被跌破）
+      pullbackLevel = isLong
+        ? Math.min(...bars.slice(-3).map(b => parseFloat(b[3])).filter(isFinite))
+        : Math.max(...bars.slice(-3).map(b => parseFloat(b[2])).filter(isFinite));
+    }
+  }
+
+  // ══ 回歸家族：只在非強趨勢時啟用，方向由型態決定（不看 score）══════
+  const isRevertFam = family === 'revert';
+  const rsiNow = parseFloat(coin.rsi);
+
+  // ── 模式 E：區間邊緣反轉（新增）───────────────────────────────
+  //    盤整是市場最常見的狀態，順勢家族在此完全無法出手。做法：確認近 N 根
+  //    形成一個夠窄的橫向區間，價格觸及上／下緣並留下拒絕影線（衝過去又被
+  //    打回來＝該邊緣有實質買賣盤），反手做回區間中軸。
+  //    目標近（回到中軸）但成功率高，正好補上順勢家族缺的量。
+  let modeE = false, rangeLevel = null, rangeMid = null, rangeSpan = null;
+  if (isRevertFam && SCALP_CFG.enableRange && prev.length >= SCALP_CFG.rangeMinBars) {
+    const rHi = Math.max(...prev.map(b => parseFloat(b[2])).filter(isFinite));
+    const rLo = Math.min(...prev.map(b => parseFloat(b[3])).filter(isFinite));
+    const width = (rHi - rLo) / (rLo || 1);
+    if (width > 0 && width <= SCALP_CFG.rangeMaxWidthPct) {
+      const span = rHi - rLo;
+      const hiB = parseFloat(last[2]), loB = parseFloat(last[3]), opB = parseFloat(last[1]);
+      const barSpan = Math.max(1e-12, hiB - loB);
+      if (!isLong) {
+        // 做空：觸及上緣 + 上影線佔比夠大（衝高被打回）
+        const atEdge = hiB >= rHi - span * SCALP_CFG.rangeEdgePct;
+        const wick = (hiB - Math.max(close, opB)) / barSpan;
+        // 收盤也要仍在上緣附近：已經跌回中軸代表這波回歸走完了，
+        // 這時才進場等於用最差的價格追一個已經沒有空間的目標
+        const closeOk = close >= rHi - span * SCALP_CFG.rangeCloseEdge;
+        if (atEdge && closeOk && wick >= SCALP_CFG.rangeWickRatio && close < rHi) {
+          modeE = true; rangeLevel = rHi; rangeMid = (rHi + rLo) / 2; rangeSpan = span;
+        }
+      } else {
+        const atEdge = loB <= rLo + span * SCALP_CFG.rangeEdgePct;
+        const wick = (Math.min(close, opB) - loB) / barSpan;
+        const closeOk = close <= rLo + span * SCALP_CFG.rangeCloseEdge;
+        if (atEdge && closeOk && wick >= SCALP_CFG.rangeWickRatio && close > rLo) {
+          modeE = true; rangeLevel = rLo; rangeMid = (rHi + rLo) / 2; rangeSpan = span;
+        }
+      }
+    }
+  }
+
+  // ── 模式 G：VWAP 回歸（新增）──────────────────────────────────
+  //    VWAP 是當日機構的平均成本線，價格過度偏離後回歸的機率高於續離。
+  //    主系統把「偏離 VWAP 過遠」當成風險扣分，對快進快出而言那正是機會。
+  //    需求：偏離 ≥vwapDevMin、方向為「往回走」、且本根已出現反向收線。
+  let modeG = false, vwapTarget = null;
+  if (isRevertFam && !modeE && SCALP_CFG.enableVwapRev) {
+    try {
+      const vw = _footprintCache?.[coin.symbol]?.vwap;
+      if (vw > 0) {
+        const dev = (price - vw) / vw;
+        const stretched = isLong ? dev <= -SCALP_CFG.vwapDevMin : dev >= SCALP_CFG.vwapDevMin;
+        const turning = isLong ? close > parseFloat(last[1]) : close < parseFloat(last[1]);
+        if (stretched && turning) { modeG = true; vwapTarget = vw; }
+      }
+    } catch(_e) {}
+  }
+
+  // ── 模式 H：衰竭反轉（新增）──────────────────────────────────
+  //    連續同向推進、但每根的實體幅度遞減 + RSI 已到極端 ＝ 推動的力量正在
+  //    耗盡。此時反手的風險報酬最好：止損放在剛創的極值外，很近。
+  let modeH = false, exhaustLevel = null;
+  if (isRevertFam && !modeE && !modeG && SCALP_CFG.enableExhaust && bars.length >= SCALP_CFG.exhaustBars + 2) {
+    const seq = bars.slice(-(SCALP_CFG.exhaustBars + 1));
+    // 反轉方向與推進方向相反：做空＝先前連續上漲
+    const dirUp = !isLong;
+    let chain = true, shrinking = true;
+    for (let i = 1; i < seq.length; i++) {
+      const c = parseFloat(seq[i][4]), pc = parseFloat(seq[i - 1][4]);
+      if (dirUp ? !(c > pc) : !(c < pc)) { chain = false; break; }
+    }
+    if (chain) {
+      const bodies = seq.slice(1).map(b => Math.abs(parseFloat(b[4]) - parseFloat(b[1])));
+      for (let i = 1; i < bodies.length; i++) if (bodies[i] > bodies[i - 1]) { shrinking = false; break; }
+      const rsiExt = isFinite(rsiNow)
+        && (dirUp ? rsiNow >= SCALP_CFG.revertRsiHi : rsiNow <= 100 - SCALP_CFG.revertRsiHi);
+      if (shrinking && rsiExt) {
+        modeH = true;
+        exhaustLevel = dirUp
+          ? Math.max(...seq.map(b => parseFloat(b[2])).filter(isFinite))
+          : Math.min(...seq.map(b => parseFloat(b[3])).filter(isFinite));
+      }
+    }
+  }
+
+  if (!modeA && !modeB && !modeC && !modeD && !modeF && !modeE && !modeG && !modeH)
+    return _sr(isRevertFam ? '無符合的回歸型態' : '無符合的進場型態');
+  // 優先序：先確認型（回踩/假突破/區間邊緣）再追擊型（勝率高者優先）
+  const mode = modeC ? 'retest' : modeD ? 'trap' : modeF ? 'pullback'
+             : modeA ? 'breakout' : modeB ? 'momentum'
+             : modeE ? 'range' : modeG ? 'vwapRev' : 'exhaust';
+
+  // 模式自動淘汰：實測期望值為負且勝率下界過低的模式先停用（附探索額度）
+  const _gate = scalpModeGate(mode);
+  if (!_gate.allow) return _sr(`模式已停用(${SCALP_MODE_LABEL[mode] || mode})`);
 
   // ── ② 量能確認：突破當根需放量（沒量的突破多為假突破）──────────
   //    注意：last 是「形成中」的 K 棒，成交量只累積了一部分。直接拿它與
@@ -20185,10 +20460,14 @@ function buildScalpSetup(coin, isLong) {
   // ── ③ 未平倉量確認（最強的真假突破分辨器）────────────────────
   //    價漲+OI增=新多進場（真突破）；價漲+OI減=空頭回補（假突破嫌疑）。
   //    突破若由平倉盤推動，動能一到就沒有後續，正是快進快出最怕的情境。
+  //    僅適用順勢家族：回歸模式賭的就是「推動力量已耗盡」，OI 減少（平倉盤
+  //    推動）反而是支持反轉的證據，用同一道門檻會把最好的反轉單全擋掉。
   let oiState = 'none';
   try { oiState = oiAlignment(coin.symbol, isLong).state; } catch(_e) {}
-  if (oiState === 'unfavorable') return _sr('OI回補平倉推動');   // 假突破嫌疑
-  if (SCALP_CFG.requireOI && oiState !== 'favorable') return _sr('OI非新錢同向');
+  if (isTrendFam) {
+    if (oiState === 'unfavorable') return _sr('OI回補平倉推動');   // 假突破嫌疑
+    if (SCALP_CFG.requireOI && oiState !== 'favorable') return _sr('OI非新錢同向');
+  }
 
   // ── ④ VWAP 同側：站在機構成本線正確一側才順勢 ─────────────────
   if (SCALP_CFG.requireVwap) try {
@@ -20197,8 +20476,11 @@ function buildScalpSetup(coin, isLong) {
   } catch(_e) {}
 
   // ── ⑤ 基本過濾：動能未耗盡、不逆 BTC、需在主力時段 ──────────────
+  //    RSI 門檻只對順勢家族成立：順勢怕追在過熱處，回歸模式要的正是極端值。
   const rsi = parseFloat(coin.rsi);
-  if (isFinite(rsi) && (isLong ? rsi >= SCALP_CFG.rsiCap : rsi <= 100 - SCALP_CFG.rsiCap)) return _sr('RSI過熱');
+  if (isTrendFam && isFinite(rsi)
+      && (isLong ? rsi >= SCALP_CFG.rsiCap : rsi <= 100 - SCALP_CFG.rsiCap)) return _sr('RSI過熱');
+  // BTC 方向對兩個家族都保留：逆著大盤做反轉是回撤最大的來源
   if (coin.symbol !== 'BTC/USDT' && typeof _btcH4Dir !== 'undefined' && _btcH4Dir !== 'neutral') {
     if (isLong ? _btcH4Dir === 'bear' : _btcH4Dir === 'bull') return _sr('逆BTC 4H');
   }
@@ -20206,28 +20488,53 @@ function buildScalpSetup(coin, isLong) {
     try { if (computeKillZone()?.quality === 'low') return _sr('非主力時段'); } catch(_e) {}
   }
 
-  // ── 價位：止損放突破點另一側（論點失效即出場，虧損小且明確）──────
+  // ── 價位：止損放論點失效位的另一側（虧損小且明確）────────────────
   const adx = parseFloat(coin.adx) || 20;
-  const atr = price * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
-  // 止損錨點：突破模式用突破點；動能模式用近期擺動低/高點（皆為論點失效位）
+  // ATR 改用 5m K 線實算（Wilder）。原本用 price×固定百分比 estimate，
+  // 等於假設所有幣波動度相同，高波動幣的止損會被放得太窄、低波動幣太寬。
+  const atr = _scalpAtr(raw) || price * (adx > 35 ? 0.018 : adx > 25 ? 0.013 : 0.009);
+  // 止損錨點：各模式各自的「論點失效位」
   const swingLo = Math.min(...prev.slice(-6).map(b => parseFloat(b[3])).filter(isFinite));
   const swingHi = Math.max(...prev.slice(-6).map(b => parseFloat(b[2])).filter(isFinite));
-  const level = mode === 'retest' ? retestLevel
-              : mode === 'trap'   ? trapLevel
-              : modeA             ? (isLong ? hi : lo)
-              :                     (isLong ? swingLo : swingHi);
+  const level = mode === 'retest'   ? retestLevel
+              : mode === 'trap'     ? trapLevel
+              : mode === 'pullback' ? pullbackLevel     // 回踩的極值
+              : mode === 'range'    ? rangeLevel        // 區間邊緣
+              : mode === 'exhaust'  ? exhaustLevel      // 剛創的極值
+              : mode === 'vwapRev'  ? (isLong ? parseFloat(last[3]) : parseFloat(last[2]))
+              : modeA               ? (isLong ? hi : lo)
+              :                       (isLong ? swingLo : swingHi);
+  if (!isFinite(level)) return _sr('止損錨點無效');
   // 止損倍數改由「機器人學習止損」決定（樣本不足時等同原本的固定 0.6×ATR）
   const _slL = scalpSlMult(mode);
-  const slRaw = isLong ? level - atr * _slL.mult : level + atr * _slL.mult;
-  const entry = price;                                  // 市價進場（突破追擊）
+  // 區間模式的緩衝另外設上限：窄區間裡 ATR 可能接近整個區間寬度，
+  // 照 ATR 放會讓止損比區間還寬，R/R 永遠不成立（實測會被 R/R 檢查全數擋掉）。
+  let _buf = atr * _slL.mult;
+  if (mode === 'range' && rangeSpan > 0) _buf = Math.min(_buf, rangeSpan * SCALP_CFG.rangeSlSpanFrac);
+  const slRaw = isLong ? level - _buf : level + _buf;
+  const entry = price;                                  // 市價進場
   const risk  = Math.abs(entry - slRaw);
   if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return _sr('風險超限(追太遠)');
-  const tp1 = isLong ? entry + risk * SCALP_CFG.tp1R : entry - risk * SCALP_CFG.tp1R;
-  const tp2 = isLong ? entry + risk * SCALP_CFG.tp2R : entry - risk * SCALP_CFG.tp2R;
-  return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi, mode,
+  // 回歸模式的目標是「回到均值」而非追延續，止盈倍數較近，不硬要 1.8R
+  const _isRev = SCALP_MODE_FAMILY[mode] === 'revert';
+  const _t1R = _isRev ? SCALP_CFG.revertTp1R : SCALP_CFG.tp1R;
+  const _t2R = _isRev ? SCALP_CFG.revertTp2R : SCALP_CFG.tp2R;
+  let tp1 = isLong ? entry + risk * _t1R : entry - risk * _t1R;
+  let tp2 = isLong ? entry + risk * _t2R : entry - risk * _t2R;
+  // 回歸模式若均值目標比 tp2 更近，就以均值為準——目標訂在價格根本到不了的
+  // 位置只會讓單子一路拖到停滯出場，那是勝率被吃掉的隱形來源。
+  const _revTarget = mode === 'range' ? rangeMid : mode === 'vwapRev' ? vwapTarget : null;
+  if (_revTarget && isFinite(_revTarget)) {
+    if (isLong ? _revTarget < tp2 : _revTarget > tp2) tp2 = _revTarget;
+    if (isLong ? tp1 > tp2 : tp1 < tp2) tp1 = isLong ? entry + (tp2 - entry) * 0.6 : entry - (entry - tp2) * 0.6;
+  }
+  const _rr = Math.abs(tp2 - entry) / risk;
+  if (_rr < 0.9) return _sr('回歸目標太近(R/R不足)');
+  return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi, mode, family,
            macd: parseFloat(coin.macdHist) || 0,
            breakLevel: level, breakExtent: +(Math.max(0, extent) * 100).toFixed(2),
            volRatio: +(curVol / avgVol).toFixed(2), oiState,
+           tp1R: _t1R, tp2R: +_rr.toFixed(2), revTarget: _revTarget || null,
            // 學習止損的存證：倍數、來源、理由，以及回頭學習所需的 ATR 標準化欄位
            slMult: +_slL.mult.toFixed(3), slMultSrc: _slL.src, slMultWhy: _slL.why,
            levelGapAtr: atr > 0 ? +(Math.abs(entry - level) / atr).toFixed(3) : null,
@@ -20259,62 +20566,113 @@ async function recordScalpSignals(data) {
 
     // ── 初篩（用已抓好的幣安資料，零額外請求）──────────────────
     //    只有通過初篩的少數幣才去抓 5m K 線，避免佔用 OKX/幣安限速。
+    //    初篩分成兩個家族：
+    //      順勢家族：方向 = score 方向，需 ADX ≥ minAdx 且 MACD 同向（原邏輯）
+    //      回歸家族：方向由型態決定（兩個方向都評估），需 ADX ≤ revertAdxMax
+    //    原本只有順勢一種，等於盤整時段完全不出手——那是交易量的天花板。
     _scalpReject._scanned = data.length;
     const cands = [];
+    const revertOn = SCALP_CFG.enableRange || SCALP_CFG.enableVwapRev || SCALP_CFG.enableExhaust;
     for (const coin of data) {
-      if (!coin || coin.score === 50) continue;
-      const isLong = coin.score > 50;
-      const dir = isLong ? 'long' : 'short';
+      if (!coin) continue;
       if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) { _sr('已有持倉'); continue; }
-      if (_scalpSignalledRecently(coin.symbol, dir)) { _sr('冷卻期內'); continue; }
-      if ((parseFloat(coin.adx) || 0) < SCALP_CFG.minAdx) { _sr('ADX過低'); continue; }
+      const adxV = parseFloat(coin.adx) || 0;
       const macd = parseFloat(coin.macdHist) || 0;
-      if (isLong ? macd <= 0 : macd >= 0) { _sr('MACD逆向'); continue; }
-      // 註：同方向上限改於「實際建倉」時才把關。若在此就擋掉，同方向只要湊滿
-      //     名額，後面的幣連突破都不會被檢查——那 5 個若都沒突破就會是 0 訊號，
-      //     即使第 6 個是完美突破也看不到（實測診斷發現的設計錯誤）。
-      cands.push({ coin, isLong, dir });
-      if (cands.length >= SCALP_CFG.maxCandidates) break;  // 控制 5m 抓取量
+
+      // ── 順勢家族候選 ──
+      if (coin.score !== 50) {
+        const isLong = coin.score > 50;
+        const dir = isLong ? 'long' : 'short';
+        if (_scalpSignalledRecently(coin.symbol, dir)) { _sr('冷卻期內'); }
+        else if (adxV < SCALP_CFG.minAdx) { _sr('ADX過低(順勢)'); }
+        else if (isLong ? macd <= 0 : macd >= 0) { _sr('MACD逆向'); }
+        // 註：同方向上限改於「實際建倉」時才把關。若在此就擋掉，同方向只要湊滿
+        //     名額，後面的幣連突破都不會被檢查——那 5 個若都沒突破就會是 0 訊號，
+        //     即使第 6 個是完美突破也看不到（實測診斷發現的設計錯誤）。
+        else cands.push({ coin, isLong, dir, family: 'trend' });
+      }
+
+      // ── 回歸家族候選（兩個方向都放進來，由型態自己決定做多或做空）──
+      if (revertOn && adxV <= SCALP_CFG.revertAdxMax) {
+        for (const isLong of [true, false]) {
+          const dir = isLong ? 'long' : 'short';
+          if (cands.some(c => c.coin.symbol === coin.symbol && c.dir === dir)) continue;  // 順勢已佔位
+          if (_scalpSignalledRecently(coin.symbol, dir)) { _sr('冷卻期內'); continue; }
+          cands.push({ coin, isLong, dir, family: 'revert' });
+        }
+      } else if (revertOn) { _sr('ADX過高(不做回歸)'); }
+
+      // 以「不重複的幣種數」控制 5m 抓取量，而不是候選筆數——同一幣的多個
+      // 家族／方向共用同一份 K 線，用筆數當上限會白白少評估一半的幣。
+      if (new Set(cands.map(c => c.coin.symbol)).size >= SCALP_CFG.maxCandidates) break;
     }
     if (!cands.length) return;
+    _scalpReject._cands = cands.length;
 
     // ── 對候選幣抓 5m K 線（突破判定需要真正的短週期資料）─────────
-    await Promise.allSettled(cands.map(async c => {
+    //     以幣種去重，同一幣的多個家族／方向共用一次請求
+    const _symsToFetch = [...new Set(cands.map(c => c.coin.symbol))];
+    // 多抓一些根數：真實 ATR 與區間判定都需要比突破回看更長的歷史
+    const _need = Math.max(SCALP_CFG.breakLookback, SCALP_CFG.rangeMinBars) + 20;
+    await Promise.allSettled(_symsToFetch.map(async symbol => {
       try {
-        const sym = c.coin.symbol.replace('/', '');
+        const sym = symbol.replace('/', '');
         const k = await (typeof fetchKlinesExec === 'function'
-          ? fetchKlinesExec(sym, SCALP_CFG.tf, SCALP_CFG.breakLookback + 5)
-          : fetchKlines(sym, SCALP_CFG.tf, SCALP_CFG.breakLookback + 5));
-        if (k && k.length) _scalpKlineCache[c.coin.symbol] = k;
+          ? fetchKlinesExec(sym, SCALP_CFG.tf, _need)
+          : fetchKlines(sym, SCALP_CFG.tf, _need));
+        if (k && k.length) _scalpKlineCache[symbol] = k;
       } catch(_e) {}
     }));
 
-    for (const { coin, isLong, dir } of cands) {
+    // 同方向已在市的風險（本輪內會累加，避免一輪把額度開滿）
+    const _sameDirRisk = { long: 0, short: 0 };
+    for (const t of active) {
+      const e = parseFloat(t.entry) || 0, sl = parseFloat(t.sl) || 0;
+      const bs = Math.abs(e - (t.baseSl ?? sl)) || 1;
+      const still = (t.direction === 'long' ? (e - sl) : (sl - e)) / bs;
+      _sameDirRisk[t.direction] = (_sameDirRisk[t.direction] || 0)
+        + Math.max(0, still) * (parseFloat(t.riskAmt) || _acct.riskAmt);
+    }
+
+    for (const { coin, isLong, dir, family } of cands) {
       if (room <= 0) break;
-      const setup = buildScalpSetup(coin, isLong);
+      const setup = buildScalpSetup(coin, isLong, family);
       if (!setup) continue;
-      // 同方向集中度：避免全部同向被大盤一次掃掉（回撤主因）——於此把關，
-      // 確保每個幣都完整評估過突破條件，只在真的要建倉時才受名額限制
-      const _curSameDir = loadScalpLog().filter(t => t.status === 'open' && t.direction === dir).length;
-      if (_curSameDir >= SCALP_CFG.maxSameDir) { _sr('同方向已達上限'); continue; }
+      // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
+      if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) { _sr('同幣本輪已建倉'); continue; }
 
       // 風控參考（共用主系統函式，只讀不寫）
       let riskScore = null, riskLevel = '', riskRecs = [], conf = null;
       try {
         const r = computeFullRisk(coin, { entry: setup.entry, sl: setup.sl, tp1: setup.tp1,
-          conf: 70, rr1: SCALP_CFG.tp1R }, isLong);
+          conf: 70, rr1: setup.tp1R || SCALP_CFG.tp1R }, isLong);
         riskScore = r.score; riskLevel = r.level; riskRecs = r.recs || [];
         conf = Math.max(0, 100 - calcRiskPenalty(r.score));
       } catch(_e) {}
 
+      // 品質加權部位：期望值高的模式加碼、風險大的減碼、連敗中砍半
+      const _qm = scalpRiskMult(setup.mode, riskScore);
+      const _riskAmt = _acct.riskAmt * _qm.mult;
+
+      // 相關性控管：同方向持倉本質上是同一筆賭注，大盤一動會一起中止損。
+      // 改以「同向風險金額佔權益 %」為上限，比單純限制筆數真正控得住回撤。
+      const _sameDirAfterPct = SCALP_CFG.equity > 0
+        ? (_sameDirRisk[dir] + _riskAmt) / SCALP_CFG.equity * 100 : 0;
+      if (_sameDirAfterPct > SCALP_CFG.maxSameDirRiskPct) {
+        _sr(`同向風險已滿(${dir === 'long' ? '多' : '空'})`); continue;
+      }
+      const _curSameDir = loadScalpLog().filter(t => t.status === 'open' && t.direction === dir).length;
+      if (_curSameDir >= SCALP_CFG.maxSameDir) { _sr('同方向已達上限'); continue; }
+
       // 部位大小（固定分數法）＋ 名目下限與組合風險額度檢查
-      const _sz = scalpPositionSize(setup.entry, setup.sl, _acct.riskAmt);
+      const _sz = scalpPositionSize(setup.entry, setup.sl, _riskAmt);
       if (!_sz) { _sr('部位計算失敗'); continue; }
       if (_sz.notional < SCALP_CFG.minNotional) { _sr('名目價值過小'); continue; }
       const _riskAfterPct = _acct.openRiskPct
-        + (SCALP_CFG.equity > 0 ? _acct.riskAmt / SCALP_CFG.equity * 100 : 0);
+        + (SCALP_CFG.equity > 0 ? _riskAmt / SCALP_CFG.equity * 100 : 0);
       if (_riskAfterPct > SCALP_CFG.maxPortfolioRiskPct) { _sr('超出組合風險上限'); continue; }
       _acct.openRiskPct = _riskAfterPct;   // 本輪內累計，避免同輪一次開太多
+      _sameDirRisk[dir] = _sameDirRisk[dir] + _riskAmt;
 
       const now = Date.now();
       const t = {
@@ -20327,7 +20685,8 @@ async function recordScalpSignals(data) {
         status: 'open', outcome: null, tp1Hit: false,
         exitPrice: null, exitTime: null, pnlR: null,
         rsi: setup.rsi, adx: setup.adx, macdHist: setup.macd,
-        mode: setup.mode,
+        mode: setup.mode, family: setup.family,
+        tp1RUsed: setup.tp1R, tp2RUsed: setup.tp2R, revTarget: setup.revTarget,
         // 機器人學習止損：本筆採用的倍數與來源，以及回頭學習用的 ATR 標準化欄位
         atrAtEntry: setup.atr, slMult: setup.slMult, slMultSrc: setup.slMultSrc,
         slMultWhy: setup.slMultWhy, levelGapAtr: setup.levelGapAtr, slDistAtr: setup.slDistAtr,
@@ -20335,10 +20694,11 @@ async function recordScalpSignals(data) {
         breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
         volRatio: setup.volRatio, oiState: setup.oiState,
         qty: +_sz.qty.toPrecision(8), notional: +_sz.notional.toFixed(2),
-        riskAmt: +_acct.riskAmt.toFixed(2), riskPct: SCALP_CFG.riskPerTradePct,
+        riskAmt: +_riskAmt.toFixed(2), riskPct: +(SCALP_CFG.riskPerTradePct * _qm.mult).toFixed(3),
+        sizeMult: _qm.mult, sizeWhy: _qm.why,
         riskScore, riskLevel, riskRecs, conf,
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
-        note: setup.mode === 'momentum' ? '快進快出（順勢動能）' : '快進快出（突破追擊）',
+        note: `快進快出（${SCALP_MODE_LABEL[setup.mode] || setup.mode}）`,
       };
       t.okxAdjusted = true;   // 資料層已對齊 OKX 價格空間，無需再換算
       log.unshift(t); changed = true; room--;
@@ -20403,6 +20763,20 @@ function updateScalpTrades(data) {
         const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
         if (Math.abs(r) < 0.3) { t.timeStopped = true; t.exitPrice = cur; outcome = 'be'; }
       }
+      // ②-b 提早保本：達 +beTriggerR 就把止損移到成本價。
+      //     把一部分「本來會變成虧損」的單改為平手，回撤明顯下降。
+      //     代價要說清楚：也會提早出掉一部分本來會續漲的單，淨 R 可能略降；
+      //     且平手不計入勝率分母，帳面勝率會因此變好看，判讀時須一併看淨 R。
+      if (!outcome && SCALP_CFG.beStop && !t.tp1Hit && !t.beArmed) {
+        const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
+        if (r >= SCALP_CFG.beTriggerR) {
+          const be = t.entry;
+          if (isLong ? be > t.sl : be < t.sl) {
+            t.sl = be; t.beArmed = true; changed = true;
+            sendScalpTelegram(t, 'be');
+          }
+        }
+      }
       // ③ TP1 後移動停利（鎖峰值 −trailGiveR，地板為 +0.5R）
       if (!outcome && t.tp1Hit) {
         t.peakPrice = isLong ? Math.max(t.peakPrice ?? cur, cur) : Math.min(t.peakPrice ?? cur, cur);
@@ -20466,12 +20840,14 @@ function sendScalpTelegram(t, kind) {
           + (t.slMult ? `（${t.slMult}×ATR${t.slMultSrc === 'default' ? '，固定值' : '，🤖 機器人學習'}）` : ''),
         t.slMultWhy && t.slMultSrc !== 'default' ? `　└ ${t.slMultWhy}` : '',
         t.qty ? `📦 數量：<b>${t.qty}</b>　名目 $${t.notional}　風險 $${t.riskAmt}（${t.riskPct}% 權益）` : '',
-        `🎯 止盈一：$${fmt(t.tp1)}（${SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
-        `🚀 止盈二：$${fmt(t.tp2)}（${SCALP_CFG.tp2R}R）`,
-        t.mode === 'momentum'
-          ? `📐 順勢動能延續（貼 ${SCALP_CFG.tf} EMA20，止損錨定近期擺動點 $${fmt(t.breakLevel)}）`
-          : `📐 突破 ${SCALP_CFG.breakLookback} 根 ${SCALP_CFG.tf} 高低點 $${fmt(t.breakLevel)}（幅度 ${t.breakExtent}%）`,
+        (t.sizeMult && t.sizeMult !== 1) ? `　└ 部位 ${t.sizeMult}×：${(t.sizeWhy || []).join('；')}` : '',
+        `🎯 止盈一：$${fmt(t.tp1)}（${t.tp1RUsed ?? SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
+        `🚀 止盈二：$${fmt(t.tp2)}（${t.tp2RUsed ?? SCALP_CFG.tp2R}R）`
+          + (t.revTarget ? `　← 均值目標 $${fmt(t.revTarget)}` : ''),
+        `📐 ${SCALP_MODE_LABEL[t.mode] || t.mode}`
+          + `（${t.family === 'revert' ? '回歸家族' : '順勢家族'}，止損錨點 $${fmt(t.breakLevel)}）`,
         `📊 量能 ${t.volRatio}× 均量｜OI ${t.oiState === 'favorable' ? '新錢同向 ✅' : t.oiState === 'neutral' ? '中性' : '—'}`,
+        SCALP_CFG.beStop ? `🛡️ 浮盈達 +${SCALP_CFG.beTriggerR}R 自動移到保本` : '',
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
         t.conf != null ? `📶 風控分：${t.conf} 分（風險 ${t.riskScore ?? '--'}／${t.riskLevel || '--'}）` : '',
         t.riskRecs && t.riskRecs.length ? `💡 ${t.riskRecs[0]}` : '',
@@ -20483,6 +20859,11 @@ function sendScalpTelegram(t, kind) {
       text = [`🎯 <b>快進快出｜觸及止盈一</b> — ${sym} ${dir}`, ``,
         `減倉 ${SCALP_CFG.tp1Frac * 100}%，止損上移至 <b>$${fmt(t.sl)}</b>（鎖 +0.5R）`,
         ``, `⏰ ${ts}`, `#${sym.toLowerCase()} #scalp #止盈一`].join('\n');
+    } else if (kind === 'be') {
+      text = [`🛡️ <b>快進快出｜已移到保本</b> — ${sym} ${dir}`, ``,
+        `浮盈達 +${SCALP_CFG.beTriggerR}R，止損移到成本價 <b>$${fmt(t.sl)}</b>`,
+        `此後這筆單最差就是不賺不賠，不會再變成虧損。`,
+        ``, `⏰ ${ts}`, `#${sym.toLowerCase()} #scalp #保本`].join('\n');
     } else {
       // ── 交易結束報告：明確說明「為什麼結束」與實際結果 ────────────
       const win = t.outcome === 'tp1' || t.outcome === 'tp2';
@@ -20510,7 +20891,10 @@ function sendScalpTelegram(t, kind) {
         } else { label = '獲利了結'; why = `觸及止盈一 $${fmt(t.tp1)} 出場`; }
       } else if (t.outcome === 'be') {
         icon = '⚖️'; label = '保本出場';
-        why = `止損位於成本價，價格回落觸及保本位出場`;
+        why = t.beArmed
+          ? `浮盈曾達 +${SCALP_CFG.beTriggerR}R 而把止損移到成本價，之後價格回落觸及保本位。`
+            + `這筆原本會是虧損，保本機制把它擋成不賺不賠`
+          : `止損位於成本價，價格回落觸及保本位出場`;
       } else {
         icon = '🛑'; label = '觸及止損';
         why = `價格${isLong2 ? '跌破' : '漲破'}止損 $${fmt(t.sl)}，`
@@ -20672,6 +21056,21 @@ const SCALP_MODE_LABEL = {
   trap:     'D 假突破反轉',
   breakout: 'A 突破追擊',
   momentum: 'B 順勢動能',
+  pullback: 'F 均線回踩',
+  range:    'E 區間邊緣反轉',
+  vwapRev:  'G VWAP 回歸',
+  exhaust:  'H 衰竭反轉',
+};
+/* 模式所屬家族：順勢 vs 回歸。兩者的失敗情境不重疊，同時開啟能在
+   「趨勢」與「盤整」兩種市場狀態都有交易，這是提高交易量的關鍵。 */
+const SCALP_MODE_FAMILY = {
+  breakout: 'trend', momentum: 'trend', retest: 'trend', trap: 'trend', pullback: 'trend',
+  range: 'revert', vwapRev: 'revert', exhaust: 'revert',
+};
+const SCALP_MODE_CFGKEY = {
+  breakout: 'enableBreakout', momentum: 'enableMomentum', retest: 'enableRetest',
+  trap: 'enableTrap', pullback: 'enablePullback', range: 'enableRange',
+  vwapRev: 'enableVwapRev', exhaust: 'enableExhaust',
 };
 function scalpModeStats() {
   const closed = loadScalpLog().filter(t => t.status === 'closed');
@@ -20685,11 +21084,12 @@ function scalpModeStats() {
   }
   return Object.entries(by).map(([mode, v]) => ({
     mode, label: SCALP_MODE_LABEL[mode] || mode,
+    family: SCALP_MODE_FAMILY[mode] || '—',
     n: v.n, wins: v.w,
     winRate: (v.w + v.l) > 0 ? +(v.w / (v.w + v.l) * 100).toFixed(1) : null,
     netR: +v.r.toFixed(2),
     expectancy: v.n ? +(v.r / v.n).toFixed(3) : 0,
-    enabled: SCALP_CFG['enable' + mode.charAt(0).toUpperCase() + mode.slice(1)] !== false,
+    enabled: SCALP_CFG[SCALP_MODE_CFGKEY[mode]] !== false,
   })).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1));
 }
 /* 分模式績效面板 */
@@ -20702,9 +21102,20 @@ function _scalpModePanel() {
         background:${on ? 'rgba(34,197,94,.12)' : 'rgba(148,163,184,.12)'};
         color:${on ? '#22c55e' : 'var(--text3)'}">${label} ${on ? '啟用' : '停用'}</span>`;
     };
-    const head = `<div style="margin-bottom:7px">
-      ${cfgRow('enableRetest', 'C 回踩')}${cfgRow('enableTrap', 'D 假突破')}
-      ${cfgRow('enableBreakout', 'A 突破')}${cfgRow('enableMomentum', 'B 動能')}</div>`;
+    // 自動淘汰狀態：實測期望值為負且勝率下界過低的模式會被系統自己關掉
+    const gateOf = m => { try { return scalpModeGate(m); } catch(_e) { return { allow: true }; } };
+    const chip = (m) => {
+      const g = gateOf(m), on = SCALP_CFG[SCALP_MODE_CFGKEY[m]] !== false && g.allow;
+      const lbl = (SCALP_MODE_LABEL[m] || m).split(' ')[0] + ' ' + (SCALP_MODE_LABEL[m] || m).slice(2);
+      return `<span title="${(g.why || '').replace(/"/g, '')}" style="font-size:0.72rem;padding:2px 8px;
+        border-radius:12px;margin:0 5px 4px 0;display:inline-block;
+        background:${on ? 'rgba(34,197,94,.12)' : 'rgba(239,68,68,.12)'};
+        color:${on ? '#22c55e' : '#ef4444'}">${lbl} ${on ? '啟用' : '停用'}</span>`;
+    };
+    const head = `<div style="margin-bottom:4px;font-size:0.74rem;color:var(--text3)">順勢家族（趨勢市場）</div>
+      <div style="margin-bottom:6px">${['retest','trap','pullback','breakout','momentum'].map(chip).join('')}</div>
+      <div style="margin-bottom:4px;font-size:0.74rem;color:var(--text3)">回歸家族（盤整市場）</div>
+      <div style="margin-bottom:7px">${['range','vwapRev','exhaust'].map(chip).join('')}</div>`;
     if (!rows.length) return `<div style="background:var(--card);border:1px solid var(--border);
       border-radius:10px;padding:10px 12px;margin-top:12px">
       <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🎯 分模式勝率</div>${head}
@@ -20714,16 +21125,21 @@ function _scalpModePanel() {
       <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🎯 分模式勝率（哪種進場方式最準）</div>${head}
       ${rows.map(r => {
         const wc = r.winRate == null ? 'var(--text3)' : r.winRate >= 55 ? '#22c55e' : r.winRate >= 45 ? '#f59e0b' : '#ef4444';
+        const g = gateOf(r.mode);
         return `<div style="display:flex;gap:10px;align-items:center;font-size:0.8rem;padding:4px 0;
-            border-top:1px solid rgba(255,255,255,.05)">
+            border-top:1px solid rgba(255,255,255,.05);flex-wrap:wrap">
           <span style="min-width:130px;font-weight:600">${r.label}</span>
+          <span style="font-size:0.7rem;color:var(--text3);min-width:34px">${r.family === 'revert' ? '回歸' : '順勢'}</span>
           <span style="color:var(--text3);min-width:52px">${r.n} 筆</span>
           <span style="color:${wc};font-weight:700;min-width:76px">勝率 ${r.winRate ?? '--'}%</span>
           <span style="color:${r.netR >= 0 ? '#22c55e' : '#ef4444'};min-width:74px">${r.netR > 0 ? '+' : ''}${r.netR}R</span>
           <span style="color:${r.expectancy > 0 ? '#22c55e' : '#ef4444'}">期望 ${r.expectancy > 0 ? '+' : ''}${r.expectancy}R</span>
+          ${!g.allow ? `<span style="font-size:0.7rem;color:#ef4444">⛔ 已自動停用</span>` : ''}
         </div>`; }).join('')}
       <div style="font-size:0.72rem;color:var(--text3);margin-top:7px">
-        樣本 ≥20 筆後，把期望值為負的模式關掉即可在不減少總量的前提下拉高整體勝率。</div>
+        樣本 ≥${SCALP_CFG.pruneMinN} 筆後，期望值 ≤0 且勝率下界 &lt;${SCALP_CFG.pruneWrLbFloor}% 的模式會
+        <b>自動停用</b>，不必手動去關；但每 ${SCALP_CFG.pruneRetestHours} 小時仍放行一筆探索單持續驗證，
+        表現回升就自動恢復。這是「加了很多模式」之後還能維持勝率的關鍵機制。</div>
     </div>`;
   } catch(_e) { return ''; }
 }
