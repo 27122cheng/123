@@ -16375,9 +16375,14 @@ function updateLabOpportunities(data) {
 }
 
 /* 統計 + 頁面渲染：按標籤分組的勝率/累計R，回答「哪種分析方式最會賺」 */
+let _labTab = 'main';   // 'main' 原實驗室 / 'quant' 量化實驗室（快進快出模型分析）
+function setLabTab(t) { _labTab = t; renderLabPage(); }
+
 function renderLabPage() {
   const el = document.getElementById('lab-content');
   if (!el) return;
+  const bar = _subTabBar(_labTab, [['main', '🧪 分析實驗室'], ['quant', '📐 量化實驗室']], 'setLabTab');
+  if (_labTab === 'quant') { el.innerHTML = bar + buildQuantLabHtml(); return; }
   const lab = loadAILab();
   const closed  = lab.filter(o => o.status === 'closed');
   const active  = lab.filter(o => o.status === 'pending' || o.status === 'open');
@@ -16561,7 +16566,7 @@ function renderLabPage() {
     }
   } catch(_ae) {}
 
-  el.innerHTML = `
+  el.innerHTML = bar + `
     <div class="page-header"><div>
       <h1 class="page-title">🧪 AI 機會實驗室</h1>
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
@@ -16806,6 +16811,442 @@ function setTlTab(t)  { _tlTab  = t; renderTradeLogPage(); }
 function setTlDay(d)  { _tlDay = Math.max(0, Math.min(TL_MAX_DAYS - 1, d)); renderTradeLogPage(); }
 
 /* 子分頁列（兩頁共用） */
+/* ══════════════════════════════════════════════════════════════════
+   量化實驗室 — 用快進快出自己的成交紀錄反推「更適合的模型參數」
+   ------------------------------------------------------------------
+   方法：MAE/MFE 重放（excursion replay）。
+   每筆單都記了 maeAtr（途中最多逆走幾個 ATR）與 mfeAtr（最多順走幾個），
+   有這兩個數字就能回答反事實問題：
+
+     · 止損放寬到 X 倍，這筆還會不會被掃掉？→ 比較 maeAtr 與新的止損距離
+     · 止盈拉到 Y 倍，這筆到得了嗎？        → 比較 mfeAtr 與新的止盈距離
+
+   於是不必重抓歷史 K 線，就能把整份紀錄在不同參數下重跑一遍。
+
+   ⚠️ 這個方法的先天限制（結果一律標示，不隱瞞）：
+   MAE 與 MFE 只記錄「最大值」，不記錄兩者發生的先後。當一筆單在新參數下
+   同時滿足「碰到止損」與「碰到止盈」時，無法判斷先碰哪一邊。此處一律
+   假設先止損（保守），因此重放結果是實際表現的下界。由於這個偏誤對所有
+   參數組一視同仁，用來「互相比較、挑出較好的參數」仍然有效；
+   但不能拿重放的絕對數字當成未來的預期報酬。
+   ══════════════════════════════════════════════════════════════════ */
+const QLAB_FEE = 0.0005;   // 單邊手續費率（與主系統損益計算一致）
+
+/* 單筆重放：回傳這筆在指定參數下的 R 損益，資料不足回傳 null */
+function _qlabReplay(t, o) {
+  const gap = parseFloat(t.levelGapAtr);
+  const mae = parseFloat(t.maeAtr);
+  const mfe = parseFloat(t.mfeAtr);
+  const atr = parseFloat(t.atrAtEntry);
+  const entry = parseFloat(t.entry);
+  if (![gap, mae, mfe, atr, entry].every(isFinite) || !(atr > 0) || !(entry > 0)) return null;
+  const riskAtr = gap + o.slMult;
+  if (!(riskAtr > 0)) return null;
+  // 手續費換算成 R：部位大小與止損距離成反比，所以止損越寬、手續費佔 R 的比重越小
+  const feeR = 2 * QLAB_FEE * entry / (riskAtr * atr);
+  if (mae >= riskAtr) return -1 - feeR;                       // 保守：同時觸及時假設先止損
+  // 分批出場必須照實模擬：實際系統在止盈一減倉 tp1Frac，剩餘倉位才續抱到止盈二。
+  // 若把止盈二當成「整筆都拿到 tp2R」，網格搜尋會系統性偏好極大的 tp2R
+  // （實測會挑出 tp2R=3.0 這種明顯過擬合的解），因為它高估了遠目標的收益。
+  const f = SCALP_CFG.tp1Frac;
+  if (mfe >= riskAtr * o.tp2R) return f * o.tp1R + (1 - f) * o.tp2R - feeR;
+  // 只到止盈一：減倉 f，剩餘部位的止損已上移到 +0.5R，保守以該價位計算
+  if (mfe >= riskAtr * o.tp1R) return f * o.tp1R + (1 - f) * 0.5 - feeR;
+  // 兩邊都沒碰到 → 用這筆實際的出場位置換算（停滯／到期出場的情況）
+  const exitP = parseFloat(t.exitPrice);
+  if (!isFinite(exitP)) return 0 - feeR;
+  const dir = t.direction === 'long' ? 1 : -1;
+  return ((exitP - entry) * dir / atr) / riskAtr - feeR;
+}
+
+/* 一組參數跑完整份紀錄 */
+function qlabRun(trades, o) {
+  const rs = [];
+  for (const t of trades) { const r = _qlabReplay(t, o); if (r != null) rs.push(r); }
+  const n = rs.length;
+  if (!n) return { n: 0 };
+  const wins = rs.filter(r => r > 0.02), losses = rs.filter(r => r < -0.02);
+  let cum = 0, peak = 0, maxDD = 0;
+  for (const r of rs) { cum += r; if (cum > peak) peak = cum; if (peak - cum > maxDD) maxDD = peak - cum; }
+  const grossW = wins.reduce((a, b) => a + b, 0), grossL = Math.abs(losses.reduce((a, b) => a + b, 0));
+  const denom = wins.length + losses.length;
+  return {
+    n, netR: +cum.toFixed(2), maxDD: +maxDD.toFixed(2),
+    winRate: denom ? +(wins.length / denom * 100).toFixed(1) : null,
+    expectancy: +(cum / n).toFixed(3),
+    profitFactor: grossL > 0 ? +(grossW / grossL).toFixed(2) : (grossW > 0 ? Infinity : 0),
+    wins: wins.length, losses: losses.length,
+    // 回撤調整後的分數：淨 R 扣掉回撤的懲罰，避免挑到「賺得多但過程慘烈」的參數
+    score: +(cum - maxDD * 0.5).toFixed(2),
+  };
+}
+
+/* 可重放的樣本（必須有 MAE/MFE，舊資料沒有這些欄位） */
+function qlabSamples(mode) {
+  try {
+    return loadScalpLog().filter(t => t.status === 'closed'
+      && isFinite(parseFloat(t.maeAtr)) && isFinite(parseFloat(t.mfeAtr))
+      && isFinite(parseFloat(t.levelGapAtr)) && parseFloat(t.atrAtEntry) > 0
+      && (!mode || t.mode === mode));
+  } catch(_e) { return []; }
+}
+
+/* 目前實際採用的參數（作為比較基準） */
+function qlabCurrent(mode) {
+  const isRev = SCALP_MODE_FAMILY[mode] === 'revert';
+  let slMult = SCALP_CFG.slAtrMult;
+  try { slMult = scalpSlMult(mode).mult; } catch(_e) {}
+  return { slMult,
+    tp1R: isRev ? SCALP_CFG.revertTp1R : SCALP_CFG.tp1R,
+    tp2R: isRev ? SCALP_CFG.revertTp2R : SCALP_CFG.tp2R };
+}
+
+/* 單一維度掃描：固定其他參數，只掃一個參數 */
+function qlabSweep(trades, base, key, values) {
+  return values.map(v => ({ v, ...qlabRun(trades, { ...base, [key]: v }) }))
+               .filter(r => r.n > 0);
+}
+
+/* 三維網格搜尋 → 找出「穩健」的最佳參數組
+   ------------------------------------------------------------------
+   不直接挑分數最高的那一格。參數最佳化最常見的失敗，是挑到一根孤立的尖峰：
+   那格分數很漂亮，但左右鄰居都很差 —— 代表它是被幾筆特定交易湊出來的，
+   換一批資料就消失。真正可用的參數會落在一片「高原」上，自己好、鄰居也好。
+   因此改以「自己與相鄰參數的平均分數」排序，尖峰會被自動淘汰。 */
+const QLAB_SLS = [0.35, 0.45, 0.6, 0.75, 0.9, 1.1, 1.3, 1.6];
+const QLAB_T1S = [0.6, 0.8, 1.0, 1.2, 1.5];
+const QLAB_T2S = [1.0, 1.3, 1.6, 2.0, 2.5, 3.0];
+
+function qlabGrid(trades, base) {
+  const rows = [], idx = {};
+  for (let i = 0; i < QLAB_SLS.length; i++)
+    for (let j = 0; j < QLAB_T1S.length; j++)
+      for (let k = 0; k < QLAB_T2S.length; k++) {
+        if (QLAB_T2S[k] <= QLAB_T1S[j]) continue;     // 止盈二必須遠於止盈一
+        const o = { slMult: QLAB_SLS[i], tp1R: QLAB_T1S[j], tp2R: QLAB_T2S[k] };
+        const r = qlabRun(trades, o);
+        if (!r.n) continue;
+        const row = { ...o, ...r, i, j, k };
+        rows.push(row); idx[`${i},${j},${k}`] = row;
+      }
+  // 鄰域平均分數（自己 + 三個維度各 ±1 格）
+  let best = null;
+  for (const row of rows) {
+    const near = [row.score];
+    for (const [di, dj, dk] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]) {
+      const n = idx[`${row.i + di},${row.j + dj},${row.k + dk}`];
+      if (n) near.push(n.score);
+    }
+    row.robust = +(near.reduce((a, b) => a + b, 0) / near.length).toFixed(2);
+    row.neighbors = near.length - 1;
+    if (!best || row.robust > best.robust) best = row;
+  }
+  const peak = rows.reduce((a, b) => (!a || b.score > a.score ? b : a), null);
+  return { best, peak, rows, cur: { ...base, ...qlabRun(trades, base) } };
+}
+
+/* ── 樣本外驗證：用前半段找參數，拿後半段驗收 ──────────────────
+   「在同一批資料上找到的最佳參數」永遠會比現行參數好看——那是最佳化的
+   定義，不是證據。真正該問的是：用舊資料挑出來的參數，套到它沒看過的
+   新資料上還有效嗎？這裡照時間切一半來回答這個問題。
+   兩者落差大 = 過擬合，那組參數不該採用。 */
+const QLAB_WF_MARGIN = 0.10;   // 樣本外要贏過現行參數至少 0.10R/筆 才算通過
+function qlabWalkForward(trades, base) {
+  const sorted = trades.slice().sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+  if (sorted.length < 30) return null;
+  const cut = Math.floor(sorted.length / 2);
+  const train = sorted.slice(0, cut), test = sorted.slice(cut);
+  const g = qlabGrid(train, base);
+  if (!g.best) return null;
+  const opt = { slMult: g.best.slMult, tp1R: g.best.tp1R, tp2R: g.best.tp2R };
+  const inSample  = qlabRun(train, opt);
+  const outSample = qlabRun(test, opt);
+  const baseOut   = qlabRun(test, base);
+  // 通過門檻不能只是「大於」：樣本外只贏 0.03R 這種差距完全在雜訊範圍內，
+  // 判成通過會讓驗證失去意義。要求贏過一個有實質意義的幅度才算數。
+  const margin = QLAB_WF_MARGIN;
+  const edge = +(outSample.expectancy - baseOut.expectancy).toFixed(3);
+  return {
+    opt, nTrain: train.length, nTest: test.length,
+    inSampleExp: inSample.expectancy, outSampleExp: outSample.expectancy,
+    baseOutExp: baseOut.expectancy, edge, margin,
+    passed: edge >= margin,
+    marginal: edge > 0 && edge < margin,     // 有贏但幅度在雜訊範圍內
+    decay: +(inSample.expectancy - outSample.expectancy).toFixed(3),
+  };
+}
+
+/* 條件交叉分析：哪些情境真的賺錢（用 Wilson 下界避免被小樣本騙） */
+function qlabSegments(trades) {
+  const buckets = [];
+  const push = (dim, label, filter) => {
+    const sub = trades.filter(filter);
+    if (sub.length < 5) return;
+    const w = sub.filter(t => (parseFloat(t.pnlR) || 0) > 0).length;
+    const l = sub.filter(t => (parseFloat(t.pnlR) || 0) < 0).length;
+    const r = sub.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0);
+    buckets.push({ dim, label, n: sub.length,
+      winRate: (w + l) ? +(w / (w + l) * 100).toFixed(1) : null,
+      wrLb: (w + l) ? +(wilsonLB(w, w + l) * 100).toFixed(1) : 0,
+      netR: +r.toFixed(2), expectancy: +(r / sub.length).toFixed(3) });
+  };
+  for (const m of Object.keys(SCALP_MODE_LABEL)) push('模式', SCALP_MODE_LABEL[m], t => t.mode === m);
+  push('方向', '做多', t => t.direction === 'long');
+  push('方向', '做空', t => t.direction === 'short');
+  const kz = { high: '主力時段', medium: '亞洲時段', low: '冷門時段' };
+  for (const k of Object.keys(kz)) push('時段', kz[k], t => t.kzQuality === k);
+  push('ADX', 'ADX < 20',    t => (parseFloat(t.adx) || 0) < 20);
+  push('ADX', 'ADX 20–30',   t => { const a = parseFloat(t.adx) || 0; return a >= 20 && a < 30; });
+  push('ADX', 'ADX ≥ 30',    t => (parseFloat(t.adx) || 0) >= 30);
+  push('量能', '量能 < 1.2×', t => (parseFloat(t.volRatio) || 0) < 1.2);
+  push('量能', '量能 ≥ 1.2×', t => (parseFloat(t.volRatio) || 0) >= 1.2);
+  push('風險分', '風險分 < 30', t => (t.riskScore ?? 99) < 30);
+  push('風險分', '風險分 30–60', t => { const s = t.riskScore ?? -1; return s >= 30 && s < 60; });
+  return buckets.sort((a, b) => b.expectancy - a.expectancy);
+}
+
+/* 持有時間分析 → 推導停滯出場與最長持有該設多少 */
+function qlabHoldAnalysis(trades) {
+  const w = trades.filter(t => (parseFloat(t.pnlR) || 0) > 0).map(t => parseFloat(t.holdMin)).filter(isFinite);
+  const l = trades.filter(t => (parseFloat(t.pnlR) || 0) < 0).map(t => parseFloat(t.holdMin)).filter(isFinite);
+  if (w.length < 5) return null;
+  const p = (a, q) => _scalpPct(a, q);
+  return {
+    winMed: +p(w, 50).toFixed(1), winP80: +p(w, 80).toFixed(1), winP95: +p(w, 95).toFixed(1),
+    lossMed: l.length ? +p(l, 50).toFixed(1) : null,
+    nWin: w.length, nLoss: l.length,
+    // 最長持有建議：涵蓋 95% 的獲利單即可，再長只是佔用名額
+    suggestMaxHold: Math.max(20, Math.ceil(p(w, 95) / 5) * 5),
+  };
+}
+
+/* ── 頁面：量化實驗室 ─────────────────────────────────────────── */
+let _qlabMode = '';   // '' = 全部模式，或指定單一模式
+
+function setQlabMode(m) { _qlabMode = m; renderLabPage(); }
+
+function buildQuantLabHtml() {
+  const QLAB_MIN = 20;   // 低於此樣本數只顯示提示，不給結論
+  const all = qlabSamples('');
+  const trades = _qlabMode ? all.filter(t => t.mode === _qlabMode) : all;
+  const modeCounts = {};
+  for (const t of all) modeCounts[t.mode] = (modeCounts[t.mode] || 0) + 1;
+
+  const head = `
+    <div class="page-header"><div>
+      <h1 class="page-title">📐 量化實驗室</h1>
+      <p class="page-subtitle">用快進快出自己的成交紀錄重放不同參數，找出更適合的模型。
+        方法為 MAE/MFE 重放：每筆單都記錄了「途中最多逆走／順走幾個 ATR」，
+        因此不必重抓歷史 K 線，就能回答「止損放寬到 X 這筆還會不會被掃掉」。</p>
+    </div></div>`;
+
+  const modeBar = `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px">
+    ${[['', `全部（${all.length}）`], ...Object.keys(SCALP_MODE_LABEL)
+        .filter(m => modeCounts[m])
+        .map(m => [m, `${SCALP_MODE_LABEL[m]}（${modeCounts[m]}）`])]
+      .map(([k, l]) => `<button onclick="setQlabMode('${k}')" style="font-size:0.76rem;padding:4px 12px;
+        border-radius:14px;cursor:pointer;border:1px solid ${_qlabMode === k ? '#6366f1' : 'var(--border)'};
+        background:${_qlabMode === k ? 'rgba(99,102,241,.15)' : 'transparent'};
+        color:${_qlabMode === k ? 'var(--text1)' : 'var(--text3)'}">${l}</button>`).join('')}
+  </div>`;
+
+  const caveat = `<div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;
+      border-radius:8px;padding:9px 12px;margin-bottom:12px;font-size:0.76rem;color:var(--text2);line-height:1.6">
+    <b>⚠️ 這套方法的先天限制（請一併理解再採用建議）</b><br>
+    MAE／MFE 只記錄「最大值」，不記錄兩者發生的先後。當一筆單在新參數下同時滿足
+    「碰到止損」與「碰到止盈」時，無法判斷先碰哪一邊——此處<b>一律假設先止損</b>。
+    因此重放出來的績效是實際表現的<b>下界</b>，絕對數字不能當成未來的預期報酬。
+    但這個偏誤對所有參數組一視同仁，所以用來<b>互相比較、挑出較好的參數</b>仍然成立。
+  </div>`;
+
+  if (trades.length < QLAB_MIN) {
+    return head + modeBar + caveat + `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
+          text-align:center;color:var(--text3);font-size:0.86rem">
+        可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
+        <div style="margin-top:8px;font-size:0.78rem;line-height:1.7">
+          重放需要 MAE／MFE 欄位，只有「機器人學習止損」上線之後產生的交易才有，
+          舊紀錄無法納入。<br>
+          樣本不足就給參數建議只是對雜訊過擬合——與其給一個看起來很精確、實際上
+          隨下一筆單就翻盤的數字，不如先誠實說還不夠。
+        </div>
+      </div>`;
+  }
+
+  const base = qlabCurrent(_qlabMode || 'breakout');
+  const grid = qlabGrid(trades, base);
+  const cur  = grid.cur;
+  const best = grid.best;
+
+  // ── 單維掃描表 ──
+  const sweepTable = (title, rows, fmt, curVal, note) => {
+    const bestRow = rows.reduce((a, b) => (!a || b.score > a.score ? b : a), null);
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">${title}</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+        <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+          <th style="padding:3px 6px;text-align:left">參數</th><th style="padding:3px 6px">樣本</th>
+          <th style="padding:3px 6px">勝率</th><th style="padding:3px 6px">淨 R</th>
+          <th style="padding:3px 6px">最大回撤</th><th style="padding:3px 6px">獲利因子</th>
+          <th style="padding:3px 6px">期望值</th></tr></thead>
+        <tbody>${rows.map(r => {
+          const isCur = Math.abs(r.v - curVal) < 1e-6, isBest = bestRow && r.v === bestRow.v;
+          return `<tr style="text-align:right;${isBest ? 'background:rgba(34,197,94,.10)' : isCur ? 'background:rgba(99,102,241,.10)' : ''}">
+            <td style="padding:3px 6px;text-align:left;font-weight:${isBest || isCur ? '700' : '500'}">
+              ${fmt(r.v)}${isCur ? ' <span style="color:#818cf8;font-size:0.68rem">目前</span>' : ''}${isBest ? ' <span style="color:#22c55e;font-size:0.68rem">最佳</span>' : ''}</td>
+            <td style="padding:3px 6px;color:var(--text3)">${r.n}</td>
+            <td style="padding:3px 6px">${r.winRate ?? '--'}%</td>
+            <td style="padding:3px 6px;color:${r.netR >= 0 ? '#22c55e' : '#ef4444'}">${r.netR > 0 ? '+' : ''}${r.netR}</td>
+            <td style="padding:3px 6px;color:#ef4444">-${r.maxDD}</td>
+            <td style="padding:3px 6px">${r.profitFactor === Infinity ? '∞' : r.profitFactor}</td>
+            <td style="padding:3px 6px;color:${r.expectancy > 0 ? '#22c55e' : '#ef4444'}">${r.expectancy > 0 ? '+' : ''}${r.expectancy}</td>
+          </tr>`; }).join('')}</tbody>
+      </table></div>
+      ${note ? `<div style="font-size:0.7rem;color:var(--text3);margin-top:6px">${note}</div>` : ''}
+    </div>`;
+  };
+
+  const slRows = qlabSweep(trades, base, 'slMult', [0.35, 0.45, 0.6, 0.75, 0.9, 1.1, 1.3, 1.6]);
+  const t1Rows = qlabSweep(trades, base, 'tp1R',   [0.6, 0.8, 1.0, 1.2, 1.5]);
+  const t2Rows = qlabSweep(trades, base, 'tp2R',   [1.0, 1.3, 1.6, 2.0, 2.5, 3.0]);
+
+  // ── 最佳組合 ──
+  const delta = best && cur.n ? +(best.netR - cur.netR).toFixed(2) : 0;
+  const bestCard = best ? `
+    <div style="background:var(--card);border:1px solid ${delta > 0 ? '#22c55e' : 'var(--border)'};
+        border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:8px">🏆 網格搜尋最佳參數組（共試 ${grid.rows.length} 組）</div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap;font-size:0.8rem">
+        <div><div style="font-size:0.7rem;color:var(--text3)">目前參數</div>
+          <div style="font-weight:700">止損 ${cur.slMult}×ATR｜止盈 ${cur.tp1R}R/${cur.tp2R}R</div>
+          <div style="color:var(--text3);font-size:0.74rem">淨 ${cur.netR > 0 ? '+' : ''}${cur.netR}R　勝率 ${cur.winRate ?? '--'}%　回撤 -${cur.maxDD}R</div></div>
+        <div><div style="font-size:0.7rem;color:var(--text3)">重放最佳</div>
+          <div style="font-weight:700;color:#22c55e">止損 ${best.slMult}×ATR｜止盈 ${best.tp1R}R/${best.tp2R}R</div>
+          <div style="color:var(--text3);font-size:0.74rem">淨 ${best.netR > 0 ? '+' : ''}${best.netR}R　勝率 ${best.winRate ?? '--'}%　回撤 -${best.maxDD}R</div></div>
+        <div><div style="font-size:0.7rem;color:var(--text3)">差異</div>
+          <div style="font-weight:700;color:${delta > 0 ? '#22c55e' : 'var(--text3)'}">${delta > 0 ? '+' : ''}${delta}R</div>
+          <div style="color:var(--text3);font-size:0.74rem">${trades.length} 筆樣本</div></div>
+      </div>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:8px;line-height:1.6">
+        排序依據為「淨 R − 回撤×0.5」的<b>鄰域平均</b>（自己與相鄰參數格的平均），而不是單一格的最高分。
+        參數最佳化最常見的失敗是挑到孤立尖峰——那格好看但左右鄰居都差，代表是被幾筆特定交易湊出來的，
+        換批資料就消失。可用的參數會落在一片高原上。
+        ${grid.peak && (grid.peak.slMult !== best.slMult || grid.peak.tp1R !== best.tp1R || grid.peak.tp2R !== best.tp2R)
+          ? `<br>（單格最高分其實是 止損 ${grid.peak.slMult}／止盈 ${grid.peak.tp1R}R/${grid.peak.tp2R}R，
+             淨 ${grid.peak.netR}R，但鄰域表現不穩，已排除）` : ''}
+        ${trades.length < 60 ? '<br><b style="color:#f59e0b">樣本仍偏少（&lt;60 筆），網格搜尋的最佳解很可能是過擬合，建議只當方向參考、不要照抄。</b>' : ''}
+      </div>
+    </div>` : '';
+
+  // ── 樣本外驗證 ──
+  const wf = qlabWalkForward(trades, base);
+  const wfCard = wf ? `
+    <div style="background:var(--card);border:1px solid ${wf.passed ? '#22c55e' : wf.marginal ? '#f59e0b' : '#ef4444'};
+        border-radius:10px;padding:11px 13px;margin-bottom:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">
+        🧭 樣本外驗證（前半段找參數，後半段驗收）
+        <span style="font-size:0.74rem;font-weight:600;margin-left:6px;color:${wf.passed ? '#22c55e' : wf.marginal ? '#f59e0b' : '#ef4444'}">
+          ${wf.passed ? '✅ 通過' : wf.marginal ? '⚠️ 差距在雜訊範圍內' : '❌ 未通過'}</span>
+      </div>
+      <div style="font-size:0.79rem;line-height:1.8;color:var(--text2)">
+        用前 ${wf.nTrain} 筆找出的最佳參數（止損 ${wf.opt.slMult}×ATR、止盈 ${wf.opt.tp1R}R/${wf.opt.tp2R}R）：<br>
+        　· 在它<b>看過</b>的資料上：期望值 <b>${wf.inSampleExp > 0 ? '+' : ''}${wf.inSampleExp}R</b><br>
+        　· 在它<b>沒看過</b>的後 ${wf.nTest} 筆上：期望值
+          <b style="color:${wf.passed ? '#22c55e' : wf.marginal ? '#f59e0b' : '#ef4444'}">${wf.outSampleExp > 0 ? '+' : ''}${wf.outSampleExp}R</b>
+          （同期現行參數 ${wf.baseOutExp > 0 ? '+' : ''}${wf.baseOutExp}R，差距 ${wf.edge > 0 ? '+' : ''}${wf.edge}R）<br>
+        　· 衰減 <b>${wf.decay}R</b>　·　通過門檻：樣本外需贏過現行參數 ≥${wf.margin}R/筆
+      </div>
+      <div style="font-size:0.71rem;color:var(--text3);margin-top:7px;line-height:1.6">
+        「在同一批資料上找到的最佳參數比現行更好」永遠成立——那是最佳化的定義，不是證據。
+        會賺錢的問題是：用舊資料挑的參數，套到它沒看過的資料上還有效嗎？
+        ${wf.passed
+          ? '這次樣本外仍明顯優於現行參數，代表改善有一定機會是真的。'
+          : wf.marginal
+            ? `<b style="color:#f59e0b">樣本外只贏 ${wf.edge}R，差距在雜訊範圍內（門檻 ${wf.margin}R），不足以當成證據 → 先不要改。</b>`
+            : '<b style="color:#ef4444">樣本外並未優於現行參數 → 上面的「最佳參數」很可能只是過擬合，建議先不要採用。</b>'}
+      </div>
+    </div>` : '';
+
+  // ── 條件交叉分析 ──
+  const segs = qlabSegments(trades);
+  const segTable = segs.length ? `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">🔍 條件交叉分析（哪些情境真的賺錢）</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+        <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+          <th style="padding:3px 6px;text-align:left">維度</th><th style="padding:3px 6px;text-align:left">情境</th>
+          <th style="padding:3px 6px">樣本</th><th style="padding:3px 6px">勝率</th>
+          <th style="padding:3px 6px">勝率下界</th><th style="padding:3px 6px">淨 R</th>
+          <th style="padding:3px 6px">期望值</th></tr></thead>
+        <tbody>${segs.map(s => `<tr style="text-align:right">
+          <td style="padding:3px 6px;text-align:left;color:var(--text3)">${s.dim}</td>
+          <td style="padding:3px 6px;text-align:left">${s.label}</td>
+          <td style="padding:3px 6px;color:var(--text3)">${s.n}</td>
+          <td style="padding:3px 6px">${s.winRate ?? '--'}%</td>
+          <td style="padding:3px 6px;color:var(--text3)">${s.wrLb}%</td>
+          <td style="padding:3px 6px;color:${s.netR >= 0 ? '#22c55e' : '#ef4444'}">${s.netR > 0 ? '+' : ''}${s.netR}</td>
+          <td style="padding:3px 6px;font-weight:700;color:${s.expectancy > 0 ? '#22c55e' : '#ef4444'}">${s.expectancy > 0 ? '+' : ''}${s.expectancy}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+      <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">
+        「勝率下界」是 Wilson 95% 下界——樣本少時原始勝率會被運氣灌水，下界才是可以拿來做決定的數字。
+        期望值為負且樣本 ≥20 的情境，考慮直接排除。</div>
+    </div>` : '';
+
+  // ── 持有時間 ──
+  const hold = qlabHoldAnalysis(trades);
+  const holdCard = hold ? `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">⏱️ 持有時間分析</div>
+      <div style="font-size:0.8rem;line-height:1.8">
+        獲利單持有時間：中位數 <b>${hold.winMed}</b> 分　·　80% 在 <b>${hold.winP80}</b> 分內完成
+        　·　95% 在 <b>${hold.winP95}</b> 分內（${hold.nWin} 筆）<br>
+        ${hold.lossMed != null ? `虧損單持有時間中位數：<b>${hold.lossMed}</b> 分（${hold.nLoss} 筆）<br>` : ''}
+        <span style="color:var(--text2)">建議最長持有：<b style="color:#22c55e">${hold.suggestMaxHold} 分</b>
+        （涵蓋 95% 的獲利單即可，再長只是佔用持倉名額；目前設定 ${SCALP_CFG.maxHoldMin} 分）</span>
+      </div>
+    </div>` : '';
+
+  // ── 具體建議 ──
+  const recs = [];
+  if (best && delta > 0.5) {
+    if (wf && !wf.passed) {
+      recs.push(`⚠️ 網格找到的「更好參數」<b>沒有通過樣本外驗證</b>，建議<b>先不要改</b>——`
+        + `它在沒看過的資料上並沒有比現行參數好，多半是過擬合。先累積更多樣本再看。`);
+    } else {
+      recs.push(`把${_qlabMode ? SCALP_MODE_LABEL[_qlabMode] : '整體'}的止損改為 <b>${best.slMult}×ATR</b>、`
+        + `止盈改為 <b>${best.tp1R}R / ${best.tp2R}R</b>，在這 ${trades.length} 筆樣本上可多 ${delta}R`
+        + (wf ? `，且已通過樣本外驗證` : ''));
+    }
+  }
+  if (hold && Math.abs(hold.suggestMaxHold - SCALP_CFG.maxHoldMin) >= 10) {
+    recs.push(`最長持有由 ${SCALP_CFG.maxHoldMin} 分改為 <b>${hold.suggestMaxHold} 分</b>`
+      + `（95% 的獲利單都在此之前結束）`);
+  }
+  for (const s of segs) {
+    if (s.n >= 20 && s.expectancy < -0.1) recs.push(`排除「${s.label}」情境：${s.n} 筆、期望值 ${s.expectancy}R`);
+    if (s.n >= 20 && s.expectancy > 0.25) recs.push(`「${s.label}」表現最好（${s.n} 筆、期望 +${s.expectancy}R），可考慮加重此情境的部位`);
+  }
+  const recCard = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px">
+    <div style="font-size:0.84rem;font-weight:700;margin-bottom:6px">💡 模型調整建議</div>
+    ${recs.length
+      ? `<ol style="margin:0;padding-left:18px;font-size:0.8rem;line-height:1.9;color:var(--text2)">
+          ${recs.map(r => `<li>${r}</li>`).join('')}</ol>`
+      : '<div style="font-size:0.8rem;color:var(--text3)">目前參數在重放上已接近最佳，沒有明顯值得調整的地方。</div>'}
+    <div style="font-size:0.7rem;color:var(--text3);margin-top:8px;line-height:1.6">
+      這些是「在既有樣本上」的最佳解，不是對未來的保證。建議一次只改一項、觀察 20 筆以上再決定是否保留，
+      避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
+  </div>`;
+
+  return head + modeBar + caveat + bestCard + wfCard
+    + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
+        '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
+    + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
+    + sweepTable('🚀 止盈二掃描', t2Rows, v => `${v}R`, base.tp2R, null)
+    + segTable + holdCard + recCard;
+}
+
 function _subTabBar(cur, tabs, fnName) {
   return `<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
     ${tabs.map(([k, label]) => `<button onclick="${fnName}('${k}')"
