@@ -17048,11 +17048,12 @@ try { setTimeout(() => {
 /* 目前實際採用的參數（作為比較基準） */
 function qlabCurrent(mode) {
   const isRev = SCALP_MODE_FAMILY[mode] === 'revert';
-  let slMult = SCALP_CFG.slAtrMult;
+  const eff = qlabEffective();
+  let slMult = eff.slMult;
   try { slMult = scalpSlMult(mode).mult; } catch(_e) {}
   return { slMult,
-    tp1R: isRev ? SCALP_CFG.revertTp1R : SCALP_CFG.tp1R,
-    tp2R: isRev ? SCALP_CFG.revertTp2R : SCALP_CFG.tp2R };
+    tp1R: isRev ? eff.revertTp1R : eff.tp1R,
+    tp2R: isRev ? eff.revertTp2R : eff.tp2R };
 }
 
 /* 單一維度掃描：固定其他參數，只掃一個參數 */
@@ -17174,6 +17175,165 @@ function qlabHoldAnalysis(trades) {
   };
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   量化實驗室自動套用 — 讓它自己判斷「這組參數能不能拿去實際發單」
+   ------------------------------------------------------------------
+   自動改動實際交易參數是有風險的事，所以這裡的設計重點不是「找到更好的
+   參數」（網格隨時都能找到），而是「憑什麼相信它、以及發現看錯時怎麼收回」。
+
+   晉升條件（必須全部成立，任一不過就不動）：
+     ① 可重放樣本 ≥ minSamples
+     ② 樣本外驗證通過（前半段找參數、後半段驗收，且需贏過現行 ≥0.10R/筆）
+     ③ 網格最佳（鄰域平均，非單格尖峰）比現行多賺 ≥ minDelta
+     ④ 距上次自動調整已超過 cooldownH，避免參數天天跳動
+     ⑤ 結果落在允許範圍內
+
+   套用後的自我複查（這才是「自行判斷」的重點）：
+     套用後累積 ≥ reviewN 筆新交易，比較實際期望值與套用前。若不升反降
+     超過 rollbackEdge，自動回滾到前一組參數並記錄，不會一直錯下去。
+
+   與機器人學習止損的分工：量化實驗室決定「基準操作點」，學習止損在那個
+   基準附近持續微調。兩者不會互相打架——套用後學習止損的 base 就是新基準。
+   ══════════════════════════════════════════════════════════════════ */
+const QLAB_APPLY_KEY = 'csp_qlab_applied';
+const QLAB_APPLY = {
+  minSamples:   60,     // 少於此樣本一律不自動套用
+  minDelta:     0.5,    // 網格最佳需比現行多賺這麼多 R 才值得動
+  cooldownH:    12,     // 兩次自動調整的最小間隔（小時）
+  reviewN:      30,     // 套用後累積幾筆新交易就複查成效
+  rollbackEdge: -0.05,  // 複查時期望值比套用前差這麼多 → 回滾
+};
+
+function loadQlabApplied() {
+  try { const o = JSON.parse(localStorage.getItem(QLAB_APPLY_KEY) || 'null'); return (o && typeof o === 'object') ? o : null; }
+  catch(_e) { return null; }
+}
+function saveQlabApplied(o) {
+  try { localStorage.setItem(QLAB_APPLY_KEY, JSON.stringify(o)); } catch(_e) {}
+}
+/* 目前生效的參數（套用中則回傳套用值，否則回傳 SCALP_CFG 預設） */
+function qlabEffective() {
+  const a = loadQlabApplied();
+  if (a && a.active && isFinite(a.slMult) && isFinite(a.tp1R) && isFinite(a.tp2R)) {
+    // 回歸家族維持原本「目標較近」的比例，不硬套順勢家族的倍數
+    const r1 = SCALP_CFG.revertTp1R / SCALP_CFG.tp1R;
+    const r2 = SCALP_CFG.revertTp2R / SCALP_CFG.tp2R;
+    return { slMult: a.slMult, tp1R: a.tp1R, tp2R: a.tp2R,
+             revertTp1R: +(a.tp1R * r1).toFixed(2), revertTp2R: +(a.tp2R * r2).toFixed(2),
+             applied: true, at: a.appliedAt };
+  }
+  return { slMult: SCALP_CFG.slAtrMult, tp1R: SCALP_CFG.tp1R, tp2R: SCALP_CFG.tp2R,
+           revertTp1R: SCALP_CFG.revertTp1R, revertTp2R: SCALP_CFG.revertTp2R, applied: false };
+}
+
+/* 自動判斷：該不該套用、或該不該回滾。回傳決策紀錄（不論有無動作） */
+function qlabAutoDecide(opts = {}) {
+  const force = !!opts.force;          // 手動按鈕：略過冷卻，但不略過證據門檻
+  // dryRun：只算出「現在會做什麼決定」，絕不寫入。頁面渲染一律用這個模式——
+  // 光是打開頁面看一眼就把實際發單參數改掉，是不能接受的副作用。
+  const dry = !!opts.dryRun;
+  const now = Date.now();
+  const out = { at: now, action: 'none', why: '' };
+  const commit = (o) => { if (!dry) saveQlabApplied(o); };
+  try {
+    const s = loadSettings();
+    if (!force && s.qlabAutoApply === false) { out.why = '自動套用已關閉'; return out; }
+
+    const cur = loadQlabApplied();
+    const trades = qlabSamples('');
+
+    // ── 先做「套用後複查」：已經套用過就先檢查它到底有沒有變好 ──────
+    if (cur && cur.active) {
+      const since = trades.filter(t => (t.exitTime || 0) > cur.appliedAt);
+      if (since.length >= QLAB_APPLY.reviewN) {
+        const exp = since.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / since.length;
+        const edge = +(exp - (cur.prevExpectancy ?? 0)).toFixed(3);
+        if (edge <= QLAB_APPLY.rollbackEdge) {
+          const from = { slMult: cur.slMult, tp1R: cur.tp1R, tp2R: cur.tp2R };
+          const hist = (cur.history || []).concat([{
+            at: now, action: 'rollback', from, to: cur.baseline,
+            why: `套用後 ${since.length} 筆實際期望值 ${exp.toFixed(3)}R，`
+               + `比套用前 ${(cur.prevExpectancy ?? 0).toFixed(3)}R 還差 ${edge}R → 回滾`,
+          }]);
+          commit({ active: false, history: hist.slice(-20) });
+          out.action = 'rollback'; out.why = hist[hist.length - 1].why;
+          return out;
+        }
+        // 通過複查 → 標記已驗證，之後不再重複複查
+        if (!cur.reviewed) { commit({ ...cur, reviewed: true, reviewEdge: edge, reviewN: since.length }); }
+      }
+    }
+
+    // ── 再考慮是否要（重新）套用一組新參數 ────────────────────────
+    if (trades.length < QLAB_APPLY.minSamples) {
+      out.why = `可重放樣本 ${trades.length}/${QLAB_APPLY.minSamples}，不足以自動套用`; return out;
+    }
+    const lastAt = cur ? (cur.appliedAt || 0) : 0;
+    const hrs = (now - lastAt) / 3600000;
+    if (!force && lastAt && hrs < QLAB_APPLY.cooldownH) {
+      out.why = `距上次調整僅 ${hrs.toFixed(1)} 小時（需 ≥${QLAB_APPLY.cooldownH}）`; return out;
+    }
+
+    const base = qlabEffective();
+    const baseCfg = { slMult: base.slMult, tp1R: base.tp1R, tp2R: base.tp2R };
+    const grid = qlabGrid(trades, baseCfg);
+    if (!grid.best) { out.why = '網格無有效結果'; return out; }
+    const curRun = grid.cur;
+    const delta = +(grid.best.netR - curRun.netR).toFixed(2);
+    if (delta < QLAB_APPLY.minDelta) {
+      out.why = `最佳僅比現行多 ${delta}R（需 ≥${QLAB_APPLY.minDelta}），不值得改動`; return out;
+    }
+    const wf = qlabWalkForward(trades, baseCfg);
+    if (!wf) { out.why = '樣本不足以做樣本外驗證'; return out; }
+    if (!wf.passed) {
+      out.why = `未通過樣本外驗證（樣本外贏 ${wf.edge}R < 門檻 ${wf.margin}R）→ 判定為過擬合，不套用`;
+      return out;
+    }
+    // 邊界保護：即使證據充分也不接受超出允許範圍的參數
+    const sl = Math.max(SCALP_CFG.slMultMin, Math.min(SCALP_CFG.slMultMax, grid.best.slMult));
+    const t1 = Math.max(0.4, Math.min(2.0, grid.best.tp1R));
+    const t2 = Math.max(t1 + 0.2, Math.min(3.0, grid.best.tp2R));
+
+    const prevExp = trades.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / trades.length;
+    const hist = ((cur && cur.history) || []).concat([{
+      at: now, action: 'apply', from: baseCfg, to: { slMult: sl, tp1R: t1, tp2R: t2 },
+      why: `樣本 ${trades.length} 筆、網格多賺 ${delta}R、樣本外贏 ${wf.edge}R（門檻 ${wf.margin}R）`,
+    }]);
+    commit({
+      active: true, slMult: sl, tp1R: t1, tp2R: t2,
+      appliedAt: now, prevExpectancy: +prevExp.toFixed(3), reviewed: false,
+      baseline: (cur && cur.active) ? { slMult: cur.slMult, tp1R: cur.tp1R, tp2R: cur.tp2R }
+                                    : { slMult: SCALP_CFG.slAtrMult, tp1R: SCALP_CFG.tp1R, tp2R: SCALP_CFG.tp2R },
+      evidence: { n: trades.length, delta, wfEdge: wf.edge, wfMargin: wf.margin,
+                  inSample: wf.inSampleExp, outSample: wf.outSampleExp },
+      history: hist.slice(-20),
+    });
+    if (!dry) { try { invalidateScalpSlLearn(); } catch(_e) {} }
+    out.action = 'apply'; out.why = hist[hist.length - 1].why;
+    out.to = { slMult: sl, tp1R: t1, tp2R: t2 };
+    return out;
+  } catch(e) { out.why = '判斷失敗：' + e.message; return out; }
+}
+
+/* 手動：立即判斷一次 / 取消套用 */
+function qlabApplyNow() {
+  const r = qlabAutoDecide({ force: true });
+  const msg = r.action === 'apply'    ? `已套用新參數（${r.why}）`
+            : r.action === 'rollback' ? `已回滾（${r.why}）`
+            :                           `維持現狀：${r.why}`;
+  showToast(msg, r.action === 'none' ? 'info' : 'success');
+  renderLabPage();
+}
+function qlabRevert() {
+  if (!confirm('確定取消量化實驗室的自動套用參數，回到預設值？')) return;
+  const cur = loadQlabApplied();
+  const hist = ((cur && cur.history) || []).concat([{ at: Date.now(), action: 'manual_revert', why: '使用者手動取消套用' }]);
+  saveQlabApplied({ active: false, history: hist.slice(-20) });
+  try { invalidateScalpSlLearn(); } catch(_e) {}
+  showToast('已回到預設參數', 'success');
+  renderLabPage();
+}
+
 /* ── 頁面：量化實驗室 ─────────────────────────────────────────── */
 let _qlabMode = '';   // '' = 全部模式，或指定單一模式
 
@@ -17217,6 +17377,58 @@ function buildQuantLabHtml() {
     </div>
   </div>`;
 
+  // ── 自動套用狀態 ──
+  const applyCard = (() => {
+    const a = loadQlabApplied();
+    const s = loadSettings();
+    const on = s.qlabAutoApply !== false;
+    const eff = qlabEffective();
+    const dec = (() => { try { return qlabAutoDecide({ dryRun: true }); } catch(_e) { return { action: 'none', why: '' }; } })();
+    const hist = (a && a.history) || [];
+    const fmtT = ts => new Date(ts).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return `<div style="background:var(--card);border:1px solid ${eff.applied ? '#22c55e' : 'var(--border)'};
+        border-radius:10px;padding:11px 13px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:7px">
+        <span style="font-size:0.84rem;font-weight:700">🤝 自動套用到實際發單</span>
+        <span style="font-size:0.74rem;padding:2px 9px;border-radius:12px;
+          background:${on ? 'rgba(34,197,94,.12)' : 'rgba(148,163,184,.12)'};
+          color:${on ? '#22c55e' : 'var(--text3)'}">${on ? '已啟用' : '已關閉'}</span>
+        <label style="font-size:0.76rem;color:var(--text3);cursor:pointer;display:flex;align-items:center;gap:5px">
+          <input type="checkbox" ${on ? 'checked' : ''}
+            onchange="saveSettings({qlabAutoApply:this.checked});state.settings=loadSettings();renderLabPage()"> 允許自動調整
+        </label>
+        <button class="btn-ghost" style="font-size:0.76rem" onclick="qlabApplyNow()">🔄 立即判斷一次</button>
+        ${eff.applied ? `<button class="btn-ghost" style="font-size:0.76rem;color:var(--bear)" onclick="qlabRevert()">↩ 取消套用</button>` : ''}
+      </div>
+      <div style="font-size:0.8rem;line-height:1.75">
+        目前實際發單使用：<b style="color:${eff.applied ? '#22c55e' : 'var(--text1)'}">
+          止損 ${eff.slMult}×ATR｜止盈 ${eff.tp1R}R / ${eff.tp2R}R</b>
+        ${eff.applied ? `<span style="color:#22c55e">（量化實驗室於 ${fmtT(eff.at)} 自動套用）</span>`
+                      : '<span style="color:var(--text3)">（預設值，尚未自動套用）</span>'}
+        ${a && a.active && a.evidence ? `<br><span style="font-size:0.74rem;color:var(--text3)">
+          當時依據：樣本 ${a.evidence.n} 筆、網格多賺 ${a.evidence.delta}R、
+          樣本外 ${a.evidence.outSample}R（贏現行 ${a.evidence.wfEdge}R，門檻 ${a.evidence.wfMargin}R）
+          ${a.reviewed ? `　·　<b style="color:#22c55e">套用後複查已通過（${a.reviewN} 筆，${a.reviewEdge > 0 ? '+' : ''}${a.reviewEdge}R）</b>`
+            : `　·　複查中（累積 ${QLAB_APPLY.reviewN} 筆後自動檢驗，不升反降超過 ${Math.abs(QLAB_APPLY.rollbackEdge)}R 會自動回滾）`}
+        </span>` : ''}
+        <br><span style="font-size:0.76rem;color:var(--text3)">本輪判斷：${dec.why || '—'}</span>
+      </div>
+      ${hist.length ? `<div style="margin-top:8px;font-size:0.73rem;color:var(--text3);line-height:1.7">
+        <b>調整紀錄</b>${hist.slice().reverse().slice(0, 5).map(h => `<div>
+          · ${fmtT(h.at)}　${h.action === 'apply' ? '套用' : h.action === 'rollback' ? '⚠️ 自動回滾' : '手動取消'}
+          ${h.to ? `→ 止損 ${h.to.slMult}／止盈 ${h.to.tp1R}R/${h.to.tp2R}R` : ''}　${h.why}</div>`).join('')}
+      </div>` : ''}
+      <div style="font-size:0.71rem;color:var(--text3);margin-top:8px;line-height:1.6">
+        晉升條件（全部成立才動）：樣本 ≥${QLAB_APPLY.minSamples} 筆、網格最佳（鄰域平均而非單格尖峰）
+        比現行多賺 ≥${QLAB_APPLY.minDelta}R、通過樣本外驗證且贏過現行 ≥${QLAB_WF_MARGIN}R/筆、
+        距上次調整 ≥${QLAB_APPLY.cooldownH} 小時、結果落在允許範圍內。<br>
+        套用後累積 ${QLAB_APPLY.reviewN} 筆新交易會自我複查，實際期望值不升反降超過
+        ${Math.abs(QLAB_APPLY.rollbackEdge)}R 就自動回滾——會判斷自己看錯，才敢讓它動實際參數。<br>
+        只影響<b>快進快出</b>的止損／止盈倍數；長線與短線單不受影響。
+      </div>
+    </div>`;
+  })();
+
   const caveat = `<div style="background:rgba(245,158,11,.08);border-left:3px solid #f59e0b;
       border-radius:8px;padding:9px 12px;margin-bottom:12px;font-size:0.76rem;color:var(--text2);line-height:1.6">
     <b>⚠️ 這套方法的先天限制（請一併理解再採用建議）</b><br>
@@ -17227,7 +17439,7 @@ function buildQuantLabHtml() {
   </div>`;
 
   if (trades.length < QLAB_MIN) {
-    return head + modeBar + archCard + caveat + `
+    return head + modeBar + applyCard + archCard + caveat + `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
           text-align:center;color:var(--text3);font-size:0.86rem">
         可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
@@ -17406,7 +17618,7 @@ function buildQuantLabHtml() {
       避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
   </div>`;
 
-  return head + modeBar + archCard + caveat + bestCard + wfCard
+  return head + modeBar + applyCard + archCard + caveat + bestCard + wfCard
     + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
         '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
     + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
@@ -20713,10 +20925,13 @@ function scalpSlLearn() {
   const cfg = SCALP_CFG;
   const log = loadScalpLog();
   const closed = log.filter(t => t.status === 'closed');
-  const key = `${closed.length}|${closed[0]?.exitTime || 0}|${cfg.slAtrMult}`;
+  // 基準操作點若已被量化實驗室自動套用，學習止損就以它為 base 繼續微調，
+  // 而不是各自往不同方向拉（兩套機制調同一個參數會互相打架）。
+  // 必須在快取鍵之前算出來——鍵要含 base，否則套用新基準後不會重算。
+  let base = cfg.slAtrMult;
+  try { const _e = qlabEffective(); if (_e && isFinite(_e.slMult)) base = _e.slMult; } catch(_e2) {}
+  const key = `${closed.length}|${closed[0]?.exitTime || 0}|${base}`;
   if (_scalpSlCache && _scalpSlCacheKey === key) return _scalpSlCache;
-
-  const base = cfg.slAtrMult;
   const out = {
     ready: false, n: closed.length, base, mult: base, src: 'default',
     reasons: [], byMode: {}, warn: null,
@@ -21342,8 +21557,11 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   }
   // 回歸模式的目標是「回到均值」而非追延續，止盈倍數較近，不硬要 1.8R
   const _isRev = SCALP_MODE_FAMILY[mode] === 'revert';
-  const _t1R = _isRev ? SCALP_CFG.revertTp1R : SCALP_CFG.tp1R;
-  const _t2R = _isRev ? SCALP_CFG.revertTp2R : SCALP_CFG.tp2R;
+  const _eff = (typeof qlabEffective === 'function') ? qlabEffective() : null;
+  const _t1R = _isRev ? (_eff ? _eff.revertTp1R : SCALP_CFG.revertTp1R)
+                      : (_eff ? _eff.tp1R       : SCALP_CFG.tp1R);
+  const _t2R = _isRev ? (_eff ? _eff.revertTp2R : SCALP_CFG.revertTp2R)
+                      : (_eff ? _eff.tp2R       : SCALP_CFG.tp2R);
   let tp1 = isLong ? entry + risk * _t1R : entry - risk * _t1R;
   let tp2 = isLong ? entry + risk * _t2R : entry - risk * _t2R;
   // 回歸模式若均值目標比 tp2 更近，就以均值為準——目標訂在價格根本到不了的
@@ -21399,6 +21617,8 @@ async function recordScalpSignals(data) {
     if (active.length >= SCALP_CFG.maxActive) {
       _scalpReject._blocked = `持倉已達上限（${active.length}/${SCALP_CFG.maxActive}）`; return;
     }
+    // 量化實驗室自我判斷：是否套用新參數／是否回滾（內建冷卻與證據門檻）
+    try { qlabAutoDecide(); } catch(_e) {}
     // 量化資金管理閘門：回撤熔斷／單日虧損上限／在市風險上限
     const _acct = scalpAccount();
     const _gate = scalpRiskGate(_acct);
