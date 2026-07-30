@@ -20483,6 +20483,13 @@ const SCALP_CFG = {
   revertAdxMax:     26,     // 回歸模式只在「非強趨勢」時啟用（逆勢做反轉是最大的爆倉來源）
   revertRsiHi:      68,     // 反轉做空需 RSI ≥ 此值（做多鏡像 100-此值）
   rangeMinBars:     10,     // 判定區間所需的最少 K 棒
+  // 區間太窄就不做——這個數字是被手續費決定的，不是隨手訂的：
+  // 手續費佔 R 的比例 = 0.1% ÷ 止損距離，要壓到 maxFeeR(15%) 以下需止損 ≥0.67%。
+  // 實測掃描各種區間寬度後，區間反轉要到 2.8% 以上才過得了這道門檻
+  //（分析式估算是 2.2%，但實際的 ATR 緩衝常小於區間上限，所以需要更寬）。
+  // 與上限 3.5% 併看，區間反轉真正可做的窗口只有 2.8%~3.5% ——很窄，
+  // 這本身就是結論：在 0.05% 的費率下，窄區間反轉再怎麼準也是替交易所打工。
+  rangeMinWidthPct: 0.028,
   rangeMaxWidthPct: 0.035,  // 區間寬度上限 3.5%（過寬就不是盤整了）
   rangeEdgePct:     0.18,   // 影線觸及上/下緣 18% 內才算到邊
   rangeCloseEdge:   0.15,   // 收盤也要仍在該側 15% 內。這個數字是被幾何限制決定的，不是隨手調的：
@@ -20547,6 +20554,13 @@ const SCALP_CFG = {
                               //（必須大於 maxPortfolioRiskPct，否則一次同向逆風就必定熔斷）
   maxDrawdownPct:      15.0,  // 最大回撤上限 → 觸及全面停止開倉
   minNotional:         5,     // 最小名目價值（低於此不下單，避免碎單）
+  // ── 手續費守門（快進快出止損很近，手續費在 R 的尺度上非常吃重）──────
+  //    手續費以名目價值計，損益以 R 計，兩者的換算是 0.001 ÷ (止損距離/價格)：
+  //      止損 2% → 0.05R　1% → 0.10R　0.5% → 0.20R　0.1% → 1.0R　0.01% → 10R
+  //    也就是說止損越近，手續費吃掉的 R 越多，這對「小賺就跑」的策略是致命的。
+  feeRate:             0.0005, // 單邊費率（與 computeTradePnlR 一致）
+  maxFeeR:             0.15,   // 手續費最多吃掉 15% 的 R，超過就不做這筆
+                               // → 等於要求止損距離 ≥ 價格的 0.67%
 
   // ── 勝率／回撤改善（與「增加交易量」互相制衡的另一半）──────────────
   //    重點認知：回撤主要不是進場問題，是「相關性 + 部位大小 + 出場」問題。
@@ -20634,10 +20648,18 @@ function scalpAccount() {
 /* 開倉前的資金管理閘門——回傳阻擋原因，null 表示可開倉 */
 function scalpRiskGate(acct) {
   const cfg = SCALP_CFG;
-  if (acct.ddNow >= cfg.maxDrawdownPct)
-    return `回撤熔斷：目前回撤 ${acct.ddNow}% ≥ 上限 ${cfg.maxDrawdownPct}%，停止開倉`;
+  if (acct.ddNow >= cfg.maxDrawdownPct) {
+    // 這是「累計回撤」不是「當日回撤」：以權益曲線的歷史高點為基準，
+    // 隔天不會自動解除，要等權益漲回距高點 maxDrawdownPct 以內才會放行。
+    // 使用者常以為它每天重來，其實是一直沒有解除過。
+    const need = (acct.peak * (1 - cfg.maxDrawdownPct / 100)).toFixed(2);
+    return `回撤熔斷：距權益高點 $${acct.peak} 已回撤 ${acct.ddNow}%（上限 ${cfg.maxDrawdownPct}%），停止開倉。`
+         + `這是累計回撤、不會隔日自動解除——需權益回到 $${need} 以上（目前 $${acct.equity}）才恢復；`
+         + `或在「自動紀錄」頁清空試跑紀錄重新開始。`;
+  }
   if (acct.todayPnlPct <= -cfg.dailyLossLimitPct)
-    return `單日虧損上限：今日 ${acct.todayPnlPct}% ≤ -${cfg.dailyLossLimitPct}%，當日停止開倉`;
+    return `單日虧損上限：今日 ${acct.todayPnlPct}% ≤ -${cfg.dailyLossLimitPct}%，當日停止開倉`
+         + `（這一項每日 00:00 自動重置）`;
   if (acct.openRiskPct >= cfg.maxPortfolioRiskPct)
     return `在市風險已滿：${acct.openRiskPct}% ≥ 上限 ${cfg.maxPortfolioRiskPct}%`;
   return null;
@@ -21144,7 +21166,8 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
     const rHi = Math.max(...prev.map(b => parseFloat(b[2])).filter(isFinite));
     const rLo = Math.min(...prev.map(b => parseFloat(b[3])).filter(isFinite));
     const width = (rHi - rLo) / (rLo || 1);
-    if (width > 0 && width <= SCALP_CFG.rangeMaxWidthPct) {
+    if (width < SCALP_CFG.rangeMinWidthPct) _sr('區間過窄(手續費吃掉R)');
+    else if (width > 0 && width <= SCALP_CFG.rangeMaxWidthPct) {
       const span = rHi - rLo;
       const hiB = parseFloat(last[2]), loB = parseFloat(last[3]), opB = parseFloat(last[1]);
       const barSpan = Math.max(1e-12, hiB - loB);
@@ -21307,6 +21330,16 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   const entry = price;                                  // 市價進場
   const risk  = Math.abs(entry - slRaw);
   if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return _sr('風險超限(追太遠)');
+  // ── 止損不能太近：手續費是以「名目價值」計，但損益以 R 計 ──────────
+  //    來回手續費 ≈ 名目的 0.1%，換算成 R 就是 0.001 ÷ (止損距離/價格)。
+  //    止損 1% → 手續費 0.10R；止損 0.1% → 1.0R；止損 0.01% → 10R。
+  //    原本只有上限（追太遠）沒有下限，於是低波動幣可能產生近乎零的止損距離，
+  //    手續費在 R 的尺度上爆掉——實際出現過「觸及止盈二卻是 -8.91R」：
+  //    毛利 +1.3R 被 10.2R 的手續費吃光。這種單無論行情怎麼走都必定大虧。
+  const _feeR = 2 * SCALP_CFG.feeRate * entry / risk;
+  if (_feeR > SCALP_CFG.maxFeeR) {
+    return _sr(`止損過近(手續費佔 ${(_feeR * 100).toFixed(0)}% R)`);
+  }
   // 回歸模式的目標是「回到均值」而非追延續，止盈倍數較近，不硬要 1.8R
   const _isRev = SCALP_MODE_FAMILY[mode] === 'revert';
   const _t1R = _isRev ? SCALP_CFG.revertTp1R : SCALP_CFG.tp1R;
@@ -21329,6 +21362,7 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
            tp1R: _t1R, tp2R: +_rr.toFixed(2), revTarget: _revTarget || null,
            mtfWhy: _mtf.why, mtfAlign: _mtf.n,
            // 學習止損的存證：倍數、來源、理由，以及回頭學習所需的 ATR 標準化欄位
+           feeR: +_feeR.toFixed(3), riskPct: +(risk / entry * 100).toFixed(3),
            slMult: +_slL.mult.toFixed(3), slMultSrc: _slL.src, slMultWhy: _slL.why,
            levelGapAtr: atr > 0 ? +(Math.abs(entry - level) / atr).toFixed(3) : null,
            slDistAtr:   atr > 0 ? +(risk / atr).toFixed(3) : null };
@@ -21505,6 +21539,7 @@ async function recordScalpSignals(data) {
         tp1RUsed: setup.tp1R, tp2RUsed: setup.tp2R, revTarget: setup.revTarget,
         mtfWhy: setup.mtfWhy, mtfAlign: setup.mtfAlign,
         // 機器人學習止損：本筆採用的倍數與來源，以及回頭學習用的 ATR 標準化欄位
+        feeR: setup.feeR, slDistPct: setup.riskPct,
         atrAtEntry: setup.atr, slMult: setup.slMult, slMultSrc: setup.slMultSrc,
         slMultWhy: setup.slMultWhy, levelGapAtr: setup.levelGapAtr, slDistAtr: setup.slDistAtr,
         maeAtr: 0, mfeAtr: 0,     // 最大不利／有利偏移（ATR 單位），持倉期間即時更新
@@ -21695,6 +21730,7 @@ function sendScalpTelegram(t, kind) {
         (t.riskScore != null) ? `🛡️ 風險分 ${t.riskScore}／${t.riskLevel}（門檻 <${SCALP_CFG.maxRiskScore}）`
           + `　風控分 ${t.conf}（門檻 ≥${SCALP_CFG.minConf}）` : '',
         SCALP_CFG.beStop ? `🛡️ 浮盈達 +${SCALP_CFG.beTriggerR}R 自動移到保本` : '',
+        t.feeR != null ? `💸 止損距離 ${t.slDistPct}%，來回手續費約 ${(t.feeR * 100).toFixed(0)}% 的 R` : '',
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
         t.riskRecs && t.riskRecs.length ? `💡 ${t.riskRecs[0]}` : '',
         ``,
