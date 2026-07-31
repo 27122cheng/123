@@ -10146,6 +10146,36 @@ function effectiveOutcome(t) {
   } catch(_e) {}
   return stored;
 }
+/* ── 損益 R 的獨立驗算 ──────────────────────────────────────────
+   「這樣有 1.54R 嗎？」——這個問題本來應該能自己算，但畫面上算不出來：
+   R 的基準是「原始止損」，而止損欄顯示的是移動停利後的止損。缺了 baseSl
+   就無從驗證，只能選擇相信。
+
+   這裡用紀錄裡儲存的欄位重算一次，並回傳算式與結果。兩者不符就代表
+   pnlR 是舊版程式寫入的、或某個欄位被改過；baseSl 缺失則明確標示無法驗算，
+   而不是假裝算得出來。 */
+function verifyPnlR(t) {
+  try {
+    const entry = parseFloat(t.entry), exit = parseFloat(t.exitPrice);
+    const stored = parseFloat(t.pnlR);
+    if (![entry, exit, stored].every(isFinite) || !t.direction) return null;
+    const baseSl = parseFloat(t.baseSl);
+    if (!isFinite(baseSl)) {
+      return { ok: null, why: '缺少原始止損（baseSl），無法驗算此筆的 R', stored };
+    }
+    const risk = Math.abs(entry - baseSl);
+    if (!(risk > 0)) return { ok: null, why: '原始止損等於進場價，R 無法定義', stored };
+    const recomputed = parseFloat(computeTradePnlR(t, exit, risk, t.direction === 'long'));
+    const diff = +(recomputed - stored).toFixed(2);
+    return {
+      ok: Math.abs(diff) <= 0.02, stored, recomputed, diff, risk: +risk.toFixed(8),
+      baseSl, entry, exit, tp1Hit: !!t.tp1Hit,
+      why: `R 基準 = |進場 ${entry} − 原始止損 ${baseSl}| = ${risk.toFixed(6)}`
+         + `　→ 重算 ${recomputed}R`,
+    };
+  } catch(_e) { return null; }
+}
+
 function isWinTrade(t)  { const o = effectiveOutcome(t); return o === 'tp1' || o === 'tp2'; }
 function isLossTrade(t) { return effectiveOutcome(t) === 'sl'; }
 function isFlatTrade(t) { return effectiveOutcome(t) === 'be'; }
@@ -16843,6 +16873,17 @@ function renderTradeLogPage() {
         const pnl = parseFloat(t.pnlR);
         const cls = pnl > 0 ? 'tl-pnl-pos' : pnl < 0 ? 'tl-pnl-neg' : 'tl-pnl-zero';
         pnlHtml = `<span class="${cls}">${pnl > 0 ? '+' : ''}${t.pnlR} R</span>`;
+        // 用儲存欄位重算一次，讓這個數字可以被檢查而不是只能相信
+        try {
+          const v = verifyPnlR(t);
+          if (v && v.ok === false) {
+            pnlHtml += `<div style="font-size:0.64rem;color:#ef4444;margin-top:2px"
+              title="${v.why}；差 ${v.diff}R">⚠️ 驗算為 ${v.recomputed}R</div>`;
+          } else if (v && v.ok === null) {
+            pnlHtml += `<div style="font-size:0.64rem;color:var(--text3);margin-top:2px"
+              title="${v.why}">無法驗算</div>`;
+          }
+        } catch(_e) {}
       }
 
       const exitTimeHtml = t.exitTime
@@ -16875,7 +16916,16 @@ function renderTradeLogPage() {
         <td>${dirHtml}${typeTag}</td>
         <td>${gradeHtml}</td>
         <td>${fmtPrice(t.entry)}</td>
-        <td style="color:var(--bear)">${fmtPrice(t.sl)}</td>
+        <td style="color:var(--bear)">${fmtPrice(t.sl)}
+          ${(() => {
+            const bs = parseFloat(t.baseSl);
+            if (!isFinite(bs) || Math.abs(bs - parseFloat(t.sl)) < Math.abs(parseFloat(t.entry)) * 1e-6) return '';
+            const r = Math.abs(parseFloat(t.entry) - bs);
+            return `<div style="font-size:0.66rem;color:var(--text3)"
+              title="R 的基準是原始止損，不是移動後的止損；沒有這個數字就無法驗算盈虧 R">
+              原始 ${fmtPrice(bs)}（1R=${r.toPrecision(3)}）</div>`;
+          })()}
+        </td>
         <td>${tp1Display}</td>
         <td style="color:#22c55e">${tp2Display}</td>
         <td>${exitPriceHtml}</td>
