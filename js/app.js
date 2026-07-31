@@ -9839,8 +9839,40 @@ function triggerRescan() {
 const TRADE_LOG_KEY     = 'csp_trade_log';
 const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內不重複記錄
 
+/* ── 覆寫防護 ──────────────────────────────────────────────────
+   關鍵細節：不能用 loadXxx() 來判斷「原本有幾筆」——那正是壞掉的那條路。
+   資料損毀時 loadXxx() 回傳空陣列，防護會誤以為本來就沒資料而放行，
+   於是照樣被覆寫（第一版就是這樣寫的，測試直接打臉）。
+   必須看 localStorage 的原始字串：解析不出來但字串很長 = 損毀，絕不覆寫。 */
+function _guardOverwrite(key, newLen, tag) {
+  let raw = null;
+  try { raw = localStorage.getItem(key); } catch(_e) { return true; }
+  if (raw == null) return true;                       // 本來就沒有，放行
+  let arr = null;
+  try { arr = JSON.parse(raw); } catch(_e) { arr = null; }
+  if (!Array.isArray(arr)) {
+    // 只要存著「不是空字串、又解析不出陣列」的東西，就一律視為損毀而不覆寫。
+    // 不設長度門檻——損毀的資料可能只剩幾個字元，但它代表原本是有資料的，
+    // 覆寫掉就再也救不回來了（第一版設了 >50 字元的門檻，測試證明會漏接）。
+    if (String(raw).trim().length > 0) {
+      console.error(`[${tag}] 儲存內容已損毀（無法解析為陣列），拒絕覆寫以保留原始資料`);
+      try { showToast(`⚠️ ${tag} 紀錄疑似損毀，已阻止覆寫；可用「從封存還原」救回`, 'error'); } catch(_t) {}
+      return false;
+    }
+    return true;
+  }
+  if (arr.length > 5 && newLen < arr.length * 0.5) {
+    console.error(`[${tag}] 拒絕寫入：新紀錄 ${newLen} 筆遠少於現有 ${arr.length} 筆，已保留原資料`);
+    try { showToast(`⚠️ 已阻止一次可能的紀錄覆寫（${arr.length} → ${newLen} 筆），原資料保留`, 'error'); } catch(_t) {}
+    return false;
+  }
+  return true;
+}
+
 function loadTradeLog() { try { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); } catch(e) { return []; } }
-function saveTradeLog(log) {
+function saveTradeLog(log, opts = {}) {
+  // 與 saveScalpLog 相同的防洗掉保護
+  if (!opts.allowShrink && !_guardOverwrite(TRADE_LOG_KEY, log.length, 'trade')) return false;
   try { globalLossStreak._cache = null; } catch(_c) {}  // 交易紀錄變動 → 連虧統計快取失效
   // 先封存再寫入：下方 catch 的救援路徑會直接裁到 250 筆並砍欄位，
   // 若等到那時才封存，被裁掉的樣本就永遠回不來了
@@ -16914,7 +16946,10 @@ function qlabRun(trades, o) {
    （訊號文字、風控建議、原因說明等）。單筆體積小很多，因此能存 6 倍的量，
    且不影響原本的持倉／紀錄頁行為。封存鍵一樣是 csp_ 開頭，完整備份會自動涵蓋。 */
 const QLAB_ARCHIVE_KEY = 'csp_qlab_archive';
-const QLAB_ARCHIVE_MAX = 3000;
+/* 上限從 3000 降到 1200。原本三份封存加起來最多會吃掉 3.4MB，而瀏覽器
+   localStorage 通常只有 5MB——等於一口氣佔掉近七成，把其他資料擠到寫不進去。
+   1200 筆已遠超各項統計所需的樣本量（學習門檻最高才 100 筆）。 */
+const QLAB_ARCHIVE_MAX = 1200;
 /* 只留這些欄位：重放（MAE/MFE/ATR/錨點距離）、分群（模式/時段/ADX/量能）、
    結果（損益/出場）、以及扣分條件學習需要的 riskKeys */
 const QLAB_KEEP_FIELDS = [
@@ -16939,6 +16974,22 @@ function _qlabSlim(t) {
    任何一種情況發生，統計與學習的樣本就永久少一大塊，備份也救不回來
    （備份只能存下當下還在的東西）。封存只留「統計與學習需要的欄位」，
    體積小很多，因此能在同樣的空間裡撐住多好幾倍的樣本。 */
+/* 目前 localStorage 用量（位元組）與各鍵排行——空間不足是靜默的，
+   必須量得出來才處理得了 */
+function storageUsage() {
+  let total = 0; const rows = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      const n = ((localStorage.getItem(k) || '').length + k.length) * 2;   // UTF-16
+      total += n; rows.push({ k, n });
+    }
+  } catch(_e) {}
+  rows.sort((a, b) => b.n - a.n);
+  return { bytes: total, mb: +(total / 1048576).toFixed(2), rows: rows.slice(0, 12) };
+}
+const STORAGE_SOFT_LIMIT = 3.2 * 1048576;   // 超過就開始縮減封存，別等到寫不進去
+
 function _loadArchive(key) {
   try { const a = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(a) ? a : []; }
   catch(_e) { return []; }
@@ -16952,9 +17003,15 @@ function _archiveMerge(key, max, slimFn, items, tag) {
     let added = 0;
     for (const t of src) { if (!byId.has(t.id)) added++; byId.set(t.id, slimFn(t)); }
     if (!added) return;                                    // 沒有新樣本就不必寫入
+    // 空間吃緊時主動縮減封存：封存是「輔助樣本」，不能為了它把主要紀錄擠掉
+    let cap = max;
+    try {
+      const used = storageUsage().bytes;
+      if (used > STORAGE_SOFT_LIMIT) cap = Math.max(200, Math.floor(max * 0.4));
+    } catch(_e) {}
     let out = [...byId.values()]
       .sort((a, b) => (b.exitTime || b.timestamp || 0) - (a.exitTime || a.timestamp || 0))
-      .slice(0, max);
+      .slice(0, cap);
     for (let attempt = 0; attempt < 3; attempt++) {
       try { localStorage.setItem(key, JSON.stringify(out)); return; }
       catch(_e) { out = out.slice(0, Math.floor(out.length / 2)); }
@@ -16979,7 +17036,7 @@ function archiveClosedScalpTrades(log) {
    欄位以「computeLearnProfile 與 auditPenaltyFactors 實際讀到的」為準，
    刻意不含 sqFactors / entryReasons / riskRecs 等顯示用長文字。 */
 const LEARN_ARCHIVE_KEY = 'csp_learn_archive';
-const LEARN_ARCHIVE_MAX = 3000;
+const LEARN_ARCHIVE_MAX = 1200;
 const LEARN_KEEP_FIELDS = [
   'id', 'symbol', 'direction', 'timestamp', 'exitTime', 'outcome', 'pnlR', 'grade',
   'rsi', 'adx', 'conf', 'learnPenalty', 'riskPenalty', 'riskScore', 'riskKeys',
@@ -17006,7 +17063,7 @@ function learnSamples() {
 
 /* ── 實驗室封存（只收已完結；備份本來就只存已完結，兩者一致）── */
 const LAB_ARCHIVE_KEY = 'csp_lab_archive';
-const LAB_ARCHIVE_MAX = 3000;
+const LAB_ARCHIVE_MAX = 800;
 const LAB_KEEP_FIELDS = ['id', 'symbol', 'direction', 'timestamp', 'exitTime',
   'pnlR', 'tags', 'riskKeys', 'refLearnPen', 'conf', 'grade', 'outcome'];
 const _labSlim = _slimBy(LAB_KEEP_FIELDS);
@@ -17014,6 +17071,28 @@ function loadLabArchive() { return _loadArchive(LAB_ARCHIVE_KEY); }
 function archiveClosedLab(list) {
   _archiveMerge(LAB_ARCHIVE_KEY, LAB_ARCHIVE_MAX, _labSlim, list, 'lab');
 }
+/* ── 從封存救回交易紀錄 ────────────────────────────────────────
+   封存本來就是為了「紀錄被裁切時還留得住樣本」而做的，紀錄真的不見時
+   它就是備援。封存是精簡版（少了訊號文字、風控建議等顯示欄位），但統計、
+   勝率、學習與量化重放需要的欄位都在，救回來後這些功能立刻恢復。 */
+function restoreScalpLogFromArchive() {
+  try {
+    const arch = loadQlabArchive();
+    if (!arch.length) { showToast('封存裡沒有可還原的樣本', 'warning'); return; }
+    const cur = loadScalpLog();
+    const byId = new Map(arch.map(t => [t.id, t]));
+    for (const t of cur) if (t && t.id) byId.set(t.id, t);   // 現有紀錄較完整，優先保留
+    const merged = [...byId.values()].sort((a, b) => (b.exitTime || b.timestamp || 0) - (a.exitTime || a.timestamp || 0));
+    if (!confirm(`從封存還原 ${arch.length} 筆樣本？\n\n目前紀錄 ${cur.length} 筆 → 還原後 ${merged.length} 筆。\n`
+               + '（封存為精簡版，訊號文字等顯示欄位不會回來，但勝率、分模式統計、\n'
+               + '學習止損與量化重放所需的欄位都完整。）')) return;
+    saveScalpLog(merged, { allowShrink: true });
+    invalidateScalpSlLearn();
+    showToast(`已還原 ${merged.length} 筆自動交易紀錄`, 'success');
+    renderScalpLogPage(); renderScalpPositionsPage();
+  } catch(e) { showToast('還原失敗：' + e.message, 'error'); }
+}
+
 function labSamples() {
   try {
     const byId = new Map();
@@ -17713,7 +17792,7 @@ function clearTradeLog() {
   if (!confirm('確定要清除所有交易記錄嗎？\n\n⚠️ AI 學習記憶（止損原因、優化方案）不受影響，會繼續保留。')) return;
   const closed = loadTradeLog().filter(t => t.status === 'closed');
   if (closed.length) archiveExpiredToMemory(closed); // 清除前先歸檔 AI 記憶
-  saveTradeLog([]);
+  saveTradeLog([], { allowShrink: true });   // 使用者明確要求清除，放行縮減保護
   invalidateLearnCache();
   renderTradeLogPage();
   showToast('交易記錄已清除（AI 記憶已保留）', 'info');
@@ -21067,11 +21146,18 @@ function loadScalpLog() {
   try { const a = JSON.parse(localStorage.getItem(SCALP_LOG_KEY) || '[]'); return Array.isArray(a) ? a : []; }
   catch(_e) { return []; }
 }
-function saveScalpLog(log) {
+function saveScalpLog(log, opts = {}) {
+  // 防洗掉：loadScalpLog() 在讀取或解析失敗時回傳空陣列，接著只要有人建了
+  // 一筆新單，就會用「1 筆」蓋掉整份歷史——一次靜默全毀。真的要清空請用
+  // 清空按鈕（走 removeItem）或帶 allowShrink。
+  if (!opts.allowShrink && !_guardOverwrite(SCALP_LOG_KEY, log.length, 'scalp')) return false;
   // 先封存再截斷：截斷後才封存的話，被 SCALP_MAX 滾掉的那些樣本就永遠進不了封存
   try { archiveClosedScalpTrades(log); } catch(_e) {}
   try { localStorage.setItem(SCALP_LOG_KEY, JSON.stringify(log.slice(0, SCALP_MAX))); }
-  catch(_e) { console.warn('[scalp] 儲存失敗', _e); }
+  catch(_e) {
+    console.warn('[scalp] 儲存失敗', _e);
+    try { showToast('⚠️ 快進快出紀錄儲存失敗（瀏覽器儲存空間已滿），請到設定頁清理', 'error'); } catch(_t) {}
+  }
   // 紀錄一變動就讓學習止損重算，避免拿舊樣本推導出的倍數去開新單
   try { invalidateScalpSlLearn(); } catch(_e) {}
 }
@@ -22611,9 +22697,27 @@ function buildScalpLogHtml() {
       ${recent.length ? recent.map(t => _scalpRow(t, true)).join('')
         : '<div style="padding:16px;text-align:center;color:var(--text3);font-size:0.84rem">尚無已完結紀錄</div>'}
     </div>
-    <div style="text-align:center;margin-top:14px">
+    ${(() => {
+      // 紀錄比封存少很多 → 很可能是被覆寫或清掉了，主動提供還原入口
+      const archN = loadQlabArchive().length;
+      const curN  = st.total + st.openCount;
+      if (archN > curN + 5) {
+        return `<div style="margin-top:14px;padding:10px 12px;border-radius:8px;
+            background:rgba(245,158,11,.10);border-left:3px solid #f59e0b;font-size:0.82rem">
+          <b style="color:#f59e0b">⚠️ 封存裡有 ${archN} 筆樣本，但目前紀錄只有 ${curN} 筆</b><br>
+          <span style="color:var(--text2);font-size:0.79rem">紀錄可能被覆寫或清除過。封存是精簡版
+          （少了訊號文字等顯示欄位），但勝率、分模式統計、學習止損與量化重放需要的欄位都完整，可以還原。</span>
+          <div style="margin-top:7px"><button class="btn-ghost" style="font-size:0.82rem;color:#00e676"
+            onclick="restoreScalpLogFromArchive()">↩ 從封存還原 ${archN} 筆</button></div>
+        </div>`;
+      }
+      return '';
+    })()}
+    <div style="text-align:center;margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+      <button class="btn-ghost" style="font-size:0.8rem"
+        onclick="restoreScalpLogFromArchive()">↩ 從封存還原（${loadQlabArchive().length} 筆）</button>
       <button class="btn-ghost" style="font-size:0.8rem;color:var(--bear)"
-        onclick="if(confirm('確定清空自動交易試跑紀錄？（不影響原有交易紀錄）')){localStorage.removeItem(SCALP_LOG_KEY);renderScalpLogPage();renderScalpPositionsPage();}">
+        onclick="if(confirm('確定清空自動交易試跑紀錄？\n\n（封存不會被清除，之後仍可還原；不影響原有交易紀錄）')){localStorage.removeItem(SCALP_LOG_KEY);renderScalpLogPage();renderScalpPositionsPage();}">
         🗑 清空試跑紀錄</button>
     </div>`;
 }
