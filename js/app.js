@@ -16805,15 +16805,28 @@ function renderTradeLogPage() {
       // 以事實校正：儲存的標記可能是舊版留下的錯誤值，出場價與損益才可靠
       const _eo = effectiveOutcome(t);
       const _corrected = _eo !== t.outcome;
+      // 是否為移動停利出場：出場價等於止損位，且該止損位已被推進到獲利側
+      const _trailOut = (() => {
+        if (_eo !== 'tp1') return false;
+        if (t.trailExit) return true;
+        const e = parseFloat(t.entry), x = parseFloat(t.exitPrice), sl = parseFloat(t.sl);
+        if (![e, x, sl].every(isFinite)) return false;
+        const dir = t.direction === 'long' ? 1 : -1;
+        return Math.abs(x - sl) < Math.abs(e) * 1e-6 && (x - e) * dir > 0;
+      })();
       let statusHtml;
       if (t.status === 'open') {
         statusHtml = `<span class="tl-badge tl-badge-open">進行中</span>`;
       } else if (_eo === 'tp2') {
         statusHtml = `<span class="tl-badge tl-badge-tp2">止盈二 ✅</span>`;
       } else if (_eo === 'tp1') {
+        // 區分「真的在止盈一成交」與「移動停利在獲利側出場」：
+        // 後者的出場價是被推進後的止損位，價格根本沒碰到止盈一，
+        // 標成「止盈一觸發」等於宣稱成交在一個從未成交過的價位。
         statusHtml = isLongTrade
           ? `<span class="tl-badge tl-badge-tp2">最終止盈 ✅</span>`
-          : `<span class="tl-badge tl-badge-tp1">止盈一 ✅</span>`;
+          : (_trailOut ? `<span class="tl-badge tl-badge-tp1">移動停利 ✅</span>`
+                       : `<span class="tl-badge tl-badge-tp1">止盈一 ✅</span>`);
       } else if (_eo === 'sl') {
         statusHtml = `<span class="tl-badge tl-badge-sl">止損 ❌</span>`;
       } else {
@@ -16847,7 +16860,8 @@ function renderTradeLogPage() {
       const _tgl = t.sqGradeLabel || { S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_tg] || '';
       const gradeHtml = _tg !== '?' ? `<span style="font-size:0.7rem;font-weight:700;background:${_tgc}22;border:1px solid ${_tgc}55;color:${_tgc};padding:2px 6px;border-radius:12px;white-space:nowrap">${_tge} ${_tg} ${_tgl}</span>` : '—';
       const _exitColor = (_eo === 'sl' || _eo === 'be') ? 'var(--bear)' : 'var(--bull)';
-      const _exitLabel = { tp1:'止盈一觸發', tp2:'止盈二觸發', sl:'止損觸發', be:'保本出場' }[_eo] || '';
+      const _exitLabel = _trailOut ? '移動停利出場（未在止盈一成交）'
+        : ({ tp1:'止盈一觸發', tp2:'止盈二觸發', sl:'止損觸發', be:'保本出場' }[_eo] || '');
       const exitPriceHtml = t.exitPrice
         ? `<div style="color:${_exitColor};font-size:0.78rem">${fmtPrice(t.exitPrice)}</div><div style="font-size:0.68rem;color:var(--text3)">${_exitLabel}</div>`
         : '—';
