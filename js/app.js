@@ -10085,6 +10085,43 @@ function computeTradePnlR(trade, exitPrice, baseRisk, isLong) {
    到期平倉那條路徑本來就是用 ±0.05R 判定，兩邊標準不一致；統一到這個常數，
    以後也不會再各自漂移。 */
 const FLAT_R_EPS = 0.05;
+/* ── 結果標記與實際損益的一致性檢查 ──────────────────────────────
+   出現過「現狀：止盈一 ✅、盈虧 -1.15R」這種自相矛盾的列。以現行程式推算，
+   觸及止盈一後以移動停利出場的損益範圍是 +0.77R ~ -0.20R（極端窄止損時
+   被手續費吃掉），不可能到 -1.15R——代表那些是舊版程式留下的紀錄，或某個
+   輸入值不合理（例如止盈價落在進場價的錯誤一側）。
+
+   無論成因為何，畫面上「標成獲利、實際虧損」都是誤導，而且會讓勝率虛高。
+   因此：① 平倉當下就檢查，不一致就把完整輸入值記在交易上並輸出到 console，
+   下次再發生可以直接看出是哪個欄位壞掉；② 顯示時據實標示。
+   容差取 0.25R：實測「觸及止盈一 → 移動停利出場」在止損極窄時，手續費可以
+   把損益壓到 -0.20R，那是合理的成本而不是矛盾；容差設 0.10 會誤報這種情況。
+   0.25 以上才算「標成賺、實際明顯在虧」的真矛盾（照片上的 -1.15R 遠超此值）。 */
+const PNL_MISMATCH_EPS = 0.25;
+function pnlOutcomeMismatch(t) {
+  const r = parseFloat(t.pnlR);
+  if (!isFinite(r)) return null;
+  const claimsWin = t.outcome === 'tp1' || t.outcome === 'tp2';
+  const claimsLoss = t.outcome === 'sl';
+  if (claimsWin && r < -PNL_MISMATCH_EPS) return { kind: 'win_but_negative', r };
+  if (claimsLoss && r > PNL_MISMATCH_EPS)  return { kind: 'loss_but_positive', r };
+  return null;
+}
+/* 平倉當下記錄診斷資訊——事後才想查就沒有現場了 */
+function recordPnlMismatch(t, tag) {
+  try {
+    const m = pnlOutcomeMismatch(t);
+    if (!m) return;
+    t.pnlMismatch = {
+      kind: m.kind, at: Date.now(), tag,
+      entry: t.entry, sl: t.sl, baseSl: t.baseSl, tp1: t.tp1, tp2: t.tp2,
+      exitPrice: t.exitPrice, tp1Hit: !!t.tp1Hit, direction: t.direction,
+      outcome: t.outcome, pnlR: t.pnlR,
+    };
+    console.error(`[pnl-mismatch/${tag}] ${t.symbol} 標記為 ${t.outcome} 但損益 ${t.pnlR}R`, t.pnlMismatch);
+  } catch(_e) {}
+}
+
 function isWinTrade(t)  { return t.outcome === 'tp1' || t.outcome === 'tp2'; }
 function isLossTrade(t) { return t.outcome === 'sl'; }
 function isFlatTrade(t) { return t.outcome === 'be'; }
@@ -12609,6 +12646,7 @@ function updateOpenTrades(data) {
       // 讓報表貼近實盤：止損約 -1.05R、保本約 -0.05R，勝率門檻不再被零成本假設美化
       // 分批出場加權損益（觸及 TP1 者 60% 落袋 + 40% 尾倉），兩處出場路徑共用同一函式
       trade.pnlR = computeTradePnlR(trade, trade.exitPrice, baseRisk, isLong);
+      recordPnlMismatch(trade, 'main');
       if (outcome === 'sl' || outcome === 'be') {
         trade.analysis = generateTradeAnalysis(trade);
       }
@@ -12919,6 +12957,7 @@ async function verifyIntrabarHits() {
       trade.intrabarHit = true;  // 標記：由 1m 插針驗證判定（供報表/診斷識別）
       // 分批出場加權損益（觸及 TP1 者 60% 落袋 + 40% 尾倉），兩處出場路徑共用同一函式
       trade.pnlR = computeTradePnlR(trade, trade.exitPrice, baseRisk, isLong);
+      recordPnlMismatch(trade, 'intrabar');
       if (outcome === 'sl') {
         trade.slWatchUntil = Date.now() + 24 * 60 * 60 * 1000;
         trade.slReversal   = null;
@@ -16754,6 +16793,16 @@ function renderTradeLogPage() {
         statusHtml = `<span class="tl-badge tl-badge-be">保本 ➡️</span>`;
       }
 
+      // 結果標記與實際損益矛盾時據實標示，不讓「止盈 ✅ 配 -1.15R」這種列誤導
+      try {
+        const _mm = pnlOutcomeMismatch(t);
+        if (_mm) {
+          statusHtml += `<div style="font-size:0.66rem;color:#f59e0b;margin-top:2px"
+            title="結果標記與實際損益不一致，多半是舊版紀錄或輸入值異常；統計請以損益為準">
+            ⚠️ 標記與損益不符</div>`;
+        }
+      } catch(_e) {}
+
       let pnlHtml = '--';
       if (t.pnlR !== null && t.pnlR !== undefined) {
         const pnl = parseFloat(t.pnlR);
@@ -16809,6 +16858,25 @@ function renderTradeLogPage() {
     </div>`;
   }
 
+  // 標記與損益不符的紀錄：勝率會因此虛高，必須讓使用者看得到有幾筆
+  let mismatchHtml = '';
+  try {
+    const bad = closed.filter(t => pnlOutcomeMismatch(t));
+    if (bad.length) {
+      const sum = bad.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0);
+      mismatchHtml = `<div style="background:rgba(245,158,11,.10);border-left:3px solid #f59e0b;
+          border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:0.82rem">
+        <b style="color:#f59e0b">⚠️ 有 ${bad.length} 筆紀錄的「結果標記」與「實際損益」不一致</b><br>
+        <span style="color:var(--text2);font-size:0.79rem">
+          例如標成止盈卻是負 R。這些筆合計 ${sum.toFixed(2)}R，卻會被算進勝率的「勝」——勝率因此虛高。
+          以現行程式推算不可能產生這種組合（觸及止盈一後最差約 -0.2R），研判是舊版程式留下的紀錄。
+          之後再發生會於平倉當下記錄完整輸入值並輸出到 console，可直接查出成因。
+          <b>判讀時請以「累計 R / 期望值」為準，不要只看勝率。</b>
+        </span>
+      </div>`;
+    }
+  } catch(_e) {}
+
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
@@ -16845,6 +16913,7 @@ function renderTradeLogPage() {
     </div>
     ${statsHtml}
     ${_tlDayPager(closed)}
+    ${mismatchHtml}
     ${filterHtml}
     ${tableHtml}
     ${backupHtml}
@@ -22108,6 +22177,7 @@ function updateScalpTrades(data) {
         t.holdMin = +heldMin.toFixed(1);
         // 分批加權損益（與主系統共用同一函式，含手續費）
         t.pnlR = computeTradePnlR(t, t.exitPrice, baseRisk, isLong);
+        recordPnlMismatch(t, 'scalp');
         changed = true;
         sendScalpTelegram(t, 'close');
       }
