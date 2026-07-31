@@ -20749,7 +20749,9 @@ function buildCapitalFlowEventsWidget() {
    ══════════════════════════════════════════════════════════════════ */
 const SCALP_LOG_KEY    = 'csp_scalp_log';
 const SCALP_LEDGER_KEY = 'csp_scalp_ledger';
-const SCALP_MAX        = 500;
+/* 細項清理後單筆體積大減，同樣的空間能放更多筆，因此上限從 500 提高到 1500
+   ——紀錄不必因為「滿了」就被迫砍掉，交易也不會因此中斷。 */
+const SCALP_MAX        = 1500;
 
 /* 快進快出參數（集中管理，方便試跑後調整）*/
 const SCALP_CFG = {
@@ -20902,7 +20904,13 @@ function scalpAccount() {
     .sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
   const open = log.filter(t => t.status === 'open');
 
+  // 回撤基準（可重設）：熔斷後若唯一的解法是「清空紀錄」，等於逼使用者用
+  // 銷毀資料換取繼續交易——歷史統計與學到的結論全部陪葬。因此把「用來熔斷
+  // 判定的回撤起點」獨立出來，可以單獨重設，紀錄與統計完全不動。
+  const ep = loadScalpDdEpoch();
+
   let equity = cfg.equity, peak = cfg.equity, maxDD = 0;
+  let gatePeak = null, gateEquityStart = null;
   const curve = [];
   for (const t of closed) {
     equity += (parseFloat(t.pnlR) || 0) * riskAmt;
@@ -20910,8 +20918,17 @@ function scalpAccount() {
     if (equity > peak) peak = equity;
     const dd = peak > 0 ? (peak - equity) / peak * 100 : 0;
     if (dd > maxDD) maxDD = dd;
+    // 熔斷用的高點只看基準之後的部分
+    if (ep && (t.exitTime || 0) > ep.at) {
+      if (gateEquityStart == null) gateEquityStart = ep.equityAt ?? equity;
+      gatePeak = Math.max(gatePeak ?? gateEquityStart, equity);
+    }
   }
-  const ddNow = peak > 0 ? (peak - equity) / peak * 100 : 0;
+  // 全期回撤（顯示用，永遠是誠實的歷史數字）
+  const ddAll = peak > 0 ? (peak - equity) / peak * 100 : 0;
+  // 熔斷判定用的回撤：有重設過就從基準起算，沒有就等同全期
+  const ddPeak = ep ? Math.max(gatePeak ?? (ep.equityAt ?? equity), ep.equityAt ?? equity) : peak;
+  const ddNow = ddPeak > 0 ? Math.max(0, (ddPeak - equity) / ddPeak * 100) : 0;
 
   // 當日已實現損益
   const d0 = new Date(); d0.setHours(0, 0, 0, 0);
@@ -20931,9 +20948,31 @@ function scalpAccount() {
 
   return { riskAmt, equity: +equity.toFixed(2), peak: +peak.toFixed(2),
            maxDD: +maxDD.toFixed(2), ddNow: +ddNow.toFixed(2),
+           ddAll: +ddAll.toFixed(2), ddPeak: +ddPeak.toFixed(2), ddEpoch: ep,
            todayR: +todayR.toFixed(2), todayPnlPct: +todayPnlPct.toFixed(2),
            openRisk: +openRisk.toFixed(2), openRiskPct: +openRiskPct.toFixed(2),
            curve, closed, open };
+}
+
+/* 回撤基準：只影響熔斷判定，不影響任何統計與紀錄 */
+const SCALP_DD_EPOCH_KEY = 'csp_scalp_dd_epoch';
+function loadScalpDdEpoch() {
+  try { const o = JSON.parse(localStorage.getItem(SCALP_DD_EPOCH_KEY) || 'null');
+        return (o && isFinite(o.at)) ? o : null; } catch(_e) { return null; }
+}
+/* 重設回撤基準 = 「從現在的權益重新起算回撤」，交易可立即恢復，
+   而歷史紀錄、勝率、分模式統計、學習樣本一筆都不會少。 */
+function resetScalpDrawdown() {
+  try {
+    const a = scalpAccount();
+    if (!confirm(`重設回撤基準？\n\n目前權益 $${a.equity}，將以此為新的回撤起點，`
+      + `熔斷立即解除、可繼續交易。\n\n`
+      + `✅ 交易紀錄、勝率、分模式統計、學習樣本全部保留，不會刪除任何資料。\n`
+      + `（全期最大回撤 ${a.maxDD}% 仍會誠實顯示在統計中）`)) return;
+    localStorage.setItem(SCALP_DD_EPOCH_KEY, JSON.stringify({ at: Date.now(), equityAt: a.equity }));
+    showToast(`回撤基準已重設為 $${a.equity}，可繼續交易（紀錄未變動）`, 'success');
+    renderPositionsPage(); renderScalpLogPage();
+  } catch(e) { showToast('重設失敗：' + e.message, 'error'); }
 }
 
 /* 開倉前的資金管理閘門——回傳阻擋原因，null 表示可開倉 */
@@ -20943,10 +20982,10 @@ function scalpRiskGate(acct) {
     // 這是「累計回撤」不是「當日回撤」：以權益曲線的歷史高點為基準，
     // 隔天不會自動解除，要等權益漲回距高點 maxDrawdownPct 以內才會放行。
     // 使用者常以為它每天重來，其實是一直沒有解除過。
-    const need = (acct.peak * (1 - cfg.maxDrawdownPct / 100)).toFixed(2);
-    return `回撤熔斷：距權益高點 $${acct.peak} 已回撤 ${acct.ddNow}%（上限 ${cfg.maxDrawdownPct}%），停止開倉。`
-         + `這是累計回撤、不會隔日自動解除——需權益回到 $${need} 以上（目前 $${acct.equity}）才恢復；`
-         + `或在「自動紀錄」頁清空試跑紀錄重新開始。`;
+    const need = (acct.ddPeak * (1 - cfg.maxDrawdownPct / 100)).toFixed(2);
+    return `回撤熔斷：距高點 $${acct.ddPeak} 已回撤 ${acct.ddNow}%（上限 ${cfg.maxDrawdownPct}%），停止開倉。`
+         + `這是累計回撤、不會隔日自動解除——需權益回到 $${need} 以上（目前 $${acct.equity}）才自動恢復，`
+         + `或按「重設回撤基準」以目前權益重新起算（紀錄與統計完全保留，不會刪除任何資料）。`;
   }
   if (acct.todayPnlPct <= -cfg.dailyLossLimitPct)
     return `單日虧損上限：今日 ${acct.todayPnlPct}% ≤ -${cfg.dailyLossLimitPct}%，當日停止開倉`
@@ -21153,6 +21192,18 @@ function saveScalpLog(log, opts = {}) {
   if (!opts.allowShrink && !_guardOverwrite(SCALP_LOG_KEY, log.length, 'scalp')) return false;
   // 先封存再截斷：截斷後才封存的話，被 SCALP_MAX 滾掉的那些樣本就永遠進不了封存
   try { archiveClosedScalpTrades(log); } catch(_e) {}
+  // 接近上限時先清掉舊細項再說——能靠瘦身容納的，就不該用丟資料解決
+  if (log.length > SCALP_MAX * 0.9) {
+    try {
+      const cutoff = Date.now() - SCALP_DETAIL_KEEP_DAYS * 24 * 3600 * 1000;
+      for (const t of log) {
+        if (t.status !== 'closed' || t._pruned) continue;
+        if ((t.exitTime || t.timestamp || 0) >= cutoff) continue;
+        for (const f of SCALP_DETAIL_FIELDS) if (t[f] !== undefined) t[f] = undefined;
+        t._pruned = true;
+      }
+    } catch(_e) {}
+  }
   try { localStorage.setItem(SCALP_LOG_KEY, JSON.stringify(log.slice(0, SCALP_MAX))); }
   catch(_e) {
     console.warn('[scalp] 儲存失敗', _e);
@@ -21161,6 +21212,40 @@ function saveScalpLog(log, opts = {}) {
   // 紀錄一變動就讓學習止損重算，避免拿舊樣本推導出的倍數去開新單
   try { invalidateScalpSlLearn(); } catch(_e) {}
 }
+/* ── 快進快出紀錄的細項清理 ────────────────────────────────────
+   需求很明確：交易要能一直做下去、紀錄要留著，但每筆的「細項」可以刪、
+   「重點數據」必須保留。因此把欄位分成兩類：
+     · 顯示用細項（訊號文字、風控建議、學習理由…）→ 超過保留天數就清掉
+     · 統計與學習用（損益、模式、MAE/MFE、ATR、風險條件…）→ 永遠保留
+   清完之後單筆體積大幅下降，同樣的空間能存下更多筆，紀錄不必被迫砍掉。 */
+const SCALP_DETAIL_KEEP_DAYS = 7;      // 幾天內保留完整細項
+const SCALP_PRUNE_KEY = 'csp_scalp_prune_at';
+/* 這些欄位只是給人看的，清掉不影響任何統計、學習與量化重放 */
+const SCALP_DETAIL_FIELDS = ['riskRecs', 'riskLevel', 'slMultWhy', 'sizeWhy', 'mtfWhy',
+  'note', 'breakExtent', 'revTarget', 'peakPrice', 'entryPrice', 'baseSl'];
+function pruneScalpDetails(force = false) {
+  try {
+    const last = parseInt(localStorage.getItem(SCALP_PRUNE_KEY) || '0') || 0;
+    if (!force && Date.now() - last < 24 * 3600 * 1000) return 0;   // 一天最多跑一次
+    const log = loadScalpLog();
+    const cutoff = Date.now() - SCALP_DETAIL_KEEP_DAYS * 24 * 3600 * 1000;
+    let n = 0;
+    for (const t of log) {
+      if (t.status !== 'closed' || t._pruned) continue;
+      if ((t.exitTime || t.timestamp || 0) >= cutoff) continue;
+      for (const f of SCALP_DETAIL_FIELDS) if (t[f] !== undefined) t[f] = undefined;
+      t._pruned = true; n++;
+    }
+    localStorage.setItem(SCALP_PRUNE_KEY, String(Date.now()));
+    if (n) {
+      saveScalpLog(log, { allowShrink: true });   // 筆數不變，只是欄位變少
+      console.info(`[scalp] 已精簡 ${n} 筆超過 ${SCALP_DETAIL_KEEP_DAYS} 天的交易細項（統計與學習不受影響）`);
+    }
+    return n;
+  } catch(e) { console.warn('[scalp] 細項清理失敗', e); return 0; }
+}
+try { setTimeout(() => pruneScalpDetails(), 9000); } catch(_e) {}
+
 function _scalpSignalledRecently(sym, dir) {
   try {
     const now = Date.now(), cut = now - 24 * 3600 * 1000;
@@ -22196,6 +22281,11 @@ function _scalpAccountPanel() {
     const m = scalpQuantMetrics();
     const a = m.acct, cfg = SCALP_CFG;
     const gate = scalpRiskGate(a);
+    const _ddEp = a.ddEpoch
+      ? `<div style="font-size:0.72rem;color:var(--text3);margin-top:4px">
+          回撤基準已於 ${new Date(a.ddEpoch.at).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}
+          重設為 $${a.ddEpoch.equityAt}（熔斷從該點起算；全期最大回撤 ${a.maxDD}% 仍完整保留於統計）
+        </div>` : '';
     const bar = (val, max, color) => `<div style="height:5px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden">
       <div style="height:100%;width:${Math.min(100, Math.abs(val) / max * 100).toFixed(0)}%;background:${color}"></div></div>`;
     const eqC = a.equity >= cfg.equity ? '#22c55e' : '#ef4444';
@@ -22203,7 +22293,12 @@ function _scalpAccountPanel() {
       <div style="font-size:0.84rem;font-weight:700;margin-bottom:8px">🤖 量化資金管理</div>
       ${gate ? `<div style="padding:7px 10px;border-radius:6px;background:rgba(239,68,68,.12);
         border-left:3px solid #ef4444;font-size:0.8rem;color:#ef4444;margin-bottom:8px">
-        ⛔ ${gate}</div>` : ''}
+        ⛔ ${gate}
+        ${String(gate).includes('回撤熔斷') ? `<div style="margin-top:7px">
+          <button class="btn-ghost" style="font-size:0.8rem;color:#00e676"
+            onclick="resetScalpDrawdown()">🔄 重設回撤基準，繼續交易（不刪除任何紀錄）</button></div>` : ''}
+        </div>` : ''}
+      ${_ddEp}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;font-size:0.8rem">
         <div><div style="color:var(--text3);font-size:0.74rem">帳戶權益</div>
           <div style="font-weight:700;color:${eqC}">$${a.equity} <span style="font-size:0.72rem;color:var(--text3)">/ 初始 $${cfg.equity}</span></div></div>
@@ -22574,6 +22669,14 @@ function buildScalpPositionsHtml() {
           ${br && br.canClaim ? `<div style="margin-top:8px">
             <button class="btn-ghost" style="font-size:0.82rem;color:#00e676"
               onclick="claimSignalMaster().then(()=>renderPositionsPage())">📡 讓本分頁接手訊號主機</button>
+          </div>` : ''}
+          ${String(blocked).includes('回撤熔斷') ? `<div style="margin-top:8px">
+            <button class="btn-ghost" style="font-size:0.82rem;color:#00e676"
+              onclick="resetScalpDrawdown()">🔄 重設回撤基準，繼續交易（不刪除任何紀錄）</button>
+            <div style="font-size:0.72rem;color:var(--text3);margin-top:5px">
+              以目前權益重新起算回撤，熔斷立即解除。交易紀錄、勝率、分模式統計、
+              學習樣本全部保留——不需要、也不應該用清空紀錄來換取繼續交易。
+            </div>
           </div>` : ''}
         </div>`;
       }
