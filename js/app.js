@@ -21199,7 +21199,7 @@ function saveScalpLog(log, opts = {}) {
       for (const t of log) {
         if (t.status !== 'closed' || t._pruned) continue;
         if ((t.exitTime || t.timestamp || 0) >= cutoff) continue;
-        for (const f of SCALP_DETAIL_FIELDS) if (t[f] !== undefined) t[f] = undefined;
+        for (const k of Object.keys(t)) if (!SCALP_KEEP_FIELDS.has(k)) delete t[k];
         t._pruned = true;
       }
     } catch(_e) {}
@@ -21218,11 +21218,39 @@ function saveScalpLog(log, opts = {}) {
      · 顯示用細項（訊號文字、風控建議、學習理由…）→ 超過保留天數就清掉
      · 統計與學習用（損益、模式、MAE/MFE、ATR、風險條件…）→ 永遠保留
    清完之後單筆體積大幅下降，同樣的空間能存下更多筆，紀錄不必被迫砍掉。 */
-const SCALP_DETAIL_KEEP_DAYS = 7;      // 幾天內保留完整細項
+const SCALP_DETAIL_KEEP_DAYS = 30;     // 與主系統的 TL_MAX_DAYS 一致：30 天內保留完整細項
 const SCALP_PRUNE_KEY = 'csp_scalp_prune_at';
-/* 這些欄位只是給人看的，清掉不影響任何統計、學習與量化重放 */
-const SCALP_DETAIL_FIELDS = ['riskRecs', 'riskLevel', 'slMultWhy', 'sizeWhy', 'mtfWhy',
-  'note', 'breakExtent', 'revTarget', 'peakPrice', 'entryPrice', 'baseSl'];
+/* ⚠️ 改用「保留白名單」而不是「刪除黑名單」。
+   黑名單的問題是漏列一個就永久刪掉不該刪的：第一版就把 baseSl 列進去刪了，
+   但 baseRisk = |entry − (baseSl ?? sl)| 在六處被用來當損益與風險的分母，
+   而止損會因移動停利／保本而變動——baseSl 一旦沒了，回頭算出來的風險基準
+   就會用到「移動後的止損」，整筆的 R 全部失真。
+   白名單則是漏列只會少留一個欄位，不會算錯，方向上安全得多。
+
+   保留：所有「勝率分析、風控評分、止損建議（機器人學習止損）、量化重放、
+         分模式與出場原因統計」需要的欄位。
+   清除：純敘述文字與過程中的暫存值（why 說明、型態描述、持倉期間的峰值）——
+         這些只是給人看的，刪掉不影響任何計算。 */
+const SCALP_KEEP_FIELDS = new Set([
+  // 身分與時間
+  'id', 'symbol', 'direction', 'mode', 'family', 'status',
+  'timestamp', 'entryTime', 'exitTime', 'holdMin',
+  // 結果與價位（baseSl 必留：它是 R 的分母基準）
+  'outcome', 'pnlR', 'entry', 'exitPrice', 'sl', 'baseSl', 'tp1', 'tp2',
+  // 出場原因分類
+  'maxHoldExit', 'timeStopped', 'tp1Hit', 'beArmed',
+  // 部位與資金
+  'qty', 'notional', 'riskAmt', 'riskPct', 'sizeMult',
+  // 風控（量化部分——風控評分與扣分條件的學習都靠它）
+  'riskScore', 'riskKeys', 'conf',
+  // 止損建議／機器人學習止損與量化重放
+  'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc',
+  'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed',
+  // 分群用（時段／波動／量能／多週期）
+  'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel',
+  // 旗標
+  'okxAdjusted', '_pruned',
+]);
 function pruneScalpDetails(force = false) {
   try {
     const last = parseInt(localStorage.getItem(SCALP_PRUNE_KEY) || '0') || 0;
@@ -21233,7 +21261,7 @@ function pruneScalpDetails(force = false) {
     for (const t of log) {
       if (t.status !== 'closed' || t._pruned) continue;
       if ((t.exitTime || t.timestamp || 0) >= cutoff) continue;
-      for (const f of SCALP_DETAIL_FIELDS) if (t[f] !== undefined) t[f] = undefined;
+      for (const k of Object.keys(t)) if (!SCALP_KEEP_FIELDS.has(k)) delete t[k];
       t._pruned = true; n++;
     }
     localStorage.setItem(SCALP_PRUNE_KEY, String(Date.now()));
