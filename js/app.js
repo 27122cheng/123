@@ -10122,9 +10122,33 @@ function recordPnlMismatch(t, tag) {
   } catch(_e) {}
 }
 
-function isWinTrade(t)  { return t.outcome === 'tp1' || t.outcome === 'tp2'; }
-function isLossTrade(t) { return t.outcome === 'sl'; }
-function isFlatTrade(t) { return t.outcome === 'be'; }
+/* ── 以事實校正結果標記 ────────────────────────────────────────
+   實際遇到的情況：一筆做空單，進場 0.20510、止損 0.20645（在進場之上）、
+   結算價 0.20645（＝止損價）、損益 -1.15R——損益是對的，出場價也是對的，
+   只有 outcome 被標成 'tp1'。用現行程式重跑不會產生這種組合，是舊版留下的。
+
+   結論：儲存的 outcome 已被證實可能是錯的，而「進場價、出場價、方向、損益」
+   四者彼此自洽且可驗證。因此顯示與勝率統計一律以事實為準，不再無條件相信
+   儲存的標記——出場價落在虧損側、損益也確實是負的，那就是止損，不管它被
+   標成什麼。
+
+   只在「標記與事實明確矛盾」時才改判：需要同時滿足「出場價在虧損側」與
+   「損益超過容差的負值」。分批出場（止盈一落袋 60%）可能出場價在虧損側但
+   整體仍獲利，那不是矛盾，會被這個雙重條件排除。 */
+function effectiveOutcome(t) {
+  const stored = t.outcome;
+  try {
+    const e = parseFloat(t.entry), x = parseFloat(t.exitPrice), r = parseFloat(t.pnlR);
+    if (!isFinite(e) || !isFinite(x) || !isFinite(r) || !t.direction) return stored;
+    const move = (x - e) * (t.direction === 'long' ? 1 : -1);   // >0 出場在獲利側
+    if ((stored === 'tp1' || stored === 'tp2') && move < 0 && r < -PNL_MISMATCH_EPS) return 'sl';
+    if (stored === 'sl' && move > 0 && r > PNL_MISMATCH_EPS) return 'tp1';
+  } catch(_e) {}
+  return stored;
+}
+function isWinTrade(t)  { const o = effectiveOutcome(t); return o === 'tp1' || o === 'tp2'; }
+function isLossTrade(t) { return effectiveOutcome(t) === 'sl'; }
+function isFlatTrade(t) { return effectiveOutcome(t) === 'be'; }
 /* 依實際損益判定出場結果（供各停滯／到期出場路徑共用） */
 function outcomeByR(r) { return r > FLAT_R_EPS ? 'tp1' : r < -FLAT_R_EPS ? 'sl' : 'be'; }
 /* 勝率 = 勝 /(勝+負)，平手不計入分母；無有效樣本回傳 null */
@@ -16778,30 +16802,28 @@ function renderTradeLogPage() {
         ? `<span style="display:inline-block;margin-left:4px;font-size:0.65rem;padding:1px 5px;border-radius:10px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);color:#4ade80;font-weight:600">長線</span>`
         : `<span style="display:inline-block;margin-left:4px;font-size:0.65rem;padding:1px 5px;border-radius:10px;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);color:#fbbf24;font-weight:600">短線</span>`;
 
+      // 以事實校正：儲存的標記可能是舊版留下的錯誤值，出場價與損益才可靠
+      const _eo = effectiveOutcome(t);
+      const _corrected = _eo !== t.outcome;
       let statusHtml;
       if (t.status === 'open') {
         statusHtml = `<span class="tl-badge tl-badge-open">進行中</span>`;
-      } else if (t.outcome === 'tp2') {
+      } else if (_eo === 'tp2') {
         statusHtml = `<span class="tl-badge tl-badge-tp2">止盈二 ✅</span>`;
-      } else if (t.outcome === 'tp1') {
+      } else if (_eo === 'tp1') {
         statusHtml = isLongTrade
           ? `<span class="tl-badge tl-badge-tp2">最終止盈 ✅</span>`
           : `<span class="tl-badge tl-badge-tp1">止盈一 ✅</span>`;
-      } else if (t.outcome === 'sl') {
+      } else if (_eo === 'sl') {
         statusHtml = `<span class="tl-badge tl-badge-sl">止損 ❌</span>`;
       } else {
         statusHtml = `<span class="tl-badge tl-badge-be">保本 ➡️</span>`;
       }
-
-      // 結果標記與實際損益矛盾時據實標示，不讓「止盈 ✅ 配 -1.15R」這種列誤導
-      try {
-        const _mm = pnlOutcomeMismatch(t);
-        if (_mm) {
-          statusHtml += `<div style="font-size:0.66rem;color:#f59e0b;margin-top:2px"
-            title="結果標記與實際損益不一致，多半是舊版紀錄或輸入值異常；統計請以損益為準">
-            ⚠️ 標記與損益不符</div>`;
-        }
-      } catch(_e) {}
+      if (_corrected) {
+        statusHtml += `<div style="font-size:0.64rem;color:#f59e0b;margin-top:2px"
+          title="原始紀錄標記為「${t.outcome}」，但出場價 ${fmtPrice(t.exitPrice)} 落在虧損側且損益為 ${t.pnlR}R，已依事實校正">
+          ⚠️ 原標記 ${ {tp1:'止盈一',tp2:'止盈二',sl:'止損',be:'保本'}[t.outcome] || t.outcome } 已校正</div>`;
+      }
 
       let pnlHtml = '--';
       if (t.pnlR !== null && t.pnlR !== undefined) {
@@ -16824,8 +16846,8 @@ function renderTradeLogPage() {
       const _tge = { S:'🏆', A:'🥇', B:'🥈', C:'🥉', D:'⚠️' }[_tg] || '📊';
       const _tgl = t.sqGradeLabel || { S:'頂級', A:'優質', B:'良好', C:'一般', D:'偏弱' }[_tg] || '';
       const gradeHtml = _tg !== '?' ? `<span style="font-size:0.7rem;font-weight:700;background:${_tgc}22;border:1px solid ${_tgc}55;color:${_tgc};padding:2px 6px;border-radius:12px;white-space:nowrap">${_tge} ${_tg} ${_tgl}</span>` : '—';
-      const _exitColor = (t.outcome === 'sl' || t.outcome === 'be') ? 'var(--bear)' : 'var(--bull)';
-      const _exitLabel = { tp1:'止盈一觸發', tp2:'止盈二觸發', sl:'止損觸發', be:'保本出場' }[t.outcome] || '';
+      const _exitColor = (_eo === 'sl' || _eo === 'be') ? 'var(--bear)' : 'var(--bull)';
+      const _exitLabel = { tp1:'止盈一觸發', tp2:'止盈二觸發', sl:'止損觸發', be:'保本出場' }[_eo] || '';
       const exitPriceHtml = t.exitPrice
         ? `<div style="color:${_exitColor};font-size:0.78rem">${fmtPrice(t.exitPrice)}</div><div style="font-size:0.68rem;color:var(--text3)">${_exitLabel}</div>`
         : '—';
@@ -16866,12 +16888,13 @@ function renderTradeLogPage() {
       const sum = bad.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0);
       mismatchHtml = `<div style="background:rgba(245,158,11,.10);border-left:3px solid #f59e0b;
           border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:0.82rem">
-        <b style="color:#f59e0b">⚠️ 有 ${bad.length} 筆紀錄的「結果標記」與「實際損益」不一致</b><br>
+        <b style="color:#f59e0b">⚠️ 有 ${bad.length} 筆舊紀錄的結果標記有誤，已依事實自動校正</b><br>
         <span style="color:var(--text2);font-size:0.79rem">
-          例如標成止盈卻是負 R。這些筆合計 ${sum.toFixed(2)}R，卻會被算進勝率的「勝」——勝率因此虛高。
-          以現行程式推算不可能產生這種組合（觸及止盈一後最差約 -0.2R），研判是舊版程式留下的紀錄。
-          之後再發生會於平倉當下記錄完整輸入值並輸出到 console，可直接查出成因。
-          <b>判讀時請以「累計 R / 期望值」為準，不要只看勝率。</b>
+          這些筆被標成止盈，但結算價就是止損價、損益也是負的（合計 ${sum.toFixed(2)}R）。
+          以現行程式重跑不會產生這種組合，研判是舊版程式留下的。<br>
+          <b>顯示與勝率統計都已改以「進場價／出場價／方向／損益」這四個彼此自洽的事實為準</b>，
+          不再無條件相信儲存的標記，所以勝率不會再被這些筆灌水。原始標記保留在紀錄裡不覆寫，
+          逐列會標示「原標記 ⋯ 已校正」。之後若再發生，平倉當下會記錄完整輸入值到 console 供追查。
         </span>
       </div>`;
     }
