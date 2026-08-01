@@ -22393,6 +22393,24 @@ async function scalpRunNow() {
 function updateScalpTrades(data) {
   try {
     if (!Array.isArray(data)) return;
+    // 通知的前置條件必須與「進場訊號」一致，否則會出現只收到結束訊號、
+    // 收不到進場訊號的怪現象——因為建單那條路有訊號主機／開關／熔斷三道
+    // 檢查，平倉這條路一道都沒有。非主機還會重複發送同一筆的結束通知。
+    //
+    // 但持倉管理本身（判定出場、更新 MAE/MFE、寫入紀錄）不受影響，
+    // 否則非主機裝置打開頁面看到的會是過期狀態。只擋通知，不擋記帳。
+    let _notifyOk = true;
+    try {
+      const _s = loadSettings();
+      _notifyOk = isSignalMaster() && _s.scalpEnabled === true;
+    } catch(_e) {}
+    // 新單被擋住的原因（熔斷等）——附在結束訊號裡，讓「只有結束沒有進場」
+    // 這件事在 Telegram 上就能看懂，而不必回到網頁翻診斷面板
+    let _entryBlocked = null;
+    try {
+      const _a = scalpAccount();
+      _entryBlocked = scalpRiskGate(_a);
+    } catch(_e) {}
     const log = loadScalpLog();
     let changed = false;
     for (const t of log) {
@@ -22464,7 +22482,7 @@ function updateScalpTrades(data) {
           const be = t.entry;
           if (isLong ? be > t.sl : be < t.sl) {
             t.sl = be; t.beArmed = true; changed = true;
-            sendScalpTelegram(t, 'be');
+            if (_notifyOk) sendScalpTelegram(t, 'be');
           }
         }
       }
@@ -22492,7 +22510,7 @@ function updateScalpTrades(data) {
           t.tp1Hit = true;
           t.sl = isLong ? t.entry + baseRisk * 0.5 : t.entry - baseRisk * 0.5;
           changed = true;
-          sendScalpTelegram(t, 'tp1');
+          if (_notifyOk) sendScalpTelegram(t, 'tp1');
         }
       }
 
@@ -22503,7 +22521,7 @@ function updateScalpTrades(data) {
         t.pnlR = computeTradePnlR(t, t.exitPrice, baseRisk, isLong);
         recordPnlMismatch(t, 'scalp');
         changed = true;
-        sendScalpTelegram(t, 'close');
+        if (_notifyOk) sendScalpTelegram(t, 'close', { entryBlocked: _entryBlocked });
       }
     }
     if (changed) saveScalpLog(log);
@@ -22511,7 +22529,7 @@ function updateScalpTrades(data) {
 }
 
 /* ── 快進快出專用 Telegram（獨立機器人，與主訊號分流）────────── */
-function sendScalpTelegram(t, kind) {
+function sendScalpTelegram(t, kind, extra = {}) {
   try {
     const s = loadSettings();
     if (!s.notifScalp || !s.tgToken2 || !s.tgChatId2) return;
@@ -22624,6 +22642,10 @@ function sendScalpTelegram(t, kind) {
               ? '　⚠️ 秒損（≤' + SCALP_CFG.slImmMin + '分），已計入放寬依據'
               : win ? '　→ 已作為「該留多少空間」的樣本' : '') : '',
         ``,
+        extra.entryBlocked
+          ? `\n⛔ <b>目前無法開新倉</b>：${extra.entryBlocked}\n`
+            + `（這就是為什麼你只收到結束訊號、收不到進場訊號）`
+          : '',
         `⏰ ${ts}`,
         `#${sym.toLowerCase()} #scalp #交易結束 #${win ? '獲利' : t.outcome === 'be' ? '平手' : '止損'}`,
       ].filter(Boolean).join('\n');
