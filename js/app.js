@@ -21223,8 +21223,12 @@ const SCALP_CFG = {
   //      止損 2% → 0.05R　1% → 0.10R　0.5% → 0.20R　0.1% → 1.0R　0.01% → 10R
   //    也就是說止損越近，手續費吃掉的 R 越多，這對「小賺就跑」的策略是致命的。
   feeRate:             0.0005, // 單邊費率（與 computeTradePnlR 一致）
-  maxFeeR:             0.15,   // 手續費最多吃掉 15% 的 R，超過就不做這筆
-                               // → 等於要求止損距離 ≥ 價格的 0.67%
+  maxFeeR:             0.15,   // 手續費最多吃掉 15% 的 R
+                               // → 等於要求止損距離 ≥ 價格的 0.67%；
+                               //   不足時「把止損推遠到這個距離」而不是放棄該筆
+  maxTpAtr:            3.0,    // 止盈一距離的上限（ATR 倍數）。止損被推遠後止盈
+                               //   也會變遠，超過這個距離代表在等一個 60 分鐘內
+                               //   走不到的行情，那才是真正該放棄的理由
 
   // ── 勝率／回撤改善（與「增加交易量」互相制衡的另一半）──────────────
   //    重點認知：回撤主要不是進場問題，是「相關性 + 部位大小 + 出場」問題。
@@ -22111,20 +22115,28 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   // 照 ATR 放會讓止損比區間還寬，R/R 永遠不成立（實測會被 R/R 檢查全數擋掉）。
   let _buf = atr * _slL.mult;
   if (mode === 'range' && rangeSpan > 0) _buf = Math.min(_buf, rangeSpan * SCALP_CFG.rangeSlSpanFrac);
-  const slRaw = isLong ? level - _buf : level + _buf;
+  let slRaw = isLong ? level - _buf : level + _buf;
   const entry = price;                                  // 市價進場
-  const risk  = Math.abs(entry - slRaw);
-  if (!(risk > 0) || risk / entry > SCALP_CFG.maxRiskPct) return _sr('風險超限(追太遠)');
-  // ── 止損不能太近：手續費是以「名目價值」計，但損益以 R 計 ──────────
-  //    來回手續費 ≈ 名目的 0.1%，換算成 R 就是 0.001 ÷ (止損距離/價格)。
-  //    止損 1% → 手續費 0.10R；止損 0.1% → 1.0R；止損 0.01% → 10R。
-  //    原本只有上限（追太遠）沒有下限，於是低波動幣可能產生近乎零的止損距離，
-  //    手續費在 R 的尺度上爆掉——實際出現過「觸及止盈二卻是 -8.91R」：
-  //    毛利 +1.3R 被 10.2R 的手續費吃光。這種單無論行情怎麼走都必定大虧。
-  const _feeR = 2 * SCALP_CFG.feeRate * entry / risk;
-  if (_feeR > SCALP_CFG.maxFeeR) {
-    return _sr(`止損過近(手續費佔 ${(_feeR * 100).toFixed(0)}% R)`);
+  let risk  = Math.abs(entry - slRaw);
+  if (!(risk > 0)) return _sr('止損距離無效');
+  // ── 止損不能太近：手續費以「名目價值」計，損益以 R 計 ────────────────
+  //    來回手續費 ≈ 名目的 0.1%，換算成 R 就是 0.001 ÷ (止損距離/價格)：
+  //    止損 1% → 0.10R；0.5% → 0.20R；0.1% → 1.0R；0.01% → 10R。
+  //
+  //    但「太近就不做」是錯的處理方式：實測 ATR 低於價格 0.5% 的幣會被全部
+  //    擋掉，而那是多數流動性好的幣在 5m 的常態——結果就是完全沒有訊號。
+  //    進場論點沒有問題，問題只在止損放得太近。因此改為<b>把止損推遠到剛好
+  //    可行的距離</b>：止損變寬只會等比例縮小部位（固定分數法），單筆風險金額
+  //    不變，而且離失效位更遠反而更安全。
+  const _minRisk = 2 * SCALP_CFG.feeRate * entry / SCALP_CFG.maxFeeR;
+  let _slWidened = false;
+  if (risk < _minRisk) {
+    slRaw = isLong ? entry - _minRisk : entry + _minRisk;
+    risk = _minRisk;
+    _slWidened = true;
   }
+  if (risk / entry > SCALP_CFG.maxRiskPct) return _sr('風險超限(追太遠)');
+  const _feeR = 2 * SCALP_CFG.feeRate * entry / risk;
   // 回歸模式的目標是「回到均值」而非追延續，止盈倍數較近，不硬要 1.8R
   const _isRev = SCALP_MODE_FAMILY[mode] === 'revert';
   const _eff = (typeof qlabEffective === 'function') ? qlabEffective() : null;
@@ -22143,6 +22155,14 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   }
   const _rr = Math.abs(tp2 - entry) / risk;
   if (_rr < 0.9) return _sr('回歸目標太近(R/R不足)');
+  // 止損被推遠後止盈也跟著變遠，必須確認那個距離在最長持有時間內走得到。
+  // 以 ATR 為尺：止盈一距離超過 maxTpAtr 個 ATR，就是在等一個不會來的行情，
+  // 那種單只會一路拖到停滯出場——這是低波動幣真正不該做的原因，
+  // 而不是「止損太近」本身。
+  const _tp1Atr = atr > 0 ? Math.abs(tp1 - entry) / atr : 0;
+  if (_tp1Atr > SCALP_CFG.maxTpAtr) {
+    return _sr(`波動不足(止盈一需走 ${_tp1Atr.toFixed(1)}×ATR)`);
+  }
   return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi, mode, family,
            macd: parseFloat(coin.macdHist) || 0,
            breakLevel: level, breakExtent: +(Math.max(0, extent) * 100).toFixed(2),
@@ -22151,6 +22171,7 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
            mtfWhy: _mtf.why, mtfAlign: _mtf.n,
            // 學習止損的存證：倍數、來源、理由，以及回頭學習所需的 ATR 標準化欄位
            feeR: +_feeR.toFixed(3), riskPct: +(risk / entry * 100).toFixed(3),
+           slWidened: _slWidened, tp1Atr: +_tp1Atr.toFixed(2),
            slMult: +_slL.mult.toFixed(3), slMultSrc: _slL.src, slMultWhy: _slL.why,
            levelGapAtr: atr > 0 ? +(Math.abs(entry - level) / atr).toFixed(3) : null,
            slDistAtr:   atr > 0 ? +(risk / atr).toFixed(3) : null };
@@ -22330,6 +22351,7 @@ async function recordScalpSignals(data) {
         mtfWhy: setup.mtfWhy, mtfAlign: setup.mtfAlign,
         // 機器人學習止損：本筆採用的倍數與來源，以及回頭學習用的 ATR 標準化欄位
         feeR: setup.feeR, slDistPct: setup.riskPct,
+        slWidened: setup.slWidened, tp1Atr: setup.tp1Atr,
         atrAtEntry: setup.atr, slMult: setup.slMult, slMultSrc: setup.slMultSrc,
         slMultWhy: setup.slMultWhy, levelGapAtr: setup.levelGapAtr, slDistAtr: setup.slDistAtr,
         maeAtr: 0, mfeAtr: 0,     // 最大不利／有利偏移（ATR 單位），持倉期間即時更新
@@ -22521,7 +22543,8 @@ function sendScalpTelegram(t, kind) {
         (t.riskScore != null) ? `🛡️ 風險分 ${t.riskScore}／${t.riskLevel}（門檻 <${SCALP_CFG.maxRiskScore}）`
           + `　風控分 ${t.conf}（門檻 ≥${SCALP_CFG.minConf}）` : '',
         SCALP_CFG.beStop ? `🛡️ 浮盈達 +${SCALP_CFG.beTriggerR}R 自動移到保本` : '',
-        t.feeR != null ? `💸 止損距離 ${t.slDistPct}%，來回手續費約 ${(t.feeR * 100).toFixed(0)}% 的 R` : '',
+        t.feeR != null ? `💸 止損距離 ${t.slDistPct}%，來回手續費約 ${(t.feeR * 100).toFixed(0)}% 的 R`
+          + (t.slWidened ? '（原始止損過近會被手續費吃掉，已推遠至可行距離；部位等比例縮小，風險金額不變）' : '') : '',
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
         t.riskRecs && t.riskRecs.length ? `💡 ${t.riskRecs[0]}` : '',
         ``,
