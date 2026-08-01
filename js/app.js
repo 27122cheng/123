@@ -12969,6 +12969,7 @@ async function verifyIntrabarHits() {
 
       // 持倉中：逐棒檢查 SL / TP 實際觸及
       let outcome = null;
+      let _hitBar = null;
       for (const bar of raw) {
         if (parseFloat(bar[6]) <= sinceTs) continue;
         const hi = parseFloat(bar[2]), lo = parseFloat(bar[3]);
@@ -12982,6 +12983,7 @@ async function verifyIntrabarHits() {
           outcome = isLong ? (slNow > entry ? 'tp1' : slNow < entry ? 'sl' : 'be')
                            : (slNow < entry ? 'tp1' : slNow > entry ? 'sl' : 'be');
           if (outcome === 'tp1') trade.trailExit = true;
+          _hitBar = bar;
           break;
         }
         // +1R 提前保本已移除（同 updateOpenTrades）：太早保本是「稍微盈利又止損」元兇
@@ -13009,6 +13011,15 @@ async function verifyIntrabarHits() {
       trade.exitTime = Date.now();
       trade.exitPrice = outcome === 'tp2' ? tp2 : outcome === 'be' ? entry : trade.sl;
       trade.intrabarHit = true;  // 標記：由 1m 插針驗證判定（供報表/診斷識別）
+      // 記錄觸發的那一根 K 棒與資料源：實倉還在、系統卻判定止損時，
+      // 這是唯一能還原「當時看到什麼價格」的線索
+      try {
+        trade.exitEvidence = {
+          src: (typeof _klineSrcBySymbol !== 'undefined' && _klineSrcBySymbol[trade.symbol]) || 'unknown',
+          bar: _hitBar ? { t: parseFloat(_hitBar[0]), h: parseFloat(_hitBar[2]), l: parseFloat(_hitBar[3]) } : null,
+          slAt: trade.sl, checkedAt: Date.now(),
+        };
+      } catch(_e) {}
       // 分批出場加權損益（觸及 TP1 者 60% 落袋 + 40% 尾倉），兩處出場路徑共用同一函式
       trade.pnlR = computeTradePnlR(trade, trade.exitPrice, baseRisk, isLong);
       recordPnlMismatch(trade, 'intrabar');
@@ -16266,7 +16277,7 @@ function updateSLTightnessWatch(data) {
   const now = Date.now();
   let changed = false;
   for (const t of tlog) {
-    if (t.outcome !== 'sl' || t.slReversal !== null || t.slReversal === undefined) continue;
+    if (effectiveOutcome(t) !== 'sl' || t.slReversal !== null || t.slReversal === undefined) continue;
     if (!t.slWatchUntil || !t.slTp1) continue;
     const coin = data.find(d => d.symbol === t.symbol);
     const cur = parseFloat(coin?.price) || 0;
@@ -16282,10 +16293,10 @@ function updateSLTightnessWatch(data) {
 }
 /* 止損鬆緊統計：已判定的止損單中，多少比例是「反轉觸TP＝止損太緊」 */
 function computeSLTightnessStats() {
-  const resolved = loadTradeLog().filter(t => t.outcome === 'sl' && (t.slReversal === true || t.slReversal === false));
+  const resolved = loadTradeLog().filter(t => effectiveOutcome(t) === 'sl' && (t.slReversal === true || t.slReversal === false));
   const tooTight = resolved.filter(t => t.slReversal === true).length;
   const n = resolved.length;
-  return { n, tooTight, pct: n ? tooTight / n * 100 : 0, watching: loadTradeLog().filter(t => t.outcome === 'sl' && t.slReversal === null).length };
+  return { n, tooTight, pct: n ? tooTight / n * 100 : 0, watching: loadTradeLog().filter(t => effectiveOutcome(t) === 'sl' && t.slReversal === null).length };
 }
 
 /* ── 自適應止損加寬（勝率優化，不影響交易量）─────────────────
@@ -16753,9 +16764,27 @@ function renderTradeLogPage() {
   if (!container) return;
   const trades  = loadTradeLog();
   const closed  = trades.filter(t => t.status === 'closed');
-  const wins    = closed.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
-  const losses  = closed.filter(t => t.outcome === 'sl');
-  const bes     = closed.filter(t => t.outcome === 'be');
+  // 必須與勝率用同一套判定：勝率已改用 effectiveOutcome（依事實校正），
+  // 這裡若還用原始 outcome，就會出現「勝率 24.9% 但止盈 45／止損 124
+  // 算起來是 26.6%」這種對不上的畫面。
+  const wins    = closed.filter(isWinTrade);
+  const losses  = closed.filter(isLossTrade);
+  const bes     = closed.filter(isFlatTrade);
+  /* 損益兩平勝率：avgLoss ÷ (avgWin + avgLoss)。
+     「勝率低」本身不是問題——賺賠比夠大時 25% 也能賺錢。真正該看的是
+     「目前的賺賠比之下，勝率至少要多少才不虧」，以及離那個門檻差幾個百分點。
+     沒有這個數字，就只能對著勝率乾著急，不知道該往哪個方向使力。 */
+  const _beStats = (() => {
+    const wR = wins.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0);
+    const lR = Math.abs(losses.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0));
+    const aw = wins.length ? wR / wins.length : 0;
+    const al = losses.length ? lR / losses.length : 0;
+    if (!(aw > 0) || !(al > 0)) return null;
+    const need = al / (aw + al) * 100;
+    const cur  = (wins.length + losses.length) ? wins.length / (wins.length + losses.length) * 100 : 0;
+    return { need: +need.toFixed(1), cur: +cur.toFixed(1), gap: +(cur - need).toFixed(1),
+             avgWin: +aw.toFixed(2), avgLoss: +al.toFixed(2), rr: +(aw / al).toFixed(2) };
+  })();
   const winRate = (winRateOf(closed) ?? 0).toFixed(1);   // 勝/(勝+負)，平手(be)不計入分母
   const avgWinR = wins.length
     ? (wins.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0) / wins.length).toFixed(2)
@@ -16771,9 +16800,9 @@ function renderTradeLogPage() {
     const ts = t.exitTime || t.timestamp || 0;
     return ts >= _dayR.start && ts < _dayR.end;
   });
-  if (_tlFilter === 'tp') display = display.filter(t => t.outcome === 'tp1' || t.outcome === 'tp2');
-  if (_tlFilter === 'sl') display = display.filter(t => t.outcome === 'sl');
-  if (_tlFilter === 'be') display = display.filter(t => t.outcome === 'be');
+  if (_tlFilter === 'tp') display = display.filter(isWinTrade);
+  if (_tlFilter === 'sl') display = display.filter(isLossTrade);
+  if (_tlFilter === 'be') display = display.filter(isFlatTrade);
 
   const netRNum = parseFloat(netR);
   const statsHtml = `<div class="tl-stats">
@@ -16785,6 +16814,12 @@ function renderTradeLogPage() {
       <div class="tl-stat-val" style="color:${parseFloat(winRate) >= 50 ? 'var(--bull)' : 'var(--bear)'}">${winRate}%</div>
       <div class="tl-stat-lbl">勝率</div>
     </div>
+    ${_beStats ? `<div class="tl-stat-card" title="損益兩平勝率 = 平均虧損 ÷ (平均獲利 + 平均虧損)。目前賺賠比 ${_beStats.rr}:1（平均賺 ${_beStats.avgWin}R／賠 ${_beStats.avgLoss}R）">
+      <div class="tl-stat-val" style="color:${_beStats.gap >= 0 ? 'var(--bull)' : 'var(--bear)'}">${_beStats.need}%</div>
+      <div class="tl-stat-lbl">兩平所需勝率
+        <span style="color:${_beStats.gap >= 0 ? 'var(--bull)' : 'var(--bear)'}">
+          ${_beStats.gap >= 0 ? '✅ 超出' : '差'} ${Math.abs(_beStats.gap)}pp</span></div>
+    </div>` : ''}
     <div class="tl-stat-card">
       <div class="tl-stat-val" style="color:var(--bull)">${avgWinR}</div>
       <div class="tl-stat-lbl">平均盈利 R</div>
@@ -16964,6 +16999,37 @@ function renderTradeLogPage() {
     }
   } catch(_e) {}
 
+  // 勝率該往哪個方向補：把「差幾個百分點」與「兩條可行路徑」講清楚
+  let beHtml = '';
+  if (_beStats) {
+    const g = _beStats.gap;
+    let slt = null;
+    try { slt = slTightnessStats(); } catch(_e) {}
+    const rrNeed = g < 0 ? (_beStats.avgLoss * (100 - _beStats.cur) / _beStats.cur / _beStats.avgLoss) : null;
+    const needRR = g < 0 ? +((100 - _beStats.cur) / _beStats.cur).toFixed(2) : null;
+    beHtml = `<div style="background:var(--card);border:1px solid ${g >= 0 ? 'var(--border)' : '#f59e0b'};
+        border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.75">
+      <div style="font-weight:700;margin-bottom:5px">📐 勝率該補多少、往哪裡補</div>
+      目前賺賠比 <b>${_beStats.rr}:1</b>（平均賺 ${_beStats.avgWin}R、賠 ${_beStats.avgLoss}R），
+      因此<b>兩平勝率是 ${_beStats.need}%</b>，目前 ${_beStats.cur}% →
+      <b style="color:${g >= 0 ? 'var(--bull)' : 'var(--bear)'}">${g >= 0 ? '已超出 ' + g : '還差 ' + Math.abs(g)}pp</b>。
+      ${g < 0 ? `<div style="margin-top:6px;color:var(--text2)">
+        <b>只有兩條路，二選一或並用：</b><br>
+        <b>① 提高勝率 ${Math.abs(g)}pp</b> —
+        ${slt && slt.n >= 10
+          ? `目前 ${slt.tooTight}/${slt.n} 筆（${slt.pct.toFixed(0)}%）的止損單在 24 小時內反轉觸及止盈，
+             代表<b>${slt.pct >= 40 ? '止損確實偏緊，放寬止損是有依據的方向' : '多數止損是真實走弱，放寬止損幫助有限，要從進場條件下手'}</b>。`
+          : '止損鬆緊診斷樣本不足（需 ≥10 筆已判定），先讓它累積再據此決定要不要放寬止損。'}<br>
+        <b>② 把賺賠比拉到 ${needRR}:1 以上</b> — 在 ${_beStats.cur}% 的勝率下，
+        平均獲利需達到平均虧損的 ${needRR} 倍才會兩平（目前 ${_beStats.rr} 倍）。
+        做法是讓獲利單跑得更遠（放寬移動停利的回吐容忍），而不是更早獲利了結。
+      </div>` : ''}
+      <div style="font-size:0.73rem;color:var(--text3);margin-top:6px">
+        「勝率低」本身不必然是問題——賺賠比夠大時 25% 也能賺錢。真正要看的是離兩平門檻差多少。
+      </div>
+    </div>`;
+  }
+
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
@@ -17001,6 +17067,7 @@ function renderTradeLogPage() {
     ${statsHtml}
     ${_tlDayPager(closed)}
     ${mismatchHtml}
+    ${beHtml}
     ${filterHtml}
     ${tableHtml}
     ${backupHtml}
