@@ -969,16 +969,50 @@ async function fetchHalvingInfo() {
 }
 
 /* ── Telegram Bot 通知（直接從瀏覽器呼叫，不需後端）────────── */
+/* ── Telegram 發送 ──────────────────────────────────────────────
+   以 parse_mode: 'HTML' 送出，因此訊息裡任何未跳脫的 < > & 都會讓 Telegram
+   回 400，整則訊息無聲消失。原本的實作只 `return res.ok`，呼叫端一律忽略，
+   所以「某類訊息從來收不到」這件事完全沒有線索——實際發生過的症狀就是
+   進場訊號收不到、結束訊號正常（進場訊息多帶了風控建議、部位理由、學習
+   理由、多週期說明四個動態欄位，中獎機率高得多）。
+
+   三道防線：
+     ① 超過 Telegram 的 4096 字元上限先截斷
+     ② HTML 解析失敗時，去掉標籤改以純文字重送——寧可少了粗體，
+        也不要整則訊息消失
+     ③ 失敗原因寫進 console，不再無聲無息 */
+const TG_MAX_LEN = 4000;   // 官方上限 4096，留餘裕給截斷提示
 async function sendTelegramMessage(token, chatId, text) {
   if (!token || !chatId) return false;
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  let body = String(text ?? '');
+  if (body.length > TG_MAX_LEN) body = body.slice(0, TG_MAX_LEN) + '\n…（訊息過長已截斷）';
+  const post = (payload) => fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ chat_id: chatId, disable_web_page_preview: true }, payload)),
+  });
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true }),
-    });
-    return res.ok;
-  } catch { return false; }
+    const res = await post({ text: body, parse_mode: 'HTML' });
+    if (res.ok) return true;
+    let info = '';
+    try { const j = await res.json(); info = (j && j.description) || ''; } catch (_e) {}
+    console.warn(`[telegram] 傳送失敗 ${res.status}：${info || '(無描述)'}`);
+    // 400 幾乎都是 HTML 解析問題（未跳脫的 < > & 或標籤不成對）→ 純文字重送
+    if (res.status === 400) {
+      const plain = body.replace(/<[^>]*>/g, '');
+      const res2 = await post({ text: plain });
+      if (res2.ok) { console.warn('[telegram] 已改以純文字重送成功（原訊息 HTML 有問題）'); return true; }
+      let info2 = '';
+      try { const j2 = await res2.json(); info2 = (j2 && j2.description) || ''; } catch (_e) {}
+      console.warn(`[telegram] 純文字重送仍失敗 ${res2.status}：${info2 || '(無描述)'}`);
+    }
+    return false;
+  } catch (e) { console.warn('[telegram] 傳送例外', e); return false; }
+}
+/* 供訊息組裝時跳脫動態內容——模板自己的 <b> 標籤不經過這裡 */
+function tgEsc(v) {
+  return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 

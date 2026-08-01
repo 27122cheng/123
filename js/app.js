@@ -22533,6 +22533,10 @@ function sendScalpTelegram(t, kind, extra = {}) {
   try {
     const s = loadSettings();
     if (!s.notifScalp || !s.tgToken2 || !s.tgChatId2) return;
+    // 動態內容一律跳脫：訊息以 HTML 模式送出，未跳脫的 < > & 會讓 Telegram
+    // 回 400 而整則消失。模板自己的 <b> 標籤不經過這裡。
+    const _e = (typeof tgEsc === 'function') ? tgEsc
+      : (v => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'));
     const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
     const sym = t.symbol.replace('/USDT', '');
     const isLong = t.direction === 'long';
@@ -22548,23 +22552,23 @@ function sendScalpTelegram(t, kind, extra = {}) {
         `📍 進場：<b>$${fmt(t.entry)}</b>（市價）`,
         `🛑 止損：$${fmt(t.sl)}`
           + (t.slMult ? `（${t.slMult}×ATR${t.slMultSrc === 'default' ? '，固定值' : '，🤖 機器人學習'}）` : ''),
-        t.slMultWhy && t.slMultSrc !== 'default' ? `　└ ${t.slMultWhy}` : '',
+        t.slMultWhy && t.slMultSrc !== 'default' ? `　└ ${_e(t.slMultWhy)}` : '',
         t.qty ? `📦 數量：<b>${t.qty}</b>　名目 $${t.notional}　風險 $${t.riskAmt}（${t.riskPct}% 權益）` : '',
-        (t.sizeMult && t.sizeMult !== 1) ? `　└ 部位 ${t.sizeMult}×：${(t.sizeWhy || []).join('；')}` : '',
+        (t.sizeMult && t.sizeMult !== 1) ? `　└ 部位 ${t.sizeMult}×：${_e((t.sizeWhy || []).join('；'))}` : '',
         `🎯 止盈一：$${fmt(t.tp1)}（${t.tp1RUsed ?? SCALP_CFG.tp1R}R，減倉 ${SCALP_CFG.tp1Frac * 100}%）`,
         `🚀 止盈二：$${fmt(t.tp2)}（${t.tp2RUsed ?? SCALP_CFG.tp2R}R）`
           + (t.revTarget ? `　← 均值目標 $${fmt(t.revTarget)}` : ''),
-        `📐 ${SCALP_MODE_LABEL[t.mode] || t.mode}`
+        `📐 ${_e(SCALP_MODE_LABEL[t.mode] || t.mode)}`
           + `（${t.family === 'revert' ? '回歸家族' : '順勢家族'}，止損錨點 $${fmt(t.breakLevel)}）`,
         `📊 量能 ${t.volRatio}× 均量｜OI ${t.oiState === 'favorable' ? '新錢同向 ✅' : t.oiState === 'neutral' ? '中性' : '—'}`,
-        t.mtfWhy ? `🕐 多週期：${t.mtfWhy}（15m/1H）` : '',
+        t.mtfWhy ? `🕐 多週期：${_e(t.mtfWhy)}（15m/1H）` : '',
         (t.riskScore != null) ? `🛡️ 風險分 ${t.riskScore}／${t.riskLevel}（門檻 <${SCALP_CFG.maxRiskScore}）`
           + `　風控分 ${t.conf}（門檻 ≥${SCALP_CFG.minConf}）` : '',
         SCALP_CFG.beStop ? `🛡️ 浮盈達 +${SCALP_CFG.beTriggerR}R 自動移到保本` : '',
         t.feeR != null ? `💸 止損距離 ${t.slDistPct}%，來回手續費約 ${(t.feeR * 100).toFixed(0)}% 的 R`
           + (t.slWidened ? '（原始止損過近會被手續費吃掉，已推遠至可行距離；部位等比例縮小，風險金額不變）' : '') : '',
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
-        t.riskRecs && t.riskRecs.length ? `💡 ${t.riskRecs[0]}` : '',
+        t.riskRecs && t.riskRecs.length ? `💡 ${_e(t.riskRecs[0])}` : '',
         ``,
         `⏰ ${ts}`,
         `#${sym.toLowerCase()} #scalp #${isLong ? 'long' : 'short'} #自動交易`,
@@ -22629,11 +22633,11 @@ function sendScalpTelegram(t, kind, extra = {}) {
         `${icon} <b>快進快出｜交易結束 — ${label}</b>`,
         `${sym} ${dir}`,
         ``,
-        `📝 <b>結束原因</b>：${why}`,
+        `📝 <b>結束原因</b>：${_e(why)}`,
         ``,
         `📍 進場 $${fmt(t.entry)} → 出場 <b>$${fmt(t.exitPrice)}</b>`,
         `📊 損益：<b>${t.pnlR > 0 ? '+' : ''}${t.pnlR}R</b>${money}`,
-        `⏱️ 持有 ${t.holdMin} 分鐘　·　進場模式：${modeLabel}`,
+        `⏱️ 持有 ${t.holdMin} 分鐘　·　進場模式：${_e(modeLabel)}`,
         t.tp1Hit ? `✔️ 期間曾觸及止盈一並減倉 ${SCALP_CFG.tp1Frac * 100}%` : '',
         // 學習止損回饋：這筆的逆走幅度會回去校正下一批單的止損寬度
         (t.slMult && t.maeAtr != null) ? `🤖 學習止損：本筆用 ${t.slMult}×ATR（總距離 ${t.slDistAtr ?? '--'}×ATR）`
@@ -22643,7 +22647,7 @@ function sendScalpTelegram(t, kind, extra = {}) {
               : win ? '　→ 已作為「該留多少空間」的樣本' : '') : '',
         ``,
         extra.entryBlocked
-          ? `\n⛔ <b>目前無法開新倉</b>：${extra.entryBlocked}\n`
+          ? `\n⛔ <b>目前無法開新倉</b>：${_e(extra.entryBlocked)}\n`
             + `（這就是為什麼你只收到結束訊號、收不到進場訊號）`
           : '',
         `⏰ ${ts}`,
