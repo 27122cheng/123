@@ -10474,18 +10474,128 @@ function relaxedCohortUnderperforms() {
     return _wr != null && _wr < 45;
   } catch(_e) { return false; }
 }
+/* ── 帳戶兩平門檻 ────────────────────────────────────────────────
+   勝率要多高才不虧，取決於賺賠比：兩平勝率 = 平均虧損 ÷（平均獲利 + 平均虧損）。
+   進場要加嚴到什麼程度，必須以這個數字為靶，而不是憑感覺調參數。 */
+let _beCache = null, _beCacheTs = 0;
+function accountBreakeven() {
+  const now = Date.now();
+  if (_beCache && now - _beCacheTs < 60000) return _beCache;
+  let out = null;
+  try {
+    const closed = learnSamples().filter(t => t.status === 'closed');
+    const w = closed.filter(isWinTrade), l = closed.filter(isLossTrade);
+    if (w.length >= 5 && l.length >= 5) {
+      const aw = w.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / w.length;
+      const al = Math.abs(l.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / l.length);
+      if (aw > 0 && al > 0) {
+        const need = al / (aw + al) * 100;
+        const cur = w.length / (w.length + l.length) * 100;
+        const exp = closed.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / closed.length;
+        out = { need: +need.toFixed(1), cur: +cur.toFixed(1), gap: +(cur - need).toFixed(1),
+                expectancy: +exp.toFixed(3), n: closed.length };
+      }
+    }
+  } catch(_e) {}
+  _beCache = out; _beCacheTs = now;
+  return out;
+}
+
+/* ── 依實測找出「SQ 要多高才真的有優勢」──────────────────────────
+   進場加嚴不該是把門檻隨手調高——調太多沒單、調太少沒用。這裡逐一測試
+   各個 SQ 門檻，看「該門檻以上的實際成交」的期望值與勝率下界，找出最低
+   的、確實跨過兩平門檻的那一級。用 Wilson 下界是因為小樣本的勝率會被
+   運氣灌水，下界才是能拿來當門檻的數字。 */
+let _sqEdgeCache = null, _sqEdgeCacheTs = 0;
+function sqEdgeProfile() {
+  const now = Date.now();
+  if (_sqEdgeCache && now - _sqEdgeCacheTs < 60000) return _sqEdgeCache;
+  let out = { ready: false, rows: [], suggest: null, why: '' };
+  try {
+    const be = accountBreakeven();
+    const closed = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.sqScore)));
+    if (closed.length < 40 || !be) {
+      out.why = `可分析樣本 ${closed.length}/40${be ? '' : '（且需先有足夠的勝負樣本估算兩平門檻）'}`;
+      _sqEdgeCache = out; _sqEdgeCacheTs = now; return out;
+    }
+    for (const th of [12, 14, 16, 18, 21, 25]) {
+      const sub = closed.filter(t => parseFloat(t.sqScore) >= th);
+      const w = sub.filter(isWinTrade).length, l = sub.filter(isLossTrade).length;
+      if (w + l < 1) continue;
+      const exp = sub.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / sub.length;
+      out.rows.push({ th, n: sub.length, wins: w, losses: l,
+        winRate: +(w / (w + l) * 100).toFixed(1),
+        wrLb: +(wilsonLB(w, w + l) * 100).toFixed(1),
+        expectancy: +exp.toFixed(3) });
+    }
+    out.ready = out.rows.length > 0;
+    // 選法：先取「樣本足夠、期望值為正、勝率下界跨過兩平」的候選，再從中挑
+    // 期望值最高的那一級。不能只取「最低的、剛好跨過」——那種只贏兩平門檻
+    // 1pp 的級距談不上有優勢，而且實測資料裡它的期望值往往只有最佳級距的
+    // 三分之一（例如 SQ≥12 是 +0.21R，SQ≥18 卻有 +0.58R）。
+    // 但也不是一味往上：若某個較低的級距已經拿到最佳期望值的九成，就選它，
+    // 因為多出來的交易量比那最後一成的期望值更有價值。
+    const ok = out.rows.filter(r => r.n >= 25 && r.expectancy > 0 && r.wrLb >= be.need);
+    if (ok.length) {
+      const best = ok.reduce((a, b2) => (b2.expectancy > a.expectancy ? b2 : a));
+      const pick = ok.find(r => r.expectancy >= best.expectancy * 0.9) || best;
+      out.suggest = pick.th;
+      out.why = `SQ ≥ ${pick.th} 的 ${pick.n} 筆：期望值 ${pick.expectancy > 0 ? '+' : ''}${pick.expectancy}R、`
+              + `勝率下界 ${pick.wrLb}% 已跨過兩平門檻 ${be.need}%`
+              + (pick.th !== best.th ? `（期望值最高的是 SQ ≥ ${best.th} 的 ${best.expectancy}R，`
+                  + `但本級已達其九成且交易量更多）` : '')
+              + `；較低的 SQ ≥ ${out.rows[0].th} 只有 ${out.rows[0].expectancy}R`;
+    } else {
+      // 沒有任何一級跨過 → 取期望值最高且樣本足夠者，至少往那個方向靠
+      const best = out.rows.filter(r => r.n >= 25).sort((a, b) => b.expectancy - a.expectancy)[0];
+      if (best) {
+        out.suggest = best.th;
+        out.why = `目前沒有任何 SQ 級距的勝率下界跨過兩平門檻 ${be.need}%；`
+                + `期望值最高的是 SQ ≥ ${best.th}（${best.expectancy}R，${best.n} 筆），先往這一級靠`;
+      } else {
+        out.why = '各 SQ 級距的樣本都不足 25 筆，尚無法據此加嚴';
+      }
+    }
+  } catch(_e) { out.why = '分析失敗：' + _e.message; }
+  _sqEdgeCache = out; _sqEdgeCacheTs = now;
+  return out;
+}
+
 function getAdaptiveGates() {
   const strict = { minConf: 60, minSq: 12, relaxed: false, label: '' };
   try {
+    // ── 加嚴優先於一切放寬 ──────────────────────────────────────
+    // 帳戶期望值為負時，絕不因為「今天訊號還不夠多」而降低門檻。
+    // 原本的邏輯是為了湊每日 3 筆而在中午、傍晚兩度放寬，等於在虧錢的時候
+    // 主動去收品質更差的單——這正是勝率一直上不去的結構性原因之一。
+    const be = accountBreakeven();
+    const losing = be && be.expectancy <= 0;
+
+    // 依實測把 SQ 門檻提高到「確實有優勢」的那一級
+    let base = strict;
+    try {
+      const edge = sqEdgeProfile();
+      if (edge.ready && edge.suggest && edge.suggest > strict.minSq) {
+        base = { minConf: strict.minConf, minSq: Math.min(21, edge.suggest), relaxed: false,
+                 label: `進場已依實測加嚴至 SQ≥${Math.min(21, edge.suggest)}：${edge.why}` };
+      }
+    } catch(_e) {}
+
+    if (losing) {
+      return { ...base, relaxed: false,
+        label: (base.label ? base.label + '　·　' : '')
+             + `帳戶期望值 ${be.expectancy}R（為負），停用所有配額性放寬` };
+    }
     // 連續止損 ≥3 筆時，停止一切配額性放寬（壞行情裡強湊每日訊號 = 送人頭）
-    if (globalLossStreak().streak >= 3) return strict;
+    if (globalLossStreak().streak >= 3) return base;
     const n = countSignalsToday();
-    if (n >= DAILY_SIGNAL_TARGET) return strict;
-    if (relaxedCohortUnderperforms()) return strict;  // 放寬單歷史勝率不佳 → 熔斷
+    if (n >= DAILY_SIGNAL_TARGET) return base;
+    if (relaxedCohortUnderperforms()) return base;  // 放寬單歷史勝率不佳 → 熔斷
+    // 放寬只在「帳戶本身是賺錢的」前提下才允許，且不會低於實測門檻
     const h = new Date().getHours();  // 本地時間
-    if (h >= 18) return { minConf: 55, minSq: 10, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬（SQ≥10、風控分≥55）` };
-    if (h >= 12) return { minConf: 58, minSq: 11, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調（SQ≥11、風控分≥58）` };
-    return strict;
+    if (h >= 18) return { minConf: Math.max(55, base.minConf - 5), minSq: Math.max(10, base.minSq - 2), relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬` };
+    if (h >= 12) return { minConf: Math.max(58, base.minConf - 2), minSq: Math.max(11, base.minSq - 1), relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調` };
+    return base;
   } catch(_e) { return strict; }
 }
 
@@ -17030,6 +17140,43 @@ function renderTradeLogPage() {
     </div>`;
   }
 
+  // 目前的進場門檻與其依據——加嚴到哪一級、為什麼，應該看得到
+  let gateHtml = '';
+  try {
+    const g = getAdaptiveGates();
+    const e = sqEdgeProfile();
+    const be = accountBreakeven();
+    gateHtml = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.75">
+      <div style="font-weight:700;margin-bottom:5px">🚪 目前的進場門檻</div>
+      收單條件：<b>SQ ≥ ${g.minSq}　風控分 ≥ ${g.minConf}</b>
+      ${g.relaxed ? '<span style="color:#f59e0b">（配額放寬中）</span>'
+                  : '<span style="color:#22c55e">（未放寬）</span>'}
+      ${g.label ? `<div style="font-size:0.76rem;color:var(--text2);margin-top:3px">${g.label}</div>` : ''}
+      ${e.ready && e.rows.length ? `
+        <div style="margin-top:8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+          <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+            <th style="padding:3px 6px;text-align:left">SQ 門檻</th><th style="padding:3px 6px">樣本</th>
+            <th style="padding:3px 6px">勝率</th><th style="padding:3px 6px">勝率下界</th>
+            <th style="padding:3px 6px">期望值</th></tr></thead>
+          <tbody>${e.rows.map(r => {
+            const pass = be && r.wrLb >= be.need && r.expectancy > 0 && r.n >= 25;
+            return `<tr style="text-align:right;${r.th === g.minSq ? 'background:rgba(99,102,241,.10)' : ''}">
+              <td style="padding:3px 6px;text-align:left;font-weight:${r.th === g.minSq ? '700' : '500'}">
+                SQ ≥ ${r.th}${r.th === g.minSq ? ' <span style="color:#818cf8;font-size:0.68rem">目前</span>' : ''}</td>
+              <td style="padding:3px 6px;color:${r.n >= 25 ? 'var(--text2)' : 'var(--text3)'}">${r.n}${r.n >= 25 ? '' : '/25'}</td>
+              <td style="padding:3px 6px">${r.winRate}%</td>
+              <td style="padding:3px 6px;color:${pass ? '#22c55e' : 'var(--text3)'}">${r.wrLb}%</td>
+              <td style="padding:3px 6px;color:${r.expectancy > 0 ? '#22c55e' : '#ef4444'}">${r.expectancy > 0 ? '+' : ''}${r.expectancy}R</td>
+            </tr>`; }).join('')}</tbody></table></div>
+        <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
+          「勝率下界」是 Wilson 95% 下界——小樣本的原始勝率會被運氣灌水，能拿來當門檻的是下界。
+          綠色代表該級距的下界已跨過兩平門檻${be ? ` ${be.need}%` : ''}且期望值為正。
+          門檻只會提高到<b>資料支持的那一級</b>，不會無限往上調（上限 SQ 21＝S 級，再高就沒有交易量了）。
+        </div>` : `<div style="font-size:0.76rem;color:var(--text3);margin-top:5px">${e.why}</div>`}
+    </div>`;
+  } catch(_e) {}
+
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
@@ -17068,6 +17215,7 @@ function renderTradeLogPage() {
     ${_tlDayPager(closed)}
     ${mismatchHtml}
     ${beHtml}
+    ${gateHtml}
     ${filterHtml}
     ${tableHtml}
     ${backupHtml}
