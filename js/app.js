@@ -10561,8 +10561,24 @@ function sqEdgeProfile() {
   return out;
 }
 
+/* 最低 R/R：兩平勝率 = 1 ÷ (1 + R/R)，反過來就是「目前勝率下，R/R 至少要多少」。
+   原本 R/R 過低只是扣風險分，扣完只要風控分還過門檻就照樣進場——但賺賠比
+   不夠時，那筆單在數學上就不可能有正期望值，扣分擋不住它。改為硬性門檻。 */
+function minRequiredRR() {
+  try {
+    const be = accountBreakeven();
+    if (!be || !(be.cur > 0)) return 1.2;               // 樣本不足：維持保守下限
+    // 以目前實測勝率反推所需 R/R，再留 15% 安全邊際。
+    // 上限壓在 2.0：勝率 24.9% 時數學上需要 R/R 3.0，但系統的止盈結構
+    // （分批出場加權後約 1.9）根本到不了那個數字，硬要求只會一筆都收不到——
+    // 那不是嚴格，是停擺。勝率太低要靠進場品質補，不是靠無限提高 R/R 要求。
+    const need = (100 - be.cur) / be.cur * 1.15;
+    return Math.max(1.2, Math.min(2.0, +need.toFixed(2)));
+  } catch(_e) { return 1.2; }
+}
+
 function getAdaptiveGates() {
-  const strict = { minConf: 60, minSq: 12, relaxed: false, label: '' };
+  const strict = { minConf: 60, minSq: 12, minRR: minRequiredRR(), relaxed: false, label: '' };
   try {
     // ── 加嚴優先於一切放寬 ──────────────────────────────────────
     // 帳戶期望值為負時，絕不因為「今天訊號還不夠多」而降低門檻。
@@ -10576,7 +10592,7 @@ function getAdaptiveGates() {
     try {
       const edge = sqEdgeProfile();
       if (edge.ready && edge.suggest && edge.suggest > strict.minSq) {
-        base = { minConf: strict.minConf, minSq: Math.min(21, edge.suggest), relaxed: false,
+        base = { minConf: strict.minConf, minSq: Math.min(21, edge.suggest), minRR: strict.minRR, relaxed: false,
                  label: `進場已依實測加嚴至 SQ≥${Math.min(21, edge.suggest)}：${edge.why}` };
       }
     } catch(_e) {}
@@ -10593,8 +10609,8 @@ function getAdaptiveGates() {
     if (relaxedCohortUnderperforms()) return base;  // 放寬單歷史勝率不佳 → 熔斷
     // 放寬只在「帳戶本身是賺錢的」前提下才允許，且不會低於實測門檻
     const h = new Date().getHours();  // 本地時間
-    if (h >= 18) return { minConf: Math.max(55, base.minConf - 5), minSq: Math.max(10, base.minSq - 2), relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬` };
-    if (h >= 12) return { minConf: Math.max(58, base.minConf - 2), minSq: Math.max(11, base.minSq - 1), relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調` };
+    if (h >= 18) return { minConf: Math.max(55, base.minConf - 5), minSq: Math.max(10, base.minSq - 2), minRR: base.minRR, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬` };
+    if (h >= 12) return { minConf: Math.max(58, base.minConf - 2), minSq: Math.max(11, base.minSq - 1), minRR: base.minRR, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調` };
     return base;
   } catch(_e) { return strict; }
 }
@@ -11947,6 +11963,21 @@ async function recordSignalsFromScan(data) {
       const _auditConf = Math.max(0, _auditPreConf - calcRiskPenalty(_auditRisk.score));
       if (_auditConf < _scanGates.minConf) {
         console.log(`[pre-audit] ${coin.symbol} 監控口徑風控分 ${_auditConf} < ${_scanGates.minConf}，不建單`);
+        continue;
+      }
+      // R/R 硬性門檻：賺賠比不足時，那筆單在數學上就不可能有正期望值，
+      // 只靠扣風險分擋不住（扣完只要風控分還過門檻仍會進場）。
+      // 比較的是「分批出場的加權 R/R」（止盈一落袋 60% + 尾倉到止盈二），
+      // 只看止盈一會低估這筆單真正的賺賠比。
+      const _auditRR2 = (setup.entry > 0 && setup.sl > 0 && setup.tp2 > 0 && Math.abs(setup.entry - setup.sl) > 0)
+        ? Math.abs(setup.tp2 - setup.entry) / Math.abs(setup.entry - setup.sl) : 0;
+      const _blendRR = _auditRR2 > 0
+        ? +(TP1_EXIT_FRAC * _auditRR + (1 - TP1_EXIT_FRAC) * _auditRR2).toFixed(2)
+        : _auditRR;
+      const _minRR = _scanGates.minRR || 1.2;
+      if (_blendRR > 0 && _blendRR < _minRR) {
+        console.log(`[pre-audit] ${coin.symbol} 加權 R/R ${_blendRR}（止盈一 ${_auditRR}／止盈二 ${_auditRR2.toFixed(2)}）`
+          + ` < ${_minRR}（目前勝率下所需），不建單`);
         continue;
       }
     } catch(_auE) { console.warn('[pre-audit]', _auE); }
@@ -15014,9 +15045,31 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
       if (_rTotal >= 3) {
         const _rLabel = (rule.warning || '').replace(/，AI 已下調信心/g, '').slice(0, 55);
         if (match) {
-          if (_rTotal >= 50 && _rRate >= 0.95) {
-            // 50筆以上且止損率≥95%：硬封鎖
-            blockReasons.push(`🚫 AI規則封鎖：「${_rLabel}」歷史止損率 ${(_rRate * 100).toFixed(0)}%（${_rTotal} 筆），AI 風控攔截`);
+          // ── 封鎖門檻（2026-08 修正）──────────────────────────────
+          // 原本要「50 筆以上且止損率 ≥95%」才硬封鎖，實務上幾乎不可能達到：
+          // 一個條件要 50 個樣本、而且 95% 都止損。結果是壞條件永遠只是扣分，
+          // 扣完只要風控分還過門檻就照樣進場——「規則不夠嚴格」的根源。
+          //
+          // 改為與帳戶的兩平勝率比較：算出該條件勝率的 Wilson 95% 上界，
+          // 若「用最樂觀的估計」都還低於兩平勝率，那它就是穩定賠錢的條件，
+          // 直接封鎖。樣本門檻降到 25 筆（可達到），判定用上界（不會錯殺）。
+          const _rWins = Math.max(0, _rTotal - (rule.lossCount != null ? rule.lossCount : Math.round(_rTotal * _rRate)));
+          const _rWrUb = wilsonUB(_rWins, _rTotal) * 100;
+          const _rBe = (typeof accountBreakeven === 'function') ? accountBreakeven() : null;
+          // 兩條封鎖路徑：
+          //   ① 上界都低於兩平＝「確定賠錢」，證據最強但小樣本時上界很寬鬆，
+          //      實測 30 筆／80% 止損率的條件上界仍有 37%，不會觸發
+          //   ② 點估計低於兩平且差距 ≥RULE_BLOCK_MARGIN pp＝「幾乎確定賠錢」，
+          //      這條才是實際會生效的那條
+          const _rWr = _rTotal ? _rWins / _rTotal * 100 : 0;
+          const _rBlock = (_rTotal >= RULE_BLOCK_MIN_N && _rBe && _rWrUb < _rBe.need)
+                       || (_rTotal >= RULE_BLOCK_MIN_N && _rBe && _rWr < _rBe.need - RULE_BLOCK_MARGIN)
+                       || (_rTotal >= 50 && _rRate >= 0.95);   // 保留原本的極端情況
+          if (_rBlock) {
+            blockReasons.push(_rBe && _rTotal >= RULE_BLOCK_MIN_N && _rWr < _rBe.need
+              ? `🚫 AI規則封鎖：「${_rLabel}」${_rTotal} 筆樣本勝率 ${_rWr.toFixed(0)}%`
+                + `（上界 ${_rWrUb.toFixed(0)}%），低於帳戶兩平勝率 ${_rBe.need}%，判定為賠錢條件`
+              : `🚫 AI規則封鎖：「${_rLabel}」歷史止損率 ${(_rRate * 100).toFixed(0)}%（${_rTotal} 筆），AI 風控攔截`);
             defenseChecks.push({ type: 'rule', label: _rLabel, count: _rTotal, pass: false, penalty: 0, rate: _rRate, blocked: true });
           } else {
             const _rPen = computeRulePenalty(_rTotal, _rRate);
@@ -16006,6 +16059,10 @@ const RISK_W_KEY    = 'csp_risk_weights';   // 學習出來的每個扣分條件
    ② 勝率低的時候沒有任何條件到得了 80%，整套審查形同從未執行過。
    改為雙向學習，門檻改成「相對比較 + Wilson 區間」，樣本需求也拉回可達到的範圍。 */
 const RISK_LEARN_MIN_N = 25;   // 條件成立的最少樣本
+/* 學習規則要封鎖進場所需的最少樣本（搭配「勝率上界低於兩平勝率」判定） */
+const RULE_BLOCK_MIN_N = 25;
+/* 點估計要低於兩平勝率幾個百分點才封鎖（避免把只差 1pp 的邊緣條件也擋掉）*/
+const RULE_BLOCK_MARGIN = 10;
 const RISK_W_MIN = 0, RISK_W_MAX = 1.8;
 
 /* Wilson 95% 信賴上界（下界的鏡像）：用於保守比較兩組勝率 */
@@ -17149,10 +17206,14 @@ function renderTradeLogPage() {
     gateHtml = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
         padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.75">
       <div style="font-weight:700;margin-bottom:5px">🚪 目前的進場門檻</div>
-      收單條件：<b>SQ ≥ ${g.minSq}　風控分 ≥ ${g.minConf}</b>
+      收單條件：<b>SQ ≥ ${g.minSq}　風控分 ≥ ${g.minConf}　R/R ≥ ${g.minRR}</b>
       ${g.relaxed ? '<span style="color:#f59e0b">（配額放寬中）</span>'
                   : '<span style="color:#22c55e">（未放寬）</span>'}
       ${g.label ? `<div style="font-size:0.76rem;color:var(--text2);margin-top:3px">${g.label}</div>` : ''}
+      ${be ? `<div style="font-size:0.76rem;color:var(--text3);margin-top:3px">
+        R/R 門檻由目前勝率 ${be.cur}% 反推：勝率 ${be.cur}% 需要 R/R ≥ ${((100 - be.cur) / be.cur).toFixed(2)}
+        才不虧，再留 15% 安全邊際 → ${g.minRR}。賺賠比不足的單在數學上不可能有正期望值，
+        因此改為硬性門檻，而不是只扣風險分。</div>` : ''}
       ${e.ready && e.rows.length ? `
         <div style="margin-top:8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
           <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
