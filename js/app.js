@@ -10052,6 +10052,475 @@ function commitNewTrade(newTrade) {
    手續費：進場收全倉，出場依 60/40 兩筆分別計（taker 各約 0.05%）。
    未觸及 TP1 的單維持原本 100% 單筆計算，行為不變。 */
 const TP1_EXIT_FRAC = 0.6;   // 觸及止盈一時減倉比例（與 tp1Reason 文案一致）
+
+/* ── 出場參數（單一來源）────────────────────────────────────────
+   這幾個數字原本是散在出場邏輯裡的字面量（0.6／0.5／0.8／16／0.3），
+   是當初憑推理定的，從來沒有人拿實際成交去驗證過。抽成一個設定物件有兩個
+   理由：① 實測重放與實盤走同一份參數，不會兩邊漂移；② 參數可以被「出場
+   實驗室」依實測資料調整，而不是永遠停在最初的猜測。 */
+const EXIT_CFG = {
+  tp1ExitFrac:  TP1_EXIT_FRAC,  // 觸及止盈一的減倉比例
+  tp1LockR:     0.5,            // 觸及止盈一後止損鎖定的獲利（R）
+  trailGiveR:   0.8,            // 移動停利的回吐容忍：鎖住「峰值 − 此值」
+  timeStopH:    16,             // 時間止損：短線單持倉超過幾小時
+  timeStopBandR:0.3,            // 時間止損的「原地踏步」帶寬（±R）
+};
+const EXIT_APPLY_KEY = 'csp_exit_applied';
+function loadExitApplied() {
+  try { const o = JSON.parse(localStorage.getItem(EXIT_APPLY_KEY) || 'null');
+    return (o && typeof o === 'object') ? o : null; } catch(_e) { return null; }
+}
+function saveExitApplied(o) {
+  try { localStorage.setItem(EXIT_APPLY_KEY, JSON.stringify(o)); } catch(_e) {}
+}
+/* 目前實際生效的出場參數：已套用的實測值 > 預設值。任一欄位缺失或不合理
+   就退回預設，避免壞掉的存檔把實盤出場邏輯帶歪。 */
+function exitEffective() {
+  const a = loadExitApplied();
+  if (a && a.active) {
+    const f = parseFloat(a.tp1ExitFrac), L = parseFloat(a.tp1LockR), g = parseFloat(a.trailGiveR);
+    if (f >= 0.2 && f <= 0.9 && L >= 0 && L <= 2 && g >= 0.2 && g <= 3) {
+      return { ...EXIT_CFG, tp1ExitFrac: f, tp1LockR: L, trailGiveR: g, src: 'learned' };
+    }
+  }
+  return { ...EXIT_CFG, src: 'default' };
+}
+
+/* ── 影子移動停利（讓「回吐容忍該多大」能被誠實地量出來）──────────
+   第一版重放是錯的，這裡把錯處寫下來，因為它是這類回測最常見的陷阱：
+
+   當時的算法是「拿記錄下來的峰值，套上另一個回吐容忍 g，算出場價」。
+   但收緊 g 的單，早在價格漲到那個峰值之前就已經被掃出場了——它根本走不到
+   那個峰值。用真實峰值去算收緊後的出場價，等於讓收緊的參數白拿了它自己
+   會錯過的那一段。結果是數學上必然：g 越小，重放出來的成績越好，最佳解
+   永遠是網格裡最緊的那一格。那不是發現，那是公式的產物。
+
+   正確做法是不要事後重建路徑，而是在單子還活著的時候，讓每一組候選參數
+   各自跑一個「影子止損」：影子沒被掃到，代表價格確實沒跌到它那裡，它才有
+   資格繼續跟著峰值往上；一旦被掃到就記下出場的 R 並凍結，之後的行情與它
+   無關。這樣量出來的是真的，不是推出來的。
+
+   已知的偏差（誠實標示，沒有資料可以補）：實單平倉後，那些「比實單更寬」
+   的影子還沒被掃到，但之後價格怎麼走沒有記錄，只能以實單的出場點結算。
+   因此這套量測對「放寬回吐」偏保守——寧可低估放寬的好處，也不要重蹈第一版
+   高估收緊的覆轍。 */
+const EXIT_L_GRID = [0.2, 0.5, 0.8, 1.2];        // 止盈一後的鎖利地板（R）
+const EXIT_G_GRID = [0.4, 0.6, 0.8, 1.1, 1.5];   // 移動停利回吐容忍（R）
+const EXIT_SHADOW_N = EXIT_L_GRID.length * EXIT_G_GRID.length;
+function exitShadowIdx(li, gi) { return li * EXIT_G_GRID.length + gi; }
+
+/* 每次報價更新時推進所有還活著的影子。curR/peakR/tp2R 皆為 R 單位。 */
+function exitShadowUpdate(trade, curR, peakR, tp2R) {
+  if (!Array.isArray(trade.trailShadow) || trade.trailShadow.length !== EXIT_SHADOW_N) {
+    trade.trailShadow = new Array(EXIT_SHADOW_N).fill(null);
+  }
+  let ch = false;
+  for (let li = 0; li < EXIT_L_GRID.length; li++) {
+    for (let gi = 0; gi < EXIT_G_GRID.length; gi++) {
+      const k = exitShadowIdx(li, gi);
+      if (trade.trailShadow[k] != null) continue;          // 已出場，凍結
+      if (isFinite(tp2R) && tp2R > 0 && curR >= tp2R) {     // 觸及止盈二＝整倉了結
+        trade.trailShadow[k] = +tp2R.toFixed(3); ch = true; continue;
+      }
+      const stopR = Math.max(EXIT_L_GRID[li], peakR - EXIT_G_GRID[gi]);
+      if (curR <= stopR) { trade.trailShadow[k] = +stopR.toFixed(3); ch = true; }
+    }
+  }
+  return ch;
+}
+/* 實單平倉：還活著的影子（比實單更寬）以實單出場點結算——見上方偏差說明。 */
+function exitShadowFinalize(trade, finalR) {
+  if (!Array.isArray(trade.trailShadow) || !isFinite(finalR)) return false;
+  let ch = false;
+  for (let k = 0; k < trade.trailShadow.length; k++) {
+    if (trade.trailShadow[k] == null) { trade.trailShadow[k] = +finalR.toFixed(3); ch = true; }
+  }
+  return ch;
+}
+
+/* ── 出場重放 ──────────────────────────────────────────────────
+   分成兩種可信度，不混為一談：
+
+   ① 止盈一減倉比例 f：完全誠實，不需要影子。改變 f 不改變價格路徑，也不
+      改變任何出場時點，只改變 60/40 這個權重怎麼分。舊單就能算，今天就能用。
+   ② 鎖利 L 與回吐 g：需要影子資料。沒有影子的舊單一律回傳 null（不猜），
+      由呼叫端決定要不要納入。 */
+function exitTradeParts(t) {
+  const dir = t.direction === 'long' ? 1 : -1;
+  const entry = parseFloat(t.entry);
+  const base  = parseFloat(t.baseSl != null ? t.baseSl : t.sl);
+  const risk  = Math.abs(entry - base);
+  if (!isFinite(entry) || !(risk > 0)) return null;
+  const rOf = p => (parseFloat(p) - entry) * dir / risk;
+  const tp1R = rOf(t.tp1);
+  if (!isFinite(tp1R) || tp1R <= 0) return null;
+  return { entry, risk, dir, rOf, tp1R,
+    tailR: isFinite(rOf(t.exitPrice)) ? rOf(t.exitPrice) : tp1R };
+}
+/* 手續費（R 單位）：進場收全倉，出場依 f/(1-f) 兩筆分別計，與 computeTradePnlR 同口徑 */
+function exitFeeR(p, f, tp1R, tailR) {
+  const tp1P = p.entry + tp1R * p.risk * p.dir, tailP = p.entry + tailR * p.risk * p.dir;
+  return (p.entry + f * tp1P + (1 - f) * tailP) * 0.0005 / p.risk;
+}
+function exitReplayTrade(t, cfg) {
+  const actual = parseFloat(t.pnlR);
+  if (!t.tp1Hit) return isFinite(actual) ? actual : null;   // 出場參數不影響
+  const p = exitTradeParts(t);
+  if (!p) return isFinite(actual) ? actual : null;
+  const f = cfg.tp1ExitFrac;
+  let tailR;
+  if (cfg.useShadow) {
+    const li = EXIT_L_GRID.indexOf(cfg.tp1LockR), gi = EXIT_G_GRID.indexOf(cfg.trailGiveR);
+    if (li < 0 || gi < 0) return null;
+    const sh = Array.isArray(t.trailShadow) && t.trailShadow.length === EXIT_SHADOW_N
+      ? t.trailShadow[exitShadowIdx(li, gi)] : null;
+    if (sh == null) return null;          // 沒有影子資料就不猜
+    tailR = sh;
+  } else {
+    tailR = p.tailR;                       // 只調 f：出場時點不變，用實際出場
+  }
+  return +(f * p.tp1R + (1 - f) * tailR - exitFeeR(p, f, p.tp1R, tailR)).toFixed(3);
+}
+
+function exitReplay(list, cfg) {
+  let n = 0, affected = 0, total = 0, w = 0, l = 0, skipped = 0;
+  for (const t of list) {
+    const r = exitReplayTrade(t, cfg);
+    if (r == null) { skipped++; continue; }
+    n++; total += r;
+    if (t.tp1Hit) affected++;
+    if (r > FLAT_R_EPS) w++; else if (r < -FLAT_R_EPS) l++;
+  }
+  return { n, affected, skipped, totalR: +total.toFixed(2),
+    expectancy: n ? +(total / n).toFixed(4) : 0,
+    wins: w, losses: l,
+    winRate: (w + l) ? +(w / (w + l) * 100).toFixed(1) : null };
+}
+/* 有影子資料、可用來評估 L／g 的樣本 */
+function exitShadowReady(list) {
+  return list.filter(t => t.tp1Hit && Array.isArray(t.trailShadow)
+    && t.trailShadow.length === EXIT_SHADOW_N && t.trailShadow.every(v => v != null));
+}
+
+const EXIT_F_GRID = [0.4, 0.5, 0.6, 0.7, 0.8];
+
+/* ── ① 止盈一減倉比例（今天就能算，不需要影子）──────────────────
+   改變 f 不改變任何出場時點，只改變「止盈一落袋多少、尾倉留多少」的權重，
+   所以拿既有的成交直接重算是誠實的。這也是三個參數裡最好調的一個：
+   尾倉留多留少，決定的是「賺賠比」還是「勝率」優先。 */
+function exitFracSweep(list) {
+  const rows = EXIT_F_GRID.map(f => {
+    const r = exitReplay(list, { tp1ExitFrac: f });
+    return { f, expectancy: r.expectancy, totalR: r.totalR, winRate: r.winRate, n: r.n };
+  });
+  const best = rows.reduce((a, b2) => (b2.expectancy > a.expectancy ? b2 : a), rows[0]);
+  return { rows, best };
+}
+
+/* ── ② 鎖利 L × 回吐 g（需要影子資料）──────────────────────────
+   網格搜尋 + 鄰域平均：只看單格最高分必然選到過擬合的尖峰，能上實盤的是
+   「周圍一圈都不差」的平原。 */
+function exitTrailGrid(list, f) {
+  const ready = exitShadowReady(list);
+  if (!ready.length) return { ok: false, why: '尚無影子資料', ready: 0 };
+  // 分母仍是全部已平倉單：出場參數只影響觸及止盈一的那群，但期望值要攤在
+  // 所有單上算，否則等於用「只看有賺的那群」的數字做決策。
+  const others = list.filter(t => !t.tp1Hit && isFinite(parseFloat(t.pnlR)));
+  const otherSum = others.reduce((a, t) => a + parseFloat(t.pnlR), 0);
+  const denom = ready.length + others.length;
+  const score = (li, gi) => {
+    let sum = otherSum;
+    for (const t of ready) {
+      const r = exitReplayTrade(t, { tp1ExitFrac: f, tp1LockR: EXIT_L_GRID[li],
+        trailGiveR: EXIT_G_GRID[gi], useShadow: true });
+      if (r == null) return null;
+      sum += r;
+    }
+    return +(sum / denom).toFixed(4);
+  };
+  const cube = EXIT_L_GRID.map((_, li) => EXIT_G_GRID.map((__, gi) => score(li, gi)));
+  let best = null, peak = null;
+  for (let li = 0; li < EXIT_L_GRID.length; li++)
+    for (let gi = 0; gi < EXIT_G_GRID.length; gi++) {
+      if (cube[li][gi] == null) continue;
+      let sum = 0, cnt = 0;
+      for (const [dl, dg] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]) {
+        const a = li + dl, b2 = gi + dg;
+        if (cube[a] && cube[a][b2] != null) { sum += cube[a][b2]; cnt++; }
+      }
+      const o = { tp1LockR: EXIT_L_GRID[li], trailGiveR: EXIT_G_GRID[gi],
+        expectancy: cube[li][gi], nbr: +(sum / cnt).toFixed(4) };
+      if (!peak || o.expectancy > peak.expectancy) peak = o;
+      if (!best || o.nbr > best.nbr) best = o;
+    }
+  return { ok: !!best, best, peak, cube, ready: ready.length, denom };
+}
+
+/* 目前生效的參數在同一把尺上的分數（供比較用） */
+function exitCurrentScore(list, cfg) {
+  const g = exitTrailGrid(list, cfg.tp1ExitFrac);
+  if (!g.ok) return null;
+  const li = EXIT_L_GRID.indexOf(cfg.tp1LockR), gi = EXIT_G_GRID.indexOf(cfg.trailGiveR);
+  return (li >= 0 && gi >= 0 && g.cube[li][gi] != null) ? g.cube[li][gi] : null;
+}
+
+/* 前後段驗證：用前 70% 找最佳參數，拿去後 30% 看還有沒有優勢。
+   邊際要求 EXIT_WF_MARGIN，避免把雜訊當成進步。 */
+const EXIT_WF_MARGIN = 0.06;
+function exitWalkForward(list, mode) {
+  const sorted = list.slice().sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+  const cut = Math.floor(sorted.length * 0.7);
+  if (cut < 20 || sorted.length - cut < 10) return { ok: false, why: '樣本不足以做前後段驗證' };
+  const train = sorted.slice(0, cut), test = sorted.slice(cut);
+  const cur = exitEffective();
+  const baseCfg = { tp1ExitFrac: cur.tp1ExitFrac, tp1LockR: cur.tp1LockR, trailGiveR: cur.trailGiveR };
+  if (mode === 'frac') {
+    const opt = { tp1ExitFrac: exitFracSweep(train).best.f };
+    const tOpt = exitReplay(test, opt), tBase = exitReplay(test, { tp1ExitFrac: baseCfg.tp1ExitFrac });
+    const delta = +(tOpt.expectancy - tBase.expectancy).toFixed(4);
+    return { ok: true, mode, nTrain: train.length, nTest: test.length, opt,
+      testOpt: tOpt.expectancy, testBase: tBase.expectancy, delta,
+      pass: delta >= EXIT_WF_MARGIN, marginal: delta > 0 && delta < EXIT_WF_MARGIN };
+  }
+  const gTr = exitTrailGrid(train, baseCfg.tp1ExitFrac);
+  if (!gTr.ok) return { ok: false, why: '訓練段沒有足夠的影子資料' };
+  const gTe = exitTrailGrid(test, baseCfg.tp1ExitFrac);
+  if (!gTe.ok) return { ok: false, why: '測試段沒有足夠的影子資料' };
+  const li = EXIT_L_GRID.indexOf(gTr.best.tp1LockR), gi = EXIT_G_GRID.indexOf(gTr.best.trailGiveR);
+  const bl = EXIT_L_GRID.indexOf(baseCfg.tp1LockR), bg = EXIT_G_GRID.indexOf(baseCfg.trailGiveR);
+  const tOpt = gTe.cube[li]?.[gi], tBase = (bl >= 0 && bg >= 0) ? gTe.cube[bl]?.[bg] : null;
+  if (tOpt == null || tBase == null) return { ok: false, why: '測試段無法對照目前參數' };
+  const delta = +(tOpt - tBase).toFixed(4);
+  return { ok: true, mode: 'trail', nTrain: train.length, nTest: test.length,
+    opt: { tp1LockR: gTr.best.tp1LockR, trailGiveR: gTr.best.trailGiveR },
+    testOpt: tOpt, testBase: tBase, delta,
+    pass: delta >= EXIT_WF_MARGIN, marginal: delta > 0 && delta < EXIT_WF_MARGIN };
+}
+
+/* 出場實驗室的樣本：只收「觸及止盈一」有意義的單 + 全部已平倉單當分母。
+   出場參數只影響前者，但期望值必須攤在全部單上算，否則會用一個
+   「只看有賺的那群」的數字去做決策。 */
+function buildExitLabPanel() {
+  const eff = exitEffective();
+  const all = exitSamples();
+  const nTp1 = all.filter(t => t.tp1Hit).length;
+  const shadowN = exitShadowReady(all).length;
+  const dec = exitAutoDecide({ dryRun: true });   // 渲染必須用 dryRun：看頁面不該改實盤參數
+  const cur = { tp1ExitFrac: eff.tp1ExitFrac, tp1LockR: eff.tp1LockR, trailGiveR: eff.trailGiveR };
+  const mae = all.map(t => parseFloat(t.maeR)).filter(v => isFinite(v) && v >= 0);
+  const pc = v => Math.round(v * 100) + '%';
+  const wrap = (inner) => `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.75">
+      <div style="font-weight:700;margin-bottom:5px">🎚️ 出場實驗室（減倉比例／鎖利／移動停利）</div>
+      <div>目前生效：<b>止盈一減倉 ${pc(eff.tp1ExitFrac)}　止損鎖利 +${eff.tp1LockR}R　移動停利回吐 ${eff.trailGiveR}R</b>
+        <span style="color:${eff.src === 'learned' ? '#22c55e' : 'var(--text3)'};font-size:0.75rem">
+        （${eff.src === 'learned' ? '已依實測調整' : '預設值'}）</span></div>${inner}</div>`;
+
+  const foot = `<div style="font-size:0.72rem;color:var(--text3);margin-top:7px;
+      border-top:1px solid var(--border);padding-top:6px">
+      <b>為什麼分成兩塊算：</b>改變<b>減倉比例</b>不會改變任何出場時點，只改變止盈一落袋多少、
+      尾倉留多少的權重，所以拿既有成交直接重算是誠實的。<br>
+      <b>鎖利與回吐不行</b>——收緊回吐的單，早在價格漲到那個峰值之前就被掃出場了，
+      拿記錄下來的峰值去回推它的出場價，等於讓收緊的參數白拿它自己會錯過的那一段，
+      結果是數學上必然：越緊分數越高，最佳解永遠是網格裡最緊的那一格。那是公式的產物，不是發現。
+      所以改成在單子還活著的時候，讓每組候選參數各自跑一個<b>影子止損</b>，被掃到才記，量到的才算。
+      <br>已知偏差：實單平倉後那些「比實單更寬」的影子還沒被掃到，只能以實單出場點結算——
+      這讓量測對<b>放寬</b>偏保守，寧可低估放寬的好處，也不重蹈高估收緊的覆轍。
+      ${mae.length ? `<br>另已累積 ${mae.length} 筆最大逆走（MAE），中位數 ${_medOf(mae).toFixed(2)}R、
+        第 85 百分位 ${_pctOf(mae, 85).toFixed(2)}R——這是日後回答「止損該放寬還是收緊」的硬資料。` : ''}
+    </div>`;
+
+  if (all.length < EXIT_APPLY.minSamples || nTp1 < EXIT_APPLY.minTp1) {
+    return wrap(`<div style="font-size:0.76rem;color:var(--text2);margin-top:4px">${dec.why}</div>` + foot);
+  }
+
+  // ── ① 減倉比例（今天就能算）──
+  let fHtml = '';
+  try {
+    const fs = exitFracSweep(all);
+    fHtml = `<div style="margin-top:9px;font-weight:600;font-size:0.78rem">① 止盈一減倉比例（${nTp1} 筆觸及止盈一）</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+        <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+          <th style="padding:3px 6px;text-align:left">減倉比例</th><th style="padding:3px 6px">期望值/筆</th>
+          <th style="padding:3px 6px">勝率</th><th style="padding:3px 6px">總計</th></tr></thead>
+        <tbody>${fs.rows.map(r => {
+          const isCur = r.f === cur.tp1ExitFrac, isBest = r.f === fs.best.f;
+          return `<tr style="text-align:right;${isBest ? 'background:rgba(34,197,94,.10)' : isCur ? 'background:rgba(99,102,241,.10)' : ''}">
+            <td style="padding:3px 6px;text-align:left;font-weight:${isCur || isBest ? '700' : '500'}">${pc(r.f)}
+              ${isCur ? '<span style="color:#818cf8;font-size:0.68rem">目前</span>' : ''}
+              ${isBest && !isCur ? '<span style="color:#22c55e;font-size:0.68rem">實測最佳</span>' : ''}</td>
+            <td style="padding:3px 6px;color:${r.expectancy > 0 ? '#22c55e' : '#ef4444'}">${r.expectancy > 0 ? '+' : ''}${r.expectancy}R</td>
+            <td style="padding:3px 6px">${r.winRate == null ? '—' : r.winRate + '%'}</td>
+            <td style="padding:3px 6px">${r.totalR > 0 ? '+' : ''}${r.totalR}R</td></tr>`; }).join('')}
+        </tbody></table></div>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">
+        減倉留少一點＝尾倉大，靠賺賠比；減倉留多一點＝落袋早，靠勝率。這張表是用實際成交比出來的，不是取捨的口號。</div>`;
+  } catch(_e) {}
+
+  // ── ② 鎖利 × 回吐（需要影子資料）──
+  let tHtml = '';
+  try {
+    if (shadowN < EXIT_APPLY.minShadow) {
+      tHtml = `<div style="margin-top:9px;font-weight:600;font-size:0.78rem">② 鎖利 × 移動停利回吐</div>
+        <div style="font-size:0.76rem;color:var(--text2)">
+          影子樣本 <b>${shadowN}/${EXIT_APPLY.minShadow}</b> 累積中。這兩個參數沒辦法從舊資料回推
+          （回推會系統性地偏袒收緊），只能等新的單子一邊跑一邊量，所以需要時間。</div>`;
+    } else {
+      const tg = exitTrailGrid(all, cur.tp1ExitFrac);
+      const curScore = exitCurrentScore(all, cur);
+      const wf = (() => { try { return exitWalkForward(all, 'trail'); } catch(_e) { return { ok: false, why: '' }; } })();
+      tHtml = `<div style="margin-top:9px;font-weight:600;font-size:0.78rem">
+          ② 鎖利 × 移動停利回吐（${shadowN} 筆影子樣本）</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+          <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+            <th style="padding:3px 6px;text-align:left">鎖利＼回吐</th>
+            ${EXIT_G_GRID.map(g => `<th style="padding:3px 6px">${g}R</th>`).join('')}</tr></thead>
+          <tbody>${EXIT_L_GRID.map((L, li) => `<tr style="text-align:right">
+            <td style="padding:3px 6px;text-align:left;color:var(--text2)">+${L}R</td>
+            ${EXIT_G_GRID.map((g, gi) => {
+              const v = tg.cube?.[li]?.[gi];
+              const isCur = L === cur.tp1LockR && g === cur.trailGiveR;
+              const isBest = tg.best && L === tg.best.tp1LockR && g === tg.best.trailGiveR;
+              return `<td style="padding:3px 6px;${isBest ? 'background:rgba(34,197,94,.14);font-weight:700' : isCur ? 'background:rgba(99,102,241,.12);font-weight:700' : ''}
+                color:${v == null ? 'var(--text3)' : v > 0 ? '#22c55e' : '#ef4444'}">${v == null ? '—' : (v > 0 ? '+' : '') + v}</td>`;
+            }).join('')}</tr>`).join('')}
+          </tbody></table></div>
+        <div style="font-size:0.72rem;color:var(--text3);margin-top:3px">
+          格內是期望值 R/筆（分母含全部已平倉單）。紫底＝目前、綠底＝鄰域平均最佳。
+          ${curScore != null && tg.best ? `目前 ${curScore}R，最佳 ${tg.best.expectancy}R（差 ${(tg.best.expectancy - curScore).toFixed(4)}R）。` : ''}
+          ${tg.peak && tg.best && (tg.peak.tp1LockR !== tg.best.tp1LockR || tg.peak.trailGiveR !== tg.best.trailGiveR)
+            ? `單格最高分其實是 鎖利 +${tg.peak.tp1LockR}R／回吐 ${tg.peak.trailGiveR}R，但周圍一圈沒跟上，那是尖峰不是平原，不採用。` : ''}
+          ${wf.ok ? `<br>前後段驗證：前 ${wf.nTrain} 筆找出的參數放到後 ${wf.nTest} 筆
+            → ${wf.testOpt}R vs 目前 ${wf.testBase}R，<b style="color:${wf.pass ? '#22c55e' : '#f59e0b'}">${wf.pass ? '通過' : `差 ${wf.delta}R 未達邊際 ${EXIT_WF_MARGIN}R`}</b>` : ''}
+        </div>`;
+    }
+  } catch(_e) {}
+
+  return wrap(fHtml + tHtml
+    + `<div style="font-size:0.74rem;color:var(--text2);margin-top:7px">自動採用判定：${dec.why || '—'}</div>`
+    + foot);
+}
+function _medOf(arr) { return _pctOf(arr, 50); }
+function _pctOf(arr, p) {
+  const s = arr.slice().sort((a, b) => a - b);
+  if (!s.length) return 0;
+  const i = (s.length - 1) * p / 100, lo = Math.floor(i), hi = Math.ceil(i);
+  return lo === hi ? s[lo] : s[lo] + (s[hi] - s[lo]) * (i - lo);
+}
+
+function exitSamples() {
+  try {
+    return learnSamples().filter(t => t.status === 'closed'
+      && isFinite(parseFloat(t.pnlR)) && isFinite(parseFloat(t.entry)));
+  } catch(_e) { return []; }
+}
+
+const EXIT_APPLY = { minSamples: 60, minTp1: 20, minShadow: 25, minDelta: 0.06,
+                     cooldownH: 12, reviewN: 25, rollbackEdge: -0.04 };
+/* 自動採用：兩條軌道分開判定，因為可信度不同。
+   · 減倉比例 f：既有成交就能誠實重算，樣本一夠就能調。
+   · 鎖利 L／回吐 g：要等影子資料累積夠，沒到就明說還在累積，不用猜的先上。
+   兩者都要過「鄰域平均取勝 + 前後段驗證 + 最小差距」，採用後持續複核，
+   實際表現轉差就自動回退。
+   dryRun 是必要的：畫面渲染會呼叫這個函式，看一眼頁面不該改動實盤參數。 */
+function exitAutoDecide(opts = {}) {
+  const dry = !!opts.dryRun;
+  const out = { action: 'none', why: '' };
+  try {
+    const cur = loadExitApplied();
+    const all = exitSamples();
+    const now = Date.now();
+    const commit = (o) => { if (!dry) saveExitApplied(o); };
+
+    // ① 先看要不要回退：已採用的參數在採用之後的實際成交裡表現轉差
+    if (cur && cur.active) {
+      const since = all.filter(t => (t.exitTime || 0) > (cur.at || 0));
+      if (since.length >= EXIT_APPLY.reviewN) {
+        const eNow = since.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / since.length;
+        if (eNow < EXIT_APPLY.rollbackEdge) {
+          out.action = 'rollback';
+          out.why = `採用後 ${since.length} 筆的實際期望值 ${eNow.toFixed(3)}R 低於回退線 `
+                  + `${EXIT_APPLY.rollbackEdge}R，退回預設出場參數`;
+          commit({ active: false, at: now, rolledBackFrom: {
+            tp1ExitFrac: cur.tp1ExitFrac, tp1LockR: cur.tp1LockR, trailGiveR: cur.trailGiveR },
+            history: [...(cur.history || []), { at: now, action: 'rollback', why: out.why }].slice(-20) });
+          return out;
+        }
+      }
+      if (now - (cur.at || 0) < EXIT_APPLY.cooldownH * 3600 * 1000) {
+        out.why = `冷卻中（採用後未滿 ${EXIT_APPLY.cooldownH} 小時）`;
+        return out;
+      }
+    }
+
+    const nTp1 = all.filter(t => t.tp1Hit).length;
+    if (all.length < EXIT_APPLY.minSamples || nTp1 < EXIT_APPLY.minTp1) {
+      out.why = `樣本不足：已平倉 ${all.length}/${EXIT_APPLY.minSamples}、`
+              + `其中觸及止盈一 ${nTp1}/${EXIT_APPLY.minTp1}（出場參數只影響這群單）`;
+      return out;
+    }
+    const eff = exitEffective();
+    const baseCfg = { tp1ExitFrac: eff.tp1ExitFrac, tp1LockR: eff.tp1LockR, trailGiveR: eff.trailGiveR };
+    const next = { ...baseCfg };
+    const reasons = [];
+
+    // ② 減倉比例
+    const fs = exitFracSweep(all);
+    const fBase = exitReplay(all, { tp1ExitFrac: baseCfg.tp1ExitFrac }).expectancy;
+    const fDelta = +(fs.best.expectancy - fBase).toFixed(4);
+    if (fs.best.f !== baseCfg.tp1ExitFrac && fDelta >= EXIT_APPLY.minDelta) {
+      const wf = exitWalkForward(all, 'frac');
+      if (wf.ok && wf.pass) {
+        next.tp1ExitFrac = fs.best.f;
+        reasons.push(`減倉比例 ${Math.round(baseCfg.tp1ExitFrac * 100)}%→${Math.round(fs.best.f * 100)}%`
+          + `（多 ${fDelta}R/筆，前後段後段仍多 ${wf.delta}R）`);
+      } else {
+        out.why = `減倉比例：實測最佳 ${Math.round(fs.best.f * 100)}% 多 ${fDelta}R，但`
+                + (wf.ok ? `前後段驗證只贏 ${wf.delta}R，未達邊際 ${EXIT_WF_MARGIN}R` : wf.why) + '；';
+      }
+    } else {
+      out.why = fs.best.f === baseCfg.tp1ExitFrac
+        ? '減倉比例已是實測最佳；'
+        : `減倉比例最佳解只多 ${fDelta}R，未達採用門檻 ${EXIT_APPLY.minDelta}R；`;
+    }
+
+    // ③ 鎖利 × 回吐（需要影子資料）
+    const shadowN = exitShadowReady(all).length;
+    if (shadowN < EXIT_APPLY.minShadow) {
+      out.why += `鎖利／回吐：影子樣本 ${shadowN}/${EXIT_APPLY.minShadow} 累積中`
+              + `（這兩個參數不能靠事後推算，只能等單子活著的時候量，見出場實驗室說明）`;
+    } else {
+      const tg = exitTrailGrid(all, next.tp1ExitFrac);
+      const curScore = exitCurrentScore(all, { ...baseCfg, tp1ExitFrac: next.tp1ExitFrac });
+      if (tg.ok && curScore != null) {
+        const tDelta = +(tg.best.expectancy - curScore).toFixed(4);
+        const sameLG = tg.best.tp1LockR === baseCfg.tp1LockR && tg.best.trailGiveR === baseCfg.trailGiveR;
+        if (!sameLG && tDelta >= EXIT_APPLY.minDelta) {
+          const wf = exitWalkForward(all, 'trail');
+          if (wf.ok && wf.pass) {
+            next.tp1LockR = tg.best.tp1LockR; next.trailGiveR = tg.best.trailGiveR;
+            reasons.push(`鎖利 ${baseCfg.tp1LockR}R→${tg.best.tp1LockR}R、回吐 ${baseCfg.trailGiveR}R→${tg.best.trailGiveR}R`
+              + `（多 ${tDelta}R/筆，${shadowN} 筆影子，前後段後段仍多 ${wf.delta}R）`);
+          } else {
+            out.why += `鎖利／回吐：實測最佳多 ${tDelta}R，但`
+                     + (wf.ok ? `前後段驗證只贏 ${wf.delta}R` : wf.why);
+          }
+        } else {
+          out.why += sameLG ? '鎖利／回吐已是實測最佳' : `鎖利／回吐最佳解只多 ${tDelta}R，未達採用門檻`;
+        }
+      }
+    }
+
+    if (!reasons.length) return out;
+    out.action = 'apply'; out.from = baseCfg; out.to = next;
+    out.why = reasons.join('；');
+    commit({ active: true, at: now, ...next,
+      baseline: (cur && cur.active) ? { tp1ExitFrac: cur.tp1ExitFrac, tp1LockR: cur.tp1LockR, trailGiveR: cur.trailGiveR } : null,
+      history: [...((cur && cur.history) || []), { at: now, action: 'apply', from: baseCfg, to: next, why: out.why }].slice(-20) });
+  } catch(_e) { out.why = '判定失敗：' + _e.message; }
+  return out;
+}
+
 function computeTradePnlR(trade, exitPrice, baseRisk, isLong) {
   const entry = parseFloat(trade.entry) || 0;
   const exit  = parseFloat(exitPrice)   || 0;
@@ -10060,7 +10529,10 @@ function computeTradePnlR(trade, exitPrice, baseRisk, isLong) {
   const tp1   = parseFloat(trade.tp1) || 0;
   // 已觸及 TP1：60% 在 TP1 落袋，40% 尾倉跑到最終出場價
   if (trade.tp1Hit && tp1 > 0) {
-    const f = TP1_EXIT_FRAC;
+    // 用「這筆單觸及止盈一當下的減倉比例」，不是現在的設定值。出場參數會隨
+    // 實測調整，若一律套用當下設定，過去的損益會被追溯改寫，學習與勝率統計
+    // 就都建立在沒發生過的成交上。
+    const f = isFinite(parseFloat(trade.tp1Frac)) ? parseFloat(trade.tp1Frac) : TP1_EXIT_FRAC;
     const gross = (f * (tp1 - entry) + (1 - f) * (exit - entry)) * dir;
     const fee   = (entry + f * tp1 + (1 - f) * exit) * 0.0005;
     return ((gross - fee) / risk).toFixed(2);
@@ -12919,6 +13391,22 @@ function updateOpenTrades(data) {
     const baseRisk = Math.abs(entry - (trade.baseSl ?? sl)) || Math.abs(entry - sl) || 1;
     const isLong = direction === 'long';
     let outcome = null;
+    const _xc = exitEffective();
+
+    // ── MAE／MFE 追蹤（最大逆走／最大順走，R 為單位）────────────────
+    // 沒有這兩個數字，「止損該放寬還是收緊」「止盈該近還是遠」永遠只能用猜的。
+    // 快速單早就在記，主系統之前只在「觸及止盈一之後」或「可加倉的長線單」
+    // 才更新 peakPrice——也就是說最需要診斷的那群單（還沒到止盈一就被掃掉的）
+    // 完全沒有軌跡可查。改為無條件記錄，兩個方向都記。
+    {
+      const _uR = ((cur - entry) * (isLong ? 1 : -1)) / baseRisk;
+      const _mae = Math.max(trade.maeR || 0, -Math.min(0, _uR));
+      const _mfe = Math.max(trade.mfeR || 0,  Math.max(0, _uR));
+      if (_mae !== trade.maeR || _mfe !== trade.mfeR) {
+        trade.maeR = +_mae.toFixed(3); trade.mfeR = +_mfe.toFixed(3); changed = true;
+      }
+      if (trade.peakPrice == null) { trade.peakPrice = cur; changed = true; }
+    }
 
     // ── +1R 提前保本已移除（2026-07）──────────────────────────────
     // 原因：止損只有 1R，+1R 在加密貨幣只是很小的波動（不到 TP1 的 1.5R）。
@@ -12929,11 +13417,11 @@ function updateOpenTrades(data) {
     // ── 時間止損：短線單持倉 >16 小時仍在 ±0.3R 內原地踏步 → 保本離場 ──
     // 停滯單多數最終走向止損；主動平掉換防，長線單（canScaleIn）不適用
     if (!trade.canScaleIn && trade.entryTime
-        && Date.now() - trade.entryTime > 16 * 3600 * 1000) {
+        && Date.now() - trade.entryTime > _xc.timeStopH * 3600 * 1000) {
       const _uRt = ((cur - entry) * (isLong ? 1 : -1)) / baseRisk;
       // 觸發條件仍是「在 ±0.3R 內原地踏步」，但結果要照實際損益標記：
       // 在 -0.29R 出場是虧損，標成平手會讓它被排除在勝率分母外，帳面勝率灌水
-      if (Math.abs(_uRt) < 0.3) { trade.timeStopped = true; outcome = outcomeByR(_uRt); }
+      if (Math.abs(_uRt) < _xc.timeStopBandR) { trade.timeStopped = true; outcome = outcomeByR(_uRt); }
     }
 
     // ── TP1 後移動停利（優化）：鎖住峰值後方 0.8R，只往獲利方向棘輪不回落 ──
@@ -12943,7 +13431,15 @@ function updateOpenTrades(data) {
     if (trade.tp1Hit && !outcome) {
       trade.peakPrice = isLong ? Math.max(trade.peakPrice ?? cur, cur) : Math.min(trade.peakPrice ?? cur, cur);
       const _peakR   = (isLong ? (trade.peakPrice - entry) : (entry - trade.peakPrice)) / baseRisk;
-      const _lockR   = Math.max(0, _peakR - 0.8);   // 鎖住峰值後方 0.8R（>0 才進獲利區）
+      // 影子移動停利：每組候選參數各自跑一個止損，被掃到就記下出場的 R。
+      // 「回吐容忍該多大」只能這樣量——事後拿峰值回推，等於讓收緊的參數白拿
+      // 它自己會錯過的那一段，最佳解永遠是最緊的那一格（見 exitShadowUpdate 註解）。
+      {
+        const _curR = ((cur - entry) * (isLong ? 1 : -1)) / baseRisk;
+        const _tp2R = ((parseFloat(tp2) - entry) * (isLong ? 1 : -1)) / baseRisk;
+        if (exitShadowUpdate(trade, _curR, _peakR, _tp2R)) changed = true;
+      }
+      const _lockR   = Math.max(_xc.tp1LockR, _peakR - _xc.trailGiveR);   // 鎖住峰值後方 trailGiveR，地板為 TP1 鎖利位
       const _trailSL = isLong ? entry + _lockR * baseRisk : entry - _lockR * baseRisk;
       if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) {
         const _oldSL = trade.sl;
@@ -12962,8 +13458,11 @@ function updateOpenTrades(data) {
           // TP1 觸及：止損鎖 +0.5R 獲利（非成本）——回踩就以小獲利出場(算贏)，
           // 不再有「保本窗口」被回踩掃成 be(輸)。之後移動停利往上棘輪。
           const _slBefore = trade.sl;
-          trade.tp1Hit = true; trade.sl = entry + baseRisk * 0.5; changed = true;
-          sendSLChangeNotification(trade, _slBefore, trade.sl, '觸及止盈一：減倉 60%，止損上移鎖定 +0.5R 獲利');
+          trade.tp1Hit = true; trade.sl = entry + baseRisk * _xc.tp1LockR;
+          trade.tp1Frac = _xc.tp1ExitFrac;   // 記下當時的減倉比例：日後參數變了，舊單的損益仍照當時規則算
+          changed = true;
+          sendSLChangeNotification(trade, _slBefore, trade.sl,
+            `觸及止盈一：減倉 ${Math.round(_xc.tp1ExitFrac * 100)}%，止損上移鎖定 +${_xc.tp1LockR}R 獲利`);
           tp1Hits.push({ trade, coin, cur });
         } else if (cur <= trade.sl) {
           // 止損被觸及：成本以上=移動停利獲利了結(tp1贏)、成本=保本(be)、成本以下=止損(sl)
@@ -12976,8 +13475,11 @@ function updateOpenTrades(data) {
           if (!trade.baseSl) trade.baseSl = sl; // 保存原始止損
           // TP1 觸及：止損鎖 +0.5R 獲利（非成本），回踩以小獲利出場(算贏)
           const _slBefore = trade.sl;
-          trade.tp1Hit = true; trade.sl = entry - baseRisk * 0.5; changed = true;
-          sendSLChangeNotification(trade, _slBefore, trade.sl, '觸及止盈一：減倉 60%，止損下移鎖定 +0.5R 獲利');
+          trade.tp1Hit = true; trade.sl = entry - baseRisk * _xc.tp1LockR;
+          trade.tp1Frac = _xc.tp1ExitFrac;
+          changed = true;
+          sendSLChangeNotification(trade, _slBefore, trade.sl,
+            `觸及止盈一：減倉 ${Math.round(_xc.tp1ExitFrac * 100)}%，止損下移鎖定 +${_xc.tp1LockR}R 獲利`);
           tp1Hits.push({ trade, coin, cur });
         } else if (cur >= trade.sl) {
           outcome = trade.sl < entry ? 'tp1' : (trade.sl > entry ? 'sl' : 'be');
@@ -13012,6 +13514,9 @@ function updateOpenTrades(data) {
       // 分批出場加權損益（觸及 TP1 者 60% 落袋 + 40% 尾倉），兩處出場路徑共用同一函式
       trade.pnlR = computeTradePnlR(trade, trade.exitPrice, baseRisk, isLong);
       recordPnlMismatch(trade, 'main');
+      // 還沒被掃到的影子（比實單更寬）以實單出場點結算——平倉後價格怎麼走
+      // 沒有記錄，只能這樣。這讓量測對「放寬回吐」偏保守，是刻意的選擇。
+      exitShadowFinalize(trade, ((trade.exitPrice - entry) * (isLong ? 1 : -1)) / baseRisk);
       if (outcome === 'sl' || outcome === 'be') {
         trade.analysis = generateTradeAnalysis(trade);
       }
@@ -13223,6 +13728,11 @@ function updateOpenTrades(data) {
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
   if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
+  // 出場參數自我調整：資料變動後才重評，且每小時最多一次（網格重放不便宜）
+  if (changed && Date.now() - (updateOpenTrades._exitAt || 0) > 3600 * 1000) {
+    updateOpenTrades._exitAt = Date.now();
+    try { const d = exitAutoDecide(); if (d.action !== 'none') console.info('[exit-lab]', d.action, d.why); } catch(_e) {}
+  }
   return cancelledSymbols;
 }
 
@@ -17447,6 +17957,10 @@ function renderTradeLogPage() {
     </div>`;
   } catch(_e) {}
 
+  // 出場實驗室：止盈一減倉比例／鎖利／移動停利回吐，用實際成交重放比較
+  let exitHtml = '';
+  try { exitHtml = buildExitLabPanel(); } catch(_e) {}
+
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
@@ -17487,6 +18001,7 @@ function renderTradeLogPage() {
     ${beHtml}
     ${gateHtml}
     ${condHtml}
+    ${exitHtml}
     ${filterHtml}
     ${tableHtml}
     ${backupHtml}
@@ -17687,6 +18202,9 @@ const LEARN_ARCHIVE_MAX = 1200;
 const LEARN_KEEP_FIELDS = [
   'id', 'symbol', 'direction', 'timestamp', 'exitTime', 'outcome', 'pnlR', 'grade',
   'status', 'entry', 'exitPrice', 'tp1Hit', 'sqScore', 'sqGate', 'gateRelaxed',
+  // 出場重放必需：原始止損、兩個止盈、峰值、當時的減倉比例、MAE／MFE
+  'baseSl', 'sl', 'tp1', 'tp2', 'peakPrice', 'tp1Frac', 'maeR', 'mfeR', 'timeStopped', 'canScaleIn',
+  'trailShadow',   // 影子移動停利的出場 R（鎖利／回吐只能靠這個量，回推會偏袒收緊）
   'rsi', 'adx', 'conf', 'learnPenalty', 'riskPenalty', 'riskScore', 'riskKeys',
   'entryAbovePOC', 'entryWhaleBias', 'entryVolDivergence', 'entryMTFAlign',
   'entryMacdHist', 'entryVolStrength', 'entryH4Aligned', 'entryScoreStrength',
