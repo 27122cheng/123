@@ -10455,7 +10455,10 @@ try {
   setInterval(() => { refreshCloudMaster(); }, 30000);
 } catch(_e) {}
 
-const DAILY_SIGNAL_TARGET = 3;
+/* 每日訊號數：只作為顯示參考，不再是配額。原本它會反過來驅動門檻放寬
+   （沒收滿就降標準去湊），那等於用交易量去換交易品質。現在交易量是條件
+   放行後的結果，不是目標。 */
+const DAILY_SIGNAL_REF = 3;
 function countSignalsToday() {
   try {
     const d0 = new Date(); d0.setHours(0, 0, 0, 0);
@@ -10561,6 +10564,157 @@ function sqEdgeProfile() {
   return out;
 }
 
+/* ── 進場條件邊際掃描（哪些條件該必要、哪些該排除）──────────────
+   原本「哪個條件不好」是靠人寫死規則、再扣個幾分；扣分擋不住單，而且規則
+   是誰拍腦袋定的、有沒有效，事後沒人驗。這裡改成：把每一個有記錄的進場
+   條件都當成一個假設，用實際成交去測「條件成立 vs 不成立」兩組的期望值與
+   勝率，跟帳戶兩平門檻比，資料說該排除才排除。
+
+   三個刻意的保守設計：
+   ① 用 Wilson 上界判定「排除」——原始勝率在小樣本會被運氣壓低，要封鎖
+      一個條件，得連它的樂觀估計都跨不過兩平門檻才算數。
+   ② 最多同時封鎖 COND_BLOCK_MAX 個條件，且封鎖後歷史交易量至少要保留
+      COND_BLOCK_KEEP——把條件一路加下去終究會擋到一筆不剩，那不是嚴格。
+   ③ 每次都從當下資料重算，不寫進 localStorage。條件變好會自動解除封鎖，
+      不會出現「當年封了就永遠封著、之後的交易再也沒被拿來檢討」。 */
+const COND_MIN_N = 30;         // 判定「排除／必要」所需的最少樣本
+const COND_WATCH_N = 15;       // 樣本還不夠、但已能列入觀察
+const COND_BLOCK_MAX = 4;      // 同時封鎖上限
+const COND_BLOCK_KEEP = 0.45;  // 封鎖後歷史交易量至少保留 45%
+
+function condDimensions() {
+  const isL = t => t.direction === 'long', isS = t => t.direction === 'short';
+  const num = (v, d) => { const x = parseFloat(v); return isFinite(x) ? x : d; };
+  const weakVol = t => t.entryVolStrength === '低' || String(t.entryVolStrength || '').includes('弱');
+  return [
+    { key: 'h4_against', label: '4H 逆勢進場',
+      on:  t => t.entryH4Aligned === false,
+      off: t => t.entryH4Aligned === true },
+    { key: 'h1_against', label: '1H 逆勢進場',
+      on:  t => t.entryH1Aligned === false,
+      off: t => t.entryH1Aligned === true },
+    { key: 'weekly_against', label: '週線逆勢進場',
+      on:  t => t.entryWeeklyAgainst === true,
+      off: t => t.entryWeeklyAgainst === false },
+    { key: 'mtf_low', label: '多週期共振 ≤1 個',
+      on:  t => t.entryMTFAlign != null && t.entryMTFAlign <= 1,
+      off: t => t.entryMTFAlign != null && t.entryMTFAlign >= 3 },
+    { key: 'whale_against', label: '巨鯨反向',
+      on:  t => (isL(t) && t.entryWhaleBias === 'bear') || (isS(t) && t.entryWhaleBias === 'bull'),
+      off: t => (isL(t) && t.entryWhaleBias === 'bull') || (isS(t) && t.entryWhaleBias === 'bear') },
+    { key: 'macd_against', label: 'MACD 柱狀反向',
+      on:  t => t.entryMacdHist != null && ((isL(t) && t.entryMacdHist < 0) || (isS(t) && t.entryMacdHist > 0)),
+      off: t => t.entryMacdHist != null && ((isL(t) && t.entryMacdHist > 0) || (isS(t) && t.entryMacdHist < 0)) },
+    { key: 'vol_weak', label: '低量進場',
+      on:  t => t.entryVolStrength != null && t.entryVolStrength !== '' && weakVol(t),
+      off: t => t.entryVolStrength != null && t.entryVolStrength !== '' && !weakVol(t) },
+    { key: 'score_weak', label: '弱評分進場',
+      on:  t => t.entryScoreStrength === 'weak',
+      off: t => t.entryScoreStrength === 'strong' || t.entryScoreStrength === 'medium' },
+    { key: 'poc_against', label: 'POC 反向（多在下／空在上）',
+      on:  t => t.entryAbovePOC != null && ((isL(t) && t.entryAbovePOC === false) || (isS(t) && t.entryAbovePOC === true)),
+      off: t => t.entryAbovePOC != null && ((isL(t) && t.entryAbovePOC === true) || (isS(t) && t.entryAbovePOC === false)) },
+    { key: 'bb_walk_against', label: '布林帶反向走壁',
+      on:  t => (isL(t) && t.entryBBWalkingBear === true) || (isS(t) && t.entryBBWalkingBull === true),
+      off: t => (isL(t) && t.entryBBWalkingBear === false) || (isS(t) && t.entryBBWalkingBull === false) },
+    { key: 'kz_asia', label: '亞洲時段進場',
+      on:  t => t.entryKillZone === 'asia',
+      off: t => t.entryKillZone === 'london' || t.entryKillZone === 'ny' },
+    { key: 'kz_other', label: '非主要時段進場',
+      on:  t => t.entryKillZone === 'other',
+      off: t => t.entryKillZone === 'london' || t.entryKillZone === 'ny' },
+    { key: 'rsi_hot_long', label: 'RSI > 70 追多',
+      on:  t => isL(t) && num(t.rsi, 50) > 70,
+      off: t => isL(t) && num(t.rsi, 50) <= 70 },
+    { key: 'rsi_cold_short', label: 'RSI < 30 追空',
+      on:  t => isS(t) && num(t.rsi, 50) < 30,
+      off: t => isS(t) && num(t.rsi, 50) >= 30 },
+    { key: 'adx_low', label: 'ADX < 20 無趨勢',
+      on:  t => num(t.adx, 20) < 20,
+      off: t => num(t.adx, 20) >= 25 },
+    { key: 'conf_low', label: '風控分 < 68 勉強進場',
+      on:  t => num(t.conf, 0) > 0 && num(t.conf, 0) < 68,
+      off: t => num(t.conf, 0) >= 68 },
+    // 方向只做診斷，不自動封鎖：封掉整個方向影響太大，該由人決定
+    { key: 'dir_long',  label: '做多（診斷用）', advisory: true, on: isL,  off: isS },
+    { key: 'dir_short', label: '做空（診斷用）', advisory: true, on: isS,  off: isL },
+  ];
+}
+
+let _condCache = null, _condCacheTs = 0;
+function condEdgeProfile() {
+  const now = Date.now();
+  if (_condCache && now - _condCacheTs < 60000) return _condCache;
+  let out = { ready: false, rows: [], blocked: [], why: '', n: 0 };
+  try {
+    const be = accountBreakeven();
+    const closed = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)));
+    out.n = closed.length;
+    if (!be || closed.length < COND_MIN_N) {
+      out.why = `可分析樣本 ${closed.length}/${COND_MIN_N}`
+              + (be ? '' : '（且需先有足夠的勝負樣本估算兩平門檻）');
+      _condCache = out; _condCacheTs = now; return out;
+    }
+    const stat = (set) => {
+      const w = set.filter(isWinTrade).length, l = set.filter(isLossTrade).length;
+      const exp = set.length ? set.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / set.length : 0;
+      return { n: set.length, w, l,
+        wr:   (w + l) ? +(w / (w + l) * 100).toFixed(1) : null,
+        wrLb: (w + l) ? +(wilsonLB(w, w + l) * 100).toFixed(1) : null,
+        wrUb: (w + l) ? +(wilsonUB(w, w + l) * 100).toFixed(1) : null,
+        exp:  +exp.toFixed(3) };
+    };
+    for (const d of condDimensions()) {
+      const on = stat(closed.filter(d.on)), off = stat(closed.filter(d.off));
+      if (on.n === 0) continue;
+      const delta = +(off.exp - on.exp).toFixed(3);
+      let verdict = 'neutral';
+      if (!d.advisory && on.n >= COND_MIN_N && on.exp < 0 && on.wrUb != null
+          && on.wrUb < be.need && delta > 0) verdict = 'block';
+      else if (!d.advisory && on.n >= COND_MIN_N && on.exp > 0 && on.wrLb != null
+          && on.wrLb >= be.need && delta < 0) verdict = 'require';
+      else if (on.n >= COND_WATCH_N && on.exp < 0 && delta > 0) verdict = 'watch';
+      out.rows.push({ key: d.key, label: d.label, advisory: !!d.advisory, on, off, delta, verdict });
+    }
+    out.rows.sort((a, b) => b.delta - a.delta);
+
+    // 封鎖名單：傷害最大的優先，但要留住交易量——擋到一筆不剩不叫嚴格
+    const dims = new Map(condDimensions().map(d => [d.key, d]));
+    const cands = out.rows.filter(r => r.verdict === 'block').slice(0, COND_BLOCK_MAX);
+    let picked = cands.slice();
+    while (picked.length) {
+      const preds = picked.map(r => dims.get(r.key).on);
+      const kept = closed.filter(t => !preds.some(p => { try { return p(t); } catch(_e) { return false; } })).length;
+      if (kept >= closed.length * COND_BLOCK_KEEP) break;
+      picked.pop();   // 由傷害最小的往回退，直到保留得住交易量
+    }
+    for (const r of out.rows) if (r.verdict === 'block' && !picked.includes(r)) r.verdict = 'watch';
+    out.blocked = picked.map(r => ({ key: r.key, label: r.label, exp: r.on.exp, n: r.on.n, wrUb: r.on.wrUb }));
+    out.ready = true;
+    out.why = out.blocked.length
+      ? `依 ${closed.length} 筆實測，封鎖 ${out.blocked.length} 個條件：`
+        + out.blocked.map(b => `${b.label}（${b.n} 筆、期望值 ${b.exp}R、勝率上界 ${b.wrUb}% < 兩平 ${be.need}%）`).join('、')
+      : `依 ${closed.length} 筆實測，沒有條件的勝率上界低到該被封鎖（兩平門檻 ${be.need}%）`;
+  } catch(_e) { out.why = '分析失敗：' + _e.message; }
+  _condCache = out; _condCacheTs = now;
+  return out;
+}
+
+/* 建單前的條件封鎖檢查：直接對「即將寫進紀錄的那個 trade 物件」求值，
+   確保判定用的欄位與事後統計用的欄位是同一份，不會兩邊算法漂移。 */
+function condBlockCheck(trade) {
+  try {
+    const prof = condEdgeProfile();
+    if (!prof.ready || !prof.blocked.length) return null;
+    const dims = new Map(condDimensions().map(d => [d.key, d]));
+    for (const b of prof.blocked) {
+      const d = dims.get(b.key);
+      if (d && d.on(trade)) return `${b.label}（實測 ${b.n} 筆期望值 ${b.exp}R，勝率上界 ${b.wrUb}% 跨不過兩平）`;
+    }
+  } catch(_e) {}
+  return null;
+}
+
 /* 最低 R/R：兩平勝率 = 1 ÷ (1 + R/R)，反過來就是「目前勝率下，R/R 至少要多少」。
    原本 R/R 過低只是扣風險分，扣完只要風控分還過門檻就照樣進場——但賺賠比
    不夠時，那筆單在數學上就不可能有正期望值，扣分擋不住它。改為硬性門檻。 */
@@ -10597,20 +10751,18 @@ function getAdaptiveGates() {
       }
     } catch(_e) {}
 
+    // ── 每日配額放寬已整個移除 ────────────────────────────────
+    // 原本中午、傍晚會因為「今天還沒收滿 3 筆」而各降一次門檻。這件事的
+    // 邏輯是反的：門檻該由「這個條件實測有沒有優勢」決定，不該由「今天湊
+    // 到幾筆」決定。為了湊數字去收平常不會收的單，收到的必然是當天最差的
+    // 那幾筆——勝率上不去、回撤壓不下來，這是其中一個結構性原因。
+    // 交易量改由「條件本身放不放得過」自然決定：條件好，一天十筆也收；
+    // 條件不好，一筆都不收也不勉強。
     if (losing) {
       return { ...base, relaxed: false,
         label: (base.label ? base.label + '　·　' : '')
-             + `帳戶期望值 ${be.expectancy}R（為負），停用所有配額性放寬` };
+             + `帳戶期望值 ${be.expectancy}R（為負），維持嚴格門檻` };
     }
-    // 連續止損 ≥3 筆時，停止一切配額性放寬（壞行情裡強湊每日訊號 = 送人頭）
-    if (globalLossStreak().streak >= 3) return base;
-    const n = countSignalsToday();
-    if (n >= DAILY_SIGNAL_TARGET) return base;
-    if (relaxedCohortUnderperforms()) return base;  // 放寬單歷史勝率不佳 → 熔斷
-    // 放寬只在「帳戶本身是賺錢的」前提下才允許，且不會低於實測門檻
-    const h = new Date().getHours();  // 本地時間
-    if (h >= 18) return { minConf: Math.max(55, base.minConf - 5), minSq: Math.max(10, base.minSq - 2), minRR: base.minRR, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻已放寬` };
-    if (h >= 12) return { minConf: Math.max(58, base.minConf - 2), minSq: Math.max(11, base.minSq - 1), minRR: base.minRR, relaxed: true, label: `今日訊號 ${n}/${DAILY_SIGNAL_TARGET}，門檻微調` };
     return base;
   } catch(_e) { return strict; }
 }
@@ -10686,13 +10838,24 @@ function lossStreakGuard() {
    sqScore 傳 99 可跳過第 2 道的 SQ 加嚴（供驗證策略單使用），上限與熔斷仍適用。 */
 function sameDirGuard(tlog, direction, sqScore) {
   const now = Date.now();
+  // 帳戶期望值為負時收緊集中度：同向並倉 4→3、方向熔斷 3 筆→2 筆止損。
+  // 回撤幾乎都不是「某一筆很慘」，而是「同向四筆一起被掃」——並倉數就是
+  // 回撤的乘數。賺錢時不動它（不必要地少賺），虧錢時先把乘數壓下來。
+  let maxActive = 4, slBreak = 3;
+  try {
+    const be = accountBreakeven();
+    if (be && be.expectancy <= 0) { maxActive = 3; slBreak = 2; }
+  } catch(_e) {}
   const active = tlog.filter(t => t.direction === direction && (t.status === 'pending' || t.status === 'open')).length;
-  if (active >= 4) return `同方向活躍單已達上限（${active}/4），暫停${direction === 'long' ? '多' : '空'}單建立`;
+  if (active >= maxActive) return `同方向活躍單已達上限（${active}/${maxActive}），暫停${direction === 'long' ? '多' : '空'}單建立`;
   const recentNew = tlog.filter(t => t.direction === direction && now - (t.timestamp || 0) < 30 * 60 * 1000).length;
   if (recentNew >= 4) return `30 分鐘內同方向已建 ${recentNew} 筆，爆量節流暫停`;
   if (recentNew >= 2 && (sqScore == null || sqScore < 13)) return `30 分鐘內同方向已建 ${recentNew} 筆，後續僅收 SQ≥13 頂級訊號`;
-  const recentSl = tlog.filter(t => t.direction === direction && t.outcome === 'sl' && now - (t.exitTime || 0) < 60 * 60 * 1000).length;
-  if (recentSl >= 3) return `60 分鐘內同方向已 ${recentSl} 筆止損，方向熔斷 1 小時`;
+  // 用 isLossTrade（會依實際損益修正錯標的結果），與勝率統計同一口徑；
+  // 原本讀原始 t.outcome，被標成 tp1 但實際虧損的單不會計入熔斷。
+  const recentSl = tlog.filter(t => t.direction === direction && isLossTrade(t)
+    && (t.exitTime || 0) > 0 && now - t.exitTime < 60 * 60 * 1000).length;
+  if (recentSl >= slBreak) return `60 分鐘內同方向已 ${recentSl} 筆止損，方向熔斷 1 小時`;
   return null;
 }
 
@@ -12046,6 +12209,13 @@ async function recordSignalsFromScan(data) {
         ? _scanCurPrice > newTrade.entry * 1.003   // 多單：現價已漲過進場位 0.3%
         : _scanCurPrice < newTrade.entry * 0.997;  // 空單：現價已跌過進場位 0.3%
       if (_pastEntry) newTrade.note = '等待回踩確認進場';
+    }
+    // 進場條件封鎖：對「即將寫進紀錄的那個物件」求值，判定欄位與事後統計
+    // 欄位保證是同一份。封鎖名單每次都由實測重算，條件轉好會自動解除。
+    const _condBlock = condBlockCheck(newTrade);
+    if (_condBlock) {
+      console.log(`[cond-block] ${coin.symbol} ${direction}：${_condBlock}，不建單`);
+      continue;
     }
     // 建單唯一入口（原子：重新載入→去重→存檔），杜絕多路徑並行建出重複訊號
     if (!commitNewTrade(newTrade)) {
@@ -17238,6 +17408,45 @@ function renderTradeLogPage() {
     </div>`;
   } catch(_e) {}
 
+  // 進場條件邊際：哪些條件實測該排除、哪些該當必要條件
+  let condHtml = '';
+  try {
+    const cp = condEdgeProfile();
+    const be = accountBreakeven();
+    const vTag = { block: ['已封鎖', '#ef4444'], watch: ['觀察中', '#f59e0b'],
+                   require: ['優勢條件', '#22c55e'], neutral: ['—', 'var(--text3)'] };
+    condHtml = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.75">
+      <div style="font-weight:700;margin-bottom:5px">🧪 進場條件邊際（哪些條件該排除）</div>
+      <div style="font-size:0.76rem;color:var(--text2)">${cp.why}</div>
+      ${cp.ready && cp.rows.length ? `
+        <div style="margin-top:8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+          <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+            <th style="padding:3px 6px;text-align:left">條件</th><th style="padding:3px 6px">成立樣本</th>
+            <th style="padding:3px 6px">勝率</th><th style="padding:3px 6px">勝率上界</th>
+            <th style="padding:3px 6px">成立期望值</th><th style="padding:3px 6px">不成立期望值</th>
+            <th style="padding:3px 6px">判定</th></tr></thead>
+          <tbody>${cp.rows.map(r => {
+            const [tag, col] = vTag[r.verdict] || vTag.neutral;
+            return `<tr style="text-align:right;${r.verdict === 'block' ? 'background:rgba(239,68,68,.08)' : ''}">
+              <td style="padding:3px 6px;text-align:left">${r.label}${r.advisory ? ' <span style="color:var(--text3);font-size:0.68rem">不自動封鎖</span>' : ''}</td>
+              <td style="padding:3px 6px;color:${r.on.n >= COND_MIN_N ? 'var(--text2)' : 'var(--text3)'}">${r.on.n}${r.on.n >= COND_MIN_N ? '' : '/' + COND_MIN_N}</td>
+              <td style="padding:3px 6px">${r.on.wr == null ? '—' : r.on.wr + '%'}</td>
+              <td style="padding:3px 6px;color:${be && r.on.wrUb != null && r.on.wrUb < be.need ? '#ef4444' : 'var(--text3)'}">${r.on.wrUb == null ? '—' : r.on.wrUb + '%'}</td>
+              <td style="padding:3px 6px;color:${r.on.exp > 0 ? '#22c55e' : '#ef4444'}">${r.on.exp > 0 ? '+' : ''}${r.on.exp}R</td>
+              <td style="padding:3px 6px;color:var(--text3)">${r.off.n ? (r.off.exp > 0 ? '+' : '') + r.off.exp + 'R' : '—'}</td>
+              <td style="padding:3px 6px;color:${col};font-weight:${r.verdict === 'block' ? '700' : '500'}">${tag}</td>
+            </tr>`; }).join('')}</tbody></table></div>
+        <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
+          判定規則：成立樣本 ≥ ${COND_MIN_N} 筆、成立組期望值為負、且<b>勝率上界</b>都跨不過兩平門檻${be ? ` ${be.need}%` : ''}
+          → 封鎖（用上界而非原始勝率，是因為要封鎖一個條件，得連它的樂觀估計都不及格才算數）。
+          最多同時封鎖 ${COND_BLOCK_MAX} 個，且封鎖後歷史交易量至少保留 ${Math.round(COND_BLOCK_KEEP * 100)}%——
+          條件一路加下去終究會擋到一筆不剩，那不是嚴格。<br>
+          名單<b>每次都由當下資料重算、不寫死</b>：條件轉好會自動解除封鎖，之後的交易也會繼續被拿來檢討。
+        </div>` : ''}
+    </div>`;
+  } catch(_e) {}
+
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
@@ -17277,6 +17486,7 @@ function renderTradeLogPage() {
     ${mismatchHtml}
     ${beHtml}
     ${gateHtml}
+    ${condHtml}
     ${filterHtml}
     ${tableHtml}
     ${backupHtml}
@@ -17469,12 +17679,19 @@ function archiveClosedScalpTrades(log) {
    刻意不含 sqFactors / entryReasons / riskRecs 等顯示用長文字。 */
 const LEARN_ARCHIVE_KEY = 'csp_learn_archive';
 const LEARN_ARCHIVE_MAX = 1200;
+/* 封存欄位白名單。少一個欄位不會報錯，只會讓某個分析從此看不到封存樣本——
+   'status' 就是這樣漏掉的：下游全是 .filter(t => t.status === 'closed')，
+   封存列沒有這個欄位就整批被濾掉，等於封存救不回任何東西。
+   'entry'/'exitPrice' 供 effectiveOutcome 依實際損益修正錯標的結果，
+   'sqScore' 供 SQ 級距分析，entryH1/週線/布林走壁供進場條件邊際掃描。 */
 const LEARN_KEEP_FIELDS = [
   'id', 'symbol', 'direction', 'timestamp', 'exitTime', 'outcome', 'pnlR', 'grade',
+  'status', 'entry', 'exitPrice', 'tp1Hit', 'sqScore', 'sqGate', 'gateRelaxed',
   'rsi', 'adx', 'conf', 'learnPenalty', 'riskPenalty', 'riskScore', 'riskKeys',
   'entryAbovePOC', 'entryWhaleBias', 'entryVolDivergence', 'entryMTFAlign',
   'entryMacdHist', 'entryVolStrength', 'entryH4Aligned', 'entryScoreStrength',
   'entryKillZone', 'entryVolBreakout', 'immediateStop', 'slReversal',
+  'entryH1Aligned', 'entryWeeklyAgainst', 'entryBBWalkingBear', 'entryBBWalkingBull',
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -17487,7 +17704,9 @@ function archiveClosedTrades(log) {
 function learnSamples() {
   try {
     const byId = new Map();
-    for (const t of loadLearnArchive()) if (t && t.id) byId.set(t.id, t);
+    // 封存只收已完結，因此舊封存列缺 status 時補回 'closed'——否則下游那些
+    // .filter(t => t.status === 'closed') 會把整批封存濾光，救回來也用不到。
+    for (const t of loadLearnArchive()) if (t && t.id) byId.set(t.id, t.status ? t : { ...t, status: 'closed' });
     for (const t of loadTradeLog()) if (t && t.id && (t.status === 'closed' || t.status === 'expired')) byId.set(t.id, t);
     return [...byId.values()];
   } catch(_e) { try { return loadTradeLog().filter(t => t.status === 'closed'); } catch(_e2) { return []; } }
