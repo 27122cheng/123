@@ -10300,6 +10300,101 @@ function exitWalkForward(list, mode) {
 /* 出場實驗室的樣本：只收「觸及止盈一」有意義的單 + 全部已平倉單當分母。
    出場參數只影響前者，但期望值必須攤在全部單上算，否則會用一個
    「只看有賺的那群」的數字去做決策。 */
+/* ── 實驗室 → 實盤的連動狀態 ──────────────────────────────────────
+   「有沒有把實驗室的結果帶進交易」不該靠我說有就是有。這裡逐條列出每個學習
+   成果現在的實際狀態：接到哪個實盤路徑、目前生效的值是什麼、還是仍在累積樣本。
+   狀態一律由當下資料現算，不是寫死的說明文字。 */
+function buildLabLinkPanel() {
+  const rows = [];
+  const add = (name, target, state, detail) => rows.push({ name, target, state, detail });
+
+  // ① 進場門檻（SQ 級距實測）
+  try {
+    const g = getAdaptiveGates(), e = sqEdgeProfile();
+    add('分析實驗室 · SQ 級距實測', '掃描建單門檻 getAdaptiveGates',
+      e.ready && e.suggest ? 'on' : 'wait',
+      `SQ ≥ ${g.minSq}、風控分 ≥ ${g.minConf}、R/R ≥ ${g.minRR}` + (e.ready ? '' : `（${e.why}）`));
+  } catch(_e) {}
+
+  // ② 進場條件封鎖
+  try {
+    const cp = condEdgeProfile();
+    add('條件邊際掃描', '建單前 condBlockCheck',
+      cp.blocked.length ? 'on' : (cp.ready ? 'idle' : 'wait'),
+      cp.blocked.length ? `已封鎖 ${cp.blocked.length} 個條件：${cp.blocked.map(b => b.label).join('、')}`
+        : (cp.ready ? '沒有條件差到該被封鎖（門檻未達＝正常，不是沒接上）' : cp.why));
+  } catch(_e) {}
+
+  // ③ 扣分條件有效性（風控權重）
+  try {
+    const w = JSON.parse(localStorage.getItem(RISK_W_KEY) || '{}');
+    const keys = Object.keys(w || {});
+    const off = keys.filter(k => (w[k] ?? 1) === 0).length;
+    const up  = keys.filter(k => (w[k] ?? 1) > 1.05).length;
+    const dn  = keys.filter(k => (w[k] ?? 1) < 0.95 && (w[k] ?? 1) > 0).length;
+    add('風控 · 扣分條件有效性審查', '風控評分 computeFullRisk',
+      keys.length ? 'on' : 'wait',
+      keys.length ? `${keys.length} 個條件已調權重：停用 ${off}、加重 ${up}、減輕 ${dn}`
+                  : `樣本不足 ${RISK_LEARN_MIN_N} 筆，尚未產生權重`);
+  } catch(_e) {}
+
+  // ④ 止損鬆緊 → 噪音底線
+  try {
+    const s = computeSLTightnessStats();
+    const v = getAdaptiveSlWiden();
+    add('止損建議 · 鬆緊診斷', '進場止損噪音底線 getAdaptiveSlWiden',
+      v > 1 ? 'on' : (s.n >= 4 ? 'idle' : 'wait'),
+      s.n >= 4 ? `已判定 ${s.n} 筆，止損太緊比例 ${s.pct.toFixed(0)}% → 噪音底線 ×${v}`
+               : `已判定 ${s.n} 筆（需 ≥4），另有 ${s.watching} 筆觀察中`);
+  } catch(_e) {}
+
+  // ⑤ 出場參數
+  try {
+    const eff = exitEffective();
+    const shadowN = exitShadowReady(exitSamples()).length;
+    add('出場實驗室', '持倉出場 updateOpenTrades',
+      eff.src === 'learned' ? 'on' : 'wait',
+      `減倉 ${Math.round(eff.tp1ExitFrac * 100)}%／鎖利 +${eff.tp1LockR}R／回吐 ${eff.trailGiveR}R`
+      + `（${eff.src === 'learned' ? '已依實測調整' : '預設值'}，影子樣本 ${shadowN}/${EXIT_APPLY.minShadow}）`);
+  } catch(_e) {}
+
+  // ⑥ 量化實驗室 → 快速單
+  try {
+    const q = qlabEffective();
+    add('量化實驗室', '快速單止損／止盈 buildScalpSetup',
+      q && q.applied ? 'on' : 'wait',
+      q ? `止損 ${q.slMult}×ATR／止盈 ${q.tp1R}R / ${q.tp2R}R（${q.applied ? '已自動採用' : '預設值'}）` : '—');
+  } catch(_e) {}
+
+  // ⑦ 快速單學習止損
+  try {
+    const l = scalpSlLearn();
+    add('快速單 · 機器人學習止損', '快速單建單 buildScalpSetup',
+      l && l.ready ? 'on' : 'wait',
+      l ? `${l.mult}×ATR（基準 ${l.base}）` + (l.warn ? `　${l.warn}` : '') : '樣本累積中');
+  } catch(_e) {}
+
+  const tag = { on: ['已連動', '#22c55e'], idle: ['已接上·目前無需調整', '#818cf8'], wait: ['樣本累積中', '#f59e0b'] };
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+    <div style="font-weight:700;margin-bottom:5px">🔗 實驗室 → 實盤 連動狀態</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+      <tbody>${rows.map(r => {
+        const [lbl, col] = tag[r.state] || tag.wait;
+        return `<tr style="border-top:1px solid var(--border)">
+          <td style="padding:5px 6px;vertical-align:top">
+            <div style="font-weight:600">${r.name}</div>
+            <div style="color:var(--text3);font-size:0.7rem">→ ${r.target}</div>
+            <div style="color:var(--text2);font-size:0.72rem;margin-top:2px">${r.detail}</div></td>
+          <td style="padding:5px 6px;text-align:right;vertical-align:top;white-space:nowrap;color:${col};font-weight:600">${lbl}</td>
+        </tr>`; }).join('')}
+    </tbody></table></div>
+    <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
+      「已接上·目前無需調整」不等於沒連動——代表資料現在沒有指出該改什麼，門檻一到就會自動生效。
+      每一列的狀態都是當下現算的，不是寫死的說明文字。
+    </div></div>`;
+}
+
 function buildExitLabPanel() {
   const eff = exitEffective();
   const all = exitSamples();
@@ -11054,11 +11149,48 @@ const COND_WATCH_N = 15;       // 樣本還不夠、但已能列入觀察
 const COND_BLOCK_MAX = 4;      // 同時封鎖上限
 const COND_BLOCK_KEEP = 0.45;  // 封鎖後歷史交易量至少保留 45%
 
+/* ── 進場模式分類 ────────────────────────────────────────────────
+   主系統的進場一直沒有「模式」的概念——快速單有 8 個模式可以逐個檢討，主系統
+   卻是一整包「評分＋共振＋風控」，所以「哪種進場方式沒用」這個問題從來問不出口。
+   這裡不改進場邏輯，只是把已經記錄下來的事實重新讀成兩個維度，讓同一套邊際
+   掃描能逐模式評估。因為只用既有欄位推導，192 筆舊單也全部適用，不用等新資料。
+
+   · 進場方式：掛單價相對訊號當下價的位置
+       回踩掛單（gap ≤ −0.2%）／貼價進場（±0.2% 內）／追價進場（gap ≥ +0.2%）
+   · 市況：ADX  盤整(<20) ／ 過渡(20–25) ／ 趨勢(≥25) */
+function entryArchetype(t) {
+  const dir = t.direction === 'long' ? 1 : -1;
+  const e = parseFloat(t.entry), p = parseFloat(t.entryPrice), adx = parseFloat(t.adx);
+  let style = null;
+  if (isFinite(e) && isFinite(p) && p > 0) {
+    const gap = (e - p) * dir / p;
+    style = gap <= -0.002 ? 'pullback' : gap >= 0.002 ? 'chase' : 'atmarket';
+  }
+  const regime = !isFinite(adx) ? null : adx < 20 ? 'range' : adx >= 25 ? 'trend' : 'mid';
+  return { style, regime };
+}
+
 function condDimensions() {
   const isL = t => t.direction === 'long', isS = t => t.direction === 'short';
   const num = (v, d) => { const x = parseFloat(v); return isFinite(x) ? x : d; };
   const weakVol = t => t.entryVolStrength === '低' || String(t.entryVolStrength || '').includes('弱');
+  const arch = t => entryArchetype(t);
+  const styleIs = s => t => arch(t).style === s;
+  const styleNot = s => t => { const v = arch(t).style; return v != null && v !== s; };
+  const comboIs = (s, r) => t => { const a = arch(t); return a.style === s && a.regime === r; };
+  const comboNot = (s, r) => t => { const a = arch(t); return a.style != null && a.regime != null && !(a.style === s && a.regime === r); };
   return [
+    // ── 進場模式（由既有欄位推導，舊單也適用）──
+    { key: 'style_chase', label: '模式：追價進場（掛單追過現價 0.2%）',
+      on: styleIs('chase'), off: styleNot('chase') },
+    { key: 'style_pullback', label: '模式：回踩掛單（等回落 0.2% 以上）',
+      on: styleIs('pullback'), off: styleNot('pullback') },
+    { key: 'style_atmarket', label: '模式：貼價進場（現價 ±0.2% 內）',
+      on: styleIs('atmarket'), off: styleNot('atmarket') },
+    { key: 'combo_chase_range', label: '模式：盤整中追價（ADX<20 且追價）',
+      on: comboIs('chase', 'range'), off: comboNot('chase', 'range') },
+    { key: 'combo_pullback_trend', label: '模式：趨勢中回踩（ADX≥25 且回踩）',
+      on: comboIs('pullback', 'trend'), off: comboNot('pullback', 'trend') },
     { key: 'h4_against', label: '4H 逆勢進場',
       on:  t => t.entryH4Aligned === false,
       off: t => t.entryH4Aligned === true },
@@ -11308,6 +11440,7 @@ function lossStreakGuard() {
       （強迫建單分散在不同時間點，而不是全擠在同一個局部高/低點）
    3) 60 分鐘內同方向 ≥3 筆止損 → 該方向熔斷 1 小時（行情反轉時停止送人頭）
    sqScore 傳 99 可跳過第 2 道的 SQ 加嚴（供驗證策略單使用），上限與熔斷仍適用。 */
+const SAME_DIR_MIN_GAP_MIN = 20;   // 同方向兩筆訊號的最小間隔（分鐘）
 function sameDirGuard(tlog, direction, sqScore) {
   const now = Date.now();
   // 帳戶期望值為負時收緊集中度：同向並倉 4→3、方向熔斷 3 筆→2 筆止損。
@@ -11320,6 +11453,20 @@ function sameDirGuard(tlog, direction, sqScore) {
   } catch(_e) {}
   const active = tlog.filter(t => t.direction === direction && (t.status === 'pending' || t.status === 'open')).length;
   if (active >= maxActive) return `同方向活躍單已達上限（${active}/${maxActive}），暫停${direction === 'long' ? '多' : '空'}單建立`;
+  // ── 同方向最小間隔（擋「連發兩筆」）────────────────────────────
+  // 原本 30 分鐘內同向可以連建 2 筆（第 2 筆只要 SQ≥13）。但一次掃描裡多個
+  // 幣同時符合條件是常態，於是兩筆會在同一分鐘內先後送出——山寨幣同向高度
+  // 連動，那實質上就是一筆兩倍大的部位，一起賺也一起被掃，正是回撤的來源。
+  // 改為硬性的最小間隔：同方向兩筆之間至少要隔 SAME_DIR_MIN_GAP_MIN 分鐘，
+  // 強迫建單分散在不同的時間點與價格上，而不是擠在同一個局部高／低點。
+  const lastSame = tlog.filter(t => t.direction === direction)
+    .reduce((a, t) => Math.max(a, t.timestamp || 0), 0);
+  const gapMin = lastSame ? (now - lastSame) / 60000 : Infinity;
+  const minGap = (maxActive === 3) ? SAME_DIR_MIN_GAP_MIN * 2 : SAME_DIR_MIN_GAP_MIN;   // 虧損期間拉開一倍
+  if (gapMin < minGap) {
+    return `距上一筆同方向訊號僅 ${gapMin.toFixed(0)} 分鐘（最小間隔 ${minGap} 分鐘），`
+         + `避免同向連發變成一筆兩倍大的部位`;
+  }
   const recentNew = tlog.filter(t => t.direction === direction && now - (t.timestamp || 0) < 30 * 60 * 1000).length;
   if (recentNew >= 4) return `30 分鐘內同方向已建 ${recentNew} 筆，爆量節流暫停`;
   if (recentNew >= 2 && (sqScore == null || sqScore < 13)) return `30 分鐘內同方向已建 ${recentNew} 筆，後續僅收 SQ≥13 頂級訊號`;
@@ -17961,6 +18108,10 @@ function renderTradeLogPage() {
   let exitHtml = '';
   try { exitHtml = buildExitLabPanel(); } catch(_e) {}
 
+  // 實驗室 → 實盤的連動狀態：每條學習成果現在到底有沒有在影響交易
+  let linkHtml = '';
+  try { linkHtml = buildLabLinkPanel(); } catch(_e) {}
+
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
@@ -17999,6 +18150,7 @@ function renderTradeLogPage() {
     ${_tlDayPager(closed)}
     ${mismatchHtml}
     ${beHtml}
+    ${linkHtml}
     ${gateHtml}
     ${condHtml}
     ${exitHtml}
@@ -18201,7 +18353,7 @@ const LEARN_ARCHIVE_MAX = 1200;
    'sqScore' 供 SQ 級距分析，entryH1/週線/布林走壁供進場條件邊際掃描。 */
 const LEARN_KEEP_FIELDS = [
   'id', 'symbol', 'direction', 'timestamp', 'exitTime', 'outcome', 'pnlR', 'grade',
-  'status', 'entry', 'exitPrice', 'tp1Hit', 'sqScore', 'sqGate', 'gateRelaxed',
+  'status', 'entry', 'entryPrice', 'exitPrice', 'tp1Hit', 'sqScore', 'sqGate', 'gateRelaxed',
   // 出場重放必需：原始止損、兩個止盈、峰值、當時的減倉比例、MAE／MFE
   'baseSl', 'sl', 'tp1', 'tp2', 'peakPrice', 'tp1Frac', 'maeR', 'mfeR', 'timeStopped', 'canScaleIn',
   'trailShadow',   // 影子移動停利的出場 R（鎖利／回吐只能靠這個量，回推會偏袒收緊）
@@ -19184,11 +19336,24 @@ function renderReportPage(year, view, month) {
   }
 }
 
+/* ── 報表勝率口徑（2026-08 統一）──────────────────────────────────
+   原本報表的「勝率」是 止盈二筆數 ÷ 全部筆數，跟交易紀錄頁的勝率是兩個
+   完全不同的東西，難怪兩邊對不起來。三處不一致：
+     ① 把 tp1 歸到「保本」——但 tp1 是止盈一落袋 60%、尾倉在鎖利位以上出場，
+        實際約 +1.1R，那是贏，不是保本
+     ② 分母含平手單（be），等於贏的沒算、輸的照算，雙重壓低
+     ③ 讀原始 outcome，沒套用「依實際損益修正錯標」的校正
+   改為與交易紀錄頁同一口徑：勝率 = 勝 ÷（勝＋負），平手不計入分母，
+   並套用 effectiveOutcome。原本那個數字改名為「止盈二達成率」另外呈現——
+   它本身是有用的（看止盈二設得會不會太遠），只是不該叫勝率。 */
 function _rptBuildYearView(yearTrades, year) {
-  const wins    = yearTrades.filter(t => t.outcome === 'tp2');
-  const losses  = yearTrades.filter(t => t.outcome === 'sl');
-  const beCount = yearTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length;
-  const winRate = yearTrades.length > 0 ? (wins.length / yearTrades.length * 100).toFixed(1) : '--';
+  const wins    = yearTrades.filter(isWinTrade);
+  const losses  = yearTrades.filter(isLossTrade);
+  const beCount = yearTrades.filter(isFlatTrade).length;
+  const tp2Count = yearTrades.filter(t => effectiveOutcome(t) === 'tp2').length;
+  const tp2Rate = yearTrades.length > 0 ? (tp2Count / yearTrades.length * 100).toFixed(1) : '--';
+  const _wl = wins.length + losses.length;
+  const winRate = _wl > 0 ? (wins.length / _wl * 100).toFixed(1) : '--';
   const totalR  = yearTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
   const avgR    = yearTrades.length > 0 ? (totalR / yearTrades.length) : null;
 
@@ -19237,7 +19402,7 @@ function _rptBuildYearView(yearTrades, year) {
     <div class="rpt-stats">
       <div class="rpt-stat-card">
         <div class="rpt-stat-val" style="color:${wrColor}">${winRate}${winRate !== '--' ? '%' : ''}</div>
-        <div class="rpt-stat-lbl">勝率（止盈二）</div>
+        <div class="rpt-stat-lbl">勝率</div>
       </div>
       <div class="rpt-stat-card">
         <div class="rpt-stat-val">${yearTrades.length}</div>
@@ -19245,9 +19410,13 @@ function _rptBuildYearView(yearTrades, year) {
       </div>
       <div class="rpt-stat-card">
         <div class="rpt-stat-val">
-          <span style="color:var(--bull)">${wins.length}</span><span style="color:var(--text3);font-weight:400;margin:0 3px">/</span><span style="color:var(--bear)">${losses.length}</span>
+          <span style="color:var(--bull)">${wins.length}</span><span style="color:var(--text3);font-weight:400;margin:0 3px">/</span><span style="color:rgba(148,163,184,.7);font-weight:400">${beCount}</span><span style="color:var(--text3);font-weight:400;margin:0 3px">/</span><span style="color:var(--bear)">${losses.length}</span>
         </div>
-        <div class="rpt-stat-lbl">獲利 / 止損</div>
+        <div class="rpt-stat-lbl">獲利 / 平手 / 止損</div>
+      </div>
+      <div class="rpt-stat-card">
+        <div class="rpt-stat-val" style="color:var(--text2)">${tp2Rate}${tp2Rate !== '--' ? '%' : ''}</div>
+        <div class="rpt-stat-lbl">止盈二達成率</div>
       </div>
       <div class="rpt-stat-card">
         <div class="rpt-stat-val">${avgDaily}</div>
@@ -19325,7 +19494,7 @@ function _rptBuildYearView(yearTrades, year) {
         <span>月度獲利 / 止損分佈</span>
         <span style="font-size:0.75rem;font-weight:400;color:var(--text3)">
           <span style="display:inline-block;width:8px;height:8px;background:var(--bull);border-radius:2px;margin-right:3px"></span>獲利(tp2)
-          <span style="display:inline-block;width:8px;height:8px;background:rgba(148,163,184,0.4);border-radius:2px;margin:0 3px 0 8px"></span>保本
+          <span style="display:inline-block;width:8px;height:8px;background:rgba(148,163,184,0.4);border-radius:2px;margin:0 3px 0 8px"></span>平手
           <span style="display:inline-block;width:8px;height:8px;background:var(--bear);border-radius:2px;margin:0 3px 0 8px"></span>止損
         </span>
       </div>
@@ -19338,7 +19507,7 @@ function _rptBuildYearView(yearTrades, year) {
       <table class="rpt-month-tbl">
         <thead><tr>
           <th style="text-align:left">月份</th>
-          <th>筆數</th><th>勝率</th><th>獲利/保本/止損</th><th>月盈虧</th><th>累計 R</th>
+          <th>筆數</th><th>勝率</th><th>獲利/平手/止損</th><th>月盈虧</th><th>累計 R</th>
         </tr></thead>
         <tbody>${monthlyRows}</tbody>
       </table>
@@ -19374,11 +19543,13 @@ function _rptBuildMonthView(yearTrades, year, month) {
     return ts >= mStart && ts <= mEnd;
   }).sort((a, b) => (a.exitTime || a.entryTime || a.timestamp || 0) - (b.exitTime || b.entryTime || b.timestamp || 0));
 
-  const mWins   = mTrades.filter(t => t.outcome === 'tp2');
-  const mLosses = mTrades.filter(t => t.outcome === 'sl');
-  const mBE     = mTrades.filter(t => t.outcome === 'tp1' || t.outcome === 'be');
+  // 口徑與交易紀錄頁一致（見 _rptBuildYearView 上方說明）
+  const mWins   = mTrades.filter(isWinTrade);
+  const mLosses = mTrades.filter(isLossTrade);
+  const mBE     = mTrades.filter(isFlatTrade);
   const mR      = mTrades.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
-  const mWR     = mTrades.length ? (mWins.length / mTrades.length * 100).toFixed(1) : '--';
+  const _mwl    = mWins.length + mLosses.length;
+  const mWR     = _mwl ? (mWins.length / _mwl * 100).toFixed(1) : '--';
   const mAvgR   = mTrades.length ? mR / mTrades.length : null;
 
   const wrColor  = mWR === '--' ? 'var(--text)' : parseFloat(mWR) >= 60 ? 'var(--bull)' : parseFloat(mWR) >= 40 ? 'var(--text)' : 'var(--bear)';
@@ -19389,7 +19560,7 @@ function _rptBuildMonthView(yearTrades, year, month) {
     : `<div class="rpt-stats" style="margin-bottom:16px">
         <div class="rpt-stat-card">
           <div class="rpt-stat-val" style="color:${wrColor}">${mWR}${mWR !== '--' ? '%' : ''}</div>
-          <div class="rpt-stat-lbl">勝率（止盈二）</div>
+          <div class="rpt-stat-lbl">勝率</div>
         </div>
         <div class="rpt-stat-card">
           <div class="rpt-stat-val">${mTrades.length}</div>
@@ -19403,7 +19574,7 @@ function _rptBuildMonthView(yearTrades, year, month) {
             <span style="color:var(--text3);font-weight:400;margin:0 3px">/</span>
             <span style="color:var(--bear)">${mLosses.length}</span>
           </div>
-          <div class="rpt-stat-lbl">獲利 / 保本 / 止損</div>
+          <div class="rpt-stat-lbl">獲利 / 平手 / 止損</div>
         </div>
         <div class="rpt-stat-card">
           <div class="rpt-stat-val" style="color:${mRColor}">${mR >= 0 ? '+' : ''}${mR.toFixed(2)} R</div>
@@ -19568,9 +19739,9 @@ function _rptBuildBarSVG(trades, year) {
     const mEnd   = new Date(year, m + 1, 0, 23, 59, 59, 999).getTime();
     const mt = trades.filter(t => { const ts = t.exitTime || t.entryTime || t.timestamp || 0; return ts >= mStart && ts <= mEnd; });
     return {
-      win: mt.filter(t => t.outcome === 'tp2').length,
-      be:  mt.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length,
-      sl:  mt.filter(t => t.outcome === 'sl').length,
+      win: mt.filter(isWinTrade).length,
+      be:  mt.filter(isFlatTrade).length,
+      sl:  mt.filter(isLossTrade).length,
     };
   });
 
@@ -19631,12 +19802,12 @@ function _rptBuildMonthly(trades, year) {
       const ts = t.exitTime || t.entryTime || t.timestamp || 0;
       return ts >= mStart && ts <= mEnd;
     });
-    const mWin = mt.filter(t => t.outcome === 'tp2').length;
-    const mBE  = mt.filter(t => t.outcome === 'tp1' || t.outcome === 'be').length;
-    const mSL  = mt.filter(t => t.outcome === 'sl').length;
+    const mWin = mt.filter(isWinTrade).length;
+    const mBE  = mt.filter(isFlatTrade).length;
+    const mSL  = mt.filter(isLossTrade).length;
     const mR   = mt.reduce((s, t) => s + parseFloat(t.pnlR || 0), 0);
     cumR += mR;
-    const mWR   = mt.length ? Math.round(mWin / mt.length * 100) : null;
+    const mWR   = (mWin + mSL) ? Math.round(mWin / (mWin + mSL) * 100) : null;
     const isCur = today.getFullYear() === year && today.getMonth() === m;
     const isFut = new Date(year, m) > today;
     const mRC   = mR > 0 ? 'var(--bull)' : mR < 0 ? 'var(--bear)' : 'var(--text3)';
