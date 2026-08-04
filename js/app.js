@@ -17177,19 +17177,45 @@ function auditPenaltyFactors() {
     for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
     scalpAll = [...m.values()];
   } catch(_e) {}
+  /* ── 證據來源分層（快速單不得凌駕主系統自己的資料）──────────────
+     這個證據池混了三個母體：正式交易、實驗室紙上機會、快速單。合併是為了
+     樣本量——25 筆門檻下主系統自己往往湊不滿，不合併等於整套審查永遠不動。
+     但合併有代價，而且代價會落在主系統身上：
+
+       · 快速單是 5 分鐘、0.6×ATR 止損的短打；主系統是 15m/1h、結構止損、
+         最長持倉 16 小時。同一個扣分條件在兩個時間尺度上的意義未必相同。
+       · 快速單筆數成長快得多，很容易把主系統自己的證據稀釋掉。
+       · 而這些權重是餵給 computeFullRisk 的——它只用來評主系統的單。
+
+     所以改成分層：合併池照樣用來取得統計檢定力，但主系統自己的資料握有
+     否決權——當主系統子集有足夠樣本、而且方向與合併結論相反時，這一輪不動
+     這個條件的權重。快速單可以幫忙「看得更清楚」，不能幫忙「改變方向」。
+
+     順便修掉勝負判定不一致：主系統這條原本讀原始 outcome，沒套用依實際損益
+     修正錯標的校正，與其他統計口徑不同。 */
   const all = [
     ...realAll.filter(t => Array.isArray(t.riskKeys))
-      .map(t => ({ keys: t.riskKeys, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
+      .map(t => ({ keys: t.riskKeys, win: isWinTrade(t), src: 'main' })),
     ...labAll.filter(o => Array.isArray(o.riskKeys))
-      .map(o => ({ keys: o.riskKeys, win: (o.pnlR || 0) > 0 })),
+      .map(o => ({ keys: o.riskKeys, win: (o.pnlR || 0) > 0, src: 'lab' })),
     ...scalpAll.filter(t => Array.isArray(t.riskKeys))
-      .map(t => ({ keys: t.riskKeys, win: (parseFloat(t.pnlR) || 0) > 0 })),
+      .map(t => ({ keys: t.riskKeys, win: (parseFloat(t.pnlR) || 0) > 0, src: 'scalp' })),
   ];
+
   let W = {};
   try { W = JSON.parse(localStorage.getItem(RISK_W_KEY) || '{}') || {}; } catch(_e) {}
   const report = [];
 
-  const judge = (key, label, withF, without) => {
+  const judge = (key, label, withF0, without0) => {
+    /* 決定用哪一組證據下判斷：
+       主系統自己的樣本夠 → 就用主系統的（這些權重本來就只拿去評主系統的單）。
+       主系統不夠 → 才退回合併池借快速單／實驗室的檢定力，但此時把調整幅度
+       夾在 [0.85, 1.25]：外部母體可以「推一把」，不能替主系統做出豁免或
+       加重到 1.8× 這種決定性的判斷。 */
+    const mainW0 = withF0.filter(s => s.src === 'main'), mainO0 = without0.filter(s => s.src === 'main');
+    const mainDecides = mainW0.length >= RISK_LEARN_MIN_N && mainO0.length >= 10;
+    const withF = mainDecides ? mainW0 : withF0;
+    const without = mainDecides ? mainO0 : without0;
     const nW = withF.length, nO = without.length;
     const winW = withF.filter(s => s.win).length, winO = without.filter(s => s.win).length;
     const wrW = nW ? winW / nW * 100 : 0;
@@ -17214,6 +17240,16 @@ function auditPenaltyFactors() {
       // （實測到的錯誤：成立時 35%、未成立 50%，區間重疊，舊邏輯竟把扣分減半）。
       else if (wrW < wrO - 2) { w = 1.0; why = `成立時勝率 ${wrW.toFixed(0)}% 低於未成立 ${wrO.toFixed(0)}%，方向正確但尚未達統計顯著 → 維持原扣分`; }
       else                    { w = 0.7; why = `成立時勝率 ${wrW.toFixed(0)}% 並不低於未成立 ${wrO.toFixed(0)}%，看不出預測力 → 減輕至 0.7×`; }
+      // 外部母體（快速單／實驗室）主導時，夾住調整幅度——它可以推一把，
+      // 不能替主系統做出「豁免」或「加重到 1.8×」這種決定性判斷
+      if (!mainDecides) {
+        const clamped = Math.max(0.85, Math.min(1.25, w));
+        if (clamped !== w) {
+          why += `；主系統樣本不足（${mainW0.length}/${RISK_LEARN_MIN_N}），本輪由合併證據主導，`
+               + `調整幅度夾在 ×0.85–1.25（外部母體不替主系統做決定性判斷），實際目標 ×${clamped}`;
+          w = clamped;
+        }
+      }
       // 平滑：一次最多往目標移動一半，避免樣本剛過門檻就大跳
       const target = w;
       w = +(prev + (target - prev) * 0.5).toFixed(2);
@@ -17222,9 +17258,17 @@ function auditPenaltyFactors() {
       // 說明必須反映「這輪實際套用的權重」，而不是還沒走到的目標值
       if (Math.abs(w - target) > 0.01) why += `；本輪平滑後實際套用 ×${w}（每次移動一半，將逐輪逼近 ×${target}）`;
     }
-    W[key] = { w, n: nW, wrW: +wrW.toFixed(1), wrO: +wrO.toFixed(1), at: Date.now(), why };
+    const mainInfo = { nW: mainW0.length, nO: mainO0.length, decides: mainDecides,
+      wrW: mainW0.length ? +(mainW0.filter(s => s.win).length / mainW0.length * 100).toFixed(1) : null,
+      wrO: mainO0.length ? +(mainO0.filter(s => s.win).length / mainO0.length * 100).toFixed(1) : null };
+    const srcN = { main: withF0.filter(s => s.src === 'main').length,
+                   lab:  withF0.filter(s => s.src === 'lab').length,
+                   scalp:withF0.filter(s => s.src === 'scalp').length };
+    W[key] = { w, n: nW, wrW: +wrW.toFixed(1), wrO: +wrO.toFixed(1), at: Date.now(), why,
+               src: srcN, main: mainInfo };
     if (!nW && w === 1) return;
-    report.push({ key, label, n: nW, wrWith: wrW, wrWithout: wrO, w, why, muted: w === 0 });
+    report.push({ key, label, n: nW, wrWith: wrW, wrWithout: wrO, w, why,
+                  muted: w === 0, src: srcN, main: mainInfo });
   };
 
   for (const key of Object.keys(RISK_KEY_LABELS)) {
@@ -17235,8 +17279,8 @@ function auditPenaltyFactors() {
   // 止損建議整體：以「學習扣分是否觸發」為條件（豁免後 calcLearnDrag 直接歸零）
   {
     const pool = [
-      ...realAll.map(t => ({ fired: (t.learnPenalty || 0) >= 5, win: t.outcome === 'tp1' || t.outcome === 'tp2' })),
-      ...labAll.map(o => ({ fired: (o.refLearnPen || 0) >= 5, win: (o.pnlR || 0) > 0 })),
+      ...realAll.map(t => ({ fired: (t.learnPenalty || 0) >= 5, win: isWinTrade(t), src: 'main' })),
+      ...labAll.map(o => ({ fired: (o.refLearnPen || 0) >= 5, win: (o.pnlR || 0) > 0, src: 'lab' })),
     ];
     judge('learn_drag', RISK_KEY_LABELS.learn_drag, pool.filter(s => s.fired), pool.filter(s => !s.fired));
   }
@@ -17909,6 +17953,7 @@ function renderLabPage() {
             <th style="padding:4px 6px">扣分條件</th><th style="padding:4px 6px;text-align:right">樣本</th>
             <th style="padding:4px 6px;text-align:right">成立時勝率</th><th style="padding:4px 6px;text-align:right">未成立</th>
             <th style="padding:4px 6px;text-align:right">學習權重</th>
+            <th style="padding:4px 6px;text-align:right">樣本來源</th>
             <th style="padding:4px 6px">依據</th></tr></thead>
           <tbody>${auditShown.map(a => {
             const wc = a.w === 0 ? '#22d3ee' : a.w > 1 ? '#ef4444' : a.w < 1 ? '#f59e0b' : 'var(--text2)';
@@ -17919,6 +17964,11 @@ function renderLabPage() {
             <td style="padding:4px 6px;text-align:right;font-weight:600">${a.wrWith != null ? a.wrWith.toFixed(0) + '%' : '--'}</td>
             <td style="padding:4px 6px;text-align:right;color:var(--text3)">${a.wrWithout != null ? a.wrWithout.toFixed(0) + '%' : '--'}</td>
             <td style="padding:4px 6px;text-align:right;font-weight:700;color:${wc}">${wl}</td>
+            <td style="padding:4px 6px;text-align:right;font-size:0.68rem;color:var(--text3);white-space:nowrap">
+              ${a.src ? `主 ${a.src.main}｜實 ${a.src.lab}｜快 ${a.src.scalp}` : '—'}
+              ${a.main ? `<div style="color:${a.main.decides ? '#22c55e' : '#f59e0b'};font-weight:600">
+                ${a.main.decides ? '主系統資料主導' : '合併證據主導（幅度受限）'}</div>` : ''}
+              ${a.main && a.main.nW ? `<div>主系統 ${a.main.wrW ?? '--'}% vs ${a.main.wrO ?? '--'}%</div>` : ''}</td>
             <td style="padding:4px 6px;color:var(--text3);font-size:0.7rem">${a.why || ''}</td>
           </tr>`; }).join('')}</tbody>
         </table></div>
@@ -17928,7 +17978,14 @@ function renderLabPage() {
             成立時反而表現更好 → <b>豁免不扣分</b>。權重每次最多往目標移動一半，避免剛過門檻就大跳。</div>
           <div style="margin-top:2px">樣本門檻 ${RISK_LEARN_MIN_N} 筆（舊版要求 100 筆且成立時勝率 ≥80% 才動作，
             帳戶勝率偏低時沒有任何條件到得了，等於整套審查從未生效）。</div>
-          <div style="margin-top:2px">樣本來源：正式交易 + 實驗室完結記錄 + 快進快出完結記錄。</div>
+          <div style="margin-top:2px"><b>樣本來源與分層：</b>合併正式交易 + 實驗室完結 + 快進快出完結，是為了湊足統計檢定力——
+            25 筆門檻下主系統自己常常湊不滿，不合併等於整套審查永遠不動。但這些權重<b>只拿去評主系統的單</b>，
+            而快速單是 5 分鐘、0.6×ATR 止損的短打，與主系統的 15m/1h 結構單不是同一個母體，筆數又成長得快，
+            很容易稀釋掉主系統自己的證據。</div>
+          <div style="margin-top:2px">所以規則是<b>主系統資料優先</b>：主系統自己的樣本達 ${RISK_LEARN_MIN_N}/10 筆時，
+            就只用主系統的資料下判斷（標示「主系統資料主導」）；不夠時才退回合併池借檢定力，
+            而且此時調整幅度<b>夾在 ×0.85–1.25</b>——外部母體可以推一把，不能替主系統做出「豁免」或
+            「加重到 1.8×」這種決定性判斷。「樣本來源」欄可逐條看到三個母體各貢獻多少筆。</div>
         </div>
       </div>`;
     }
