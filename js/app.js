@@ -2907,6 +2907,16 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   }
 
   // ── 進場點 ──
+  // 掛單深度上限（ATR 為單位）：掛在現價下方（多單）要價格先走弱才成交，
+  // 掛得越深，「直接往獲利方向噴出去」的那些就越吃不到——留下來的是先走弱
+  // 的樣本，飛掉的是直接走強的樣本。這是勝率被壓在隨機漫步之下的結構性原因。
+  // 上限預設 0.35 ATR；有足夠實測後改由每訊號期望值決定（entryFillProfile）。
+  const _PULL_CAP_DEFAULT = 0.35;
+  let _pullCapAtr = _PULL_CAP_DEFAULT;
+  try {
+    const _fp = entryFillProfile();
+    if (_fp.ready && _fp.suggest != null) _pullCapAtr = Math.max(0.1, Math.min(0.8, _fp.suggest));
+  } catch(_e) {}
   const m15ema = m15?.ema20 || parseFloat(coin.ema20) || price;
   let entry, entryReasons = [];
   if (_ltDowngradeReason) entryReasons.push(_ltDowngradeReason);  // 長線→短線降級說明（折價區把關）
@@ -2924,6 +2934,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
     } else {
       entry = price;
+    }
+    // 掛單深度封頂：結構位再漂亮，掛得太深就等於只會吃到走弱的那些單
+    if (price - entry > atr * _pullCapAtr) {
+      entry = price - atr * _pullCapAtr;
+      entryReasons.push(`掛單深度封頂 ${_pullCapAtr}×ATR（掛太深只會吃到先走弱的單）`);
     }
     if (rsi < 45 && rsiSlope > 1)  entryReasons.push(`RSI ${rsi} 低位回升（+${rsiSlope}）`);
     else if (rsi < 38)             entryReasons.push(`RSI ${rsi} 超賣反彈機會`);
@@ -3009,6 +3024,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
     } else {
       entry = price;
+    }
+    // 掛單深度封頂（與多單對稱）
+    if (entry - price > atr * _pullCapAtr) {
+      entry = price + atr * _pullCapAtr;
+      entryReasons.push(`掛單深度封頂 ${_pullCapAtr}×ATR（掛太深只會吃到先走弱的單）`);
     }
     if (rsi > 55 && rsiSlope < -1) entryReasons.push(`RSI ${rsi} 高位回落（${rsiSlope}）`);
     else if (rsi > 62)             entryReasons.push(`RSI ${rsi} 超買回調機會`);
@@ -10300,6 +10320,75 @@ function exitWalkForward(list, mode) {
 /* 出場實驗室的樣本：只收「觸及止盈一」有意義的單 + 全部已平倉單當分母。
    出場參數只影響前者，但期望值必須攤在全部單上算，否則會用一個
    「只看有賺的那群」的數字去做決策。 */
+/* 進場掛單深度面板：把「隨機漫步基準 vs 實測勝率」的落差攤開，
+   並逐深度顯示成交率、飛越率、每訊號期望值。 */
+function buildPullDepthPanel() {
+  const fp = entryFillProfile();
+  const be = accountBreakeven();
+  // 隨機漫步基準：止盈一 / 止損 的幾何結構下，毫無預測力也該有的勝率
+  let rr1 = null, baseline = null;
+  try {
+    const s = learnSamples().filter(t => t.status === 'closed');
+    const rs = s.map(t => {
+      const dir = t.direction === 'long' ? 1 : -1;
+      const e = parseFloat(t.entry), sl = parseFloat(t.baseSl != null ? t.baseSl : t.sl), tp1 = parseFloat(t.tp1);
+      const risk = Math.abs(e - sl);
+      return (risk > 0 && isFinite(tp1)) ? Math.abs(tp1 - e) / risk : null;
+    }).filter(v => v != null && v > 0);
+    if (rs.length >= 20) { rr1 = +_medOf(rs).toFixed(2); baseline = +(1 / (1 + rr1) * 100).toFixed(1); }
+  } catch(_e) {}
+
+  const diag = (baseline != null && be)
+    ? `<div style="background:${be.cur < baseline - 5 ? 'rgba(239,68,68,.10)' : 'rgba(34,197,94,.08)'};
+         border-radius:8px;padding:8px 10px;margin-top:6px;font-size:0.78rem;line-height:1.7">
+        止盈一中位數 <b>${rr1}R</b>、止損 1R 的結構下，<b>就算進場毫無預測力</b>（純隨機漫步），
+        先觸及止盈一而非止損的機率也有 <b>${baseline}%</b>。目前實測 <b>${be.cur}%</b>
+        → <b style="color:${be.cur < baseline ? '#ef4444' : '#22c55e'}">
+        ${be.cur < baseline ? `低於隨機基準 ${(baseline - be.cur).toFixed(1)}pp` : `高於隨機基準 ${(be.cur - baseline).toFixed(1)}pp`}</b>。
+        ${be.cur < baseline - 5 ? `<br><b>低於隨機不是「訊號不夠準」能解釋的</b>——要比亂猜還糟，通常是有東西在系統性地
+          摧毀贏單。最可能的是下方這件事：掛單掛在現價的不利側，只有價格先走弱才成交，
+          直接噴向獲利方向的那些根本沒吃到。留下先走弱的，飛掉直接走強的。` : ''}
+      </div>` : '';
+
+  const rowsHtml = fp.ready ? `
+    <div style="margin-top:8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+      <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+        <th style="padding:3px 6px;text-align:left">掛單深度</th><th style="padding:3px 6px">訊號</th>
+        <th style="padding:3px 6px">成交率</th><th style="padding:3px 6px">飛越率</th>
+        <th style="padding:3px 6px">成交後勝率</th><th style="padding:3px 6px">每成交</th>
+        <th style="padding:3px 6px">每訊號</th></tr></thead>
+      <tbody>${fp.rows.map(r => `<tr style="text-align:right">
+        <td style="padding:3px 6px;text-align:left">${r.label}</td>
+        <td style="padding:3px 6px;color:${r.signals >= 20 ? 'var(--text2)' : 'var(--text3)'}">${r.signals}${r.signals >= 20 ? '' : '/20'}</td>
+        <td style="padding:3px 6px">${r.fillRate}%</td>
+        <td style="padding:3px 6px;color:${r.flyRate > 20 ? '#ef4444' : 'var(--text3)'}">${r.flyRate}%</td>
+        <td style="padding:3px 6px">${r.winRate == null ? '—' : r.winRate + '%'}</td>
+        <td style="padding:3px 6px;color:${r.evFilled > 0 ? '#22c55e' : '#ef4444'}">${r.evFilled == null ? '—' : (r.evFilled > 0 ? '+' : '') + r.evFilled + 'R'}</td>
+        <td style="padding:3px 6px;font-weight:700;color:${r.evSignal > 0 ? '#22c55e' : '#ef4444'}">${r.evSignal > 0 ? '+' : ''}${r.evSignal}R</td>
+      </tr>`).join('')}</tbody></table></div>
+    <div style="font-size:0.72rem;color:var(--text3);margin-top:5px">
+      要看的是<b>最右邊那欄</b>。「每成交」只算成交的那些，會把飛掉的贏單當作不存在——
+      掛越深「每成交」通常越好看，但那是倖存者偏差。「每訊號」＝成交單總 R ÷ 訊號總數（含沒成交的），
+      它才誠實反映「這個深度到底幫你賺錢還是虧錢」。
+    </div>` : '';
+
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+    <div style="font-weight:700;margin-bottom:3px">🎯 進場掛單深度（逆選擇診斷）</div>
+    ${diag}
+    <div style="font-size:0.76rem;color:var(--text2);margin-top:6px">
+      已成交 ${fp.nFilled} 筆　·　未成交訊號 ${fp.nMissed} 筆
+      （其中<b style="color:#ef4444">沒回踩就飛過止盈 ${fp.flyaway} 筆</b>——方向對、幅度也到了，只是掛太低沒吃到）
+    </div>
+    <div style="font-size:0.76rem;color:var(--text2)">${fp.why}</div>
+    ${rowsHtml}
+    <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
+      未成交訊號從現在開始記錄，之前的取消紀錄過了冷卻期就被清掉了，救不回來——
+      所以飛越筆數會從 0 開始長。成交邏輯完全沒有動（仍是真實限價單語意），
+      改的是<b>掛單掛在哪</b>：深度上限預設 0.35×ATR，樣本夠了之後由「每訊號期望值」自己決定。
+    </div></div>`;
+}
+
 /* ── 實驗室 → 實盤的連動狀態 ──────────────────────────────────────
    「有沒有把實驗室的結果帶進交易」不該靠我說有就是有。這裡逐條列出每個學習
    成果現在的實際狀態：接到哪個實盤路徑、目前生效的值是什麼、還是仍在累積樣本。
@@ -11319,6 +11408,87 @@ function condBlockCheck(trade) {
   return null;
 }
 
+/* ── 進場掛單深度分析（勝率一直上不去的結構性原因）──────────────
+   先把算術攤開來看，因為它指向的方向很明確：
+
+   止損 1R、止盈一約 1.5R 的結構下，就算進場毫無預測力（純隨機漫步），
+   先觸及止盈一而非止損的機率也有 1 ÷ (1+1.5) ＝ 40%。實測勝率若明顯低於
+   這個數，代表問題不在「訊號不夠準」，而是有東西在系統性地摧毀贏單——
+   因為要低於隨機，得比亂猜還糟，那通常不是預測力的問題。
+
+   最可能的兇手是逆選擇：進場是掛在現價下方（多單）的限價單，
+     · 價格回踩到掛單位才成交——而會回踩的，往往是走勢比較弱的那些
+     · 價格直接噴向獲利方向的，掛單根本沒吃到，取消，不計入任何統計
+   於是留下來的是「先走弱」的樣本，飛掉的是「直接走強」的樣本。
+
+   所以正確的衡量單位是<b>每個訊號</b>的期望值，不是每筆成交的期望值：
+     每訊號期望值 = 成交單的總 R ÷ 訊號總數（含沒成交的）
+   掛得越深，單筆成交的價格越好，但成交率越低、且成交到的品質越差。
+   這個函式把訊號按掛單深度分組，把兩邊一起算，找出深度該壓在哪。 */
+const PULL_BUCKETS = [
+  { key: 'p0',  label: '貼價（≤0.05R）',   lo: -Infinity, hi: 0.05 },
+  { key: 'p1',  label: '淺回踩 0.05–0.2R', lo: 0.05, hi: 0.2 },
+  { key: 'p2',  label: '中回踩 0.2–0.4R',  lo: 0.2,  hi: 0.4 },
+  { key: 'p3',  label: '深回踩 0.4–0.7R',  lo: 0.4,  hi: 0.7 },
+  { key: 'p4',  label: '極深回踩 >0.7R',   lo: 0.7,  hi: Infinity },
+];
+function pullDepthR(t) {
+  const dir = t.direction === 'long' ? 1 : -1;
+  const p = parseFloat(t.entryPrice), e = parseFloat(t.entry);
+  const sl = parseFloat(t.baseSl != null ? t.baseSl : t.sl);
+  const risk = Math.abs(e - sl);
+  if (!isFinite(p) || !isFinite(e) || !(risk > 0)) return null;
+  // 四捨五入到 3 位：浮點誤差會讓 0.4 變成 0.3999…而落到隔壁的分組
+  return +(((p - e) * dir) / risk).toFixed(3);   // >0 代表掛在現價的不利側（要回踩才成交）
+}
+let _pullCache = null, _pullCacheTs = 0;
+function entryFillProfile() {
+  const now = Date.now();
+  if (_pullCache && now - _pullCacheTs < 60000) return _pullCache;
+  const out = { ready: false, rows: [], why: '', nFilled: 0, nMissed: 0, flyaway: 0, suggest: null };
+  try {
+    const filled = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)));
+    const missed = loadMissedSignals();
+    out.nFilled = filled.length; out.nMissed = missed.length;
+    out.flyaway = missed.filter(m => m.kind === 'flyaway').length;
+    if (filled.length < 30) {
+      out.why = `已成交樣本 ${filled.length}/30`;
+      _pullCache = out; _pullCacheTs = now; return out;
+    }
+    for (const b of PULL_BUCKETS) {
+      const inB = v => v != null && v > b.lo && v <= b.hi;
+      const f = filled.filter(t => inB(pullDepthR(t)));
+      const mFly = missed.filter(m => m.kind === 'flyaway' && inB(m.pullR));
+      const mDec = missed.filter(m => m.kind === 'decay'   && inB(m.pullR));
+      const signals = f.length + mFly.length + mDec.length;
+      if (!signals) continue;
+      const sumR = f.reduce((a, t) => a + parseFloat(t.pnlR), 0);
+      const w = f.filter(isWinTrade).length, l = f.filter(isLossTrade).length;
+      out.rows.push({ ...b, signals, filled: f.length, flyaway: mFly.length, decay: mDec.length,
+        fillRate: +(f.length / signals * 100).toFixed(1),
+        flyRate:  +(mFly.length / signals * 100).toFixed(1),
+        winRate:  (w + l) ? +(w / (w + l) * 100).toFixed(1) : null,
+        evFilled: f.length ? +(sumR / f.length).toFixed(3) : null,
+        evSignal: +(sumR / signals).toFixed(3) });
+    }
+    out.ready = out.rows.length > 0;
+    // 建議上限：取「每訊號期望值」最好的那一桶，把深度壓到它的上緣。
+    // 樣本不足的桶不參與（≥20 個訊號），避免一兩筆運氣決定進場結構。
+    const ok = out.rows.filter(r => r.signals >= 20);
+    if (ok.length) {
+      const best = ok.reduce((a, b2) => (b2.evSignal > a.evSignal ? b2 : a));
+      out.suggest = isFinite(best.hi) ? best.hi : null;
+      out.why = `每訊號期望值最好的是「${best.label}」（${best.signals} 個訊號、${best.evSignal}R/訊號）`
+              + (out.suggest ? `，建議把掛單深度上限壓到 ${out.suggest}R` : '');
+    } else {
+      out.why = `各深度分組的訊號數都不足 20，尚無法據此調整`
+              + (out.flyaway ? `；目前已記錄 ${out.flyaway} 筆「沒回踩就飛過止盈」的錯失訊號` : '');
+    }
+  } catch(_e) { out.why = '分析失敗：' + _e.message; }
+  _pullCache = out; _pullCacheTs = now;
+  return out;
+}
+
 /* 最低 R/R：兩平勝率 = 1 ÷ (1 + R/R)，反過來就是「目前勝率下，R/R 至少要多少」。
    原本 R/R 過低只是扣風險分，扣完只要風控分還過門檻就照樣進場——但賺賠比
    不夠時，那筆單在數學上就不可能有正期望值，扣分擋不住它。改為硬性門檻。 */
@@ -11642,6 +11812,48 @@ function calcATR14FromKlines(klines) {
 const CANCEL_COOLDOWN_KEY = 'csp_cancel_cooldowns';
 function loadCancelCooldowns() { try { return JSON.parse(localStorage.getItem(CANCEL_COOLDOWN_KEY) || '[]'); } catch(e) { return []; } }
 function saveCancelCooldowns(list) { localStorage.setItem(CANCEL_COOLDOWN_KEY, JSON.stringify(list)); }
+/* ── 未成交訊號台帳 ────────────────────────────────────────────────
+   為什麼需要這個：進場是掛在現價下方（多單）的限價單，成交的前提是「價格
+   先往不利方向走一段」。於是會發生一件很傷的事——
+
+     · 價格回踩到掛單位 → 成交 → 常常繼續走弱 → 止損（計入統計，是敗仗）
+     · 價格直接往獲利方向噴出去 → 沒成交 → 取消（不計入任何統計）
+
+   贏的那些被丟掉，輸的那些留下來。這叫逆選擇（adverse selection）。
+   原本取消紀錄只進 cooldown 清單，過了冷卻期就被清掉，所以「錯過了多少
+   本來會贏的單」這件事在系統裡完全沒有留下痕跡，勝率低到什麼程度是它造成
+   的也就無從得知。這個台帳把它記下來，只留分析必需的欄位。
+
+   分兩類，因為意義完全相反：
+     · flyaway  ——「沒回踩就飛過止盈」：這是被逆選擇丟掉的贏單
+     · decay    ——「訊號轉弱而取消」：這是正確迴避，不算損失 */
+const MISSED_KEY = 'csp_missed_signals';
+const MISSED_MAX = 500;
+function loadMissedSignals() {
+  try { const a = JSON.parse(localStorage.getItem(MISSED_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+function recordMissedSignal(trade, kind, note) {
+  try {
+    const dir = trade.direction === 'long' ? 1 : -1;
+    const p = parseFloat(trade.entryPrice), e = parseFloat(trade.entry);
+    const sl = parseFloat(trade.baseSl != null ? trade.baseSl : trade.sl);
+    const risk = Math.abs(e - sl);
+    const all = loadMissedSignals();
+    all.unshift({
+      id: trade.id, symbol: trade.symbol, direction: trade.direction, kind,
+      at: Date.now(), timestamp: trade.timestamp || 0,
+      entry: e, entryPrice: p, sl, tp1: parseFloat(trade.tp1), tp2: parseFloat(trade.tp2),
+      // 掛單相對訊號當下價的回踩深度（R 為單位）——這是要分析的自變數
+      pullR: (isFinite(p) && isFinite(e) && risk > 0) ? +(((p - e) * dir) / risk).toFixed(3) : null,
+      sqScore: trade.sqScore, conf: trade.conf, adx: trade.adx, rsi: trade.rsi,
+      note: (note || '').slice(0, 60),
+    });
+    if (all.length > MISSED_MAX) all.splice(MISSED_MAX);
+    localStorage.setItem(MISSED_KEY, JSON.stringify(all));
+  } catch(_e) {}
+}
+
 function addCancelCooldown(trade, reason) {
   const cutoff = Date.now() - SIGNAL_COOLDOWN;
   const all = loadCancelCooldowns().filter(c => (c.cancelTime || 0) > cutoff);
@@ -13475,6 +13687,7 @@ function updateOpenTrades(data) {
         if (trendReversed) reasons.push(`趨勢已反轉（${coin.trend}）`);
         if (scoreFailed)   reasons.push(`評分跌至 ${nowScore}，信號失效`);
         const cancelReason = (reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`) + '（連續 2 輪確認）';
+        recordMissedSignal(trade, 'decay', cancelReason);   // 正確迴避，不是被逆選擇丟掉的贏單
         addCancelCooldown(trade, cancelReason);
         toDeleteIds.add(trade.id);
         changed = true;
@@ -13507,6 +13720,8 @@ function updateOpenTrades(data) {
         const hitLevel = hitTP2 ? '止盈二' : '止盈一';
         const fmt      = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
         const cancelReason = `價格未回踩進場直接飛越${hitLevel}（$${fmt(isLong ? tp1 : tp1)}），掛單失效`;
+        // 這是被逆選擇丟掉的贏單：方向對、幅度也到了，只是掛太低沒吃到
+        recordMissedSignal(trade, 'flyaway', `飛越${hitLevel}`);
         addCancelCooldown(trade, cancelReason);
         toDeleteIds.add(trade.id);
         changed = true;
@@ -18112,6 +18327,10 @@ function renderTradeLogPage() {
   let linkHtml = '';
   try { linkHtml = buildLabLinkPanel(); } catch(_e) {}
 
+  // 進場掛單深度：勝率低於隨機基準時，兇手通常在這裡
+  let pullHtml = '';
+  try { pullHtml = buildPullDepthPanel(); } catch(_e) {}
+
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
 
@@ -18151,6 +18370,7 @@ function renderTradeLogPage() {
     ${mismatchHtml}
     ${beHtml}
     ${linkHtml}
+    ${pullHtml}
     ${gateHtml}
     ${condHtml}
     ${exitHtml}
