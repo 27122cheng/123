@@ -2906,6 +2906,46 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     }
   }
 
+  /* ── 結構階梯：四個價位全部釘在分析出來的結構位上 ──────────────
+     要求（使用者指定）：做多時「進場點、止損點、加倉位、加倉後的止損」
+     四個價位的<b>下方都要有分析出的支撐</b>；做空則上方都要有壓力。
+     不再用固定 R（entry − risk×1.3 之類）推算任何一個價位。
+
+     多單由上到下的排列，以及每一階下方的那道結構：
+       加倉位     ＝ 上方第一道壓力 + 緩衝   → 突破後該壓力翻成支撐，撐在它下方
+       進場點     ＝ 最近支撐 S1 + 緩衝      → S1 撐在下方
+       加倉後止損 ＝ S1 − 緩衝               → 下方還有 S2
+       初始止損   ＝ S2 − 緩衝               → 下方還有 S3
+     所以做多需要 S1/S2/S3 三道支撐 + 一道壓力；做空對稱。
+     結構不足就不建這筆單——沒有結構可釘時硬用固定 R 湊，正是要改掉的事。
+
+     緩衝仍以 ATR 計，那是「插針容忍」不是價位推算：價位由結構決定，
+     緩衝只決定要離結構多遠才不會被雜訊掃到。 */
+  const LADDER_BUF = 0.25;          // 結構緩衝（×ATR）
+  const LADDER_MIN_SEP = 0.35;      // 相鄰兩道結構至少要隔開（×ATR），太近視為同一道
+  function pickLadder(levels, from, isLongDir, n) {
+    // levels：多單為支撐（由高到低）、空單為壓力（由低到高）
+    const out = [];
+    for (const v of levels) {
+      if (!isFinite(v) || v <= 0) continue;
+      const beyond = isLongDir ? v < from : v > from;
+      if (!beyond) continue;
+      if (out.length && Math.abs(out[out.length - 1] - v) < atr * LADDER_MIN_SEP) continue;
+      out.push(v);
+      if (out.length >= n) break;
+    }
+    return out;
+  }
+  const _ladderSupps = pickLadder(supps, price, true, 3);
+  const _ladderRess  = pickLadder(resists, price, false, 3);
+  const _ladderSide  = isLong ? _ladderSupps : _ladderRess;
+  const _ladderOpp   = isLong ? _ladderRess : _ladderSupps;
+  const _ladderOk    = _ladderSide.length >= 3 && _ladderOpp.length >= 1;
+  const _ladderWhy   = _ladderOk ? '' :
+    `結構不足：${isLong ? '下方支撐' : '上方壓力'} ${_ladderSide.length}/3 道`
+    + `、${isLong ? '上方壓力' : '下方支撐'} ${_ladderOpp.length}/1 道`
+    + `（四個價位都要有結構撐著，不用固定 R 湊）`;
+
   // ── 進場點 ──
   // 掛單深度上限（ATR 為單位）：掛在現價下方（多單）要價格先走弱才成交，
   // 掛得越深，「直接往獲利方向噴出去」的那些就越吃不到——留下來的是先走弱
@@ -2923,15 +2963,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   if (isLong) {
     const near4hSup = _htfSupps.find(s => (price - s) < atr * 1.0);
     const nearSup   = supps[0];
-    if (near4hSup && (price - near4hSup) < atr * 0.8) {
+    // 進場點釘在最近一道支撐 S1 上方緩衝處——S1 就是進場點下方的那道支撐
+    const _s1 = _ladderSupps[0];
+    if (_s1) {
+      entry = Math.min(price, _s1 + atr * LADDER_BUF);
+      entryReasons.push(`進場釘於${_htfTfLabel(_s1)}支撐 ${fmtPrice(_s1)} 上方 ${LADDER_BUF}×ATR（下方有此支撐撐著）`);
+    } else if (near4hSup && (price - near4hSup) < atr * 0.8) {
       entry = Math.min(price, near4hSup + atr * 0.12);
       entryReasons.push(`${_htfTfLabel(near4hSup)}結構支撐 ${fmtPrice(near4hSup)} 確認進場`);
     } else if (nearSup && (price - nearSup) < atr * 0.8) {
       entry = Math.min(price, nearSup + atr * 0.15);
       entryReasons.push(`1H 結構支撐 ${fmtPrice(nearSup)} 附近確認`);
-    } else if (m15ema < price && (price - m15ema) < atr * 0.6) {
-      entry = Math.min(price, m15ema * 1.002);
-      entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
     } else {
       entry = price;
     }
@@ -3013,15 +3055,17 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   } else {
     const near4hRes = _htfResists.find(r => (r - price) < atr * 1.0);
     const nearRes   = resists[0];
-    if (near4hRes && (near4hRes - price) < atr * 0.8) {
+    // 進場點釘在最近一道壓力 R1 下方緩衝處——R1 就是進場點上方的那道壓力
+    const _r1 = _ladderRess[0];
+    if (_r1) {
+      entry = Math.max(price, _r1 - atr * LADDER_BUF);
+      entryReasons.push(`進場釘於${_htfTfLabel(_r1)}壓力 ${fmtPrice(_r1)} 下方 ${LADDER_BUF}×ATR（上方有此壓力壓著）`);
+    } else if (near4hRes && (near4hRes - price) < atr * 0.8) {
       entry = Math.max(price, near4hRes - atr * 0.12);
       entryReasons.push(`${_htfTfLabel(near4hRes)}結構壓力 ${fmtPrice(near4hRes)} 確認進場`);
     } else if (nearRes && (nearRes - price) < atr * 0.8) {
       entry = Math.max(price, nearRes - atr * 0.15);
       entryReasons.push(`1H 結構壓力 ${fmtPrice(nearRes)} 附近確認`);
-    } else if (m15ema > price && (m15ema - price) < atr * 0.6) {
-      entry = Math.max(price, m15ema * 0.998);
-      entryReasons.push(`貼近 15m EMA20（${fmtPrice(m15ema)}）`);
     } else {
       entry = price;
     }
@@ -3212,6 +3256,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const slDistPct = ((entry - sl) / price * 100).toFixed(2);
       const tfLabel = trapLow === trapLow4h ? '4H ' : '';
       slReason = `${tfLabel}PO3/掃蕩低點 ${fmtPrice(trapLow)} 下方止損，-${slDistPct}%（結構化止損）`;
+    } else if (_ladderSupps[1]) {
+      // 止損釘在第二道支撐 S2 下方——S2 要先跌破才會被掃，而 S2 下方還有 S3
+      sl = _ladderSupps[1] - atr * LADDER_BUF;
+      const slDistPct = ((entry - sl) / price * 100).toFixed(2);
+      slReason = `止損釘於${_htfTfLabel(_ladderSupps[1])}支撐 ${fmtPrice(_ladderSupps[1])} 下方 ${LADDER_BUF}×ATR，-${slDistPct}%`
+               + (_ladderSupps[2] ? `（下方仍有支撐 ${fmtPrice(_ladderSupps[2])}）` : '');
     } else {
       sl = Math.min(structSup - atr * 0.3, entry - atr * 1.3);
       const slDistPct = ((entry - sl) / price * 100).toFixed(2);
@@ -3233,6 +3283,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const slDistPct = ((sl - entry) / price * 100).toFixed(2);
       const tfLabel = trapHigh === trapHigh4h ? '4H ' : '';
       slReason = `${tfLabel}PO3/掃蕩高點 ${fmtPrice(trapHigh)} 上方止損，+${slDistPct}%（結構化止損）`;
+    } else if (_ladderRess[1]) {
+      // 止損釘在第二道壓力 R2 上方——R2 要先突破才會被掃，而 R2 上方還有 R3
+      sl = _ladderRess[1] + atr * LADDER_BUF;
+      const slDistPct = ((sl - entry) / price * 100).toFixed(2);
+      slReason = `止損釘於${_htfTfLabel(_ladderRess[1])}壓力 ${fmtPrice(_ladderRess[1])} 上方 ${LADDER_BUF}×ATR，+${slDistPct}%`
+               + (_ladderRess[2] ? `（上方仍有壓力 ${fmtPrice(_ladderRess[2])}）` : '');
     } else {
       sl = Math.max(structRes + atr * 0.3, entry + atr * 1.3);
       const slDistPct = ((sl - entry) / price * 100).toFixed(2);
@@ -4671,6 +4727,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ltTPReason: (canScaleIn && ltTPReason) ? ltTPReason : null,
     // 極端頂/底反轉辨識（供 Telegram 顯示反轉可能性）
     extremeRev: _extremeRev,
+    /* 結構階梯（不用固定 R 推算，全部釘在分析出的結構位上）：
+       addLevel   加倉位     ＝ 上方第一道壓力（做空為下方第一道支撐）+ 緩衝，
+                              突破後該結構翻向，撐／壓在加倉位的另一側
+       addSl      加倉後止損 ＝ S1 − 緩衝（做空 R1 + 緩衝），下方仍有 S2
+       ladderOk   四個價位是否都有結構可釘；false 代表結構不足
+       ladder     三道同向結構＋一道反向結構，供顯示與稽核 */
+    addLevel: _ladderOpp[0] != null
+      ? +(isLong ? _ladderOpp[0] + atr * LADDER_BUF : _ladderOpp[0] - atr * LADDER_BUF).toFixed(8) : null,
+    addSl: _ladderSide[0] != null
+      ? +(isLong ? _ladderSide[0] - atr * LADDER_BUF : _ladderSide[0] + atr * LADDER_BUF).toFixed(8) : null,
+    ladderOk: _ladderOk,
+    ladderWhy: _ladderWhy,
+    ladder: { side: _ladderSide.slice(0, 3), opp: _ladderOpp.slice(0, 1), buf: LADDER_BUF },
   };
 
   // 更新或新增交易記錄（查看詳情時用 S/R 精確版本更新已自動記錄的估算值）
@@ -12659,6 +12728,9 @@ async function recordSignalsFromScan(data) {
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     let setup = computeSimpleSetup(coin, isLong);
     if (setup.hardBlocked && _no('進場結構硬性封鎖')) continue;
+    // 結構階梯不完整＝四個價位沒辦法全部釘在結構上 → 不建單。
+    // 沒有結構可釘時硬用固定 R 湊出價位，正是這次要改掉的事。
+    if (setup.ladderOk === false && _no('結構不足（四個價位無法全部釘在結構上）')) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
     // 風控分最低門檻（100 分制，與幣種詳情頁一致；未達每日配額時自適應放寬）
     if ((setup.conf || 0) < _scanGates.minConf && _no(`風控分 < ${_scanGates.minConf}（扣風險分前）`)) continue;
@@ -13193,6 +13265,10 @@ async function recordSignalsFromScan(data) {
       entryBBWalkingBear: !!(coin.bb?.walkingBear),
       entryBBWalkingBull: !!(coin.bb?.walkingBull),
       entryWeeklyAgainst: isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
+      // 結構階梯：加倉位與加倉後止損都釘在結構上，持倉監控直接用這兩個值
+      addLevel: setup.addLevel ?? null,
+      addSl:    setup.addSl ?? null,
+      ladder:   setup.ladder ?? null,
       entryScoreStrength: (() => { const s = isLong ? coin.score : 100 - coin.score; return s >= 75 ? 'strong' : s >= 65 ? 'medium' : 'weak'; })(),
       entryKillZone:      (() => { const h = new Date().getUTCHours(); return h >= 7 && h < 11 ? 'london' : h >= 13 && h < 17 ? 'ny' : h >= 0 && h < 4 ? 'asia' : 'other'; })(),
       status: 'pending', outcome: null, tp1Hit: false,
@@ -14167,14 +14243,26 @@ function updateOpenTrades(data) {
       const lastSIAt   = confirmedSIs.at(-1)?.entryTime ?? trade.entryTime ?? trade.timestamp ?? 0;
       const hasTimeGap = Date.now() - lastSIAt > 60 * 60 * 1000; // 最少 1 小時間隔
 
-      if (inProfit && fromPeak > 0.008 && hasTimeGap) {
+      /* ── 加倉：釘在結構上，不用固定 R ────────────────────────────
+         addLevel＝建單時算出的「上方第一道壓力 + 緩衝」（做空對稱）。價格
+         突破它之後那道結構翻向，就成了加倉位下方的支撐——這是加倉位「下方
+         要有分析出的支撐」的來源。條件因此改為「價格已站上 addLevel」，
+         而不是原本的「獲利 0.3% + 回落 0.8%」那組與結構無關的百分比。
+         舊單沒有 addLevel（結構階梯上線前建的），維持原本的百分比條件。 */
+      const _addLv = parseFloat(trade.addLevel);
+      const _hasLadder = isFinite(_addLv) && _addLv > 0;
+      const _clearedStruct = _hasLadder && (isLong ? peakRef >= _addLv : peakRef <= _addLv);
+      const _addReady = _hasLadder
+        ? (_clearedStruct && (isLong ? cur >= _addLv : cur <= _addLv))   // 突破後回踩到該結構位
+        : (inProfit && fromPeak > 0.008);
+      if (_addReady && hasTimeGap) {
         const siNum   = confirmedSIs.length + 1;
         const origRisk = Math.abs(trade.entry - trade.sl) || 1;
         const _newSI = {
           id: `${trade.id}-si${siNum}`,
           seqNum: siNum,
           timestamp: Date.now(),
-          entryLevel: cur,
+          entryLevel: _hasLadder ? _addLv : cur,
           // 註：加倉不另設止損——出場判定（updateOpenTrades / verifyIntrabarHits）
           // 一律只看主倉 trade.sl，整倉共用一個止損。此處保留欄位僅為相容舊記錄，
           // 各處顯示與通知皆已改用 trade.sl，避免實盤照著掛出不會生效的停損。
@@ -14186,9 +14274,21 @@ function updateOpenTrades(data) {
           entryPrice: null,
           touched: true, // 建立時現價即為回踩位，標記已觸及，等待反彈確認進場
           conf: trade.conf || 0,
+          structural: _hasLadder || undefined,
         };
         trade.scaleIns.push(_newSI);
         changed = true;
+        /* 加倉後的止損：推到 addSl＝S1 − 緩衝（做空 R1 + 緩衝）。
+           S1 是進場點下方的那道支撐，止損釘在它下方，而下方仍有 S2 —— 這是
+           「加倉後的止損下方要有支撐」的來源。原本是把止損推到「保本位以上」
+           那種與結構無關的位置。只在確實往獲利方向推進時才動。 */
+        const _addSl = parseFloat(trade.addSl);
+        if (isFinite(_addSl) && (isLong ? _addSl > trade.sl : _addSl < trade.sl)) {
+          const _slBefore = trade.sl;
+          trade.sl = _addSl;
+          sendSLChangeNotification(trade, _slBefore, _addSl,
+            `加倉後止損推進至結構位（釘於${isLong ? '支撐下方' : '壓力上方'}，其${isLong ? '下' : '上'}方仍有次一道結構）`);
+        }
         // 加倉訊號成立 → 立即通知（實盤需同步掛加倉單，不能等成交後才知道）
         sendScaleInSignalNotification(trade, _newSI, MAX_SCALE_INS);
       }
