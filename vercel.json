@@ -1,18 +1,1 @@
-{
-  "version": 2,
-  "name": "stock-scanner",
-  "builds": [
-    {
-      "src": "stock-scanner/package.json",
-      "use": "@vercel/next"
-    }
-  ],
-  "functions": {
-    "stock-scanner/app/api/scan/route.ts": {
-      "maxDuration": 60
-    },
-    "stock-scanner/app/api/stock/[symbol]/route.ts": {
-      "maxDuration": 30
-    }
-  }
-}
+{}

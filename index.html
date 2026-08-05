@@ -1,431 +1,912 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>股票掃描系統 | Stock Scanner Pro</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-  <link rel="stylesheet" href="css/styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>coin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
-  <div id="app">
 
-    <!-- Navigation -->
-    <nav class="navbar" id="navbar">
-      <div class="nav-brand">
-        <div class="nav-logo-icon">
-          <i class="fas fa-chart-bar"></i>
-        </div>
-        <div class="nav-brand-text">
-          <span class="nav-title">股票掃描系統</span>
-          <span class="nav-subtitle">台股/美股技術指標分析</span>
-        </div>
+  <!-- 加载遮罩 -->
+  <div id="loading-overlay" class="loading-overlay">
+    <div class="loading-content">
+      <div class="loading-logo">
+        <svg class="logo-svg" width="48" height="48" viewBox="0 0 48 48" fill="none">
+          <polygon points="24,4 44,14 44,34 24,44 4,34 4,14" stroke="#00d4ff" stroke-width="2" fill="none"/>
+          <polygon points="24,12 36,18 36,30 24,36 12,30 12,18" fill="rgba(0,212,255,0.15)" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="24" cy="24" r="4" fill="#00d4ff"/>
+        </svg>
+        <span class="loading-logo-text">加密货币扫描 <span class="accent">专家</span></span>
       </div>
-      <div class="nav-links" id="navLinks">
-        <a href="#dashboard" class="nav-link active" data-page="dashboard">
-          <i class="fas fa-th-large"></i><span>儀表板</span>
-        </a>
-        <a href="#ranking" class="nav-link" data-page="ranking">
-          <i class="fas fa-list-ol"></i><span>市場排行</span>
-        </a>
-        <a href="#analysis" class="nav-link" data-page="analysis">
-          <i class="fas fa-chart-bar"></i><span>個股分析</span>
-        </a>
-        <a href="#settings" class="nav-link" data-page="settings">
-          <i class="fas fa-cog"></i><span>設定</span>
-        </a>
+      <div class="loading-bar-wrap">
+        <div class="loading-bar-fill" id="loading-bar"></div>
       </div>
-      <div class="nav-right">
-        <div class="live-indicator" id="liveIndicator">
-          <span class="pulse-dot"></span>
-          <span>LIVE</span>
-        </div>
-        <div class="market-tabs" id="marketTabs">
-          <button class="market-tab active" data-market="TW">台股</button>
-          <button class="market-tab" data-market="US">美股</button>
-          <button class="market-tab" data-market="ALL">全部</button>
-        </div>
-        <div class="refresh-countdown" id="refreshCountdown">60s</div>
-        <button class="btn-icon" id="refreshBtn" title="立即更新">
-          <i class="fas fa-sync-alt"></i>
-        </button>
-        <button class="btn-icon mobile-only" id="mobileToggle">
-          <i class="fas fa-bars"></i>
-        </button>
-      </div>
-    </nav>
-
-    <!-- Mobile Drawer -->
-    <div class="mobile-overlay" id="mobileOverlay"></div>
-    <div class="mobile-drawer" id="mobileDrawer">
-      <div class="drawer-header">
-        <span>選單</span>
-        <button class="btn-icon" id="drawerClose"><i class="fas fa-times"></i></button>
-      </div>
-      <a href="#dashboard" class="drawer-link" data-page="dashboard"><i class="fas fa-th-large"></i> 儀表板</a>
-      <a href="#ranking" class="drawer-link" data-page="ranking"><i class="fas fa-list-ol"></i> 市場排行</a>
-      <a href="#analysis" class="drawer-link" data-page="analysis"><i class="fas fa-chart-bar"></i> 個股分析</a>
-      <a href="#settings" class="drawer-link" data-page="settings"><i class="fas fa-cog"></i> 設定</a>
+      <p class="loading-text" id="loading-text">正在连接市场...</p>
     </div>
-
-    <!-- Main Content -->
-    <main class="main-content" id="mainContent">
-
-      <!-- ===== 儀表板 PAGE ===== -->
-      <div class="page active" id="dashboardPage">
-
-        <div class="page-header">
-          <div class="page-header-left">
-            <h1 class="page-title">市場儀表板</h1>
-            <p class="page-subtitle" id="dashboardSubtitle">正在掃描股票市場...</p>
-          </div>
-          <div class="timeframe-selector" id="dashboardTF">
-            <button class="tf-btn active" data-tf="1D">1D</button>
-            <button class="tf-btn" data-tf="1W">1W</button>
-            <button class="tf-btn" data-tf="1M">1M</button>
-            <button class="tf-btn" data-tf="3M">3M</button>
-          </div>
-        </div>
-
-        <!-- Overview Cards -->
-        <div class="overview-grid">
-          <div class="ov-card glass-card">
-            <div class="ov-icon icon-blue"><i class="fas fa-database"></i></div>
-            <div class="ov-body">
-              <div class="ov-label">已掃描</div>
-              <div class="ov-value" id="totalCount">--</div>
-            </div>
-            <div class="ov-glow blue-glow"></div>
-          </div>
-          <div class="ov-card glass-card">
-            <div class="ov-icon icon-red"><i class="fas fa-arrow-trend-up"></i></div>
-            <div class="ov-body">
-              <div class="ov-label">買進訊號</div>
-              <div class="ov-value text-red" id="bullishCount">--</div>
-            </div>
-            <div class="ov-bar" id="bullishBar"></div>
-            <div class="ov-glow red-glow"></div>
-          </div>
-          <div class="ov-card glass-card">
-            <div class="ov-icon icon-green"><i class="fas fa-arrow-trend-down"></i></div>
-            <div class="ov-body">
-              <div class="ov-label">賣出訊號</div>
-              <div class="ov-value text-green" id="bearishCount">--</div>
-            </div>
-            <div class="ov-bar" id="bearishBar"></div>
-            <div class="ov-glow green-glow"></div>
-          </div>
-          <div class="ov-card glass-card">
-            <div class="ov-icon icon-yellow"><i class="fas fa-minus"></i></div>
-            <div class="ov-body">
-              <div class="ov-label">中立</div>
-              <div class="ov-value text-yellow" id="neutralCount">--</div>
-            </div>
-            <div class="ov-bar" id="neutralBar"></div>
-            <div class="ov-glow yellow-glow"></div>
-          </div>
-          <div class="ov-card glass-card">
-            <div class="ov-icon icon-purple"><i class="fas fa-clock"></i></div>
-            <div class="ov-body">
-              <div class="ov-label">最後更新</div>
-              <div class="ov-value ov-time" id="lastUpdated">--</div>
-            </div>
-            <div class="ov-glow purple-glow"></div>
-          </div>
-        </div>
-
-        <!-- Search & Filter Bar -->
-        <div class="search-filter-bar glass-card">
-          <div class="search-wrap">
-            <i class="fas fa-search"></i>
-            <input type="text" id="dashSearch" class="search-input" placeholder="搜尋股票代號或名稱...">
-            <button class="search-clear" id="searchClear"><i class="fas fa-times"></i></button>
-          </div>
-          <div class="filter-chips" id="dashFilter">
-            <button class="chip active" data-filter="all">全部</button>
-            <button class="chip chip-strong-buy" data-filter="強力買進">強力買進</button>
-            <button class="chip chip-buy" data-filter="買進">買進</button>
-            <button class="chip chip-watch" data-filter="觀望">觀望</button>
-            <button class="chip chip-sell" data-filter="賣出">賣出</button>
-            <button class="chip chip-strong-sell" data-filter="強力賣出">強力賣出</button>
-          </div>
-        </div>
-
-        <!-- Tables Grid -->
-        <div class="tables-row">
-
-          <!-- Buy Table -->
-          <div class="table-card glass-card">
-            <div class="card-header">
-              <div class="card-title-row">
-                <span class="dot red-dot"></span>
-                <h2>強力買進</h2>
-                <span class="badge badge-red" id="bullishBadge">0</span>
-              </div>
-              <button class="link-btn" onclick="App.navigateTo('ranking', {filter:'買進'})">查看全部 <i class="fas fa-chevron-right"></i></button>
-            </div>
-            <div class="table-scroll">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>股票</th>
-                    <th class="sortable" data-table="bullish" data-col="score">分數 <i class="fas fa-sort"></i></th>
-                    <th>訊號</th>
-                    <th class="sortable" data-table="bullish" data-col="price">股價 <i class="fas fa-sort"></i></th>
-                    <th class="sortable" data-table="bullish" data-col="rsi">RSI <i class="fas fa-sort"></i></th>
-                    <th class="sortable" data-table="bullish" data-col="adx">ADX <i class="fas fa-sort"></i></th>
-                    <th>成交量</th>
-                  </tr>
-                </thead>
-                <tbody id="bullishTbody"><tr><td colspan="8" class="loading-cell"><div class="spinner"></div></td></tr></tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Sell Table -->
-          <div class="table-card glass-card">
-            <div class="card-header">
-              <div class="card-title-row">
-                <span class="dot green-dot"></span>
-                <h2>強力賣出</h2>
-                <span class="badge badge-green" id="bearishBadge">0</span>
-              </div>
-              <button class="link-btn" onclick="App.navigateTo('ranking', {filter:'賣出'})">查看全部 <i class="fas fa-chevron-right"></i></button>
-            </div>
-            <div class="table-scroll">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>股票</th>
-                    <th class="sortable" data-table="bearish" data-col="score">分數 <i class="fas fa-sort"></i></th>
-                    <th>訊號</th>
-                    <th class="sortable" data-table="bearish" data-col="price">股價 <i class="fas fa-sort"></i></th>
-                    <th class="sortable" data-table="bearish" data-col="rsi">RSI <i class="fas fa-sort"></i></th>
-                    <th class="sortable" data-table="bearish" data-col="adx">ADX <i class="fas fa-sort"></i></th>
-                    <th>成交量</th>
-                  </tr>
-                </thead>
-                <tbody id="bearishTbody"><tr><td colspan="8" class="loading-cell"><div class="spinner"></div></td></tr></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- Reversal Opportunities -->
-        <div class="glass-card reversal-card">
-          <div class="card-header">
-            <div class="card-title-row">
-              <span class="dot yellow-dot pulse-dot-yellow"></span>
-              <h2>反轉機會</h2>
-              <span class="badge badge-yellow" id="reversalBadge">0</span>
-            </div>
-            <span class="card-subtitle">顯示趨勢轉換訊號的個股</span>
-          </div>
-          <div class="reversal-grid" id="reversalGrid">
-            <div class="reversal-empty"><div class="spinner"></div><span>偵測反轉訊號中...</span></div>
-          </div>
-        </div>
-
-      </div>
-      <!-- END 儀表板 -->
-
-      <!-- ===== 個股詳情 PAGE ===== -->
-      <div class="page" id="coinPage">
-        <button class="back-btn" id="coinBackBtn">
-          <i class="fas fa-arrow-left"></i> 返回
-        </button>
-        <div id="coinDetailContent"></div>
-      </div>
-
-      <!-- ===== 市場排行 PAGE ===== -->
-      <div class="page" id="rankingPage">
-        <div class="page-header">
-          <div class="page-header-left">
-            <h1 class="page-title">市場排行</h1>
-            <p class="page-subtitle" id="rankingSubtitle">台股與美股技術指標排名</p>
-          </div>
-          <div class="timeframe-selector" id="rankingTF">
-            <button class="tf-btn active" data-tf="1D">1D</button>
-            <button class="tf-btn" data-tf="1W">1W</button>
-            <button class="tf-btn" data-tf="1M">1M</button>
-            <button class="tf-btn" data-tf="3M">3M</button>
-          </div>
-        </div>
-        <div class="glass-card">
-          <div class="ranking-toolbar">
-            <div class="search-wrap">
-              <i class="fas fa-search"></i>
-              <input type="text" id="rankingSearch" class="search-input" placeholder="搜尋股票...">
-            </div>
-            <div class="filter-chips" id="rankingFilter">
-              <button class="chip active" data-filter="all">全部</button>
-              <button class="chip chip-strong-buy" data-filter="強力買進">強力買進</button>
-              <button class="chip chip-buy" data-filter="買進">買進</button>
-              <button class="chip chip-watch" data-filter="觀望">觀望</button>
-              <button class="chip chip-sell" data-filter="賣出">賣出</button>
-              <button class="chip chip-strong-sell" data-filter="強力賣出">強力賣出</button>
-            </div>
-          </div>
-          <div class="table-scroll">
-            <table class="data-table full-width-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>股票</th>
-                  <th class="sortable" data-table="ranking" data-col="price">股價 <i class="fas fa-sort"></i></th>
-                  <th>訊號</th>
-                  <th class="sortable active-sort" data-table="ranking" data-col="score">分數 <i class="fas fa-sort-down"></i></th>
-                  <th class="sortable" data-table="ranking" data-col="rsi">RSI <i class="fas fa-sort"></i></th>
-                  <th>成交量</th>
-                  <th class="sortable" data-table="ranking" data-col="adx">ADX <i class="fas fa-sort"></i></th>
-                </tr>
-              </thead>
-              <tbody id="rankingTbody"><tr><td colspan="8" class="loading-cell"><div class="spinner"></div></td></tr></tbody>
-            </table>
-          </div>
-          <div class="table-footer" id="rankingFooter"></div>
-        </div>
-      </div>
-
-      <!-- ===== 個股分析 PAGE ===== -->
-      <div class="page" id="analysisPage">
-        <div class="page-header">
-          <div class="page-header-left">
-            <h1 class="page-title">個股分析</h1>
-            <p class="page-subtitle">深入分析任何股票的技術指標</p>
-          </div>
-        </div>
-        <div class="glass-card analysis-search-card">
-          <div class="analysis-search-wrap">
-            <i class="fas fa-search"></i>
-            <input type="text" id="analysisSearch" class="search-input large" placeholder="搜尋並選擇股票（例如 2330、AAPL、台積電）...">
-          </div>
-          <div class="analysis-suggestions" id="analysisSuggestions"></div>
-        </div>
-        <div id="analysisContent">
-          <div class="analysis-placeholder">
-            <div class="placeholder-icon"><i class="fas fa-chart-line"></i></div>
-            <h3>選擇個股以開始分析</h3>
-            <p>在上方搜尋任何股票，查看詳細技術分析報告</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- ===== 設定 PAGE ===== -->
-      <div class="page" id="settingsPage">
-        <div class="page-header">
-          <div class="page-header-left">
-            <h1 class="page-title">設定</h1>
-            <p class="page-subtitle">自訂您的儀表板偏好設定</p>
-          </div>
-        </div>
-        <div class="settings-grid">
-          <div class="glass-card settings-card">
-            <div class="settings-card-header"><i class="fas fa-clock"></i> 時間與更新</div>
-            <div class="setting-row">
-              <label class="setting-label">預設時間週期</label>
-              <select class="setting-select" id="settingTimeframe">
-                <option value="1D" selected>日線 (1D)</option>
-                <option value="1W">週線 (1W)</option>
-                <option value="1M">月線 (1M)</option>
-                <option value="3M">季線 (3M)</option>
-              </select>
-            </div>
-            <div class="setting-row">
-              <label class="setting-label">自動更新間隔</label>
-              <select class="setting-select" id="settingRefresh">
-                <option value="30000">30 秒</option>
-                <option value="60000" selected>60 秒</option>
-                <option value="120000">2 分鐘</option>
-                <option value="300000">5 分鐘</option>
-                <option value="0">停用</option>
-              </select>
-            </div>
-          </div>
-          <div class="glass-card settings-card">
-            <div class="settings-card-header"><i class="fas fa-palette"></i> 外觀設定</div>
-            <div class="setting-row">
-              <label class="setting-label">深色模式</label>
-              <label class="toggle">
-                <input type="checkbox" id="settingDarkMode" checked>
-                <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              </label>
-            </div>
-            <div class="setting-row">
-              <label class="setting-label">強調色</label>
-              <div class="color-picker">
-                <button class="color-btn active" data-color="blue" style="--c:#00d4ff" title="藍色"></button>
-                <button class="color-btn" data-color="purple" style="--c:#a855f7" title="紫色"></button>
-                <button class="color-btn" data-color="cyan" style="--c:#06b6d4" title="青色"></button>
-                <button class="color-btn" data-color="orange" style="--c:#f97316" title="橙色"></button>
-              </div>
-            </div>
-          </div>
-          <div class="glass-card settings-card">
-            <div class="settings-card-header"><i class="fas fa-database"></i> API 設定</div>
-            <div class="setting-row col">
-              <label class="setting-label">API 端點</label>
-              <input type="text" class="setting-input" id="settingApi" value="/api/scan">
-            </div>
-            <div class="setting-row">
-              <label class="setting-label">連線狀態</label>
-              <div class="api-status-badge" id="apiStatus"><span class="pulse-dot"></span> 檢查中...</div>
-            </div>
-            <button class="btn-outline full-w" id="testApiBtn"><i class="fas fa-plug"></i> 測試連線</button>
-          </div>
-          <div class="glass-card settings-card">
-            <div class="settings-card-header"><i class="fas fa-bell"></i> 通知</div>
-            <div class="setting-row">
-              <label class="setting-label">強力訊號通知</label>
-              <label class="toggle">
-                <input type="checkbox" id="settingSignalAlert" checked>
-                <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              </label>
-            </div>
-            <div class="setting-row">
-              <label class="setting-label">反轉訊號通知</label>
-              <label class="toggle">
-                <input type="checkbox" id="settingReversalAlert" checked>
-                <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              </label>
-            </div>
-            <div class="setting-row">
-              <label class="setting-label">聲音通知</label>
-              <label class="toggle">
-                <input type="checkbox" id="settingSoundAlert">
-                <span class="toggle-track"><span class="toggle-thumb"></span></span>
-              </label>
-            </div>
-          </div>
-        </div>
-        <div class="settings-actions">
-          <button class="btn-primary" id="saveSettingsBtn"><i class="fas fa-save"></i> 儲存設定</button>
-          <button class="btn-outline" id="resetSettingsBtn"><i class="fas fa-undo"></i> 恢復預設</button>
-        </div>
-      </div>
-
-    </main>
-
-    <!-- Toast -->
-    <div class="toast-container" id="toastContainer"></div>
-
-    <!-- Full Page Loader -->
-    <div class="page-loader" id="pageLoader">
-      <div class="loader-content">
-        <div class="loader-logo"><i class="fas fa-chart-bar"></i></div>
-        <div class="loader-ring"></div>
-        <p class="loader-text">掃描市場中...</p>
-        <p class="loader-sub">分析台股與美股技術指標</p>
-      </div>
-    </div>
-
   </div>
 
-  <script src="js/api.js"></script>
-  <script src="js/app.js"></script>
+  <!-- 顶部导航 -->
+  <nav class="top-nav" id="top-nav">
+    <div class="nav-inner">
+      <!-- Logo -->
+      <div class="nav-logo" onclick="navigateTo('dashboard')">
+        <svg width="28" height="28" viewBox="0 0 48 48" fill="none">
+          <polygon points="24,4 44,14 44,34 24,44 4,34 4,14" stroke="#00d4ff" stroke-width="2" fill="none"/>
+          <polygon points="24,12 36,18 36,30 24,36 12,30 12,18" fill="rgba(0,212,255,0.12)" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="24" cy="24" r="4" fill="#00d4ff"/>
+        </svg>
+        <span class="nav-logo-text">加密扫描 <span class="accent">专家</span></span>
+      </div>
+
+      <!-- 导航链接 -->
+      <div class="nav-links" id="nav-links">
+        <a class="nav-link active" data-page="dashboard" onclick="navigateTo('dashboard')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          仪表板
+        </a>
+        <a class="nav-link" data-page="ranking" onclick="navigateTo('ranking')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          市场排名
+        </a>
+        <a class="nav-link" data-page="coin" style="display:none" id="nav-coin-link">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          币种分析
+        </a>
+        <a class="nav-link" data-page="positions" onclick="navigateTo('positions')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+          持倉中
+        </a>
+        <a class="nav-link" data-page="tradelog" onclick="navigateTo('tradelog')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          交易記錄
+        </a>
+        <a class="nav-link" data-page="report" onclick="navigateTo('report')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          策略報表
+        </a>
+        <a class="nav-link" data-page="lab" onclick="navigateTo('lab')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3h6M10 3v6.5L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9.5V3"/><line x1="7" y1="15" x2="17" y2="15"/></svg>
+          機會實驗室
+        </a>
+        <a class="nav-link" data-page="settings" onclick="navigateTo('settings')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          设置
+        </a>
+      </div>
+
+      <!-- 右侧控件 -->
+      <div class="nav-right">
+        <div class="nav-search-wrap">
+          <svg class="search-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="nav-search-input" placeholder="搜索币种..." autocomplete="off" />
+          <div class="search-dropdown" id="search-dropdown"></div>
+        </div>
+
+        <div class="tf-group" id="nav-timeframes">
+          <button class="tf-btn" data-tf="5m">5分</button>
+          <button class="tf-btn active" data-tf="15m">15分</button>
+          <button class="tf-btn" data-tf="1h">1时</button>
+          <button class="tf-btn" data-tf="4h">4时</button>
+        </div>
+
+        <div class="refresh-pill" id="refresh-pill">
+          <span class="live-dot"></span>
+          <span id="refresh-countdown">60秒</span>
+          <button class="manual-refresh-btn" onclick="manualRefresh()" title="立即刷新">↻</button>
+        </div>
+
+        <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 移动端抽屉菜单 -->
+  <div class="mobile-drawer" id="mobile-drawer">
+    <a class="mob-link" onclick="navigateTo('dashboard');toggleMobileMenu()">仪表板</a>
+    <a class="mob-link" onclick="navigateTo('ranking');toggleMobileMenu()">市场排名</a>
+    <a class="mob-link" onclick="navigateTo('positions');toggleMobileMenu()">持倉中</a>
+    <a class="mob-link" onclick="navigateTo('tradelog');toggleMobileMenu()">交易記錄</a>
+    <a class="mob-link" onclick="navigateTo('report');toggleMobileMenu()">策略報表</a>
+    <a class="mob-link" onclick="navigateTo('lab');toggleMobileMenu()">機會實驗室</a>
+    <a class="mob-link" onclick="navigateTo('settings');toggleMobileMenu()">设置</a>
+    <div class="mob-tf">
+      <span class="mob-tf-label">时间周期</span>
+      <div class="tf-group">
+        <button class="tf-btn" data-tf="5m">5分</button>
+        <button class="tf-btn active" data-tf="15m">15分</button>
+        <button class="tf-btn" data-tf="1h">1时</button>
+        <button class="tf-btn" data-tf="4h">4时</button>
+      </div>
+    </div>
+  </div>
+  <div class="drawer-overlay" id="drawer-overlay" onclick="toggleMobileMenu()"></div>
+
+  <!-- 应用主体 -->
+  <main class="app-container" id="app">
+
+    <!-- ═══════════════════════ 仪表板页面 ═══════════════════════ -->
+    <section class="page active" id="page-dashboard">
+
+      <!-- K 線掃描進度條 -->
+      <div class="scan-bar" id="scan-bar" style="display:none">
+        <div class="scan-bar-inner">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2" style="animation:spin 1s linear infinite">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+          <span id="scan-bar-txt">正在分析 K 線數據...</span>
+          <div class="scan-bar-track">
+            <div class="scan-bar-fill" id="scan-bar-fill"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 市场概览 -->
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">市场概览</h1>
+          <p class="page-subtitle">实时分析币安USDT市场交易对</p>
+        </div>
+        <div class="last-scan">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          最后扫描：<span id="last-updated">--</span>
+        </div>
+      </div>
+
+      <div class="overview-grid">
+        <div class="ov-card ov-total">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-total">--</div>
+            <div class="ov-label">扫描总数</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+        <div class="ov-card ov-bull">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-bull">--</div>
+            <div class="ov-label">看涨币种</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+        <div class="ov-card ov-bear">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"/><polyline points="17 18 23 18 23 12"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-bear">--</div>
+            <div class="ov-label">看跌币种</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+        <div class="ov-card ov-neutral">
+          <div class="ov-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </div>
+          <div class="ov-body">
+            <div class="ov-value" id="ov-neutral">--</div>
+            <div class="ov-label">中性币种</div>
+          </div>
+          <div class="ov-glow"></div>
+        </div>
+      </div>
+
+      <!-- BTC/ETH 頂/底反轉可能性 -->
+      <div class="market-outlook-card">
+        <div id="er-dashboard-body"><div class="adv-loading">載入反轉分析...</div></div>
+      </div>
+
+      <!-- 市場大方向 -->
+      <div class="market-outlook-card">
+        <div id="market-outlook-body"><div class="adv-loading">載入市場大方向分析...</div></div>
+      </div>
+
+      <!-- 財經新聞 -->
+      <div class="market-outlook-card">
+        <div id="news-body"><div class="adv-loading">載入財經新聞...</div></div>
+      </div>
+
+      <!-- 加密市場資金流動事件 -->
+      <div class="market-outlook-card">
+        <div id="capital-flow-body"><div class="adv-loading">載入資金流動事件...</div></div>
+      </div>
+
+    </section>
+
+    <!-- ═══════════════════════ 市场排名页面 ═══════════════════════ -->
+    <section class="page" id="page-ranking">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">市场排名</h1>
+        </div>
+        <div class="dash-search-wrap">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="dash-search" placeholder="搜索币种代码..." autocomplete="off" />
+        </div>
+      </div>
+
+      <!-- 巨鯨+籌碼集中度排名 -->
+      <div class="tbl-card full-tbl">
+        <div class="tbl-scroll">
+          <table class="data-tbl ranking-tbl" id="ranking-tbl">
+            <thead><tr>
+              <th># 排名</th>
+              <th>币种</th>
+              <th>价格</th>
+              <th>趋势</th>
+              <th>巨鯨+籌碼集中度</th>
+              <th>动量 RSI</th>
+              <th>成交量</th>
+            </tr></thead>
+            <tbody id="ranking-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 筛选 -->
+      <div class="toolbar" style="margin-top:16px">
+        <div class="filter-chips">
+          <button class="chip active" data-filter="all">全部</button>
+          <button class="chip chip-sbull" data-filter="強勢看漲">強勢看漲</button>
+          <button class="chip chip-bull"  data-filter="看漲">看漲</button>
+          <button class="chip chip-neutral" data-filter="中性">中性</button>
+          <button class="chip chip-bear"  data-filter="看跌">看跌</button>
+          <button class="chip chip-sbear" data-filter="強勢看跌">強勢看跌</button>
+        </div>
+      </div>
+
+      <!-- 搜尋 / 篩選結果 -->
+      <div id="search-results-wrap" style="display:none">
+        <div class="tbl-card" style="width:100%;max-width:100%">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot" id="search-dot" style="background:var(--blue)"></span>
+              <span id="search-results-title">搜尋結果</span>
+            </div>
+            <span class="tbl-badge" id="search-results-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl">
+              <thead><tr>
+                <th>幣種</th>
+                <th>價格</th>
+                <th>趨勢</th>
+                <th>成交量</th>
+                <th>今日漲跌</th>
+              </tr></thead>
+              <tbody id="all-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 強勢看漲 / 強勢看跌排名 -->
+      <div class="tables-row">
+        <div class="tbl-card tbl-bull">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot dot-bull"></span>
+              强势看涨排名
+            </div>
+            <span class="tbl-badge badge-bull" id="bull-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl" id="bull-tbl">
+              <thead><tr>
+                <th data-sort="symbol"    data-tbl="bull">幣種</th>
+                <th data-sort="price"     data-tbl="bull">價格</th>
+                <th data-sort="trend"     data-tbl="bull">趨勢</th>
+                <th data-sort="volume"    data-tbl="bull">成交量</th>
+                <th data-sort="change24h" data-tbl="bull">今日漲跌</th>
+              </tr></thead>
+              <tbody id="bull-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="tbl-card tbl-bear">
+          <div class="tbl-head">
+            <div class="tbl-title">
+              <span class="dot dot-bear"></span>
+              强势看跌排名
+            </div>
+            <span class="tbl-badge badge-bear" id="bear-count">0</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="data-tbl" id="bear-tbl">
+              <thead><tr>
+                <th data-sort="symbol"    data-tbl="bear">幣種</th>
+                <th data-sort="price"     data-tbl="bear">價格</th>
+                <th data-sort="trend"     data-tbl="bear">趨勢</th>
+                <th data-sort="volume"    data-tbl="bear">成交量</th>
+                <th data-sort="change24h" data-tbl="bear">今日漲跌</th>
+              </tr></thead>
+              <tbody id="bear-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 反转机会 -->
+      <div class="section-row" style="margin-top:16px">
+        <div class="section-label">
+          <span class="pulse-dot"></span>
+          反转机会
+        </div>
+        <span class="rev-badge" id="rev-count">0</span>
+      </div>
+      <div class="reversal-grid" id="reversal-grid">
+        <div class="rev-placeholder">正在扫描反转信号...</div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ 币种详情页面 ═══════════════════════ -->
+    <section class="page" id="page-coin">
+      <div class="coin-back" onclick="navigateTo('dashboard')">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        返回仪表板
+      </div>
+
+      <div class="coin-hero">
+        <div class="coin-hero-left">
+          <div class="coin-avatar" id="coin-avatar">BTC</div>
+          <div class="coin-hero-info">
+            <div class="coin-name" id="coin-name">BTC/USDT</div>
+            <div class="coin-badges">
+              <span class="coin-trend-chip" id="coin-trend-chip">--</span>
+            </div>
+          </div>
+        </div>
+        <div class="coin-hero-right">
+          <div class="coin-price" id="coin-price">$--</div>
+          <div class="coin-price-sub" id="coin-price-sub">USDT</div>
+        </div>
+      </div>
+
+      <!-- K线图 -->
+      <div class="chart-card">
+        <div class="chart-topbar">
+          <span class="chart-title">价格走势</span>
+          <div class="chart-tf-group" id="chart-tf-group">
+            <button class="tf-btn active" data-ctf="15">15分</button>
+            <button class="tf-btn" data-ctf="60">1时</button>
+            <button class="tf-btn" data-ctf="240">4时</button>
+            <button class="tf-btn" data-ctf="D">日线</button>
+          </div>
+        </div>
+        <div id="tv-chart-container" class="tv-chart"></div>
+      </div>
+
+      <!-- 指标卡片 -->
+      <div class="metrics-row">
+        <div class="metric-card">
+          <div class="metric-lbl">趋势评分</div>
+          <div class="metric-val" id="m-score">--</div>
+          <div class="score-track"><div class="score-fill" id="score-fill"></div></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-lbl">RSI (14)</div>
+          <div class="metric-val" id="m-rsi">--</div>
+          <div class="metric-tag" id="rsi-tag">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-lbl">ADX</div>
+          <div class="metric-val" id="m-adx">--</div>
+          <div class="metric-tag" id="adx-tag">--</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-lbl">成交量</div>
+          <div class="metric-val" id="m-vol">--</div>
+          <div class="metric-tag" id="vol-tag">--</div>
+        </div>
+      </div>
+
+      <!-- 均线区域 -->
+      <div class="ema-section">
+        <div class="section-row"><div class="section-label">移动均线</div></div>
+        <div class="ema-row">
+          <div class="ema-card">
+            <div class="ema-lbl">EMA 20</div>
+            <div class="ema-val" id="ema20">--</div>
+            <div class="ema-sig" id="ema20-sig">--</div>
+          </div>
+          <div class="ema-card">
+            <div class="ema-lbl">EMA 50</div>
+            <div class="ema-val" id="ema50">--</div>
+            <div class="ema-sig" id="ema50-sig">--</div>
+          </div>
+          <div class="ema-card">
+            <div class="ema-lbl">EMA 200</div>
+            <div class="ema-val" id="ema200">--</div>
+            <div class="ema-sig" id="ema200-sig">--</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 整合分析概覽（趨勢 + 動量 + 強度）-->
+      <div class="quick-analysis-wrap">
+        <div class="section-row"><div class="section-label">分析概覽</div></div>
+        <div id="a-quick"><div class="qa-grid">
+          <div class="qa-item"><span class="qa-lbl">趨勢</span><span class="qa-val">--</span></div>
+          <div class="qa-item"><span class="qa-lbl">RSI</span><span class="qa-val">--</span></div>
+          <div class="qa-item"><span class="qa-lbl">ADX</span><span class="qa-val">--</span></div>
+          <div class="qa-item"><span class="qa-lbl">均線</span><span class="qa-val">--</span></div>
+          <div class="qa-item"><span class="qa-lbl">動量</span><span class="qa-val">--</span></div>
+          <div class="qa-item"><span class="qa-lbl">MACD</span><span class="qa-val">--</span></div>
+          <div class="qa-item"><span class="qa-lbl">成交量</span><span class="qa-val">--</span></div>
+          <div class="qa-item"><span class="qa-lbl">評分</span><span class="qa-val">--</span></div>
+        </div></div>
+      </div>
+
+      <!-- 宏觀市場環境 -->
+      <div class="adv-section" id="macro-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          宏觀市場環境
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">總市值 · BTC主導 · 減半倒數 · 六大影響因素</span>
+        </div>
+        <div class="adv-section-body" id="macro-body"><div class="adv-loading">載入中...</div></div>
+      </div>
+
+      <!-- 交易建議（移至宏觀下方）-->
+      <div class="adv-section" id="setup-section">
+        <div class="adv-section-hdr" style="background:rgba(0,212,255,0.08)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          交易建議
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">進場點 · 止盈 · 止損</span>
+        </div>
+        <div class="adv-section-body" id="setup-body"><div class="adv-loading">正在分析交易機會...</div></div>
+      </div>
+
+      <!-- AI 市場判斷 -->
+      <div class="adv-section" id="ai-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          AI 市場判斷
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">基於多維技術指標綜合分析</span>
+        </div>
+        <div class="adv-section-body" id="ai-body"><div class="adv-loading">正在生成分析...</div></div>
+      </div>
+
+      <!-- 風險評估（移至交易建議下方）-->
+      <div class="risk-section">
+        <div class="section-row"><div class="section-label">風險評估</div></div>
+        <div class="risk-card" id="risk-card">
+          <div class="risk-top">
+            <span class="risk-label">風險等級</span>
+            <span class="risk-badge" id="risk-badge">--</span>
+          </div>
+          <div class="risk-bar-track"><div class="risk-bar-fill" id="risk-bar"></div></div>
+          <p class="risk-desc" id="risk-desc">--</p>
+        </div>
+        <!-- 10因子 AI 風險評估 -->
+        <div id="full-risk-body" style="margin-top:10px"></div>
+      </div>
+
+      <!-- 多週期信號分析 -->
+      <div class="adv-section" id="mtf-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          多週期信號分析
+          <span class="adv-section-badge" id="mtf-badge"></span>
+        </div>
+        <div class="adv-section-body" id="mtf-body"><div class="adv-loading">正在載入多週期數據...</div></div>
+      </div>
+
+
+      <!-- 訂單流分析 -->
+      <div class="adv-section" id="of-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 7 13.5 15.5 8.5 10.5 1 17"/><polyline points="15 7 22 7 22 14"/></svg>
+          訂單流分析（Order Flow）
+        </div>
+        <div class="adv-section-body" id="of-body"><div class="adv-loading">正在載入訂單流數據...</div></div>
+      </div>
+
+      <!-- 市場足跡圖 -->
+      <div class="adv-section" id="fp-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="4" height="20" rx="1"/><rect x="10" y="6" width="4" height="16" rx="1"/><rect x="18" y="10" width="4" height="12" rx="1"/></svg>
+          市場足跡圖（Footprint Chart）
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">Delta · POC · 買賣壓強度</span>
+        </div>
+        <div class="adv-section-body" id="fp-body"><div class="adv-loading">正在載入足跡數據...</div></div>
+      </div>
+
+      <!-- 爆倉地圖 + 熱力圖 -->
+      <div class="adv-section" id="liq-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          爆倉地圖（Liquidation Map）
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">多空爆倉牆 · Short/Long Squeeze 目標</span>
+        </div>
+        <div class="adv-section-body" id="liq-body"><div class="adv-loading">正在載入爆倉數據...</div></div>
+      </div>
+
+      <!-- 籌碼分佈 & 巨鯨 & 成交量 AI -->
+      <div class="adv-section" id="vp-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          籌碼分佈 · 巨鯨 · 成交量 AI
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">Volume Profile · 主力動向 · 量能分析</span>
+        </div>
+        <div class="adv-section-body" id="vp-body"><div class="adv-loading">載入中...</div></div>
+      </div>
+
+      <!-- 局勢重點 -->
+      <div class="adv-section" id="situation-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          局勢重點
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">趨勢 · 動能 · 合約 · 情緒 · 關鍵位</span>
+        </div>
+        <div class="adv-section-body" id="situation-body"><div class="adv-loading">載入中...</div></div>
+      </div>
+
+      <!-- 合約衍生品（移至局勢重點下方）-->
+      <div class="adv-section" id="deriv-section">
+        <div class="adv-section-hdr">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          合約衍生品數據
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text3);margin-left:6px">資金費率 · 多空比 · 頂級交易員持倉 · OI</span>
+        </div>
+        <div class="adv-section-body" id="deriv-body"><div class="adv-loading">載入中...</div></div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════ 持倉中頁面 ════════════════════════ -->
+    <section class="page" id="page-positions">
+      <div id="positions-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
+    <!-- ═══════════════════════ 交易記錄頁面 ══════════════════════ -->
+    <section class="page" id="page-tradelog">
+      <div id="tradelog-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
+    <!-- ═════════════════ 自動交易（快進快出）持倉 ═════════════════ -->
+    <section class="page" id="page-scalppos">
+      <div id="scalp-positions-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
+    <!-- ═════════════════ 自動交易（快進快出）紀錄 ═════════════════ -->
+    <section class="page" id="page-scalplog">
+      <div id="scalp-log-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
+    <!-- ═══════════════════════ 策略報表頁面 ══════════════════════ -->
+    <section class="page" id="page-report">
+      <div id="report-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
+    <!-- ═══════════════════════ AI 機會實驗室 ══════════════════════ -->
+    <section class="page" id="page-lab">
+      <div id="lab-content"><div class="adv-loading">載入中...</div></div>
+    </section>
+
+    <!-- ═══════════════════════ 设置页面 ═══════════════════════ -->
+    <section class="page" id="page-settings">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">系统设置</h1>
+          <p class="page-subtitle">配置您的扫描器偏好</p>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <div class="settings-card">
+          <h3 class="settings-group-ttl">常规设置</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">默认时间周期</div>
+              <div class="setting-desc">设置默认图表时间周期</div>
+            </div>
+            <select class="setting-select" id="s-timeframe">
+              <option value="5m">5 分钟</option>
+              <option value="15m" selected>15 分钟</option>
+              <option value="1h">1 小时</option>
+              <option value="4h">4 小时</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">刷新间隔</div>
+              <div class="setting-desc">自动刷新市场数据的频率</div>
+            </div>
+            <select class="setting-select" id="s-refresh">
+              <option value="30">30 秒</option>
+              <option value="60" selected>60 秒</option>
+              <option value="120">2 分钟</option>
+              <option value="300">5 分钟</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">深色模式</div>
+              <div class="setting-desc">切换深色和浅色主题</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="s-dark" checked />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-group-ttl">API 配置</h3>
+
+          <div class="setting-row vertical">
+            <div class="setting-name">API 端点</div>
+            <input type="text" class="setting-input" id="s-api-url" value="http://127.0.0.1:8000/scan" />
+          </div>
+
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">连接状态</div>
+            </div>
+            <div class="api-status-pill" id="api-status-pill">
+              <span class="api-dot" id="api-dot"></span>
+              <span id="api-status-txt">检测中...</span>
+            </div>
+          </div>
+
+          <button class="btn-primary" onclick="testApiConnection()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.5 19.79 19.79 0 0 1 1.6 5 2 2 0 0 1 3.57 2.68h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L7.91 10a16 16 0 0 0 6 6l.92-.92a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 21.5 17z"/></svg>
+            测试连接
+          </button>
+        </div>
+
+        <div class="settings-card">
+          <h3 class="settings-group-ttl">显示设置</h3>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">K 線數據源</div>
+              <div class="setting-desc">每輪掃描更新。分析走幣安（限速寬鬆），確切幣價、進場/止盈止損與成交判定走 OKX；快取為效期內未重抓的筆數</div>
+            </div>
+            <div class="data-src-badge" id="data-src-badge" title="K線數據源（每輪掃描更新）">數據源偵測中…</div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">反转提醒</div>
+              <div class="setting-desc">高亮显示潜在趋势反转信号</div>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="s-reversals" checked />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">看涨评分阈值</div>
+              <div class="setting-desc">看涨分类的最低评分</div>
+            </div>
+            <div class="range-group">
+              <input type="range" class="setting-range" id="s-bull-threshold" min="50" max="90" value="60" oninput="document.getElementById('bull-thr-val').textContent=this.value" />
+              <span class="range-val" id="bull-thr-val">60</span>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">看跌评分阈值</div>
+              <div class="setting-desc">看跌分类的最高评分</div>
+            </div>
+            <div class="range-group">
+              <input type="range" class="setting-range" id="s-bear-threshold" min="10" max="50" value="40" oninput="document.getElementById('bear-thr-val').textContent=this.value" />
+              <span class="range-val" id="bear-thr-val">40</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 交易信號通知 -->
+      <div class="settings-card">
+        <h3 class="settings-group-ttl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          交易信號通知
+        </h3>
+
+        <!-- 瀏覽器推播 -->
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">📲 瀏覽器推播通知</div>
+            <div class="setting-desc">分頁開啟時收到桌面通知（無需帳號）</div>
+          </div>
+          <button id="s-notif-browser-btn" class="btn-ghost" onclick="requestBrowserNotifPermission()" style="white-space:nowrap;min-width:90px">點擊啟用</button>
+        </div>
+
+        <!-- 訊號主機 -->
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">📡 本裝置為訊號主機</div>
+            <div class="setting-desc">只有主機會建單與發送 Telegram 通知。<b>多台裝置（手機／電腦）同時開啟時，請只在一台開啟，其餘關閉</b>——各裝置的去重紀錄互相看不到，兩台都開就會收到兩則相同訊號。此開關優先於下方的分頁主機設定。</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-master-toggle" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+
+        <!-- 快進快出（自動交易） -->
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">⚡ 快進快出訊號（自動交易）</div>
+            <div class="setting-desc">獨立試跑用訊號，與長線／短線單完全隔離、不影響原有交易紀錄與統計。啟用後掃描時自動產生，推送至下方專用 Telegram 機器人。可於「自動紀錄」頁查看勝率、最大回撤等試跑數據</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-scalp-toggle" onchange="try{saveAllSettings()}catch(e){};try{renderScalpPositionsPage()}catch(e){}" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+        <div class="setting-row vertical" style="gap:10px;margin-top:6px">
+          <div>
+            <div class="setting-name">🤖 快進快出專用 Telegram 機器人</div>
+            <div class="setting-desc">與主訊號分流：長線／短線單走原本的機器人，快進快出訊號走這一個。留空則不推送</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <label class="toggle-wrap" style="flex-shrink:0">
+              <input type="checkbox" id="s-scalp-tg-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+            <span style="font-size:0.82rem;color:var(--text3)">啟用推送</span>
+          </div>
+          <div>
+            <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">Bot Token</div>
+            <input id="s-tg-token2" type="password" class="setting-input" placeholder="1234567890:ABCD..." autocomplete="off" />
+          </div>
+          <div>
+            <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">Chat ID</div>
+            <input id="s-tg-chatid2" type="text" class="setting-input" placeholder="123456789" autocomplete="off" />
+          </div>
+          <div>
+            <button class="btn-ghost" onclick="testScalpTelegram()" style="font-size:0.82rem">📨 發送測試訊息</button>
+          </div>
+        </div>
+
+        <!-- 閒置自動停發 -->
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">😴 閒置自動停發</div>
+            <div class="setting-desc">超過設定時數無操作即自動停止建單與發送，避免在別台電腦忘記關的分頁持續發重複訊號。回到該分頁點一下即立即恢復。設為 0 表示不自動停止（無人值守的專用機器適用）</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" id="s-idle-stop" class="setting-input" min="0" max="72" step="1"
+              style="width:70px;text-align:center" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
+            <span style="color:var(--text3);font-size:0.82rem">小時</span>
+          </div>
+        </div>
+
+        <!-- Telegram -->
+        <div class="setting-row vertical" style="gap:10px;margin-top:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div class="setting-name">✈️ Telegram Bot 通知</div>
+              <div class="setting-desc">信號出現時主動推送到手機（免費、即時）</div>
+            </div>
+            <label class="toggle-wrap">
+              <input type="checkbox" id="s-tg-toggle" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div class="tg-setup-grid">
+            <div class="tg-field">
+              <label class="tg-label">Bot Token</label>
+              <input id="s-tg-token" type="password" class="setting-input" placeholder="1234567890:ABCD..." autocomplete="off" />
+            </div>
+            <div class="tg-field">
+              <label class="tg-label">Chat ID</label>
+              <input id="s-tg-chatid" type="text" class="setting-input" placeholder="123456789" autocomplete="off" />
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-ghost" onclick="testTelegramNotif()" style="font-size:0.82rem">📨 發送測試訊息</button>
+            <button class="btn-ghost" onclick="manualSendDailyBriefing()" style="font-size:0.82rem">📊 立即發送每日市場簡報</button>
+          </div>
+          <div class="tg-guide">
+            <div class="tg-guide-title">📖 Telegram 設定步驟</div>
+            <ol class="tg-guide-steps">
+              <li>在 Telegram 搜尋 <code>@BotFather</code>，發送 <code>/newbot</code> 建立 Bot，取得 <strong>Bot Token</strong></li>
+              <li>搜尋 <code>@userinfobot</code>，發送任意訊息，取得你的 <strong>Chat ID</strong></li>
+              <li>先向你的 Bot 發送一條訊息（不然 Bot 無法主動聯繫你）</li>
+              <li>填入上方欄位後點「發送測試訊息」驗證</li>
+            </ol>
+            <div style="font-size:0.75rem;color:var(--text3);margin-top:6px">⚠ LINE Notify 已於 2025年4月終止服務；Telegram 為目前最佳免費替代方案</div>
+          </div>
+        </div>
+
+        <!-- 通知門檻 -->
+        <div class="setting-row" style="margin-top:8px">
+          <div class="setting-name">做多通知門檻</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="range" id="s-notif-bull-thr" min="60" max="85" value="65"
+              oninput="document.getElementById('notif-bull-val').textContent=this.value" />
+            <span id="notif-bull-val" style="width:28px;text-align:right;color:var(--bull);font-weight:700">65</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-name">做空通知門檻</div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="range" id="s-notif-bear-thr" min="15" max="40" value="35"
+              oninput="document.getElementById('notif-bear-val').textContent=this.value" />
+            <span id="notif-bear-val" style="width:28px;text-align:right;color:var(--bear);font-weight:700">35</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 自定義幣種管理 -->
+      <div class="settings-card pairs-mgr-card">
+        <h3 class="settings-group-ttl">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          自定義追蹤幣種
+        </h3>
+        <div class="setting-row vertical" style="gap:8px">
+          <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">新增幣種（輸入符號後按新增，系統會驗證 OKX 是否有合約；清單每輪掃描自動與 OKX 合約幣種表同步）</div>
+          <div style="display:flex;gap:8px">
+            <input id="add-pair-input" type="text" class="setting-input" placeholder="例如：BTC、DOGE、PEPE" style="flex:1;text-transform:uppercase"
+              onkeydown="if(event.key==='Enter')addCustomPair()" />
+            <button class="btn-primary" onclick="addCustomPair()" style="white-space:nowrap;padding:0 18px">新增</button>
+          </div>
+        </div>
+        <div class="pairs-list-wrap">
+          <div id="custom-pairs-list" class="pairs-list"></div>
+        </div>
+        <div class="setting-row" style="margin-top:12px;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-ghost" onclick="resetCustomPairs()" style="font-size:0.82rem">重置為默認清單（100個幣種）</button>
+            <button class="btn-ghost" onclick="syncOkxPairsNow()" style="font-size:0.82rem;color:#00e676">🔄 同步 OKX 合約幣種表</button>
+            <button class="btn-ghost" onclick="clearAllPairs()" style="font-size:0.82rem;color:var(--bear)">🗑 清空全部</button>
+          </div>
+          <span id="pairs-count" style="color:var(--text3);font-size:0.82rem;align-self:center"></span>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <h3 class="settings-group-ttl">📡 訊號主機</h3>
+        <div class="setting-row vertical" style="gap:8px">
+          <div class="setting-name" style="font-size:0.82rem;color:var(--text3)">
+            同時開多個分頁／裝置時，每一份都會各自建單並發送 Telegram，導致同一訊號重複出現。
+            指定唯一主機後，只有主機會建單與發送訊號；以最新開啟時間為準，後按的自動接手。
+            已接上雲端仲裁時，手機與電腦之間也只會有一台發送（未設定雲端則退回單機模式，僅同瀏覽器分頁生效）。
+          </div>
+          <button class="btn-ghost" onclick="claimSignalMaster()" style="font-size:0.86rem;color:#00e676">
+            📡 將本分頁設為訊號主機
+          </button>
+          <div id="signal-master-status" style="font-size:0.82rem;line-height:1.7"></div>
+        </div>
+      </div>
+
+      <div class="settings-footer">
+        <button class="btn-primary" onclick="saveAllSettings()">保存設置</button>
+        <button class="btn-ghost" onclick="resetAllSettings()">恢復默認</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 消息提示容器 -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- 脚本 -->
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script src="js/indicators.js?v=20260717p"></script>
+  <script src="js/api.js?v=20260803c"></script>
+  <script src="js/app.js?v=20260803c"></script>
 </body>
 </html>
