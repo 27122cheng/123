@@ -10320,6 +10320,160 @@ function exitWalkForward(list, mode) {
 /* 出場實驗室的樣本：只收「觸及止盈一」有意義的單 + 全部已平倉單當分母。
    出場參數只影響前者，但期望值必須攤在全部單上算，否則會用一個
    「只看有賺的那群」的數字去做決策。 */
+/* ── 交易可行性自檢 ────────────────────────────────────────────
+   一路加上去的門檻各自都有道理，疊在一起卻可能把交易量壓到零，而且每個
+   continue 都是靜默的——外面只看得到「今天沒單」，看不到是誰擋的。
+   這裡做兩件事：
+     ① 結構可行性：門檻和系統自己的止盈結構有沒有矛盾（門檻高於結構能給的
+        上限＝不管訊號多好都過不了，那是把一整類行情關掉，不是挑單）
+     ② 目前狀態：逐條列出每個閘門現在擋不擋，以及最近一輪掃描的淘汰漏斗 */
+function tradeFeasibility() {
+  const out = { blocking: [], warnings: [], ok: [], funnel: null, structural: null };
+  try {
+    const g = getAdaptiveGates();
+    const be = accountBreakeven();
+
+    // ① 結構可行性：加權 R/R 門檻 vs 各 ADX 分級的止盈底線
+    const regimes = [
+      { label: 'ADX < 28（多數時候的常態行情）', boost: 0 },
+      { label: 'ADX 28–35', boost: 0.5 },
+      { label: 'ADX ≥ 35（強趨勢）', boost: 1.0 },
+    ].map(r => {
+      const t1 = 1.0 + r.boost * 0.5, t2 = 2.5 + r.boost * 1.5;
+      const blend = +(TP1_EXIT_FRAC * t1 + (1 - TP1_EXIT_FRAC) * t2).toFixed(2);
+      return { ...r, t1, t2, blend, pass: blend >= g.minRR };
+    });
+    const deadRegimes = regimes.filter(r => !r.pass);
+    out.structural = { minRR: g.minRR, regimes, deadRegimes: deadRegimes.length };
+    if (deadRegimes.length === regimes.length) {
+      out.blocking.push({ name: '加權 R/R 門檻', detail:
+        `門檻 ${g.minRR} 高於所有 ADX 分級的止盈底線 → 結構上不可能有任何單通過` });
+    } else if (deadRegimes.length) {
+      out.warnings.push({ name: '加權 R/R 門檻', detail:
+        `門檻 ${g.minRR}：${deadRegimes.map(r => r.label).join('、')} 在止盈底線上只有 `
+        + `${deadRegimes.map(r => r.blend + 'R').join('／')}，這些分級只有在結構位（VP／爆倉牆／前高低）`
+        + `把止盈推得更遠時才過得了` });
+    } else {
+      out.ok.push({ name: '加權 R/R 門檻', detail: `門檻 ${g.minRR}，各 ADX 分級的止盈底線都跨得過` });
+    }
+
+    // ② 連虧熔斷
+    try {
+      const ls = lossStreakGuard();
+      const st = globalLossStreak();
+      if (ls.blocked) out.blocking.push({ name: '全局連續止損熔斷', detail: ls.reason || `連虧 ${st.streak} 筆，暫停新建單` });
+      else if (st.streak >= 3) out.warnings.push({ name: '連續止損', detail: `已連虧 ${st.streak} 筆，門檻加嚴中（未暫停）` });
+      else out.ok.push({ name: '連續止損熔斷', detail: `目前連虧 ${st.streak} 筆，未觸發` });
+    } catch(_e) {}
+
+    // ③ 同方向集中度
+    try {
+      const tl = loadTradeLog();
+      const dirs = ['long', 'short'].map(d => ({ d, msg: sameDirGuard(tl, d, 99) }));
+      const bothBlocked = dirs.every(x => x.msg);
+      if (bothBlocked) out.blocking.push({ name: '同方向集中度', detail:
+        `多空兩邊都被擋：${dirs.map(x => (x.d === 'long' ? '多' : '空') + '＝' + x.msg).join('；')}` });
+      else if (dirs.some(x => x.msg)) out.warnings.push({ name: '同方向集中度', detail:
+        dirs.filter(x => x.msg).map(x => (x.d === 'long' ? '多' : '空') + '單暫停：' + x.msg).join('；') });
+      else out.ok.push({ name: '同方向集中度', detail: '多空皆可建單' });
+    } catch(_e) {}
+
+    // ④ 條件封鎖
+    try {
+      const cp = condEdgeProfile();
+      if (cp.blocked.length) out.warnings.push({ name: '進場條件封鎖', detail:
+        `已封鎖 ${cp.blocked.length} 個條件（${cp.blocked.map(b => b.label).join('、')}）；`
+        + `封鎖名單有交易量保護，最多 ${COND_BLOCK_MAX} 個且歷史交易量至少保留 ${Math.round(COND_BLOCK_KEEP * 100)}%` });
+      else out.ok.push({ name: '進場條件封鎖', detail: cp.ready ? '目前沒有條件被封鎖' : '樣本累積中，尚未啟用' });
+    } catch(_e) {}
+
+    // ⑤ SQ / 風控分門檻
+    out.ok.push({ name: '訊號門檻', detail: `SQ ≥ ${g.minSq}、風控分 ≥ ${g.minConf}`
+      + (g.minSq >= 21 ? '（已達上限 21＝S 級，交易量會很少）' : '') });
+    if (g.minSq >= 21) out.warnings.push({ name: 'SQ 門檻已到頂', detail:
+      'SQ 門檻已被實測推到上限 21（S 級），只有頂級訊號會被收，交易量必然很低' });
+
+    // ⑥ BTC 急波動保護
+    try {
+      if (typeof _btcVolGuardUntil !== 'undefined' && Date.now() < _btcVolGuardUntil) {
+        out.warnings.push({ name: 'BTC 急波動保護', detail:
+          `山寨新單暫停至 ${new Date(_btcVolGuardUntil).toLocaleTimeString('zh-TW')}（BTC 本身不受限）` });
+      } else out.ok.push({ name: 'BTC 急波動保護', detail: '未觸發' });
+    } catch(_e) {}
+
+    // ⑦ 最近一輪掃描的淘汰漏斗
+    try {
+      const f = JSON.parse(localStorage.getItem(SCAN_FUNNEL_KEY) || 'null');
+      if (f && f.at) out.funnel = f;
+    } catch(_e) {}
+  } catch(_e) { out.blocking.push({ name: '自檢失敗', detail: _e.message }); }
+  return out;
+}
+
+function buildFeasibilityPanel() {
+  const f = tradeFeasibility();
+  const sec = (title, items, color) => items.length ? `
+    <div style="margin-top:7px">
+      <div style="font-weight:600;font-size:0.78rem;color:${color}">${title}</div>
+      ${items.map(i => `<div style="font-size:0.75rem;color:var(--text2);margin-left:4px">
+        · <b>${i.name}</b>：${i.detail}</div>`).join('')}
+    </div>` : '';
+
+  const verdict = f.blocking.length
+    ? { txt: '目前有閘門會擋掉全部交易', col: '#ef4444', bg: 'rgba(239,68,68,.12)' }
+    : f.warnings.length
+    ? { txt: '不會完全沒有交易，但有閘門正在明顯壓低交易量', col: '#f59e0b', bg: 'rgba(245,158,11,.10)' }
+    : { txt: '各閘門都通得過，不會沒有交易', col: '#22c55e', bg: 'rgba(34,197,94,.10)' };
+
+  const st = f.structural;
+  const stHtml = st ? `
+    <div style="margin-top:8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+      <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+        <th style="padding:3px 6px;text-align:left">行情分級</th><th style="padding:3px 6px">止盈一底線</th>
+        <th style="padding:3px 6px">止盈二底線</th><th style="padding:3px 6px">加權 R/R</th>
+        <th style="padding:3px 6px">門檻 ${st.minRR}</th></tr></thead>
+      <tbody>${st.regimes.map(r => `<tr style="text-align:right">
+        <td style="padding:3px 6px;text-align:left">${r.label}</td>
+        <td style="padding:3px 6px">${r.t1}R</td><td style="padding:3px 6px">${r.t2}R</td>
+        <td style="padding:3px 6px;font-weight:600">${r.blend}R</td>
+        <td style="padding:3px 6px;color:${r.pass ? '#22c55e' : '#ef4444'};font-weight:700">${r.pass ? '通過' : '結構性擋下'}</td>
+      </tr>`).join('')}</tbody></table></div>
+    <div style="font-size:0.72rem;color:var(--text3);margin-top:4px">
+      加權 R/R ＝ ${Math.round(TP1_EXIT_FRAC * 100)}%×止盈一 + ${Math.round((1 - TP1_EXIT_FRAC) * 100)}%×止盈二。
+      門檻若高過某一級的底線，那一級就<b>不管訊號多好都過不了</b>——那是把一整類行情關掉，不是挑單。
+      所以 R/R 門檻上限已改為壓在結構底線 ${RR_STRUCTURAL_FLOOR}，不再是憑感覺的 2.0。
+    </div>` : '';
+
+  const fn = f.funnel;
+  const fnRows = fn ? Object.entries(fn.rejects || {}).sort((a, b) => b[1] - a[1]) : [];
+  const fnHtml = fn ? `
+    <div style="margin-top:9px;font-weight:600;font-size:0.78rem">最近一輪掃描的淘汰漏斗
+      <span style="font-weight:400;color:var(--text3);font-size:0.72rem">
+        （${new Date(fn.at).toLocaleString('zh-TW')}　候選 ${fn.candidates} → 建單 ${fn.built}）</span></div>
+    ${fnRows.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+      <tbody>${fnRows.map(([k, v]) => `<tr>
+        <td style="padding:2px 6px;color:var(--text2)">${k}</td>
+        <td style="padding:2px 6px;text-align:right;font-weight:600;width:60px">${v}</td>
+        <td style="padding:2px 6px;width:40%"><div style="background:#ef4444;height:6px;border-radius:3px;
+          width:${Math.round(v / fn.candidates * 100)}%"></div></td>
+      </tr>`).join('')}</tbody></table></div>` : '<div style="font-size:0.75rem;color:var(--text3)">這輪沒有候選被擋下</div>'}`
+    : `<div style="font-size:0.75rem;color:var(--text3);margin-top:8px">
+        還沒有掃描漏斗資料——下一輪掃描後就會出現，屆時可以直接看到每個閘門各擋掉幾個候選。</div>`;
+
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+    <div style="font-weight:700;margin-bottom:5px">🚦 交易可行性自檢（會不會完全沒有交易）</div>
+    <div style="background:${verdict.bg};border-radius:8px;padding:7px 10px;font-weight:700;color:${verdict.col}">
+      ${verdict.txt}</div>
+    ${sec('🛑 會擋掉全部交易', f.blocking, '#ef4444')}
+    ${sec('⚠️ 明顯壓低交易量', f.warnings, '#f59e0b')}
+    ${sec('✅ 目前通得過', f.ok, '#22c55e')}
+    <div style="margin-top:9px;font-weight:600;font-size:0.78rem">結構可行性：R/R 門檻 vs 系統自己的止盈底線</div>
+    ${stHtml}
+    ${fnHtml}
+  </div>`;
+}
+
 /* 進場掛單深度面板：把「隨機漫步基準 vs 實測勝率」的落差攤開，
    並逐深度顯示成交率、飛越率、每訊號期望值。 */
 function buildPullDepthPanel() {
@@ -11492,16 +11646,26 @@ function entryFillProfile() {
 /* 最低 R/R：兩平勝率 = 1 ÷ (1 + R/R)，反過來就是「目前勝率下，R/R 至少要多少」。
    原本 R/R 過低只是扣風險分，扣完只要風控分還過門檻就照樣進場——但賺賠比
    不夠時，那筆單在數學上就不可能有正期望值，扣分擋不住它。改為硬性門檻。 */
+/* 系統的止盈結構在最弱的行情分級（ADX<28）下，最低能給出的加權 R/R。
+   止盈一底線 1.0R、止盈二底線 2.5R，分批出場加權 = 0.6×1.0 + 0.4×2.5 = 1.6。
+   門檻只要高過這個數，ADX<28 的單就會被「結構性」全數否決——不管訊號多好，
+   幾何上就是過不了。那不是挑單，是把一整個行情分級關掉。 */
+const RR_STRUCTURAL_FLOOR = +(TP1_EXIT_FRAC * 1.0 + (1 - TP1_EXIT_FRAC) * 2.5).toFixed(2);
 function minRequiredRR() {
   try {
     const be = accountBreakeven();
     if (!be || !(be.cur > 0)) return 1.2;               // 樣本不足：維持保守下限
-    // 以目前實測勝率反推所需 R/R，再留 15% 安全邊際。
-    // 上限壓在 2.0：勝率 24.9% 時數學上需要 R/R 3.0，但系統的止盈結構
-    // （分批出場加權後約 1.9）根本到不了那個數字，硬要求只會一筆都收不到——
-    // 那不是嚴格，是停擺。勝率太低要靠進場品質補，不是靠無限提高 R/R 要求。
     const need = (100 - be.cur) / be.cur * 1.15;
-    return Math.max(1.2, Math.min(2.0, +need.toFixed(2)));
+    // 上限壓在結構底線 1.6，而不是憑感覺的 2.0。原本設 2.0 時實測發現：
+    // ADX<28 的單在止盈底線上只有 1.60R，一律被擋——而 ADX<28 是多數時候的
+    // 常態行情。那正是我先前替快速單指出過的「不是嚴格，是停擺」。
+    //
+    // 更重要的是要講清楚 R/R 門檻的極限：勝率 24.9% 時，
+    //   R/R 1.6 → 期望值 −0.35R　　R/R 2.0 → −0.25R　　R/R 3.0 → 0.00R
+    // 也就是說，把門檻拉到 3.0 才勉強兩平，但那個數字結構上根本給不出來。
+    // 結論：R/R 門檻只能用來擋掉「幾何上明顯不合理」的單，救不了勝率。
+    // 勝率要靠進場品質（條件邊際掃描、掛單深度），不是靠無限提高 R/R。
+    return Math.max(1.2, Math.min(RR_STRUCTURAL_FLOOR, +need.toFixed(2)));
   } catch(_e) { return 1.2; }
 }
 
@@ -11827,6 +11991,7 @@ function saveCancelCooldowns(list) { localStorage.setItem(CANCEL_COOLDOWN_KEY, J
    分兩類，因為意義完全相反：
      · flyaway  ——「沒回踩就飛過止盈」：這是被逆選擇丟掉的贏單
      · decay    ——「訊號轉弱而取消」：這是正確迴避，不算損失 */
+const SCAN_FUNNEL_KEY = 'csp_scan_funnel';   // 最近一輪掃描的淘汰漏斗
 const MISSED_KEY = 'csp_missed_signals';
 const MISSED_MAX = 500;
 function loadMissedSignals() {
@@ -12377,6 +12542,13 @@ async function recordSignalsFromScan(data) {
   // 記錄本次掃描開始前已存在的掛單 ID，SQ 監控只處理這些（不重複驗證剛建立的掛單）
   const _existingTradeIds = new Set(tlog.map(t => t.id));
   let changed = false;
+  /* ── 淘汰漏斗 ────────────────────────────────────────────────
+     一路加上去的門檻各自都有道理，疊在一起卻可能把交易量壓到零，而且
+     「到底是誰擋的」以前完全看不到——每個 continue 都是靜默的。這裡逐一
+     計數，掃描結束存起來，實驗室就能顯示「這輪 N 個候選，各被什麼擋掉」。 */
+  const _rej = {};
+  const _no = (reason) => { _rej[reason] = (_rej[reason] || 0) + 1; return true; };
+  let _cand = 0;
 
   // ── 預先計算宏觀方向（使用與大方向進度條完全一致的多因子評分）──
   let macroNetDir = 'neutral';  // 預設：無快取時全放行
@@ -12459,7 +12631,8 @@ async function recordSignalsFromScan(data) {
   // 長線升級：日線 + 週線均同向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
-    if (coin.score === 50) continue;
+    _cand++;
+    if (coin.score === 50 && _no('評分中性(50)')) continue;
     const isLong    = coin.score > 50;
     const direction = isLong ? 'long' : 'short';
 
@@ -12469,29 +12642,29 @@ async function recordSignalsFromScan(data) {
 
     // 強烈宏觀硬封鎖（與 buildTradeSetup macroBlockedForRecord 完全一致）
     if (isLong  && blockLong)  continue;
-    if (!isLong && blockShort) continue;
+    if (!isLong && blockShort && _no('宏觀禁空')) continue;
 
     // 已有活躍倉位或在冷卻期 → 跳過
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
-    if (hasOpen) continue;
-    if (inCooldown(tlog, coin.symbol, direction)) continue;
+    if (hasOpen && _no('該幣已有活躍單')) continue;
+    if (inCooldown(tlog, coin.symbol, direction) && _no('冷卻期內')) continue;
 
     // BTC 急波動保護：暫停山寨幣新單
-    if (btcVolGuardBlocks(coin.symbol)) continue;
+    if (btcVolGuardBlocks(coin.symbol) && _no('BTC 急波動保護')) continue;
 
     // 今日 AI 反向 → 無論信心度一律封鎖；週預測信心<70 僅作參考
-    if (isLong  && (tBias === 'bear' || tBias === 'strong_bear')) continue;
-    if (!isLong && (tBias === 'bull' || tBias === 'strong_bull')) continue;
+    if (isLong  && (tBias === 'bear' || tBias === 'strong_bear') && _no('今日大方向偏空，擋多')) continue;
+    if (!isLong && (tBias === 'bull' || tBias === 'strong_bull') && _no('今日大方向偏多，擋空')) continue;
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     let setup = computeSimpleSetup(coin, isLong);
-    if (setup.hardBlocked) continue;
+    if (setup.hardBlocked && _no('進場結構硬性封鎖')) continue;
     if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
     // 風控分最低門檻（100 分制，與幣種詳情頁一致；未達每日配額時自適應放寬）
-    if ((setup.conf || 0) < _scanGates.minConf) continue;
+    if ((setup.conf || 0) < _scanGates.minConf && _no(`風控分 < ${_scanGates.minConf}（扣風險分前）`)) continue;
     // 週預測信心≥70 且強衝突（週強多+日強空 或 週強空+日強多）→ 硬封鎖；信心<70 僅作參考
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
-    if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull'))) continue;
+    if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull')) && _no('週線+日線強勢逆向')) continue;
 
     // 完整風險評估（15 因子）
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
@@ -12522,14 +12695,14 @@ async function recordSignalsFromScan(data) {
     } catch(_e) {}
     // 風險評估扣分（比例制）：扣後風控分低於門檻 → 跳過
     const _scanRiskPen = calcRiskPenalty(_scanRisk.score);
-    if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < _scanGates.minConf) continue;
+    if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < _scanGates.minConf && _no(`風控分 < ${_scanGates.minConf}（扣風險分後）`)) continue;
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     let canScaleIn = setup.isLongTerm === true;
 
     // R/R 門檻：多空皆 ≥1.3
     const _scanRR = setup.rr1 || 0;
-    if (parseFloat(_scanRR) < 1.3) continue;
+    if (parseFloat(_scanRR) < 1.3 && _no('止盈一 R/R < 1.3')) continue;
     // 長線單：週預測信心≥70 時週向須對齊（信心<70 僅作參考）
     if (canScaleIn && wBiasConf >= 70) {
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
@@ -12604,7 +12777,7 @@ async function recordSignalsFromScan(data) {
         if (_setup2 && !_setup2.hardBlocked && !_setup2.rrBlocked && (parseFloat(_setup2.rr1) || 0) >= 1.3) {
           setup = _setup2;
         } else {
-          continue; // 真實波動率下 R/R 不足或被封鎖 → 放棄此訊號
+          _no('真實 ATR 下 R/R 不足或結構封鎖'); continue;
         }
       }
     }
@@ -12622,7 +12795,7 @@ async function recordSignalsFromScan(data) {
     const _ss15mSig = coin.signal15m || (isLong ? ((coin.score||50) >= 55 ? 'bull' : '') : ((coin.score||50) <= 45 ? 'bear' : ''));
     const _ss15mOk  = isLong ? _ss15mSig.includes('bull') : _ss15mSig.includes('bear');
     const _ssDayOk = isLong ? (coin.dailySignal ||'').includes('bull') : (coin.dailySignal ||'').includes('bear');
-    if (!_ssH4Ok || !_ss15mOk) continue; // 硬性條件未達標 → 跳過
+    if ((!_ssH4Ok || !_ss15mOk) && _no('4H/15m 未同向')) continue; // 硬性條件未達標 → 跳過
     if (canScaleIn && !_ssDayOk) continue; // 長線單額外需日線同向（canScaleIn 已保證此條件，這是防禦性檢查）
     _scanSqFactors.push(canScaleIn ? '✅ 日線+4H+15m 三確認（長線硬性條件）' : '✅ 4H+15m 雙確認（短線硬性條件）');
     // 其餘時框同向加分（1H / 日線 / 週線）— max +3
@@ -12934,7 +13107,7 @@ async function recordSignalsFromScan(data) {
     if (_dirGuardMsg) { console.log('[dir-guard]', coin.symbol, _dirGuardMsg); continue; }
 
     // 全局連續止損熔斷：只剩重大連虧的硬停；漸進壓制交給自適應 learnDrag
-    if (lossStreakGuard().blocked) continue;
+    if (lossStreakGuard().blocked && _no('全局連續止損熔斷')) continue;
 
     // ── 建單前終審（根本解法，取代 30 分鐘時間寬限）──────────────
     // 用「SQ 監控完全相同的評分函式」預演下一輪監控會怎麼評這筆單：
@@ -12947,7 +13120,7 @@ async function recordSignalsFromScan(data) {
       const _auditSqGate = canScaleIn ? 21 : _scanGates.minSq;
       if (_audit.sq < _auditSqGate) {
         console.log(`[pre-audit] ${coin.symbol} 監控口徑評分 ${_audit.sq} < ${_auditSqGate}，不建單（杜絕建了又取消）`);
-        continue;
+        _no(`終審 SQ < ${_auditSqGate}`); continue;
       }
       const _auditLearnPen = _audit.learn?.penalty ?? (setup.learnPenalty || 0);
       const _auditPreConf  = Math.max(0, 100 - calcLearnDrag(_auditLearnPen));
@@ -12957,7 +13130,7 @@ async function recordSignalsFromScan(data) {
       const _auditConf = Math.max(0, _auditPreConf - calcRiskPenalty(_auditRisk.score));
       if (_auditConf < _scanGates.minConf) {
         console.log(`[pre-audit] ${coin.symbol} 監控口徑風控分 ${_auditConf} < ${_scanGates.minConf}，不建單`);
-        continue;
+        _no(`終審風控分 < ${_scanGates.minConf}`); continue;
       }
       // R/R 硬性門檻：賺賠比不足時，那筆單在數學上就不可能有正期望值，
       // 只靠扣風險分擋不住（扣完只要風控分還過門檻仍會進場）。
@@ -12972,7 +13145,7 @@ async function recordSignalsFromScan(data) {
       if (_blendRR > 0 && _blendRR < _minRR) {
         console.log(`[pre-audit] ${coin.symbol} 加權 R/R ${_blendRR}（止盈一 ${_auditRR}／止盈二 ${_auditRR2.toFixed(2)}）`
           + ` < ${_minRR}（目前勝率下所需），不建單`);
-        continue;
+        _no(`加權 R/R < ${_minRR}`); continue;
       }
     } catch(_auE) { console.warn('[pre-audit]', _auE); }
 
@@ -13046,12 +13219,12 @@ async function recordSignalsFromScan(data) {
     const _condBlock = condBlockCheck(newTrade);
     if (_condBlock) {
       console.log(`[cond-block] ${coin.symbol} ${direction}：${_condBlock}，不建單`);
-      continue;
+      _no('條件封鎖：' + _condBlock.split('（')[0]); continue;
     }
     // 建單唯一入口（原子：重新載入→去重→存檔），杜絕多路徑並行建出重複訊號
     if (!commitNewTrade(newTrade)) {
       console.log(`[dedup] ${coin.symbol} 已有相同訊號，略過重複建單`);
-      continue;
+      _no('去重（同訊號已存在）'); continue;
     }
     // 同步回 tlog 供後續 SQ 監控迴圈使用（splice 保留同一陣列引用）
     tlog.splice(0, tlog.length, ...loadTradeLog());
@@ -13188,6 +13361,15 @@ async function recordSignalsFromScan(data) {
     if (tlog.length > 500) tlog.splice(500);
     saveTradeLog(tlog);
   }
+  // 淘汰漏斗存檔：實驗室據此顯示「這輪掃了幾個候選、各被什麼擋掉」
+  try {
+    const _built = Object.values(_rej).length ? _cand - Object.values(_rej).reduce((a, b) => a + b, 0) : _cand;
+    localStorage.setItem(SCAN_FUNNEL_KEY, JSON.stringify({
+      at: Date.now(), candidates: _cand, built: Math.max(0, _built),
+      gates: { minConf: _scanGates.minConf, minSq: _scanGates.minSq, minRR: _scanGates.minRR },
+      rejects: _rej,
+    }));
+  } catch(_fe) {}
   // 背景檢測新建短線單是否符合長線條件（異步，不阻塞掃描）
   if (changed) setTimeout(() => backgroundRefineNewTrades().catch(e => console.warn('[bg-refine]', e)), 2000);
   // 背景刷新掛單的 ICT 結構 + 圖形確認快取（每 30 分鐘最多一次），讓 SQ 監控可涵蓋 ⑥⑯ 兩因子
@@ -18384,6 +18566,10 @@ function renderTradeLogPage() {
   let linkHtml = '';
   try { linkHtml = buildLabLinkPanel(); } catch(_e) {}
 
+  // 交易可行性自檢：疊了這麼多門檻，會不會變成完全沒有交易
+  let feasHtml = '';
+  try { feasHtml = buildFeasibilityPanel(); } catch(_e) {}
+
   // 進場掛單深度：勝率低於隨機基準時，兇手通常在這裡
   let pullHtml = '';
   try { pullHtml = buildPullDepthPanel(); } catch(_e) {}
@@ -18427,6 +18613,7 @@ function renderTradeLogPage() {
     ${mismatchHtml}
     ${beHtml}
     ${linkHtml}
+    ${feasHtml}
     ${pullHtml}
     ${gateHtml}
     ${condHtml}
