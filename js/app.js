@@ -21769,14 +21769,68 @@ function computeSimpleSetup(coin, isLong) {
     _entryTag = 'ema20';
   }
 
+  /* ── 結構階梯（做多下方要有支撐、做空上方要有壓力）──────────────
+     這段之前寫在 buildTradeSetup，但那個函式只給幣種詳情頁算顯示用的建議，
+     掃描建單根本不呼叫它——所以整套結構錨定對實際訊號完全沒作用。這次搬到
+     真正會跑的地方。
+
+     結構池用這個函式拿得到的實際結構位：Order Block 邊界、Fair Value Gap、
+     布林上下軌、EMA20/50/200。不用固定 R 推算任何一個價位，R 只在最後
+     當作安全上下限（止損不得過緊或過寬）。
+
+     做多時由高到低取出「價格下方」的結構，相鄰太近的視為同一道： */
+  const LADDER_SEP = 0.35;   // 相鄰結構至少隔開（×ATR），太近視為同一道
+  const _lvPool = [
+    _ob && _ob.low  > 0 ? _ob.low  : null,
+    _ob && _ob.high > 0 ? _ob.high : null,
+    _fvg && parseFloat(_fvg.mid) > 0 ? parseFloat(_fvg.mid) : null,
+    _bbLo > 0 ? _bbLo : null, _bbUp > 0 ? _bbUp : null,
+    ema20 > 0 ? ema20 : null, ema50 > 0 ? ema50 : null, ema200 > 0 ? ema200 : null,
+  ].filter(v => v != null && isFinite(v) && v > 0);
+  const _ladderOf = (fromPrice, wantBelow) => {
+    const out = [];
+    const sorted = _lvPool
+      .filter(v => wantBelow ? v < fromPrice * 0.999 : v > fromPrice * 1.001)
+      .sort((a, b) => wantBelow ? b - a : a - b);
+    for (const v of sorted) {
+      if (out.length && Math.abs(out[out.length - 1] - v) < atr * LADDER_SEP) continue;
+      out.push(v);
+    }
+    return out;
+  };
+  const _ladder = _ladderOf(price, isLong);          // 做多＝下方支撐，做空＝上方壓力
+  const _ladderOpp = _ladderOf(price, !isLong);      // 反向那側（供加倉位用）
+  // 需要兩道：一道給止損釘，另一道確保止損外側還有結構撐著
+  const _ladderOk = _ladder.length >= 2;
+
   // ═══════════════════════════════════════════════
   // 2. 止損：結構失效點（最小化止損）
-  //    優先級：OB 邊界 → EMA 結構 → BB 帶 → ATR（縮小至 1.5×）
+  //    優先級：結構階梯 → OB 邊界 → EMA 結構 → BB 帶 → ATR（縮小至 1.5×）
   // ═══════════════════════════════════════════════
   let sl, _slTag = '', _slStructure = '';
   // Kill Zone 高品質時段本就可收緊，MTF 雙確認時再乘以 _mtfSlFactor
   const _atrBuf = (_kzHigh ? 0.3 : 0.5) * _mtfSlFactor;
-  if (_ob && _ob.priceInOB && _ob.high > 0 && _ob.low > 0) {
+  /* 結構階梯優先：在風控上限（3%）內，由外而內挑第一個放得進預算的結構，
+     止損釘在它外側，而它外側還有次一道結構。挑不到才走原本的分支。
+     由外而內是刻意的——越外側的結構越不容易被雜訊掃到，但要放得進風險預算。 */
+  const _ladderPick = (() => {
+    if (!_ladderOk) return null;
+    const budget = price * 0.03;
+    for (let i = Math.min(_ladder.length - 2, 1); i >= 0; i--) {
+      const lv = _ladder[i];
+      const slTry = isLong ? lv - atr * _atrBuf : lv + atr * _atrBuf;
+      if (Math.abs(entry - slTry) > budget) continue;
+      return { level: lv, next: _ladder[i + 1] ?? null };
+    }
+    return null;
+  })();
+  if (_ladderPick) {
+    sl = isLong ? _ladderPick.level - atr * _atrBuf : _ladderPick.level + atr * _atrBuf;
+    _slTag = 'ladder';
+    _slStructure = `${isLong ? '支撐' : '壓力'} $${_ladderPick.level.toPrecision(5).replace(/\.?0+$/, '')}`
+      + `${isLong ? '下' : '上'}方`
+      + (_ladderPick.next ? `（外側仍有 $${_ladderPick.next.toPrecision(5).replace(/\.?0+$/, '')}）` : '');
+  } else if (_ob && _ob.priceInOB && _ob.high > 0 && _ob.low > 0) {
     const _buf = atr * _atrBuf;
     sl      = isLong ? _ob.low - _buf : _ob.high + _buf;
     _slTag  = 'ob';
@@ -22257,6 +22311,17 @@ function computeSimpleSetup(coin, isLong) {
     entryReasons: reasons,                // 陣列版（buildTelegramText 優先使用）
     entryReason:  reasons.join('，'),     // 字串版（相容其他地方）
     slReason, tp1Reason, tp2Reason,
+    /* 結構階梯（做多下方要有支撐、做空上方要有壓力）。
+       ladderOk=false 代表結構不足，掃描會據此不建單——沒有結構可釘時
+       用固定 R 湊出價位，正是要改掉的事。
+       addLevel：加倉位＝反向第一道結構外側（突破後該結構翻向，成為加倉位的支撐／壓力）
+       addSl   ：加倉後止損＝同向第一道結構外側，其外側仍有次一道 */
+    ladderOk: _ladderOk,
+    ladder: { side: _ladder.slice(0, 3), opp: _ladderOpp.slice(0, 1), sep: LADDER_SEP },
+    addLevel: _ladderOpp[0] != null
+      ? +(isLong ? _ladderOpp[0] + atr * _atrBuf : _ladderOpp[0] - atr * _atrBuf).toFixed(8) : null,
+    addSl: (_ladder[0] != null && _ladder.length >= 2)
+      ? +(isLong ? _ladder[0] - atr * _atrBuf : _ladder[0] + atr * _atrBuf).toFixed(8) : null,
     rr1: _rr1, rr2: _rr2,
     atr, conf, rawConf, hardAdxPenalty, learnPenalty,
     macroPenalty: _sMacroPen, aiTrendPenalty: _sAIPen,
@@ -23513,7 +23578,7 @@ const SCALP_KEEP_FIELDS = new Set([
   // 風控（量化部分——風控評分與扣分條件的學習都靠它）
   'riskScore', 'riskKeys', 'conf',
   // 止損建議／機器人學習止損與量化重放
-  'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc',
+  'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter',
   'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed',
   // 分群用（時段／波動／量能／多週期）
   'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel',
@@ -24010,6 +24075,20 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   let _buf = atr * _slL.mult;
   if (mode === 'range' && rangeSpan > 0) _buf = Math.min(_buf, rangeSpan * SCALP_CFG.rangeSlSpanFrac);
   let slRaw = isLong ? level - _buf : level + _buf;
+  /* 「做多下方要有支撐、做空上方要有壓力」——止損本身已經釘在該模式自己的
+     結構位（回踩位／假突破位／區間邊緣／擺動極值）外側，這點原本就成立。
+     這裡補上第二階：確認止損<b>外側還有另一道結構</b>，而不是懸在真空中。
+     用近 40 根 5m K 棒的擺動極值當第二道；找不到就標記，讓紀錄看得出來
+     這筆單的止損外側沒有東西接。不硬性擋單——5m 級別結構本來就稀疏，
+     擋掉會讓交易量歸零，但這個標記會進統計，之後可以用實測決定要不要擋。 */
+  let _outerLv = null;
+  try {
+    const win = prev.slice(-40);
+    const lows  = win.map(b => parseFloat(b[3])).filter(isFinite);
+    const highs = win.map(b => parseFloat(b[2])).filter(isFinite);
+    const cand = isLong ? lows.filter(v => v < slRaw) : highs.filter(v => v > slRaw);
+    if (cand.length) _outerLv = isLong ? Math.max(...cand) : Math.min(...cand);
+  } catch(_e) {}
   const entry = price;                                  // 市價進場
   let risk  = Math.abs(entry - slRaw);
   if (!(risk > 0)) return _sr('止損距離無效');
@@ -24067,6 +24146,9 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
            feeR: +_feeR.toFixed(3), riskPct: +(risk / entry * 100).toFixed(3),
            slWidened: _slWidened, tp1Atr: +_tp1Atr.toFixed(2),
            slMult: +_slL.mult.toFixed(3), slMultSrc: _slL.src, slMultWhy: _slL.why,
+           // 止損釘在模式自己的結構位外側；outerLv＝止損外側的次一道結構（無則 null）
+           slAnchor: +level.toFixed(8), slOuter: _outerLv != null ? +_outerLv.toFixed(8) : null,
+           slHasOuter: _outerLv != null,
            levelGapAtr: atr > 0 ? +(Math.abs(entry - level) / atr).toFixed(3) : null,
            slDistAtr:   atr > 0 ? +(risk / atr).toFixed(3) : null };
 }
