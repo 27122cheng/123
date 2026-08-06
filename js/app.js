@@ -2940,9 +2940,14 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
   const _ladderRess  = pickLadder(resists, price, false, 3);
   const _ladderSide  = isLong ? _ladderSupps : _ladderRess;
   const _ladderOpp   = isLong ? _ladderRess : _ladderSupps;
-  const _ladderOk    = _ladderSide.length >= 3 && _ladderOpp.length >= 1;
+  /* 需要幾道結構，取決於止損釘在第幾道（見下方 _ladderSlAnchor 的預算挑選）：
+       止損釘第二道 → 其外側要有第三道　→ 共需 3 道
+       止損降級釘第一道 → 其外側要有第二道 → 共需 2 道
+     兩種情況都滿足「四個價位的另一側都還有一道結構」。原本一律要求 3 道，
+     等於把「S2 太遠只好釘 S1」這個完全合法的情況也擋掉，白白少了交易。 */
+  const _ladderOk    = _ladderSide.length >= 2 && _ladderOpp.length >= 1;
   const _ladderWhy   = _ladderOk ? '' :
-    `結構不足：${isLong ? '下方支撐' : '上方壓力'} ${_ladderSide.length}/3 道`
+    `結構不足：${isLong ? '下方支撐' : '上方壓力'} ${_ladderSide.length}/2 道`
     + `、${isLong ? '上方壓力' : '下方支撐'} ${_ladderOpp.length}/1 道`
     + `（四個價位都要有結構撐著，不用固定 R 湊）`;
 
@@ -3240,6 +3245,33 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       entryReasons.unshift(`⏰ ${_kz.emoji} ${_kz.name} 黃金獵殺時段（${_kz.desc}）`);
   } catch(_epE) {}
 
+  /* ── 止損錨點：在風控預算內挑「最深的那道結構」──────────────────
+     原本一律釘第二道（S2/R2），但 S2 常在 2～4×ATR 之外，會超過風控上限
+     min(價格×分層%, 3.5×ATR)。超過時後面的夾擠會把止損壓成一個固定距離，
+     並把 slReason 覆寫成「風控上限止損」——結構錨定就這樣被靜默地取消了，
+     止損落在 S1 與 S2 之間的無人區，插針掃得到卻沒有跌破任何結構。
+
+     改成先算預算，再由深到淺挑第一個放得進預算的結構：
+       S2 放得下 → 釘 S2（下方還有 S3）
+       S2 太遠   → 降級釘 S1（下方還有 S2）※ 仍然是結構，不是固定距離
+       都放不下 → 不給錨點，交由後面的舊路徑處理（該情況已改為不建單）
+     這樣「止損下方一定還有一道結構」的保證在任何情況下都成立。 */
+  const _slMaxPctPre = price > 10000 ? 0.025 : price > 500 ? 0.035 : 0.045;
+  const _slBudget    = Math.min(price * _slMaxPctPre, atr * 3.5);
+  const _ladderSlAnchor = (() => {
+    const side = isLong ? _ladderSupps : _ladderRess;
+    // 由深到淺：先試第二道，再退回第一道
+    for (const i of [1, 0]) {
+      const lv = side[i];
+      if (lv == null) continue;
+      const slTry = isLong ? lv - atr * LADDER_BUF : lv + atr * LADDER_BUF;
+      const dist  = Math.abs(entry - slTry);
+      if (dist > _slBudget) continue;
+      return { level: lv, next: side[i + 1] ?? null, downgraded: i === 0 };
+    }
+    return null;
+  })();
+
   // ── 止損：HTF 結構位 + 緩衝（4H/日線優先，1H fallback）──
   let sl, slReason;
   if (isLong) {
@@ -3256,12 +3288,13 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const slDistPct = ((entry - sl) / price * 100).toFixed(2);
       const tfLabel = trapLow === trapLow4h ? '4H ' : '';
       slReason = `${tfLabel}PO3/掃蕩低點 ${fmtPrice(trapLow)} 下方止損，-${slDistPct}%（結構化止損）`;
-    } else if (_ladderSupps[1]) {
-      // 止損釘在第二道支撐 S2 下方——S2 要先跌破才會被掃，而 S2 下方還有 S3
-      sl = _ladderSupps[1] - atr * LADDER_BUF;
+    } else if (_ladderSlAnchor) {
+      // 止損釘在結構下方——該道結構要先跌破才會被掃，而它下方還有次一道
+      sl = _ladderSlAnchor.level - atr * LADDER_BUF;
       const slDistPct = ((entry - sl) / price * 100).toFixed(2);
-      slReason = `止損釘於${_htfTfLabel(_ladderSupps[1])}支撐 ${fmtPrice(_ladderSupps[1])} 下方 ${LADDER_BUF}×ATR，-${slDistPct}%`
-               + (_ladderSupps[2] ? `（下方仍有支撐 ${fmtPrice(_ladderSupps[2])}）` : '');
+      slReason = `止損釘於${_htfTfLabel(_ladderSlAnchor.level)}支撐 ${fmtPrice(_ladderSlAnchor.level)} 下方 ${LADDER_BUF}×ATR，-${slDistPct}%`
+               + (_ladderSlAnchor.next ? `（下方仍有支撐 ${fmtPrice(_ladderSlAnchor.next)}）` : '')
+               + (_ladderSlAnchor.downgraded ? `　※ 次深支撐超出風控上限，改釘較淺的這道` : '');
     } else {
       sl = Math.min(structSup - atr * 0.3, entry - atr * 1.3);
       const slDistPct = ((entry - sl) / price * 100).toFixed(2);
@@ -3283,12 +3316,12 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       const slDistPct = ((sl - entry) / price * 100).toFixed(2);
       const tfLabel = trapHigh === trapHigh4h ? '4H ' : '';
       slReason = `${tfLabel}PO3/掃蕩高點 ${fmtPrice(trapHigh)} 上方止損，+${slDistPct}%（結構化止損）`;
-    } else if (_ladderRess[1]) {
-      // 止損釘在第二道壓力 R2 上方——R2 要先突破才會被掃，而 R2 上方還有 R3
-      sl = _ladderRess[1] + atr * LADDER_BUF;
+    } else if (_ladderSlAnchor) {
+      sl = _ladderSlAnchor.level + atr * LADDER_BUF;
       const slDistPct = ((sl - entry) / price * 100).toFixed(2);
-      slReason = `止損釘於${_htfTfLabel(_ladderRess[1])}壓力 ${fmtPrice(_ladderRess[1])} 上方 ${LADDER_BUF}×ATR，+${slDistPct}%`
-               + (_ladderRess[2] ? `（上方仍有壓力 ${fmtPrice(_ladderRess[2])}）` : '');
+      slReason = `止損釘於${_htfTfLabel(_ladderSlAnchor.level)}壓力 ${fmtPrice(_ladderSlAnchor.level)} 上方 ${LADDER_BUF}×ATR，+${slDistPct}%`
+               + (_ladderSlAnchor.next ? `（上方仍有壓力 ${fmtPrice(_ladderSlAnchor.next)}）` : '')
+               + (_ladderSlAnchor.downgraded ? `　※ 次深壓力超出風控上限，改釘較淺的這道` : '');
     } else {
       sl = Math.max(structRes + atr * 0.3, entry + atr * 1.3);
       const slDistPct = ((sl - entry) / price * 100).toFixed(2);
@@ -3306,17 +3339,19 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     const _slMinDist = atr * 0.8 * getAdaptiveSlWiden();
     // 止損上限改「價格分層 ∧ ATR 倍數」取小：平靜期用 ATR 收緊、暴動期用分層封頂，
     // 避免平靜的 BTC 給到 2.5% 過寬、暴動的山寨被 4.5% 綁太窄
-    const _slMaxPct  = price > 10000 ? 0.025 : price > 500 ? 0.035 : 0.045;
-    const _slMaxDist = Math.min(price * _slMaxPct, atr * 3.5);
+    const _slMaxPct  = _slMaxPctPre;
+    const _slMaxDist = _slBudget;
     if (isLong) {
       if ((entry - sl) < _slMinDist) { sl = entry - _slMinDist; slReason += `（已擴展至ATR噪音底線）`; }
       if ((entry - sl) > _slMaxDist) { sl = entry - _slMaxDist; slReason = `風控上限止損 ${(_slMaxPct*100).toFixed(1)}% — ${fmtPrice(sl)}`; }
-      if (vp1h?.val && vp1h.val < entry && vp1h.val > sl && (entry - vp1h.val) < atr * 2.5)
+      // VP 錨點只在「止損不是由結構階梯釘的」時候才覆寫。階梯已經保證止損
+      // 下方還有一道結構，被 VAL 往上拉會把那個保證弄丟。
+      if (!_ladderSlAnchor && vp1h?.val && vp1h.val < entry && vp1h.val > sl && (entry - vp1h.val) < atr * 2.5)
         { sl = vp1h.val - atr * 0.15; slReason = `VP 價值區低點(VAL) ${fmtPrice(vp1h.val)} 下方止損，-${((entry-sl)/price*100).toFixed(2)}%`; }
     } else {
       if ((sl - entry) < _slMinDist) { sl = entry + _slMinDist; slReason += `（已擴展至ATR噪音底線）`; }
       if ((sl - entry) > _slMaxDist) { sl = entry + _slMaxDist; slReason = `風控上限止損 ${(_slMaxPct*100).toFixed(1)}% — ${fmtPrice(sl)}`; }
-      if (vp1h?.vah && vp1h.vah > entry && vp1h.vah < sl && (vp1h.vah - entry) < atr * 2.5)
+      if (!_ladderSlAnchor && vp1h?.vah && vp1h.vah > entry && vp1h.vah < sl && (vp1h.vah - entry) < atr * 2.5)
         { sl = vp1h.vah + atr * 0.15; slReason = `VP 價值區高點(VAH) ${fmtPrice(vp1h.vah)} 上方止損，+${((sl-entry)/price*100).toFixed(2)}%`; }
     }
   } catch(_slE) {}
@@ -3338,6 +3373,11 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         const _ltSrc = (_wkSwC && _ltSlCands[0] === _wkSwC) ? '週線擺動低點'
                      : (_wkSup && _ltSlCands[0] === _wkSup) ? '週線支撐' : 'EMA200';
         slReason = `🔒 長線止損 ${_ltSrc} ${fmtPrice(_ltSlCands[0])} 下方 -${_ltSlPct}%（跌破週級結構清倉）`;
+      } else if (_ladderSlAnchor) {
+        // 週線結構不足時不要退回固定 4%——結構階梯的錨點仍然是結構
+        sl = Math.min(sl, _ladderSlAnchor.level - atr * LADDER_BUF);
+        slReason = `🔒 長線止損：週線結構不足，改釘${_htfTfLabel(_ladderSlAnchor.level)}支撐 `
+                 + `${fmtPrice(_ladderSlAnchor.level)} 下方 -${((entry-sl)/price*100).toFixed(2)}%`;
       } else {
         sl = Math.min(sl, entry * (1 - 0.040));
         slReason = `🔒 長線止損：進場下方 ${((entry-sl)/price*100).toFixed(2)}%（週線結構不足，ATR擴展）`;
@@ -3354,6 +3394,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
         const _ltSrc = (_wkSwC && _ltSlCands[0] === _wkSwC) ? '週線擺動高點'
                      : (_wkRes && _ltSlCands[0] === _wkRes) ? '週線壓力' : 'EMA200';
         slReason = `🔒 長線止損 ${_ltSrc} ${fmtPrice(_ltSlCands[0])} 上方 +${_ltSlPct}%（突破週級結構清倉）`;
+      } else if (_ladderSlAnchor) {
+        sl = Math.max(sl, _ladderSlAnchor.level + atr * LADDER_BUF);
+        slReason = `🔒 長線止損：週線結構不足，改釘${_htfTfLabel(_ladderSlAnchor.level)}壓力 `
+                 + `${fmtPrice(_ladderSlAnchor.level)} 上方 +${((sl-entry)/price*100).toFixed(2)}%`;
       } else {
         sl = Math.max(sl, entry * (1 + 0.040));
         slReason = `🔒 長線止損：進場上方 ${((sl-entry)/price*100).toFixed(2)}%（週線結構不足，ATR擴展）`;
@@ -4735,7 +4779,10 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
        ladder     三道同向結構＋一道反向結構，供顯示與稽核 */
     addLevel: _ladderOpp[0] != null
       ? +(isLong ? _ladderOpp[0] + atr * LADDER_BUF : _ladderOpp[0] - atr * LADDER_BUF).toFixed(8) : null,
-    addSl: _ladderSide[0] != null
+    /* 加倉後止損只有在「止損釘第二道」時才存在：此時它釘第一道，外側還有
+       第二道撐著。若止損已降級釘第一道，就沒有更淺的結構可釘了——這時不硬
+       湊一個位置，加倉後止損維持不動（null），其餘三個價位的保證仍然成立。 */
+    addSl: (_ladderSlAnchor && !_ladderSlAnchor.downgraded && _ladderSide[0] != null)
       ? +(isLong ? _ladderSide[0] - atr * LADDER_BUF : _ladderSide[0] + atr * LADDER_BUF).toFixed(8) : null,
     ladderOk: _ladderOk,
     ladderWhy: _ladderWhy,
@@ -10417,6 +10464,13 @@ function tradeFeasibility() {
     if (deadRegimes.length === regimes.length) {
       out.blocking.push({ name: '加權 R/R 門檻', detail:
         `門檻 ${g.minRR} 高於所有 ADX 分級的止盈底線 → 結構上不可能有任何單通過` });
+    } else if (g.minRR <= RR_STRUCTURAL_FLOOR + 0.001) {
+      // 誠實話：門檻壓在結構底線時，止盈本來就不可能低於它，這道閘門實際上不會擋任何單
+      out.ok.push({ name: '加權 R/R 門檻（目前實質不作用）', detail:
+        `門檻 ${g.minRR} 等於結構底線 ${RR_STRUCTURAL_FLOOR}，而止盈一/二本身就有 1.0R/2.5R 的下限，`
+        + `所以加權 R/R 永遠 ≥ ${RR_STRUCTURAL_FLOOR} —— 這道閘門目前一單都不會擋。`
+        + `這是刻意的：勝率 ${be ? be.cur : '--'}% 下要靠 R/R 拉到兩平得要 3.0，結構上給不出來，`
+        + `硬拉只會停擺。R/R 只留作「幾何明顯不合理」的保險，勝率要靠進場品質解決。` });
     } else if (deadRegimes.length) {
       out.warnings.push({ name: '加權 R/R 門檻', detail:
         `門檻 ${g.minRR}：${deadRegimes.map(r => r.label).join('、')} 在止盈底線上只有 `
@@ -11022,6 +11076,15 @@ function effectiveOutcome(t) {
     const move = (x - e) * (t.direction === 'long' ? 1 : -1);   // >0 出場在獲利側
     if ((stored === 'tp1' || stored === 'tp2') && move < 0 && r < -PNL_MISMATCH_EPS) return 'sl';
     if (stored === 'sl' && move > 0 && r > PNL_MISMATCH_EPS) return 'tp1';
+    /* 「保本」也必須依事實檢查——這裡原本漏了，而且漏得剛好會灌水勝率。
+       平手的定義是 |R| ≤ FLAT_R_EPS（0.05R，約等於只賠手續費），可是舊制的
+       16 小時時間止損是「±0.3R 內原地踏步就出場並記為 be」，所以歷史紀錄裡
+       存在實際虧掉 0.1~0.3R 卻掛著 be 的單。be 不計入勝率分母，於是這些真實
+       的小虧被整批移出分母 → 勝率被墊高。
+       依 outcomeByR 的同一把尺重新判定：超出平手帶就照實際損益歸勝或負。
+       反向也一樣：標成勝負但實際 |R| 在平手帶內的，歸回平手。 */
+    if (stored === 'be' && Math.abs(r) > FLAT_R_EPS) return r > 0 ? 'tp1' : 'sl';
+    if ((stored === 'tp1' || stored === 'tp2' || stored === 'sl') && Math.abs(r) <= FLAT_R_EPS) return 'be';
   } catch(_e) {}
   return stored;
 }
@@ -11584,13 +11647,22 @@ function condEdgeProfile() {
       const on = stat(closed.filter(d.on)), off = stat(closed.filter(d.off));
       if (on.n === 0) continue;
       const delta = +(off.exp - on.exp).toFixed(3);
+      /* 兩組勝率差是否真的存在，而不是抽樣雜訊：用 Wilson 區間比較，
+         「成立組的上界」仍低於「不成立組的下界」才算數。
+         為什麼一定要這一關：這裡同時檢定 ~20 個維度，每個都用 delta > 0
+         這種點估計去判斷，光靠運氣就會有好幾個看起來是壞條件——那是典型的
+         多重比較過擬合，選出來的前 4 名很可能全是雜訊。加上區間檢定之後，
+         要被封鎖就得連樂觀估計都跨不過對照組的保守估計。 */
+      const sepWorse = on.wrUb != null && off.wrLb != null && on.wrUb < off.wrLb;
+      const sepBetter = on.wrLb != null && off.wrUb != null && on.wrLb > off.wrUb;
       let verdict = 'neutral';
-      if (!d.advisory && on.n >= COND_MIN_N && on.exp < 0 && on.wrUb != null
-          && on.wrUb < be.need && delta > 0) verdict = 'block';
+      if (!d.advisory && on.n >= COND_MIN_N && off.n >= COND_MIN_N && on.exp < 0
+          && on.wrUb != null && on.wrUb < be.need && delta > 0 && sepWorse) verdict = 'block';
       else if (!d.advisory && on.n >= COND_MIN_N && on.exp > 0 && on.wrLb != null
-          && on.wrLb >= be.need && delta < 0) verdict = 'require';
+          && on.wrLb >= be.need && delta < 0 && sepBetter) verdict = 'require';
       else if (on.n >= COND_WATCH_N && on.exp < 0 && delta > 0) verdict = 'watch';
-      out.rows.push({ key: d.key, label: d.label, advisory: !!d.advisory, on, off, delta, verdict });
+      out.rows.push({ key: d.key, label: d.label, advisory: !!d.advisory, on, off, delta, verdict,
+                      sepWorse, sepBetter });
     }
     out.rows.sort((a, b) => b.delta - a.delta);
 
@@ -18080,9 +18152,16 @@ function renderLabPage() {
   const lab = loadAILab();
   const closed  = lab.filter(o => o.status === 'closed');
   const active  = lab.filter(o => o.status === 'pending' || o.status === 'open');
-  const wins    = closed.filter(o => (o.pnlR || 0) > 0);
+  /* 勝率口徑與交易記錄／策略報表統一：勝 ÷ (勝 + 負)，平手不計入分母。
+     這裡原本是 pnlR > 0 ÷ 全部已完結——第三種算法，難怪三個頁面對不起來。
+     實驗室的機會沒有 outcome 欄位，所以用損益直接分類，門檻同 FLAT_R_EPS。 */
+  const _labCls = o => { const r = parseFloat(o.pnlR) || 0;
+    return r > FLAT_R_EPS ? 'win' : r < -FLAT_R_EPS ? 'loss' : 'flat'; };
+  const wins    = closed.filter(o => _labCls(o) === 'win');
+  const _labLoss= closed.filter(o => _labCls(o) === 'loss');
   const totalR  = closed.reduce((s, o) => s + (o.pnlR || 0), 0);
-  const winRate = closed.length ? (wins.length / closed.length * 100) : 0;
+  const winRate = (wins.length + _labLoss.length)
+    ? (wins.length / (wins.length + _labLoss.length) * 100) : 0;
 
   // 按標籤聚合
   const tagStats = {};
@@ -18328,10 +18407,20 @@ function renderTradeLogPage() {
     const aw = wins.length ? wR / wins.length : 0;
     const al = losses.length ? lR / losses.length : 0;
     if (!(aw > 0) || !(al > 0)) return null;
-    const need = al / (aw + al) * 100;
-    const cur  = (wins.length + losses.length) ? wins.length / (wins.length + losses.length) * 100 : 0;
+    /* 兩平勝率要把平手單的拖累算進去。平手不計入勝率分母，但它們仍然在賠
+       手續費——那筆錢得由贏單補回來。忽略它，門檻就會被低估一點點，
+       「還差幾 pp」也跟著失真。
+         每筆(勝+負)要多賺 d = 平手總虧損 ÷ (勝+負筆數)
+         w×aw − (1−w)×al = d  →  w = (al + d) ÷ (aw + al) */
+    const nWL = wins.length + losses.length;
+    const flatDrag = Math.abs(bes.reduce((a, t) => a + Math.min(0, parseFloat(t.pnlR) || 0), 0));
+    const d = nWL ? flatDrag / nWL : 0;
+    const need = (al + d) / (aw + al) * 100;
+    const cur  = nWL ? wins.length / nWL * 100 : 0;
     return { need: +need.toFixed(1), cur: +cur.toFixed(1), gap: +(cur - need).toFixed(1),
-             avgWin: +aw.toFixed(2), avgLoss: +al.toFixed(2), rr: +(aw / al).toFixed(2) };
+             avgWin: +aw.toFixed(2), avgLoss: +al.toFixed(2), rr: +(aw / al).toFixed(2),
+             nWin: wins.length, nLoss: losses.length, nFlat: bes.length,
+             flatDrag: +flatDrag.toFixed(2), flatAdj: +(d / (aw + al) * 100).toFixed(2) };
   })();
   const winRate = (winRateOf(closed) ?? 0).toFixed(1);   // 勝/(勝+負)，平手(be)不計入分母
   const avgWinR = wins.length
@@ -18358,11 +18447,13 @@ function renderTradeLogPage() {
       <div class="tl-stat-val">${closed.length}</div>
       <div class="tl-stat-lbl">已完成交易</div>
     </div>
-    <div class="tl-stat-card">
+    <div class="tl-stat-card" title="勝率 = 勝 ÷ (勝 + 負)，平手不計入分母。括號內是含平手的另一種算法，兩個都列出來以免對不上。">
       <div class="tl-stat-val" style="color:${parseFloat(winRate) >= 50 ? 'var(--bull)' : 'var(--bear)'}">${winRate}%</div>
-      <div class="tl-stat-lbl">勝率</div>
+      <div class="tl-stat-lbl">勝率
+        <span style="color:var(--text3);font-size:0.68rem">${wins.length}/${wins.length + losses.length}
+          ${bes.length ? `（含平手 ${(closed.length ? wins.length / closed.length * 100 : 0).toFixed(1)}%）` : ''}</span></div>
     </div>
-    ${_beStats ? `<div class="tl-stat-card" title="損益兩平勝率 = 平均虧損 ÷ (平均獲利 + 平均虧損)。目前賺賠比 ${_beStats.rr}:1（平均賺 ${_beStats.avgWin}R／賠 ${_beStats.avgLoss}R）">
+    ${_beStats ? `<div class="tl-stat-card" title="兩平勝率 = (平均虧損 + 平手拖累分攤) ÷ (平均獲利 + 平均虧損)。賺賠比 ${_beStats.rr}:1（平均賺 ${_beStats.avgWin}R／賠 ${_beStats.avgLoss}R）；平手 ${_beStats.nFlat} 筆共虧 ${_beStats.flatDrag}R，分攤後門檻 +${_beStats.flatAdj}pp">
       <div class="tl-stat-val" style="color:${_beStats.gap >= 0 ? 'var(--bull)' : 'var(--bear)'}">${_beStats.need}%</div>
       <div class="tl-stat-lbl">兩平所需勝率
         <span style="color:${_beStats.gap >= 0 ? 'var(--bull)' : 'var(--bear)'}">
@@ -18649,8 +18740,10 @@ function renderTradeLogPage() {
               <td style="padding:3px 6px;color:${col};font-weight:${r.verdict === 'block' ? '700' : '500'}">${tag}</td>
             </tr>`; }).join('')}</tbody></table></div>
         <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
-          判定規則：成立樣本 ≥ ${COND_MIN_N} 筆、成立組期望值為負、且<b>勝率上界</b>都跨不過兩平門檻${be ? ` ${be.need}%` : ''}
-          → 封鎖（用上界而非原始勝率，是因為要封鎖一個條件，得連它的樂觀估計都不及格才算數）。
+          判定規則：成立／不成立兩組樣本都 ≥ ${COND_MIN_N} 筆、成立組期望值為負、成立組<b>勝率上界</b>
+          跨不過兩平門檻${be ? ` ${be.need}%` : ''}，<b>且成立組的勝率上界仍低於不成立組的勝率下界</b>（兩組區間不重疊）
+          → 才封鎖。最後這一關是必要的：這張表同時檢定約 20 個維度，只用「兩組期望值誰高誰低」這種點估計，
+          光靠運氣就會有好幾個看起來像壞條件，再取前幾名等於挑出最會騙人的雜訊（多重比較過擬合）。
           最多同時封鎖 ${COND_BLOCK_MAX} 個，且封鎖後歷史交易量至少保留 ${Math.round(COND_BLOCK_KEEP * 100)}%——
           條件一路加下去終究會擋到一筆不剩，那不是嚴格。<br>
           名單<b>每次都由當下資料重算、不寫死</b>：條件轉好會自動解除封鎖，之後的交易也會繼續被拿來檢討。
