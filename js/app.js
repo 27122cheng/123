@@ -10013,7 +10013,9 @@ function saveTradeLog(log, opts = {}) {
   // 先封存再寫入：下方 catch 的救援路徑會直接裁到 250 筆並砍欄位，
   // 若等到那時才封存，被裁掉的樣本就永遠回不來了
   try { archiveClosedTrades(log); } catch(_a) {}
-  try { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); }
+  // 回傳值要明確：呼叫端（commitNewTrade）靠它決定要不要送出 Telegram 訊號。
+  // 原本成功與失敗都回傳 undefined，等於呼叫端無從判斷，於是存檔失敗照樣發訊號。
+  try { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); return true; }
   catch(e) {
     // localStorage 空間不足：裁剪已完結交易的大型文字欄位與筆數後重試，避免整頁卡死
     try {
@@ -10022,7 +10024,11 @@ function saveTradeLog(log, opts = {}) {
         : t);
       localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(slim));
       console.warn('[saveTradeLog] localStorage 已滿，已自動裁剪舊記錄');
-    } catch(e2) { console.error('[saveTradeLog] localStorage 寫入失敗', e2); }
+      return true;
+    } catch(e2) {
+      console.error('[saveTradeLog] localStorage 寫入失敗', e2);
+      return false;   // 裁剪後仍寫不進去 → 明確告知呼叫端，不要當成成功
+    }
   }
 }
 
@@ -10188,7 +10194,29 @@ function commitNewTrade(newTrade) {
     newTrade.okxAdjusted = true;
     log.unshift(newTrade);
     if (log.length > 500) log.splice(500);
-    saveTradeLog(log);
+    /* ── 必須確認真的存進去了 ────────────────────────────────────
+       這裡原本是 saveTradeLog(log) 然後直接 return true，回傳值丟掉不看。
+       但 saveTradeLog 會在兩種情況下失敗：
+         · _guardOverwrite 拒絕寫入（既有值損毀無法解析時會一直拒絕）
+         · localStorage 配額不足，裁剪重試後仍然拋錯
+       失敗時掛單沒有存進去，可是 commitNewTrade 照樣回傳 true，呼叫端就
+       送出了 Telegram 進場訊號，還把它記進去重台帳（30 分鐘內不會再試）。
+       結果就是使用者回報的：「收到進場訊號、沒有取消訊號、但持倉裡找不到」。
+       這種幽靈訊號完全無法追查，因為系統裡沒有留下任何那筆單的痕跡。
+
+       改為：存檔失敗就回傳 false（不送訊號、不記台帳），並且寫完再讀回來
+       確認那筆單真的在裡面——存檔本身沒拋錯但內容沒進去的情況也要擋掉。 */
+    if (saveTradeLog(log) === false) {
+      console.warn(`[commit] ${sym} 交易紀錄存檔被拒（防覆蓋保護或配額不足），不建單也不發訊號`);
+      try { showToast(`⚠️ ${sym} 建單失敗：交易紀錄無法寫入（請到設定頁檢查儲存空間）`, 'error'); } catch(_t) {}
+      return false;
+    }
+    const _verify = loadTradeLog().some(t => t && t.id === newTrade.id);
+    if (!_verify) {
+      console.warn(`[commit] ${sym} 存檔後讀回找不到該筆，不發訊號`);
+      try { showToast(`⚠️ ${sym} 建單失敗：寫入後讀不回來，已取消發送訊號`, 'error'); } catch(_t) {}
+      return false;
+    }
     _recordSignalLedger(sym, dir);   // 記入台帳（不隨交易紀錄刪除而消失）
     return true;
   } catch(_e) { return false; }
