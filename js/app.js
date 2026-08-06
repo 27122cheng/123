@@ -10575,6 +10575,67 @@ function tradeFeasibility() {
   return out;
 }
 
+/* 近期 vs 先前：勝率與兩平門檻必須並排看。單看勝率上升會誤判成在好轉，
+   但如果賺賠比同時變差，兩平門檻升得比勝率快，結果就是「勝率上升、虧損擴大」。 */
+function buildTrendPanel(win = 30) {
+  const all = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)))
+    .sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+  if (all.length < win * 2) {
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.8rem;color:var(--text3)">
+      📉 近期趨勢：樣本 ${all.length}/${win * 2} 筆，還不足以比較兩段區間</div>`;
+  }
+  const seg = (arr) => {
+    const w = arr.filter(isWinTrade), l = arr.filter(isLossTrade);
+    const aw = w.length ? w.reduce((a, t) => a + +t.pnlR, 0) / w.length : 0;
+    const al = l.length ? Math.abs(l.reduce((a, t) => a + +t.pnlR, 0) / l.length) : 0;
+    const wr = (w.length + l.length) ? w.length / (w.length + l.length) * 100 : null;
+    const need = (aw > 0 && al > 0) ? al / (aw + al) * 100 : null;
+    const exp = arr.reduce((a, t) => a + +t.pnlR, 0) / arr.length;
+    return { n: arr.length, wr, aw, al, need, exp, gap: (wr != null && need != null) ? wr - need : null,
+             totalR: arr.reduce((a, t) => a + +t.pnlR, 0) };
+  };
+  const recent = seg(all.slice(-win)), prev = seg(all.slice(-win * 2, -win));
+  // 四捨五入到 1 位會把期望值的變化（常在 0.0x 量級）直接抹平成 0，
+  // 判定就永遠看不出「勝率上升但期望值變差」。改為保留 3 位。
+  const d = (a, b2) => (a == null || b2 == null) ? null : +(a - b2).toFixed(3);
+  const arrow = (v, goodUp = true, dp = 1) => v == null || v === 0 ? '' :
+    `<span style="color:${(v > 0) === goodUp ? '#22c55e' : '#ef4444'}">${v > 0 ? '▲' : '▼'}${Math.abs(v).toFixed(dp)}</span>`;
+  const row = (label, a, b2, fmt, goodUp) => `<tr style="text-align:right">
+    <td style="padding:3px 6px;text-align:left;color:var(--text2)">${label}</td>
+    <td style="padding:3px 6px">${b2 == null ? '—' : fmt(b2)}</td>
+    <td style="padding:3px 6px;font-weight:600">${a == null ? '—' : fmt(a)}</td>
+    <td style="padding:3px 6px">${arrow(d(a, b2), goodUp, label.includes('期望值') ? 3 : 1)}</td></tr>`;
+  const wrUp = d(recent.wr, prev.wr) > 0, expDown = d(recent.exp, prev.exp) < 0;
+  const verdict = (wrUp && expDown)
+    ? { t: '勝率上升，但期望值反而變差 —— 這正是「把止盈拉近」的典型後果', c: '#ef4444', bg: 'rgba(239,68,68,.12)' }
+    : d(recent.exp, prev.exp) > 0
+    ? { t: '期望值改善中', c: '#22c55e', bg: 'rgba(34,197,94,.10)' }
+    : { t: '期望值持平或略降', c: '#f59e0b', bg: 'rgba(245,158,11,.10)' };
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+    <div style="font-weight:700;margin-bottom:4px">📉 近 ${win} 筆 vs 前 ${win} 筆</div>
+    <div style="background:${verdict.bg};color:${verdict.c};border-radius:8px;padding:6px 10px;font-weight:700">${verdict.t}</div>
+    <div style="margin-top:7px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+      <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
+        <th style="padding:3px 6px;text-align:left"></th><th style="padding:3px 6px">前 ${win} 筆</th>
+        <th style="padding:3px 6px">近 ${win} 筆</th><th style="padding:3px 6px">變化</th></tr></thead>
+      <tbody>
+        ${row('勝率', recent.wr, prev.wr, v => v.toFixed(1) + '%', true)}
+        ${row('平均獲利', recent.aw, prev.aw, v => v.toFixed(2) + 'R', true)}
+        ${row('平均虧損', recent.al, prev.al, v => v.toFixed(2) + 'R', false)}
+        ${row('兩平所需勝率', recent.need, prev.need, v => v.toFixed(1) + '%', false)}
+        ${row('離兩平的差距', recent.gap, prev.gap, v => (v > 0 ? '+' : '') + v.toFixed(1) + 'pp', true)}
+        ${row('期望值/筆', recent.exp, prev.exp, v => (v > 0 ? '+' : '') + v.toFixed(3) + 'R', true)}
+        ${row('區間累計', recent.totalR, prev.totalR, v => (v > 0 ? '+' : '') + v.toFixed(1) + 'R', true)}
+      </tbody></table></div>
+    <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">
+      <b>要看的是「離兩平的差距」那一列，不是勝率。</b>兩平所需勝率 ＝ 平均虧損 ÷ (平均獲利 + 平均虧損)，
+      它會隨賺賠比移動：止盈拉近 → 勝率上升，但兩平門檻同時上升而且升得更快，
+      於是勝率變好、虧損反而擴大。加權 R/R 1.2 要 46.7% 才不虧，R/R 2.45 只要 30.0%。
+    </div></div>`;
+}
+
 function buildFeasibilityPanel() {
   const f = tradeFeasibility();
   const sec = (title, items, color) => items.length ? `
@@ -11870,6 +11931,96 @@ function minRequiredRR() {
     // 勝率要靠進場品質（條件邊際掃描、掛單深度），不是靠無限提高 R/R。
     return Math.max(1.2, Math.min(RR_STRUCTURAL_FLOOR, +need.toFixed(2)));
   } catch(_e) { return 1.2; }
+}
+
+/* ── 期望值門檻（取代「R/R 一律要 ≥ 某個數」）────────────────────
+   使用者回報「勝率有上升但虧損卻一直增加」，這是可以完全用算術解釋的：
+
+     兩平勝率 = 平均虧損 ÷ (平均獲利 + 平均虧損)
+     加權 R/R 1.2 → 要 46.7% 才不虧
+     加權 R/R 2.45 → 只要 30.0% 就不虧
+
+   把止盈拉近，勝率一定會上升——但兩平門檻同時上升，而且升得更快。
+   所以「勝率變好」和「虧損擴大」可以同時發生，而且常常是同一件事的兩面。
+
+   我自己就踩了這個坑：R/R 門檻原本設 1.6 導致訊號全被擋（Telegram 收不到
+   進場通知），我把它降到 1.2 讓訊號通過——但 1.2 的兩平勝率是 46.7%，
+   在目前 20 幾 % 的勝率下，那種單每一筆的期望值都是負的。放行它們會讓
+   勝率上升、虧損加速，正是回報的現象。
+
+   固定的 R/R 門檻無論設多少都是錯的：設高沒單、設低賠錢。正確的是直接
+   要求「這筆單的期望值為正」——R/R 1.2 的單只要勝率有 47% 就值得做，
+   R/R 2.5 的單有 31% 就值得做。門檻該綁在期望值上，不是綁在 R/R 上。 */
+function estimateWinProb(sqScore) {
+  try {
+    const e = sqEdgeProfile();
+    if (e.ready && e.rows.length && isFinite(sqScore)) {
+      // 取「該訊號跨得過的最高 SQ 級距」的實測勝率，樣本要夠
+      const row = e.rows.filter(r => r.n >= 25 && sqScore >= r.th).sort((a, b) => b.th - a.th)[0];
+      if (row && row.winRate != null) return row.winRate / 100;
+    }
+    const be = accountBreakeven();
+    if (be && be.cur > 0) return be.cur / 100;
+  } catch(_e) {}
+  return null;
+}
+const EV_MARGIN_R = 0.02;   // 期望值要為正並留一點餘裕，避免剛好貼在 0
+function evGateCheck(blendRR, sqScore) {
+  const p = estimateWinProb(sqScore);
+  if (p == null || !(blendRR > 0)) return { ok: true, why: '樣本不足以估勝率，不以期望值攔截' };
+  let avgLoss = 1.05;
+  try { const be = accountBreakeven(); if (be) { const _al = be.need > 0 && be.need < 100
+    ? (be.need / 100) * (blendRR + 1.05) / (1 - be.need / 100) : null; } } catch(_e) {}
+  try {
+    const closed = learnSamples().filter(t => t.status === 'closed');
+    const L = closed.filter(isLossTrade);
+    if (L.length >= 5) avgLoss = Math.abs(L.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / L.length);
+  } catch(_e) {}
+  const ev = p * blendRR - (1 - p) * avgLoss;
+  const needP = avgLoss / (blendRR + avgLoss) * 100;
+  /* 這裡有個陷阱，我第一版就掉進去了：直接要求「期望值 > 0」會在帳戶勝率
+     偏低時把所有單都擋掉——25% 勝率下，連 R/R 3.0 的期望值都是負的，而系統
+     的止盈結構根本給不出 3.0。那等於用「帳戶在虧錢」推導出「什麼單都不該做」，
+     是循環論證，結果就是全面停擺（我剛修完的那個問題）。
+
+     門檻的作用是<b>挑出比較好的那一半</b>，不是拒絕全部。所以判定改成兩條：
+       ① 期望值為正 → 放行（本來就該做）
+       ② 期望值雖負，但比「目前平均每筆的實際結果」更好 → 也放行，
+          因為多做這種單會把整體往上拉；擋掉它反而只剩更差的組合
+     這樣門檻永遠有東西可放行，而且放行的一定是拉高平均的那些。 */
+  /* 第二版還是不對：拿「計畫中的加權 R/R」算出的期望值，去跟「已實現的平均
+     每筆結果」比，兩邊單位不一致。已實現的贏單會靠移動停利跑過止盈二，
+     平均獲利 2.45R 遠高於當初計畫的加權 R/R（約 1.6～1.9），所以任何新單的
+     計畫期望值都比不過已實現基準——又是全部擋掉。
+
+     改成單位一致的相對比較：拿這筆單的加權 R/R，去比「近期已建單的加權 R/R
+     中位數」。同樣是計畫值對計畫值。要求不低於中位數，等於只收賺賠比在中位
+     以上的那一半——正好對症：勝率上升但虧損擴大，就是因為低賺賠比的單被大量
+     放進來。這個規則按建構就不會停擺（中位數以上永遠存在），而且會隨著資料
+     自己往上走：整體賺賠比改善，門檻跟著提高。 */
+  let medRR = null;
+  try {
+    const rs = learnSamples().filter(t => t.status === 'closed').map(t => {
+      const dir = t.direction === 'long' ? 1 : -1;
+      const e = parseFloat(t.entry), sl = parseFloat(t.baseSl != null ? t.baseSl : t.sl);
+      const risk = Math.abs(e - sl);
+      if (!(risk > 0)) return null;
+      const r1 = (parseFloat(t.tp1) - e) * dir / risk;
+      const r2 = t.tp2 != null ? (parseFloat(t.tp2) - e) * dir / risk : null;
+      if (!isFinite(r1) || r1 <= 0) return null;
+      return (r2 != null && isFinite(r2) && r2 > 0) ? TP1_EXIT_FRAC * r1 + (1 - TP1_EXIT_FRAC) * r2 : r1;
+    }).filter(v => v != null && v > 0).sort((a, b) => a - b);
+    if (rs.length >= 20) medRR = rs[Math.floor(rs.length / 2)];
+  } catch(_e) {}
+  const aboveMedian = medRR == null || blendRR >= medRR;
+  const ok = ev > EV_MARGIN_R || aboveMedian;
+  return { ok, ev: +ev.toFixed(3), p: +(p * 100).toFixed(1),
+    needP: +needP.toFixed(1), avgLoss: +avgLoss.toFixed(2),
+    medRR: medRR != null ? +medRR.toFixed(2) : null,
+    why: `加權 R/R ${blendRR} 的兩平勝率是 ${needP.toFixed(1)}%，`
+       + `這類訊號的實測勝率 ${(p * 100).toFixed(1)}% → 期望值 ${ev >= 0 ? '+' : ''}${ev.toFixed(3)}R`
+       + (medRR != null ? `；近期建單的加權 R/R 中位數 ${medRR.toFixed(2)}，`
+          + `本筆 ${blendRR >= medRR ? '在中位以上 → 放行' : '低於中位 → 擋下（低賺賠比正是虧損擴大的來源）'}` : '') };
 }
 
 function getAdaptiveGates() {
@@ -13347,11 +13498,19 @@ async function recordSignalsFromScan(data) {
       const _blendRR = _auditRR2 > 0
         ? +(TP1_EXIT_FRAC * _auditRR + (1 - TP1_EXIT_FRAC) * _auditRR2).toFixed(2)
         : _auditRR;
+      // ① 幾何硬底線：低於系統自己能產生的最低組合＝資料有問題，直接擋
       const _minRR = _scanGates.minRR || 1.2;
       if (_blendRR > 0 && _blendRR < _minRR) {
         console.log(`[pre-audit] ${coin.symbol} 加權 R/R ${_blendRR}（止盈一 ${_auditRR}／止盈二 ${_auditRR2.toFixed(2)}）`
-          + ` < ${_minRR}（目前勝率下所需），不建單`);
+          + ` < ${_minRR}，不建單`);
         _no(`加權 R/R < ${_minRR}`); continue;
+      }
+      // ② 期望值門檻：R/R 高低本身沒有對錯，要看它配上這類訊號的勝率划不划算。
+      //    固定 R/R 門檻設高沒單、設低賠錢——「勝率上升但虧損擴大」就是設低的後果。
+      const _ev = evGateCheck(_blendRR, _scanSqScore);
+      if (!_ev.ok) {
+        console.log(`[pre-audit] ${coin.symbol} 期望值不足：${_ev.why}，不建單`);
+        _no(`期望值為負（R/R ${_blendRR} 需勝率 ${_ev.needP}%，實測 ${_ev.p}%）`); continue;
       }
     } catch(_auE) { console.warn('[pre-audit]', _auE); }
 
@@ -18835,6 +18994,10 @@ function renderTradeLogPage() {
   let linkHtml = '';
   try { linkHtml = buildLabLinkPanel(); } catch(_e) {}
 
+  // 近期趨勢：勝率與兩平門檻並排，避免只看勝率誤判
+  let trendHtml = '';
+  try { trendHtml = buildTrendPanel(30); } catch(_e) {}
+
   // 交易可行性自檢：疊了這麼多門檻，會不會變成完全沒有交易
   let feasHtml = '';
   try { feasHtml = buildFeasibilityPanel(); } catch(_e) {}
@@ -18881,6 +19044,7 @@ function renderTradeLogPage() {
     ${_tlDayPager(closed)}
     ${mismatchHtml}
     ${beHtml}
+    ${trendHtml}
     ${linkHtml}
     ${feasHtml}
     ${pullHtml}
