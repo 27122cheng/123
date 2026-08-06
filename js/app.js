@@ -10120,6 +10120,24 @@ function _signalledRecently(symbol, direction) {
    這裡不再依賴任何旗標，改在「送出前」查一本獨立台帳：同幣種同方向於
    去重窗內已送過就不再送。取消/加倉/止損調整等其他類型訊息不受影響。 */
 const TG_SIGNAL_LEDGER_KEY = 'csp_tg_signal_ledger';
+/* 進場通知嘗試台帳：記錄每一次「有建單」之後的通知結果。
+   「沒收到進場通知」有兩種完全不同的成因——訊號根本沒被建出來（門檻擋掉），
+   或建了但送不出去。沒有這份紀錄就分不出來，只能猜。 */
+const TG_ATTEMPT_KEY = 'csp_tg_attempts';
+function recordTgAttempt(symbol, direction, ok, why) {
+  try {
+    const arr = JSON.parse(localStorage.getItem(TG_ATTEMPT_KEY) || '[]');
+    const a = Array.isArray(arr) ? arr : [];
+    a.unshift({ at: Date.now(), s: symbol, d: direction, ok: !!ok, why: String(why || '').slice(0, 80) });
+    localStorage.setItem(TG_ATTEMPT_KEY, JSON.stringify(a.slice(0, 60)));
+  } catch(_e) {}
+  return ok;
+}
+function loadTgAttempts() {
+  try { const a = JSON.parse(localStorage.getItem(TG_ATTEMPT_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+
 function tgSignalOnce(symbol, direction) {
   try {
     const now = Date.now();
@@ -10449,21 +10467,24 @@ function tradeFeasibility() {
     const g = getAdaptiveGates();
     const be = accountBreakeven();
 
-    // ① 結構可行性：加權 R/R 門檻 vs 各 ADX 分級的止盈底線
+    /* ① 結構可行性：加權 R/R 門檻 vs 掃描實際用的 computeSimpleSetup 的止盈底線。
+       這張表原本列的是 buildTradeSetup 的 ADX 分級底線——但那個函式只給詳情頁
+       用，掃描根本不呼叫它，所以表格顯示「全部通過」而實際上訊號正在被擋。
+       現在列的是真正會發生的四種止盈組合。 */
     const regimes = [
-      { label: 'ADX < 28（多數時候的常態行情）', boost: 0 },
-      { label: 'ADX 28–35', boost: 0.5 },
-      { label: 'ADX ≥ 35（強趨勢）', boost: 1.0 },
+      { label: '止盈一 0.8R（結構候選最低）＋止盈二 1.5R（結構候選最低）', t1: SIMPLE_TP1_MIN_R, t2: SIMPLE_TP2_MIN_R },
+      { label: '止盈一 1.0R（無候選 fallback）＋止盈二 1.5R', t1: 1.0, t2: SIMPLE_TP2_MIN_R },
+      { label: '止盈一 1.0R＋止盈二 2.0R（雙週期同向的候選門檻）', t1: 1.0, t2: 2.0 },
+      { label: '止盈一 1.0R＋止盈二 2.5R（無候選 fallback）', t1: 1.0, t2: 2.5 },
     ].map(r => {
-      const t1 = 1.0 + r.boost * 0.5, t2 = 2.5 + r.boost * 1.5;
-      const blend = +(TP1_EXIT_FRAC * t1 + (1 - TP1_EXIT_FRAC) * t2).toFixed(2);
-      return { ...r, t1, t2, blend, pass: blend >= g.minRR };
+      const blend = +(TP1_EXIT_FRAC * r.t1 + (1 - TP1_EXIT_FRAC) * r.t2).toFixed(2);
+      return { ...r, blend, pass: blend >= g.minRR };
     });
     const deadRegimes = regimes.filter(r => !r.pass);
     out.structural = { minRR: g.minRR, regimes, deadRegimes: deadRegimes.length };
     if (deadRegimes.length === regimes.length) {
       out.blocking.push({ name: '加權 R/R 門檻', detail:
-        `門檻 ${g.minRR} 高於所有 ADX 分級的止盈底線 → 結構上不可能有任何單通過` });
+        `門檻 ${g.minRR} 高於所有止盈組合 → 結構上不可能有任何單通過` });
     } else if (g.minRR <= RR_STRUCTURAL_FLOOR + 0.001) {
       // 誠實話：門檻壓在結構底線時，止盈本來就不可能低於它，這道閘門實際上不會擋任何單
       out.ok.push({ name: '加權 R/R 門檻（目前實質不作用）', detail:
@@ -10473,9 +10494,8 @@ function tradeFeasibility() {
         + `硬拉只會停擺。R/R 只留作「幾何明顯不合理」的保險，勝率要靠進場品質解決。` });
     } else if (deadRegimes.length) {
       out.warnings.push({ name: '加權 R/R 門檻', detail:
-        `門檻 ${g.minRR}：${deadRegimes.map(r => r.label).join('、')} 在止盈底線上只有 `
-        + `${deadRegimes.map(r => r.blend + 'R').join('／')}，這些分級只有在結構位（VP／爆倉牆／前高低）`
-        + `把止盈推得更遠時才過得了` });
+        `門檻 ${g.minRR} 會擋掉 ${deadRegimes.length}/${regimes.length} 種止盈組合`
+        + `（${deadRegimes.map(r => r.blend + 'R').join('／')}）——這些訊號不是品質不好，是幾何上過不了門檻` });
     } else {
       out.ok.push({ name: '加權 R/R 門檻', detail: `門檻 ${g.minRR}，各 ADX 分級的止盈底線都跨得過` });
     }
@@ -10524,7 +10544,29 @@ function tradeFeasibility() {
       } else out.ok.push({ name: 'BTC 急波動保護', detail: '未觸發' });
     } catch(_e) {}
 
-    // ⑦ 最近一輪掃描的淘汰漏斗
+    // ⑦ 進場通知：分清楚「沒建單」與「建了但沒送出」
+    try {
+      const att = loadTgAttempts();
+      const st = loadSettings();
+      const cfgMissing = !st.notifTelegram ? '設定頁未開啟 Telegram 通知'
+                       : !st.tgToken ? '未填 Bot Token' : !st.tgChatId ? '未填 Chat ID' : null;
+      if (cfgMissing) {
+        out.blocking.push({ name: '進場 Telegram 通知', detail: cfgMissing + '（其他通知若收得到，代表這三項其實有設；請確認是否被改動）' });
+      } else if (!att.length) {
+        out.warnings.push({ name: '進場 Telegram 通知', detail:
+          '尚無任何發送嘗試紀錄 → 代表這段期間<b>一筆單都沒建出來</b>，'
+          + '不是 Telegram 的問題。看下方漏斗就知道是哪個門檻擋的。' });
+      } else {
+        const fail = att.filter(a => !a.ok);
+        const last = att[0];
+        (fail.length > att.length / 2 ? out.warnings : out.ok).push({
+          name: '進場 Telegram 通知', detail:
+            `最近 ${att.length} 次嘗試：成功 ${att.length - fail.length}、失敗 ${fail.length}；`
+            + `最後一次 ${new Date(last.at).toLocaleString('zh-TW')} ${last.s} — ${last.why}` });
+      }
+    } catch(_e) {}
+
+    // ⑧ 最近一輪掃描的淘汰漏斗
     try {
       const f = JSON.parse(localStorage.getItem(SCAN_FUNNEL_KEY) || 'null');
       if (f && f.at) out.funnel = f;
@@ -10552,8 +10594,9 @@ function buildFeasibilityPanel() {
   const stHtml = st ? `
     <div style="margin-top:8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
       <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:right">
-        <th style="padding:3px 6px;text-align:left">行情分級</th><th style="padding:3px 6px">止盈一底線</th>
-        <th style="padding:3px 6px">止盈二底線</th><th style="padding:3px 6px">加權 R/R</th>
+        <th style="padding:3px 6px;text-align:left">止盈組合（computeSimpleSetup 實際會產生的）</th>
+        <th style="padding:3px 6px">止盈一</th>
+        <th style="padding:3px 6px">止盈二</th><th style="padding:3px 6px">加權 R/R</th>
         <th style="padding:3px 6px">門檻 ${st.minRR}</th></tr></thead>
       <tbody>${st.regimes.map(r => `<tr style="text-align:right">
         <td style="padding:3px 6px;text-align:left">${r.label}</td>
@@ -10563,8 +10606,12 @@ function buildFeasibilityPanel() {
       </tr>`).join('')}</tbody></table></div>
     <div style="font-size:0.72rem;color:var(--text3);margin-top:4px">
       加權 R/R ＝ ${Math.round(TP1_EXIT_FRAC * 100)}%×止盈一 + ${Math.round((1 - TP1_EXIT_FRAC) * 100)}%×止盈二。
-      門檻若高過某一級的底線，那一級就<b>不管訊號多好都過不了</b>——那是把一整類行情關掉，不是挑單。
-      所以 R/R 門檻上限已改為壓在結構底線 ${RR_STRUCTURAL_FLOOR}，不再是憑感覺的 2.0。
+      門檻若高過某個組合，那個組合就<b>不管訊號多好都過不了</b>——那是把一整類訊號關掉，不是挑單。
+      <br><b>這張表曾經列錯</b>：原本列的是 buildTradeSetup 的止盈底線（1.0R/2.5R），
+      但那個函式只給幣種詳情頁算顯示用的建議，<b>掃描建單根本不呼叫它</b>，
+      真正跑的是 computeSimpleSetup（止盈一 ≥0.8R、止盈二 ≥1.5R 就採用）。
+      於是表格顯示「全部通過」，實際上門檻 1.6 正在把大部分訊號擋掉——訊號沒被建出來，
+      看起來就像「Telegram 沒收到進場通知」。現在結構底線改由實際常數推導（${RR_STRUCTURAL_FLOOR}）。
     </div>` : '';
 
   const fn = f.funnel;
@@ -11787,11 +11834,26 @@ function entryFillProfile() {
 /* 最低 R/R：兩平勝率 = 1 ÷ (1 + R/R)，反過來就是「目前勝率下，R/R 至少要多少」。
    原本 R/R 過低只是扣風險分，扣完只要風控分還過門檻就照樣進場——但賺賠比
    不夠時，那筆單在數學上就不可能有正期望值，扣分擋不住它。改為硬性門檻。 */
-/* 系統的止盈結構在最弱的行情分級（ADX<28）下，最低能給出的加權 R/R。
-   止盈一底線 1.0R、止盈二底線 2.5R，分批出場加權 = 0.6×1.0 + 0.4×2.5 = 1.6。
-   門檻只要高過這個數，ADX<28 的單就會被「結構性」全數否決——不管訊號多好，
-   幾何上就是過不了。那不是挑單，是把一整個行情分級關掉。 */
-const RR_STRUCTURAL_FLOOR = +(TP1_EXIT_FRAC * 1.0 + (1 - TP1_EXIT_FRAC) * 2.5).toFixed(2);
+/* ── 結構底線：掃描實際用的那個函式能給出的最低加權 R/R ──────────
+   ⚠️ 這裡曾經算錯，錯法值得記下來：我拿 buildTradeSetup 的止盈底線
+   （1.0R / 2.5R → 1.60）當結構底線，但 buildTradeSetup 只給「幣種詳情頁」
+   算顯示用的建議，真正建單的掃描迴圈用的是 computeSimpleSetup，
+   它的底線完全不同：
+     止盈一：結構候選只要 ≥ 0.8R 就採用，沒有候選才 fallback 1.0R
+     止盈二：結構候選只要 ≥ 1.5R 就採用，沒有候選才 fallback 2.5R
+   → 真正的底線是 0.6×0.8 + 0.4×1.5 = 1.08，不是 1.60。
+
+   後果是實際發生過的：門檻被設成 1.6，於是「止盈二落在 1.5～2.4R」的訊號
+   全部被擋——只有止盈二退回 2.5R fallback 的那些才過得了。使用者回報
+   「交易信號沒有傳送到 telegram 但其他數據的有」，原因就是這個：訊號根本
+   沒被建出來，不是 Telegram 壞掉。
+
+   教訓：門檻要對照「實際跑的那個函式」的常數，不是名字看起來像的那個。
+   這兩個常數若改動，這裡必須跟著改。 */
+const SIMPLE_TP1_MIN_R = 0.8;   // computeSimpleSetup：止盈一結構候選的最低倍數
+const SIMPLE_TP2_MIN_R = 1.5;   // computeSimpleSetup：止盈二結構候選的最低倍數（未雙週期同向時）
+const RR_STRUCTURAL_FLOOR = +(TP1_EXIT_FRAC * SIMPLE_TP1_MIN_R
+                            + (1 - TP1_EXIT_FRAC) * SIMPLE_TP2_MIN_R).toFixed(2);
 function minRequiredRR() {
   try {
     const be = accountBreakeven();
@@ -13383,18 +13445,32 @@ async function recordSignalsFromScan(data) {
     // 建單即時發送 Telegram（條件在掃描時已完整驗證，不需延遲）
     try {
       const _scanNs = loadSettings();
+      // 為什麼要記：這整段被 try 包住，失敗只 console.warn——而使用者看不到
+      // console。「進場通知沒收到」到底是沒建單、還是建了但沒送成功，
+      // 過去完全無從分辨。這裡把每次嘗試與結果留下來，實驗室看得到。
+      const _tgWhy = !_scanNs.notifTelegram ? '設定頁未開啟 Telegram 通知'
+                   : !_scanNs.tgToken ? '未填 Bot Token'
+                   : !_scanNs.tgChatId ? '未填 Chat ID' : null;
+      if (_tgWhy) recordTgAttempt(coin.symbol, direction, false, _tgWhy);
       if (_scanNs.notifTelegram && _scanNs.tgToken && _scanNs.tgChatId
-          && tgSignalOnce(coin.symbol, direction)) {
+          && (tgSignalOnce(coin.symbol, direction)
+              || (recordTgAttempt(coin.symbol, direction, false, '去重窗內已發送過'), false))) {
         const _scanTgSetup = Object.assign({}, newTrade, setup,
           { riskScore: _scanRisk.score, riskLevel: _scanRisk.level, riskRecs: _scanRisk.recs,
             conf: newTrade.conf, riskPenalty: _scanRiskPen,
             canScaleIn, isLongTerm: canScaleIn }); // 以建單後值覆蓋 setup，避免 SQ 降格後 isLongTerm 顯示錯標題
-        sendTelegramMessage(_scanNs.tgToken, _scanNs.tgChatId,
-          buildTelegramText(coin, direction, _scanTgSetup, _macroCache,
-            typeof window !== 'undefined' ? window.location.origin + window.location.pathname : ''));
+        const _tgText = buildTelegramText(coin, direction, _scanTgSetup, _macroCache,
+          typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '');
+        Promise.resolve(sendTelegramMessage(_scanNs.tgToken, _scanNs.tgChatId, _tgText))
+          .then(ok => recordTgAttempt(coin.symbol, direction, ok !== false,
+                        ok !== false ? '已送出' : 'Telegram API 回傳失敗（見主控台）'))
+          .catch(e => recordTgAttempt(coin.symbol, direction, false, '送出時例外：' + e.message));
         newTrade.telegramSent = true;
       }
-    } catch(_scanTe) { console.warn('[recordSignalsFromScan tg]', _scanTe); }
+    } catch(_scanTe) {
+      console.warn('[recordSignalsFromScan tg]', _scanTe);
+      recordTgAttempt(coin.symbol, direction, false, '組訊息時例外：' + _scanTe.message);
+    }
   }
 
   // ── 訊號品質持續監控：掛單未進場前每次掃描用完整 21 因子重新評估，低於 A 級自動取消 ──
