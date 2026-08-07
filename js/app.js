@@ -10733,6 +10733,124 @@ function buildFeasibilityPanel() {
   </div>`;
 }
 
+/* ── 進場理由正規化 ────────────────────────────────────────────
+   進場理由是給人看的字串，裡面嵌著數字（「RSI 45 低位回升」「ADX 32 強趨勢」），
+   直接拿來分組會變成每筆單各自一組，統計不出東西。這裡把它歸類成穩定的代碼。
+
+   用關鍵字比對而不是在產生理由的地方加代碼：理由的 push 點散在四十幾處、
+   分屬兩個 setup 函式，逐一改動風險高且容易漏；比對是純讀取，漏掉的會落到
+   「其他」而不是壞掉。 */
+const REASON_RULES = [
+  [/RSI\s*\d+\s*(超賣|低位)/, 'rsi_low', 'RSI 超賣／低位回升'],
+  [/RSI\s*\d+\s*(超買|偏高)/, 'rsi_high', 'RSI 超買／偏高回落'],
+  [/RSI\s*\d+\s*(積極偏多|強勢偏多|偏弱|弱勢偏空)/, 'rsi_trend', 'RSI 順勢動能'],
+  [/EMA\s*(多頭|空頭)排列/, 'ema_stack', 'EMA 多／空頭排列'],
+  [/站上\s*EMA20|跌破\s*EMA20/, 'ema20_cross', '價格站上／跌破 EMA20'],
+  [/EMA200/, 'ema200', 'EMA200 長線位置'],
+  [/貼近\s*15m\s*EMA20|貼合\s*EMA20/, 'ema20_near', '貼近 EMA20 進場'],
+  [/MACD.*(翻正|翻負|轉正|轉負|衰減)/, 'macd', 'MACD 動能轉向'],
+  [/動量值?\s*(正值|負值)|上行動能|下行動能/, 'momentum', '動量方向確認'],
+  [/高量突破|放量突破|量價齊升|成交量暴增/, 'vol_breakout', '放量突破／量價齊升'],
+  [/成交量中等|走勢正常/, 'vol_normal', '成交量中等'],
+  [/量能.*背離|動能衰竭/, 'vol_div', '量能背離／動能衰竭'],
+  [/ADX\s*\d+\s*強趨勢/, 'adx_strong', 'ADX 強趨勢'],
+  [/ADX\s*\d+\s*趨勢成形/, 'adx_form', 'ADX 趨勢成形'],
+  [/綜合評分/, 'score', '綜合評分強度'],
+  [/結構支撐|結構壓力|支撐\s*\$|壓力\s*\$/, 'structure', '結構支撐／壓力位'],
+  [/進場釘於|止損釘於/, 'ladder', '結構階梯錨定'],
+  [/POC|籌碼/, 'poc', 'POC／籌碼結構'],
+  [/巨鯨/, 'whale', '巨鯨大額進出'],
+  [/CVD|主動買盤|主動賣盤/, 'orderflow', '訂單流（CVD／主動盤）'],
+  [/足跡圖|足跡\s*POC/, 'footprint', '足跡圖 Delta／吸收'],
+  [/BB\s*(多頭|空頭)走軌|走軌/, 'bb_walk', '布林走軌'],
+  [/BB\s*收窄|蓄力/, 'bb_squeeze', '布林收窄蓄力'],
+  [/BB\s*(頂|底)背離/, 'bb_div', '布林背離'],
+  [/123\s*(多頭|空頭)型態/, 'pat_123', '123 反轉型態'],
+  [/2B\s*(多頭|空頭)型態/, 'pat_2b', '2B 型態'],
+  [/Kill\s*Zone|黃金獵殺時段/i, 'killzone', 'Kill Zone 時段'],
+  [/FVG|Fair\s*Value/i, 'fvg', 'FVG 缺口'],
+  [/Order\s*Block|OB\s/i, 'ob', 'Order Block'],
+  [/掛單深度封頂/, 'pullcap', '掛單深度封頂'],
+  [/共振|同向/, 'mtf', '多週期共振'],
+];
+const REASON_LABELS = Object.fromEntries(REASON_RULES.map(r => [r[1], r[2]]));
+function normalizeReasons(reasons) {
+  const out = new Set();
+  /* 字串與陣列要分開處理。理由本身就含逗號（「RSI 41 低位，多頭動能回升」），
+     所以把合併後的字串用逗號切開，會切出「多頭動能回升」這種對不上任何規則的
+     碎片，全部落到「其他」——舊單只有字串版，那樣分析等於報廢。
+     改為：陣列逐條比對（每條是完整理由）；字串則整段比對，只有完全沒命中
+     才記為「其他」。 */
+  if (Array.isArray(reasons)) {
+    for (const raw of reasons) {
+      const txt = String(raw || '');
+      if (!txt.trim()) continue;
+      let hit = false;
+      for (const [re, code] of REASON_RULES) if (re.test(txt)) { out.add(code); hit = true; }
+      if (!hit) out.add('other');
+    }
+    return [...out];
+  }
+  const whole = String(reasons || '');
+  if (!whole.trim()) return [];
+  for (const [re, code] of REASON_RULES) if (re.test(whole)) out.add(code);
+  if (!out.size) out.add('other');
+  return [...out];
+}
+
+/* ── 進場理由績效（哪一個理由真的可獲利）────────────────────────
+   每筆單通常同時成立好幾個理由，所以這是多標籤分析：逐理由比較
+   「該理由成立的單」與「不成立的單」，不是把單獨占分組。 */
+function reasonPerformance() {
+  const out = { rows: [], ready: false, why: '', n: 0 };
+  try {
+    const be = accountBreakeven();
+    const closed = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)))
+      .map(t => ({ t, codes: (Array.isArray(t.entryReasonCodes) && t.entryReasonCodes.length)
+        ? t.entryReasonCodes : normalizeReasons(t.entryReasons || t.entryReason) }))
+      .filter(x => x.codes.length);
+    out.n = closed.length;
+    if (!be || closed.length < 25) {
+      out.why = `可分析樣本 ${closed.length}/25`
+        + (closed.length ? '' : '（進場理由需要有記錄才能分析）');
+      return out;
+    }
+    const stat = (set) => {
+      const arr = set.map(x => x.t);
+      const w = arr.filter(isWinTrade).length, l = arr.filter(isLossTrade).length;
+      const exp = arr.length ? arr.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / arr.length : 0;
+      return { n: arr.length, wr: (w + l) ? +(w / (w + l) * 100).toFixed(1) : null,
+        wrLb: (w + l) ? +(wilsonLB(w, w + l) * 100).toFixed(1) : null,
+        wrUb: (w + l) ? +(wilsonUB(w, w + l) * 100).toFixed(1) : null,
+        exp: +exp.toFixed(3),
+        totalR: +arr.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0).toFixed(1) };
+    };
+    const codes = [...new Set(closed.flatMap(x => x.codes))];
+    for (const code of codes) {
+      const on = stat(closed.filter(x => x.codes.includes(code)));
+      const off = stat(closed.filter(x => !x.codes.includes(code)));
+      if (on.n < 5) continue;
+      const delta = +(on.exp - off.exp).toFixed(3);
+      let verdict = 'neutral';
+      if (on.n >= 20 && off.n >= 20) {
+        if (on.exp > 0 && on.wrLb != null && on.wrLb >= be.need && on.wrLb > (off.wrUb ?? 100)) verdict = 'good';
+        else if (on.exp < 0 && on.wrUb != null && on.wrUb < be.need && on.wrUb < (off.wrLb ?? 0)) verdict = 'bad';
+        else verdict = delta > 0 ? 'lean_good' : 'lean_bad';
+      }
+      out.rows.push({ code, label: REASON_LABELS[code] || (code === 'other' ? '其他（未歸類）' : code),
+        on, off, delta, verdict });
+    }
+    out.rows.sort((a, b) => b.delta - a.delta);
+    out.ready = out.rows.length > 0;
+    const g = out.rows.filter(r => r.verdict === 'good'), b2 = out.rows.filter(r => r.verdict === 'bad');
+    out.why = `${closed.length} 筆、兩平門檻 ${be.need}%：`
+      + (g.length ? `真的可獲利 ${g.map(r => r.label).join('、')}；` : '')
+      + (b2.length ? `真的在扣分 ${b2.map(r => r.label).join('、')}；` : '')
+      + (!g.length && !b2.length ? '尚無理由達到統計顯著' : '');
+  } catch(_e) { out.why = '分析失敗：' + _e.message; }
+  return out;
+}
+
 /* ── 進場邏輯別績效（哪一條分支真的會賺）──────────────────────
    條件邊際掃描看的是「訊號成立時的環境條件」（4H 順逆、量能、時段…），
    這裡看的是另一個維度：<b>這筆單是走哪一條進場邏輯建出來的</b>。
@@ -10831,10 +10949,37 @@ function buildTagPanel() {
   };
   return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
       padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
-    <div style="font-weight:700;margin-bottom:3px">🧬 進場邏輯別績效（哪一條分支真的會賺）</div>
+    <div style="font-weight:700;margin-bottom:3px">🧬 進場理由與邏輯績效（哪一個真的可獲利）</div>
     <div style="font-size:0.75rem;color:var(--text2)">
-      條件邊際掃描看的是「訊號成立時的環境」；這裡看的是<b>這筆單是走哪一條邏輯建出來的</b>。
-      過去六條進場分支、九條止損分支全部混在一起算勝率，好的分支被差的分支拖著一起被否定。</div>
+      ⓪ 是<b>系統給出的進場理由</b>本身（RSI 回升、放量突破、巨鯨買入、結構支撐…），
+      ①②③ 是決定進場價／止損／止盈的<b>邏輯分支</b>。
+      過去這些全部混在一起算勝率，理由寫得再漂亮也沒人驗證過它到底有沒有用。</div>
+    ${(() => { try {
+      const p = reasonPerformance();
+      if (!p.ready) return `<div style="margin-top:9px;font-weight:600;font-size:0.78rem">⓪ 進場理由</div>
+        <div style="font-size:0.75rem;color:var(--text3)">${p.why}</div>`;
+      return `<div style="margin-top:10px;font-weight:600;font-size:0.78rem">⓪ 進場理由
+          <span style="font-weight:400;color:var(--text3);font-size:0.7rem">每筆單通常同時成立多個理由，逐理由比較「成立 vs 不成立」</span></div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+          <thead><tr style="color:var(--text3);font-size:0.68rem;text-align:right">
+            <th style="padding:3px 5px;text-align:left">進場理由</th><th style="padding:3px 5px">成立筆數</th>
+            <th style="padding:3px 5px">勝率</th><th style="padding:3px 5px">勝率下界</th>
+            <th style="padding:3px 5px">成立期望值</th><th style="padding:3px 5px">不成立</th>
+            <th style="padding:3px 5px">差距</th><th style="padding:3px 5px">判定</th></tr></thead>
+          <tbody>${p.rows.map(r => {
+            const [lb, col] = V[r.verdict] || V.neutral;
+            return `<tr style="text-align:right;${r.verdict === 'good' ? 'background:rgba(34,197,94,.10)' : r.verdict === 'bad' ? 'background:rgba(239,68,68,.08)' : ''}">
+              <td style="padding:3px 5px;text-align:left">${r.label}</td>
+              <td style="padding:3px 5px;color:${r.on.n >= 20 ? 'var(--text2)' : 'var(--text3)'}">${r.on.n}${r.on.n >= 20 ? '' : '/20'}</td>
+              <td style="padding:3px 5px">${r.on.wr == null ? '—' : r.on.wr + '%'}</td>
+              <td style="padding:3px 5px;color:${be && r.on.wrLb != null && r.on.wrLb >= be.need ? '#22c55e' : 'var(--text3)'}">${r.on.wrLb == null ? '—' : r.on.wrLb + '%'}</td>
+              <td style="padding:3px 5px;font-weight:600;color:${r.on.exp > 0 ? '#22c55e' : '#ef4444'}">${r.on.exp > 0 ? '+' : ''}${r.on.exp}R</td>
+              <td style="padding:3px 5px;color:var(--text3)">${r.off.n ? (r.off.exp > 0 ? '+' : '') + r.off.exp + 'R' : '—'}</td>
+              <td style="padding:3px 5px;color:${r.delta > 0 ? '#22c55e' : '#ef4444'}">${r.delta > 0 ? '+' : ''}${r.delta}</td>
+              <td style="padding:3px 5px;color:${col};font-weight:${r.verdict === 'good' || r.verdict === 'bad' ? '700' : '500'}">${lb}</td>
+            </tr>`; }).join('')}</tbody></table></div>
+        <div style="font-size:0.7rem;color:var(--text3);margin-top:3px">${p.why}</div>`;
+    } catch(_e) { return ''; } })()}
     ${section('① 進場分支', 'entryTag', TAG_LABELS.entry, '決定進場價的那條規則')}
     ${section('② 止損分支', 'slTag', TAG_LABELS.sl, '決定止損位的那條規則')}
     ${section('③ 止盈一分支', 'tp1Tag', TAG_LABELS.tp1, '決定止盈一的那條規則')}
@@ -13711,6 +13856,11 @@ async function recordSignalsFromScan(data) {
       entryBBWalkingBear: !!(coin.bb?.walkingBear),
       entryBBWalkingBull: !!(coin.bb?.walkingBull),
       entryWeeklyAgainst: isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
+      // 進場理由（正規化代碼）：理由字串會被裁切、也含變動數字，所以額外存代碼。
+      // 這是「哪個理由真的可獲利」能被統計的前提。
+      entryReasonCodes: (() => { try {
+        return normalizeReasons(setup.entryReasons || setup.entryReason);
+      } catch(_e) { return []; } })(),
       // 進場邏輯別（哪一條分支決定了這筆單的進場／止損／止盈）
       entryTag: setup.entryTag || null, slTag: setup.slTag || null,
       tp1Tag: setup.tp1Tag || null, tp2Tag: setup.tp2Tag || null,
@@ -19421,6 +19571,7 @@ const LEARN_KEEP_FIELDS = [
   'entryKillZone', 'entryVolBreakout', 'immediateStop', 'slReversal',
   'entryH1Aligned', 'entryWeeklyAgainst', 'entryBBWalkingBear', 'entryBBWalkingBull',
   'entryTag', 'slTag', 'tp1Tag', 'tp2Tag',   // 進場邏輯別，供逐分支績效分析
+  'entryReasonCodes',                        // 進場理由（正規化代碼），供逐理由績效分析
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
