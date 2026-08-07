@@ -10733,6 +10733,119 @@ function buildFeasibilityPanel() {
   </div>`;
 }
 
+/* ── 進場邏輯別績效（哪一條分支真的會賺）──────────────────────
+   條件邊際掃描看的是「訊號成立時的環境條件」（4H 順逆、量能、時段…），
+   這裡看的是另一個維度：<b>這筆單是走哪一條進場邏輯建出來的</b>。
+   computeSimpleSetup 有六條進場分支、九條止損分支，過去全部混在一起算勝率，
+   所以「哪一種邏輯有效」從來沒被檢驗過——好的分支被差的分支拖著一起被否定。
+
+   判定用同一套紀律：樣本門檻 + Wilson 下界 + 對照帳戶兩平勝率。
+   逐分支跟「其餘分支」比，並要求兩組 Wilson 區間不重疊才下結論，
+   理由同條件掃描——同時比十幾條分支，只看點估計必然挑到雜訊。 */
+const TAG_LABELS = {
+  entry: { ob:'Order Block 邊界', '2b':'2B 假突破型態', '123':'123 反轉型態',
+           ema50:'貼近 EMA50', bbmid:'布林中軌均值回歸', ema20:'貼合 EMA20（預設）' },
+  sl:    { ladder:'結構階梯（外側仍有結構）', ob:'OB 邊界外', '2b':'2B 假突破點',
+           '123':'123 型態 P2', ema50:'EMA50 外', bblo:'布林下軌', bbup:'布林上軌',
+           ema20:'EMA20 外', atr:'純 ATR 倍數（無結構可釘）' },
+  tp1:   { fvg:'FVG 中點', ema50:'EMA50', bbup:'布林上軌', bblo:'布林下軌',
+           prevhigh:'前高', prevlow:'前低', rr:'固定 R 倍數（無結構目標）' },
+};
+function tagPerformance(field, labelMap) {
+  const out = { rows: [], ready: false, why: '', n: 0 };
+  try {
+    const be = accountBreakeven();
+    const closed = learnSamples().filter(t => t.status === 'closed'
+      && isFinite(parseFloat(t.pnlR)) && t[field]);
+    out.n = closed.length;
+    if (!be || closed.length < 25) {
+      out.why = `有標記的已完結樣本 ${closed.length}/25`
+        + (closed.length === 0 ? '（進場邏輯別是新記錄的欄位，舊單沒有，需要新交易累積）' : '');
+      return out;
+    }
+    const stat = (set) => {
+      const w = set.filter(isWinTrade).length, l = set.filter(isLossTrade).length;
+      const exp = set.length ? set.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / set.length : 0;
+      return { n: set.length, w, l,
+        wr:   (w + l) ? +(w / (w + l) * 100).toFixed(1) : null,
+        wrLb: (w + l) ? +(wilsonLB(w, w + l) * 100).toFixed(1) : null,
+        wrUb: (w + l) ? +(wilsonUB(w, w + l) * 100).toFixed(1) : null,
+        exp:  +exp.toFixed(3), totalR: +set.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0).toFixed(1) };
+    };
+    const tags = [...new Set(closed.map(t => t[field]))];
+    for (const tag of tags) {
+      const on = stat(closed.filter(t => t[field] === tag));
+      const off = stat(closed.filter(t => t[field] !== tag));
+      const delta = +(on.exp - off.exp).toFixed(3);
+      let verdict = 'neutral';
+      if (on.n >= 20 && off.n >= 20) {
+        if (on.exp > 0 && on.wrLb != null && on.wrLb >= be.need
+            && on.wrLb > (off.wrUb ?? 100)) verdict = 'good';
+        else if (on.exp < 0 && on.wrUb != null && on.wrUb < be.need
+            && on.wrUb < (off.wrLb ?? 0)) verdict = 'bad';
+        else verdict = on.exp > off.exp ? 'lean_good' : 'lean_bad';
+      }
+      out.rows.push({ tag, label: (labelMap && labelMap[tag]) || tag, on, off, delta, verdict });
+    }
+    out.rows.sort((a, b) => b.on.exp - a.on.exp);
+    out.ready = true;
+    const good = out.rows.filter(r => r.verdict === 'good'), bad = out.rows.filter(r => r.verdict === 'bad');
+    out.why = `${closed.length} 筆有標記樣本、兩平門檻 ${be.need}%：`
+      + (good.length ? `確認有效 ${good.map(r => r.label).join('、')}；` : '')
+      + (bad.length ? `確認無效 ${bad.map(r => r.label).join('、')}；` : '')
+      + (!good.length && !bad.length ? '目前沒有任何分支達到統計顯著（樣本或差距還不夠）' : '');
+  } catch(_e) { out.why = '分析失敗：' + _e.message; }
+  return out;
+}
+
+function buildTagPanel() {
+  const V = { good: ['✅ 確認有效', '#22c55e'], bad: ['❌ 確認無效', '#ef4444'],
+              lean_good: ['偏好（未顯著）', '#818cf8'], lean_bad: ['偏差（未顯著）', '#f59e0b'],
+              neutral: ['樣本不足', 'var(--text3)'] };
+  const be = accountBreakeven();
+  const section = (title, field, labelMap, note) => {
+    const p = tagPerformance(field, labelMap);
+    if (!p.ready) return `<div style="margin-top:9px;font-weight:600;font-size:0.78rem">${title}</div>
+      <div style="font-size:0.75rem;color:var(--text3)">${p.why}</div>`;
+    return `<div style="margin-top:10px;font-weight:600;font-size:0.78rem">${title}
+        <span style="font-weight:400;color:var(--text3);font-size:0.7rem">${note || ''}</span></div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+        <thead><tr style="color:var(--text3);font-size:0.68rem;text-align:right">
+          <th style="padding:3px 5px;text-align:left">邏輯分支</th><th style="padding:3px 5px">樣本</th>
+          <th style="padding:3px 5px">勝率</th><th style="padding:3px 5px">勝率下界</th>
+          <th style="padding:3px 5px">期望值</th><th style="padding:3px 5px">其餘分支</th>
+          <th style="padding:3px 5px">累計</th><th style="padding:3px 5px">判定</th></tr></thead>
+        <tbody>${p.rows.map(r => {
+          const [lb, col] = V[r.verdict] || V.neutral;
+          return `<tr style="text-align:right;${r.verdict === 'good' ? 'background:rgba(34,197,94,.10)' : r.verdict === 'bad' ? 'background:rgba(239,68,68,.08)' : ''}">
+            <td style="padding:3px 5px;text-align:left">${r.label}</td>
+            <td style="padding:3px 5px;color:${r.on.n >= 20 ? 'var(--text2)' : 'var(--text3)'}">${r.on.n}${r.on.n >= 20 ? '' : '/20'}</td>
+            <td style="padding:3px 5px">${r.on.wr == null ? '—' : r.on.wr + '%'}</td>
+            <td style="padding:3px 5px;color:${be && r.on.wrLb != null && r.on.wrLb >= be.need ? '#22c55e' : 'var(--text3)'}">${r.on.wrLb == null ? '—' : r.on.wrLb + '%'}</td>
+            <td style="padding:3px 5px;font-weight:600;color:${r.on.exp > 0 ? '#22c55e' : '#ef4444'}">${r.on.exp > 0 ? '+' : ''}${r.on.exp}R</td>
+            <td style="padding:3px 5px;color:var(--text3)">${r.off.n ? (r.off.exp > 0 ? '+' : '') + r.off.exp + 'R' : '—'}</td>
+            <td style="padding:3px 5px;color:${r.on.totalR > 0 ? '#22c55e' : '#ef4444'}">${r.on.totalR > 0 ? '+' : ''}${r.on.totalR}R</td>
+            <td style="padding:3px 5px;color:${col};font-weight:${r.verdict === 'good' || r.verdict === 'bad' ? '700' : '500'}">${lb}</td>
+          </tr>`; }).join('')}</tbody></table></div>
+      <div style="font-size:0.7rem;color:var(--text3);margin-top:3px">${p.why}</div>`;
+  };
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+    <div style="font-weight:700;margin-bottom:3px">🧬 進場邏輯別績效（哪一條分支真的會賺）</div>
+    <div style="font-size:0.75rem;color:var(--text2)">
+      條件邊際掃描看的是「訊號成立時的環境」；這裡看的是<b>這筆單是走哪一條邏輯建出來的</b>。
+      過去六條進場分支、九條止損分支全部混在一起算勝率，好的分支被差的分支拖著一起被否定。</div>
+    ${section('① 進場分支', 'entryTag', TAG_LABELS.entry, '決定進場價的那條規則')}
+    ${section('② 止損分支', 'slTag', TAG_LABELS.sl, '決定止損位的那條規則')}
+    ${section('③ 止盈一分支', 'tp1Tag', TAG_LABELS.tp1, '決定止盈一的那條規則')}
+    <div style="font-size:0.7rem;color:var(--text3);margin-top:7px;border-top:1px solid var(--border);padding-top:5px">
+      判定紀律與條件掃描相同：樣本 ≥20、期望值方向一致、Wilson 勝率下界跨過兩平門檻${be ? ` ${be.need}%` : ''}，
+      <b>且與其餘分支的 Wilson 區間不重疊</b>才標「確認」。同時比十幾條分支，只看點估計必然挑到雜訊。
+      「偏好／偏差」是方向已經看得出來但還沒到顯著，先觀察不下結論。
+      <br>這幾個標籤是<b>新記錄的欄位</b>，舊單沒有，所以要等新交易累積才會有數字。
+    </div></div>`;
+}
+
 /* 進場掛單深度面板：把「隨機漫步基準 vs 實測勝率」的落差攤開，
    並逐深度顯示成交率、飛越率、每訊號期望值。 */
 function buildPullDepthPanel() {
@@ -11750,6 +11863,18 @@ function condDimensions() {
     { key: 'conf_low', label: '風控分 < 68 勉強進場',
       on:  t => num(t.conf, 0) > 0 && num(t.conf, 0) < 68,
       off: t => num(t.conf, 0) >= 68 },
+    /* 進場／止損邏輯分支：把「這筆單走哪條規則」也納入同一套邊際掃描，
+       被判定為有害的分支會被封鎖（與其他條件共用 4 個名額與交易量保護）。
+       這是「哪個邏輯真的可獲利」從觀察走到實際生效的那一步。 */
+    { key: 'logic_sl_atr', label: '邏輯：止損無結構可釘（純 ATR 倍數）',
+      on:  t => t.slTag === 'atr',
+      off: t => t.slTag != null && t.slTag !== 'atr' },
+    { key: 'logic_tp1_rr', label: '邏輯：止盈一無結構目標（固定 R 倍數）',
+      on:  t => t.tp1Tag === 'rr',
+      off: t => t.tp1Tag != null && t.tp1Tag !== 'rr' },
+    { key: 'logic_entry_ema20', label: '邏輯：進場走預設分支（貼合 EMA20）',
+      on:  t => t.entryTag === 'ema20',
+      off: t => t.entryTag != null && t.entryTag !== 'ema20' },
     // 方向只做診斷，不自動封鎖：封掉整個方向影響太大，該由人決定
     { key: 'dir_long',  label: '做多（診斷用）', advisory: true, on: isL,  off: isS },
     { key: 'dir_short', label: '做空（診斷用）', advisory: true, on: isS,  off: isL },
@@ -13586,6 +13711,9 @@ async function recordSignalsFromScan(data) {
       entryBBWalkingBear: !!(coin.bb?.walkingBear),
       entryBBWalkingBull: !!(coin.bb?.walkingBull),
       entryWeeklyAgainst: isLong ? (coin.weeklySignal||'').includes('bear') : (coin.weeklySignal||'').includes('bull'),
+      // 進場邏輯別（哪一條分支決定了這筆單的進場／止損／止盈）
+      entryTag: setup.entryTag || null, slTag: setup.slTag || null,
+      tp1Tag: setup.tp1Tag || null, tp2Tag: setup.tp2Tag || null,
       // 結構階梯：加倉位與加倉後止損都釘在結構上，持倉監控直接用這兩個值
       addLevel: setup.addLevel ?? null,
       addSl:    setup.addSl ?? null,
@@ -19030,6 +19158,10 @@ function renderTradeLogPage() {
   let feasHtml = '';
   try { feasHtml = buildFeasibilityPanel(); } catch(_e) {}
 
+  // 進場邏輯別：哪一條分支真的會賺
+  let tagHtml = '';
+  try { tagHtml = buildTagPanel(); } catch(_e) {}
+
   // 進場掛單深度：勝率低於隨機基準時，兇手通常在這裡
   let pullHtml = '';
   try { pullHtml = buildPullDepthPanel(); } catch(_e) {}
@@ -19078,6 +19210,7 @@ function renderTradeLogPage() {
     ${pullHtml}
     ${gateHtml}
     ${condHtml}
+    ${tagHtml}
     ${exitHtml}
     ${filterHtml}
     ${tableHtml}
@@ -19287,6 +19420,7 @@ const LEARN_KEEP_FIELDS = [
   'entryMacdHist', 'entryVolStrength', 'entryH4Aligned', 'entryScoreStrength',
   'entryKillZone', 'entryVolBreakout', 'immediateStop', 'slReversal',
   'entryH1Aligned', 'entryWeeklyAgainst', 'entryBBWalkingBear', 'entryBBWalkingBull',
+  'entryTag', 'slTag', 'tp1Tag', 'tp2Tag',   // 進場邏輯別，供逐分支績效分析
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -22318,6 +22452,11 @@ function computeSimpleSetup(coin, isLong) {
        addSl   ：加倉後止損＝同向第一道結構外側，其外側仍有次一道 */
     ladderOk: _ladderOk,
     ladder: { side: _ladder.slice(0, 3), opp: _ladderOpp.slice(0, 1), sep: LADDER_SEP },
+    /* 進場邏輯別：這筆單實際是走哪一條分支決定進場／止損／止盈的。
+       這幾個標籤本來就算好了，卻從來沒有被回傳、也沒被記進交易紀錄——
+       於是「哪一種進場邏輯真的會賺」這個問題根本問不出口，只能整包看勝率。
+       記下來之後，實驗室就能逐條分支比較期望值。 */
+    entryTag: _entryTag, slTag: _slTag, tp1Tag: _tp1Tag, tp2Tag: _tp2Tag,
     addLevel: _ladderOpp[0] != null
       ? +(isLong ? _ladderOpp[0] + atr * _atrBuf : _ladderOpp[0] - atr * _atrBuf).toFixed(8) : null,
     addSl: (_ladder[0] != null && _ladder.length >= 2)
