@@ -10733,6 +10733,159 @@ function buildFeasibilityPanel() {
   </div>`;
 }
 
+/* ── 條件組合搜尋（貪婪前向選擇）──────────────────────────────
+   目標：把每個進場條件／邏輯／標籤先各自單獨測，挑出好的，再一層一層試
+   「再加上哪一個，勝率會更高」，逐步找出最好的組合。
+
+   ⚠️ 這種搜尋最容易產生的不是發現，是過擬合。候選條件有五、六十個，
+   每加一層就是幾十次比較，光靠運氣就能在歷史資料上湊出很漂亮的勝率——
+   而那個組合上線後會立刻打回原形。所以這裡用四道防線：
+
+   ① 目標函數用 Wilson 勝率下界，不是原始勝率。
+      12 戰 10 勝（83%）的下界只有 55%，40 戰 28 勝（70%）的下界有 54%——
+      下界會自動懲罰小樣本，不會被幾筆好運帶著走。
+   ② 每一層都要求最低樣本數，樣本掉到門檻以下就停手，不繼續往下切。
+   ③ 加一個條件必須讓下界「明顯」變好（要超過 COMBO_MIN_GAIN），
+      只贏一點點就停——那多半是雜訊。
+   ④ 找到組合後做前後段驗證：前 70% 找組合，後 30% 檢驗它還在不在。
+      後段掉下來就直接標示「疑似過擬合」，不假裝找到了聖杯。 */
+const COMBO_MIN_N = 100;      // 使用者指定：樣本數 100 筆起跳
+const COMBO_MIN_WR = 50;      // 使用者指定：勝率 50% 以上才納入續看
+const COMBO_TARGET_WR = 80;   // 使用者指定的最終目標
+const COMBO_MIN_GAIN = 2.0;   // 每加一層，勝率下界至少要多這麼多 pp
+const COMBO_MAX_DEPTH = 5;
+
+/* 候選池：條件維度 + 進場理由 + 邏輯分支，全部轉成同一種「述詞」介面，
+   這樣單獨測與組合測走同一套程式碼，不會兩邊算法漂移。 */
+function comboUniverse() {
+  const preds = [];
+  try {
+    for (const d of condDimensions()) {
+      if (d.advisory) continue;
+      preds.push({ key: 'cond:' + d.key, label: d.label, fn: d.on });
+      // 反面也要納入：「4H 逆勢」不好，不代表「4H 順勢」就是好條件，要各自測
+      preds.push({ key: 'cond!' + d.key, label: d.label + '（不成立）', fn: d.off });
+    }
+  } catch(_e) {}
+  try {
+    for (const [, code, label] of REASON_RULES) {
+      preds.push({ key: 'reason:' + code, label: '理由：' + label,
+        fn: t => {
+          const cs = (Array.isArray(t.entryReasonCodes) && t.entryReasonCodes.length)
+            ? t.entryReasonCodes : normalizeReasons(t.entryReasons || t.entryReason);
+          return cs.includes(code);
+        } });
+    }
+  } catch(_e) {}
+  for (const [field, map, pfx] of [['entryTag', TAG_LABELS.entry, '進場分支'],
+                                   ['slTag', TAG_LABELS.sl, '止損分支'],
+                                   ['tp1Tag', TAG_LABELS.tp1, '止盈分支']]) {
+    for (const k of Object.keys(map)) {
+      preds.push({ key: `tag:${field}:${k}`, label: `${pfx}：${map[k]}`,
+        fn: t => t[field] === k });
+    }
+  }
+  return preds;
+}
+
+function comboStat(arr) {
+  const w = arr.filter(isWinTrade).length, l = arr.filter(isLossTrade).length;
+  const exp = arr.length ? arr.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / arr.length : 0;
+  return { n: arr.length, w, l,
+    wr: (w + l) ? +(w / (w + l) * 100).toFixed(1) : null,
+    wrLb: (w + l) ? +(wilsonLB(w, w + l) * 100).toFixed(1) : null,
+    exp: +exp.toFixed(3),
+    totalR: +arr.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0).toFixed(1) };
+}
+
+/* 貪婪前向選擇：每層挑「加進來讓勝率下界進步最多」的那個條件 */
+function comboGreedy(samples, preds, opts = {}) {
+  const minN = opts.minN ?? COMBO_MIN_N;
+  const path = [];
+  let cur = samples, curStat = comboStat(samples), used = new Set();
+  for (let depth = 0; depth < COMBO_MAX_DEPTH; depth++) {
+    let best = null;
+    for (const p of preds) {
+      if (used.has(p.key)) continue;
+      let sub;
+      try { sub = cur.filter(t => { try { return !!p.fn(t); } catch(_e) { return false; } }); }
+      catch(_e) { continue; }
+      if (sub.length < minN) continue;                 // 防線②：樣本不足不往下切
+      const st = comboStat(sub);
+      if (st.wrLb == null) continue;
+      if (!best || st.wrLb > best.stat.wrLb) best = { pred: p, stat: st };
+    }
+    if (!best) break;
+    const gain = +(best.stat.wrLb - (curStat.wrLb ?? 0)).toFixed(1);
+    if (gain < COMBO_MIN_GAIN) break;                  // 防線③：進步不明顯就停
+    used.add(best.pred.key);
+    cur = cur.filter(t => { try { return !!best.pred.fn(t); } catch(_e) { return false; } });
+    curStat = best.stat;
+    path.push({ key: best.pred.key, label: best.pred.label, gain, ...best.stat });
+  }
+  return { path, stat: curStat, preds: [...used] };
+}
+
+function comboSearch(opts = {}) {
+  const out = { ready: false, why: '', singles: [], path: [], final: null, wf: null,
+                minN: opts.minN ?? COMBO_MIN_N, relaxed: false };
+  try {
+    const all = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)))
+      .sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+    out.total = all.length;
+    if (all.length < 40) { out.why = `已完結樣本 ${all.length}/40，太少無法搜尋組合`; return out; }
+    const preds = comboUniverse();
+    out.universe = preds.length;
+
+    // ── 第一步：每個條件單獨測 ──
+    const base = comboStat(all);
+    out.base = base;
+    let minN = out.minN;
+    const singlesAt = (n) => preds.map(p => {
+      let sub; try { sub = all.filter(t => { try { return !!p.fn(t); } catch(_e) { return false; } }); }
+      catch(_e) { return null; }
+      if (!sub.length) return null;
+      const st = comboStat(sub);
+      return { key: p.key, label: p.label, ...st, qualified: st.n >= n && (st.wr ?? 0) >= COMBO_MIN_WR };
+    }).filter(Boolean).sort((a, b) => (b.wrLb ?? 0) - (a.wrLb ?? 0));
+    let singles = singlesAt(minN);
+    // 樣本不足以支撐 100 筆門檻時自動降階，但要說清楚降到多少
+    if (!singles.some(r => r.qualified)) {
+      const alt = Math.max(25, Math.floor(all.length * 0.25));
+      if (alt < minN) { minN = alt; out.relaxed = true; singles = singlesAt(minN); }
+    }
+    out.singles = singles.slice(0, 25);
+    out.minN = minN;
+
+    // ── 第二步：貪婪組合 ──
+    const g = comboGreedy(all, preds, { minN });
+    out.path = g.path; out.final = g.stat;
+
+    // ── 第三步：前後段驗證（防線④）──
+    const cut = Math.floor(all.length * 0.7);
+    if (cut >= 30 && all.length - cut >= 15 && g.path.length) {
+      const train = all.slice(0, cut), test = all.slice(cut);
+      const gTr = comboGreedy(train, preds, { minN: Math.max(15, Math.floor(minN * 0.7)) });
+      if (gTr.path.length) {
+        const fns = gTr.path.map(s => preds.find(p => p.key === s.key)).filter(Boolean);
+        const testSub = test.filter(t => fns.every(p => { try { return !!p.fn(t); } catch(_e) { return false; } }));
+        out.wf = { nTrain: train.length, nTest: test.length,
+          combo: gTr.path.map(s => s.label),
+          trainStat: gTr.stat, testStat: comboStat(testSub),
+          usable: testSub.length >= 10 };
+      }
+    }
+    out.ready = true;
+    const f = out.final;
+    out.why = `候選條件 ${preds.length} 個、樣本 ${all.length} 筆（門檻 ${minN} 筆`
+      + (out.relaxed ? '，已自動降階' : '') + `）：`
+      + (g.path.length
+         ? `找到 ${g.path.length} 個條件的組合，勝率 ${f.wr}%（下界 ${f.wrLb}%）、${f.n} 筆`
+         : `沒有任何條件能在保住 ${minN} 筆樣本的前提下把勝率下界推高 ${COMBO_MIN_GAIN}pp 以上`);
+  } catch(_e) { out.why = '搜尋失敗：' + _e.message; }
+  return out;
+}
+
 /* ── 進場理由正規化 ────────────────────────────────────────────
    進場理由是給人看的字串，裡面嵌著數字（「RSI 45 低位回升」「ADX 32 強趨勢」），
    直接拿來分組會變成每筆單各自一組，統計不出東西。這裡把它歸類成穩定的代碼。
@@ -10914,6 +11067,94 @@ function tagPerformance(field, labelMap) {
       + (!good.length && !bad.length ? '目前沒有任何分支達到統計顯著（樣本或差距還不夠）' : '');
   } catch(_e) { out.why = '分析失敗：' + _e.message; }
   return out;
+}
+
+function buildComboPanel() {
+  const c = comboSearch();
+  const wrap = (inner) => `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+      <div style="font-weight:700;margin-bottom:3px">🔎 條件組合搜尋（找出哪幾個一起用勝率最好）</div>${inner}</div>`;
+  if (!c.ready) return wrap(`<div style="font-size:0.76rem;color:var(--text3)">${c.why}</div>`);
+
+  const f = c.final, hit80 = f && (f.wrLb ?? 0) >= COMBO_TARGET_WR;
+  const wf = c.wf;
+  const overfit = wf && wf.usable && wf.testStat.wr != null && wf.trainStat.wr != null
+    && (wf.trainStat.wr - wf.testStat.wr) > 15;
+  const verdict = !c.path.length
+    ? { t: `沒找到能同時滿足「樣本 ≥ ${c.minN} 筆」與「勝率下界明顯提升」的組合`, col: '#f59e0b', bg: 'rgba(245,158,11,.10)' }
+    : hit80 && !overfit
+    ? { t: `達成目標：組合勝率下界 ${f.wrLb}% ≥ ${COMBO_TARGET_WR}%`, col: '#22c55e', bg: 'rgba(34,197,94,.12)' }
+    : overfit
+    ? { t: `疑似過擬合：訓練段 ${wf.trainStat.wr}% → 測試段 ${wf.testStat.wr}%，掉了 ${(wf.trainStat.wr - wf.testStat.wr).toFixed(1)}pp`, col: '#ef4444', bg: 'rgba(239,68,68,.12)' }
+    : { t: `目前最佳組合勝率 ${f.wr}%（下界 ${f.wrLb}%），距 ${COMBO_TARGET_WR}% 目標還差 ${(COMBO_TARGET_WR - (f.wrLb ?? 0)).toFixed(1)}pp`, col: '#f59e0b', bg: 'rgba(245,158,11,.10)' };
+
+  const singlesTbl = `<div style="margin-top:9px;font-weight:600;font-size:0.78rem">① 每個條件單獨測（依勝率下界排序，前 25）</div>
+    <div style="overflow-x:auto;max-height:280px;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:0.73rem">
+      <thead><tr style="color:var(--text3);font-size:0.67rem;text-align:right;position:sticky;top:0;background:var(--card)">
+        <th style="padding:3px 5px;text-align:left">條件／邏輯／標籤</th><th style="padding:3px 5px">樣本</th>
+        <th style="padding:3px 5px">勝率</th><th style="padding:3px 5px">下界</th>
+        <th style="padding:3px 5px">期望值</th><th style="padding:3px 5px">入選</th></tr></thead>
+      <tbody>${c.singles.map(r => `<tr style="text-align:right;${r.qualified ? 'background:rgba(34,197,94,.08)' : ''}">
+        <td style="padding:3px 5px;text-align:left">${r.label}</td>
+        <td style="padding:3px 5px;color:${r.n >= c.minN ? 'var(--text2)' : 'var(--text3)'}">${r.n}</td>
+        <td style="padding:3px 5px">${r.wr == null ? '—' : r.wr + '%'}</td>
+        <td style="padding:3px 5px;font-weight:600">${r.wrLb == null ? '—' : r.wrLb + '%'}</td>
+        <td style="padding:3px 5px;color:${r.exp > 0 ? '#22c55e' : '#ef4444'}">${r.exp > 0 ? '+' : ''}${r.exp}R</td>
+        <td style="padding:3px 5px">${r.qualified ? '✅' : ''}</td></tr>`).join('')}
+      </tbody></table></div>
+    <div style="font-size:0.7rem;color:var(--text3);margin-top:3px">
+      入選＝樣本 ≥ ${c.minN} 筆且勝率 ≥ ${COMBO_MIN_WR}%。排序用<b>勝率下界</b>不是原始勝率——
+      12 戰 10 勝（83%）的下界只有 55%，小樣本的漂亮數字會被自動打回原形。</div>`;
+
+  const pathTbl = c.path.length ? `<div style="margin-top:10px;font-weight:600;font-size:0.78rem">② 逐層加條件（每層挑「加進來讓勝率下界進步最多」的）</div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.73rem">
+      <thead><tr style="color:var(--text3);font-size:0.67rem;text-align:right">
+        <th style="padding:3px 5px;text-align:left">層</th><th style="padding:3px 5px;text-align:left">加入的條件</th>
+        <th style="padding:3px 5px">剩餘樣本</th><th style="padding:3px 5px">勝率</th>
+        <th style="padding:3px 5px">下界</th><th style="padding:3px 5px">下界進步</th>
+        <th style="padding:3px 5px">期望值</th></tr></thead>
+      <tbody><tr style="text-align:right;color:var(--text3)">
+        <td style="padding:3px 5px;text-align:left">0</td><td style="padding:3px 5px;text-align:left">（全部交易）</td>
+        <td style="padding:3px 5px">${c.base.n}</td><td style="padding:3px 5px">${c.base.wr ?? '—'}%</td>
+        <td style="padding:3px 5px">${c.base.wrLb ?? '—'}%</td><td style="padding:3px 5px">—</td>
+        <td style="padding:3px 5px">${c.base.exp}R</td></tr>
+      ${c.path.map((s, i) => `<tr style="text-align:right">
+        <td style="padding:3px 5px;text-align:left">${i + 1}</td>
+        <td style="padding:3px 5px;text-align:left">${s.label}</td>
+        <td style="padding:3px 5px">${s.n}</td><td style="padding:3px 5px">${s.wr}%</td>
+        <td style="padding:3px 5px;font-weight:700">${s.wrLb}%</td>
+        <td style="padding:3px 5px;color:#22c55e">+${s.gain}</td>
+        <td style="padding:3px 5px;color:${s.exp > 0 ? '#22c55e' : '#ef4444'}">${s.exp > 0 ? '+' : ''}${s.exp}R</td>
+      </tr>`).join('')}</tbody></table></div>` : '';
+
+  const wfHtml = wf ? `<div style="margin-top:9px;font-size:0.75rem;color:var(--text2)">
+      <b>前後段驗證</b>：用前 ${wf.nTrain} 筆搜出的組合（${wf.combo.join(' ＋ ')}），
+      拿到後 ${wf.nTest} 筆上檢驗 →
+      ${wf.usable
+        ? `命中 ${wf.testStat.n} 筆、勝率 <b style="color:${overfit ? '#ef4444' : '#22c55e'}">${wf.testStat.wr ?? '—'}%</b>
+           （訓練段 ${wf.trainStat.wr}%）`
+        : `後段只命中 ${wf.testStat.n} 筆，太少無法驗證——這本身就是警訊：組合太窄`}
+    </div>` : '';
+
+  return wrap(`
+    <div style="background:${verdict.bg};color:${verdict.col};border-radius:8px;padding:7px 10px;font-weight:700;margin-top:4px">${verdict.t}</div>
+    <div style="font-size:0.75rem;color:var(--text2);margin-top:5px">${c.why}</div>
+    ${c.relaxed ? `<div style="font-size:0.73rem;color:#f59e0b;margin-top:3px">
+      ⚠️ 目前總樣本 ${c.total} 筆，撐不起「每個條件 100 筆」的門檻，已自動降到 ${c.minN} 筆。
+      門檻越低越容易挑到雜訊，這裡的結論要當成線索而不是結論。</div>` : ''}
+    ${singlesTbl}
+    ${pathTbl}
+    ${wfHtml}
+    <div style="font-size:0.7rem;color:var(--text3);margin-top:7px;border-top:1px solid var(--border);padding-top:5px">
+      <b>關於 ${COMBO_TARGET_WR}% 這個目標，有件事要先說清楚：</b>
+      在 ${c.universe} 個候選條件裡搜組合，要在<b>歷史資料上</b>湊出 80% 勝率並不難——
+      每加一層就是幾十次比較，光靠運氣就湊得出來。難的是它上線後還站得住。
+      所以這裡用四道防線：目標函數用 Wilson 下界（自動懲罰小樣本）、每層要求最低樣本數、
+      進步幅度不到 ${COMBO_MIN_GAIN}pp 就停手、最後做前後段驗證。
+      <br>如果表格顯示「疑似過擬合」，那代表這個組合只是在描述過去，不是在預測未來——
+      照著它交易會賠錢。<b>寧可誠實地告訴你沒找到，也不要給你一個看起來 80% 的假答案。</b>
+      <br>另外：組合越多層，符合的單越少。真的找到 80% 勝率的五條件組合，可能一個月只有兩三筆單。
+    </div>`);
 }
 
 function buildTagPanel() {
@@ -19308,6 +19549,10 @@ function renderTradeLogPage() {
   let feasHtml = '';
   try { feasHtml = buildFeasibilityPanel(); } catch(_e) {}
 
+  // 條件組合搜尋：哪幾個條件一起用勝率最好
+  let comboHtml = '';
+  try { comboHtml = buildComboPanel(); } catch(_e) {}
+
   // 進場邏輯別：哪一條分支真的會賺
   let tagHtml = '';
   try { tagHtml = buildTagPanel(); } catch(_e) {}
@@ -19360,6 +19605,7 @@ function renderTradeLogPage() {
     ${pullHtml}
     ${gateHtml}
     ${condHtml}
+    ${comboHtml}
     ${tagHtml}
     ${exitHtml}
     ${filterHtml}
