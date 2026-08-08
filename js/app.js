@@ -10757,6 +10757,14 @@ const COMBO_MAX_DEPTH = 5;
 
 /* 候選池：條件維度 + 進場理由 + 邏輯分支，全部轉成同一種「述詞」介面，
    這樣單獨測與組合測走同一套程式碼，不會兩邊算法漂移。 */
+function _reasonCodesOf(t) {
+  if (t.__rc) return t.__rc;
+  const cs = (Array.isArray(t.entryReasonCodes) && t.entryReasonCodes.length)
+    ? t.entryReasonCodes : normalizeReasons(t.entryReasons || t.entryReason);
+  try { Object.defineProperty(t, '__rc', { value: cs, enumerable: false, configurable: true }); }
+  catch(_e) {}
+  return cs;
+}
 function comboUniverse() {
   const preds = [];
   try {
@@ -10769,12 +10777,10 @@ function comboUniverse() {
   } catch(_e) {}
   try {
     for (const [, code, label] of REASON_RULES) {
+      // 用快取欄位：normalizeReasons 一條要跑 31 個 regex，31 個理由述詞
+      // 各自呼叫一次就是 961 次／筆。改成每筆單只算一次、掛在物件上。
       preds.push({ key: 'reason:' + code, label: '理由：' + label,
-        fn: t => {
-          const cs = (Array.isArray(t.entryReasonCodes) && t.entryReasonCodes.length)
-            ? t.entryReasonCodes : normalizeReasons(t.entryReasons || t.entryReason);
-          return cs.includes(code);
-        } });
+        fn: t => _reasonCodesOf(t).includes(code) });
     }
   } catch(_e) {}
   for (const [field, map, pfx] of [['entryTag', TAG_LABELS.entry, '進場分支'],
@@ -10798,56 +10804,50 @@ function comboStat(arr) {
     totalR: +arr.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0).toFixed(1) };
 }
 
-/* 貪婪前向選擇：每層挑「加進來讓勝率下界進步最多」的那個條件 */
-function comboGreedy(samples, preds, opts = {}) {
-  const minN = opts.minN ?? COMBO_MIN_N;
-  const path = [];
-  let cur = samples, curStat = comboStat(samples), used = new Set();
-  for (let depth = 0; depth < COMBO_MAX_DEPTH; depth++) {
-    let best = null;
-    for (const p of preds) {
-      if (used.has(p.key)) continue;
-      let sub;
-      try { sub = cur.filter(t => { try { return !!p.fn(t); } catch(_e) { return false; } }); }
-      catch(_e) { continue; }
-      if (sub.length < minN) continue;                 // 防線②：樣本不足不往下切
-      const st = comboStat(sub);
-      if (st.wrLb == null) continue;
-      if (!best || st.wrLb > best.stat.wrLb) best = { pred: p, stat: st };
-    }
-    if (!best) break;
-    const gain = +(best.stat.wrLb - (curStat.wrLb ?? 0)).toFixed(1);
-    if (gain < COMBO_MIN_GAIN) break;                  // 防線③：進步不明顯就停
-    used.add(best.pred.key);
-    cur = cur.filter(t => { try { return !!best.pred.fn(t); } catch(_e) { return false; } });
-    curStat = best.stat;
-    path.push({ key: best.pred.key, label: best.pred.label, gain, ...best.stat });
-  }
-  return { path, stat: curStat, preds: [...used] };
-}
-
+/* ⚠️ 效能：這個搜尋讓頁面卡死過，原因記在這裡。
+   原本每個述詞都是「一個函式，對每筆單即時求值」，而理由類述詞每次求值都要
+   跑 31 條 regex。101 個述詞 × 400 筆 × (單獨測 + 5 層貪婪 + 前後段再一次)
+   ≈ 44 萬次求值、其中約 413 萬次 regex——而且沒有快取，每次畫面重繪都重跑，
+   主執行緒直接卡住。
+   修法三層：① 先算成布林矩陣（每個述詞命中哪些交易，只算一次），之後全部
+   改成集合交集；② 理由代碼每筆單只正規化一次並快取在物件上；③ 結果快取
+   60 秒，且面板改為按鈕觸發、不在渲染路徑上自動執行。 */
+let _comboCache = null, _comboCacheKey = '';
 function comboSearch(opts = {}) {
   const out = { ready: false, why: '', singles: [], path: [], final: null, wf: null,
                 minN: opts.minN ?? COMBO_MIN_N, relaxed: false };
   try {
     const all = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)))
       .sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));
+    const _ck = `${all.length}|${all[0]?.id || ''}|${all[all.length - 1]?.id || ''}|${out.minN}`;
+    if (_comboCache && _comboCacheKey === _ck) return _comboCache;
     out.total = all.length;
     if (all.length < 40) { out.why = `已完結樣本 ${all.length}/40，太少無法搜尋組合`; return out; }
     const preds = comboUniverse();
     out.universe = preds.length;
+    /* 布林矩陣：mask[j] = 第 j 個述詞命中的交易索引集合（Set）。
+       只在這裡求值一次，後面全部改成集合交集。 */
+    const masks = preds.map(p => {
+      const set = new Set();
+      for (let i = 0; i < all.length; i++) {
+        try { if (p.fn(all[i])) set.add(i); } catch(_e) {}
+      }
+      return set;
+    });
+    const idxStat = (idx) => comboStat(idx.map(i => all[i]));
 
     // ── 第一步：每個條件單獨測 ──
     const base = comboStat(all);
     out.base = base;
     let minN = out.minN;
-    const singlesAt = (n) => preds.map(p => {
-      let sub; try { sub = all.filter(t => { try { return !!p.fn(t); } catch(_e) { return false; } }); }
-      catch(_e) { return null; }
-      if (!sub.length) return null;
-      const st = comboStat(sub);
-      return { key: p.key, label: p.label, ...st, qualified: st.n >= n && (st.wr ?? 0) >= COMBO_MIN_WR };
-    }).filter(Boolean).sort((a, b) => (b.wrLb ?? 0) - (a.wrLb ?? 0));
+    // 單獨測：直接用矩陣統計，不再逐筆呼叫述詞
+    const singleStats = preds.map((p, j) => {
+      if (!masks[j].size) return null;
+      return { key: p.key, label: p.label, ...idxStat([...masks[j]]) };
+    });
+    const singlesAt = (n) => singleStats.filter(Boolean)
+      .map(r => ({ ...r, qualified: r.n >= n && (r.wr ?? 0) >= COMBO_MIN_WR }))
+      .sort((a, b) => (b.wrLb ?? 0) - (a.wrLb ?? 0));
     let singles = singlesAt(minN);
     // 樣本不足以支撐 100 筆門檻時自動降階，但要說清楚降到多少
     if (!singles.some(r => r.qualified)) {
@@ -10857,21 +10857,44 @@ function comboSearch(opts = {}) {
     out.singles = singles.slice(0, 25);
     out.minN = minN;
 
-    // ── 第二步：貪婪組合 ──
-    const g = comboGreedy(all, preds, { minN });
+    // ── 第二步：貪婪組合（在矩陣上做交集）──
+    const greedyIdx = (poolIdx, n) => {
+      const path = [];
+      let cur = poolIdx, curStat = idxStat(cur);
+      const used = new Set();
+      for (let d = 0; d < COMBO_MAX_DEPTH; d++) {
+        let best = null;
+        for (let j = 0; j < preds.length; j++) {
+          if (used.has(j)) continue;
+          const m = masks[j];
+          const sub = cur.filter(i => m.has(i));
+          if (sub.length < n) continue;
+          const st = idxStat(sub);
+          if (st.wrLb == null) continue;
+          if (!best || st.wrLb > best.st.wrLb) best = { j, st, sub };
+        }
+        if (!best) break;
+        const gain = +(best.st.wrLb - (curStat.wrLb ?? 0)).toFixed(1);
+        if (gain < COMBO_MIN_GAIN) break;
+        used.add(best.j); cur = best.sub; curStat = best.st;
+        path.push({ key: preds[best.j].key, label: preds[best.j].label, j: best.j, gain, ...best.st });
+      }
+      return { path, stat: curStat };
+    };
+    const allIdx = all.map((_, i) => i);
+    const g = greedyIdx(allIdx, minN);
     out.path = g.path; out.final = g.stat;
 
     // ── 第三步：前後段驗證（防線④）──
     const cut = Math.floor(all.length * 0.7);
     if (cut >= 30 && all.length - cut >= 15 && g.path.length) {
-      const train = all.slice(0, cut), test = all.slice(cut);
-      const gTr = comboGreedy(train, preds, { minN: Math.max(15, Math.floor(minN * 0.7)) });
+      const trainIdx = allIdx.slice(0, cut), testIdx = allIdx.slice(cut);
+      const gTr = greedyIdx(trainIdx, Math.max(15, Math.floor(minN * 0.7)));
       if (gTr.path.length) {
-        const fns = gTr.path.map(s => preds.find(p => p.key === s.key)).filter(Boolean);
-        const testSub = test.filter(t => fns.every(p => { try { return !!p.fn(t); } catch(_e) { return false; } }));
-        out.wf = { nTrain: train.length, nTest: test.length,
-          combo: gTr.path.map(s => s.label),
-          trainStat: gTr.stat, testStat: comboStat(testSub),
+        const testSub = testIdx.filter(i => gTr.path.every(st => masks[st.j].has(i)));
+        out.wf = { nTrain: trainIdx.length, nTest: testIdx.length,
+          combo: gTr.path.map(st => st.label),
+          trainStat: gTr.stat, testStat: idxStat(testSub),
           usable: testSub.length >= 10 };
       }
     }
@@ -10882,6 +10905,7 @@ function comboSearch(opts = {}) {
       + (g.path.length
          ? `找到 ${g.path.length} 個條件的組合，勝率 ${f.wr}%（下界 ${f.wrLb}%）、${f.n} 筆`
          : `沒有任何條件能在保住 ${minN} 筆樣本的前提下把勝率下界推高 ${COMBO_MIN_GAIN}pp 以上`);
+    _comboCache = out; _comboCacheKey = _ck;
   } catch(_e) { out.why = '搜尋失敗：' + _e.message; }
   return out;
 }
@@ -10959,8 +10983,7 @@ function reasonPerformance() {
   try {
     const be = accountBreakeven();
     const closed = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)))
-      .map(t => ({ t, codes: (Array.isArray(t.entryReasonCodes) && t.entryReasonCodes.length)
-        ? t.entryReasonCodes : normalizeReasons(t.entryReasons || t.entryReason) }))
+      .map(t => ({ t, codes: _reasonCodesOf(t) }))
       .filter(x => x.codes.length);
     out.n = closed.length;
     if (!be || closed.length < 25) {
@@ -11069,7 +11092,29 @@ function tagPerformance(field, labelMap) {
   return out;
 }
 
+/* 面板改為按鈕觸發：這個搜尋就算已經優化過，仍是幾十萬次集合運算，
+   放在渲染路徑上等於每次切分頁都卡一下。使用者按了才跑，跑完快取 60 秒。 */
+let _comboRun = false;
+function runComboSearch() {
+  _comboRun = true;
+  try { showToast('條件組合搜尋執行中…', 'info'); } catch(_e) {}
+  setTimeout(() => { try { renderTradeLogPage(); } catch(_e) {} }, 30);
+}
 function buildComboPanel() {
+  if (!_comboRun) {
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+      <div style="font-weight:700;margin-bottom:3px">🔎 條件組合搜尋（找出哪幾個一起用勝率最好）</div>
+      <div style="font-size:0.76rem;color:var(--text2)">
+        逐一測試每個進場條件／邏輯／標籤，再一層一層試「再加上哪一個勝率會更高」，
+        找出最好的組合並做前後段驗證。</div>
+      <div style="font-size:0.73rem;color:var(--text3);margin-top:4px">
+        這是上百個述詞 × 數百筆交易 × 多層搜尋，運算量大，所以改成手動執行——
+        放在自動渲染裡會讓頁面卡住（先前就是這樣卡的）。</div>
+      <button class="btn-ghost" onclick="runComboSearch()"
+        style="margin-top:8px;font-size:0.82rem">▶ 執行搜尋</button>
+    </div>`;
+  }
   const c = comboSearch();
   const wrap = (inner) => `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
       padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
