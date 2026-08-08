@@ -10749,7 +10749,12 @@ function buildFeasibilityPanel() {
       只贏一點點就停——那多半是雜訊。
    ④ 找到組合後做前後段驗證：前 70% 找組合，後 30% 檢驗它還在不在。
       後段掉下來就直接標示「疑似過擬合」，不假裝找到了聖杯。 */
-const COMBO_MIN_N = 100;      // 使用者指定：樣本數 100 筆起跳
+/* 一般交易（主系統）的組合搜尋樣本門檻。原本依指定設 100，實務上主系統
+   總樣本只有兩百多筆，任何一個條件要獨立湊到 100 筆就已經很勉強，再往下
+   疊第二層幾乎必然跌破門檻——結果是搜尋永遠停在第一層或直接降階。
+   依使用者指示改為 50：在「不要小到全是雜訊」與「疊得動第二、三層」之間
+   取平衡。快速單策略庫的調參門檻另計（那裡樣本會多得多）。 */
+const COMBO_MIN_N = 50;
 const COMBO_MIN_WR = 50;      // 使用者指定：勝率 50% 以上才納入續看
 const COMBO_TARGET_WR = 80;   // 使用者指定的最終目標
 const COMBO_MIN_GAIN = 2.0;   // 每加一層，勝率下界至少要多這麼多 pp
@@ -11148,7 +11153,8 @@ function buildComboPanel() {
         <td style="padding:3px 5px">${r.qualified ? '✅' : ''}</td></tr>`).join('')}
       </tbody></table></div>
     <div style="font-size:0.7rem;color:var(--text3);margin-top:3px">
-      入選＝樣本 ≥ ${c.minN} 筆且勝率 ≥ ${COMBO_MIN_WR}%。排序用<b>勝率下界</b>不是原始勝率——
+      入選＝樣本 ≥ ${c.minN} 筆且勝率 ≥ ${COMBO_MIN_WR}%（主系統樣本有限，門檻設 ${COMBO_MIN_N} 筆，
+      太高會疊不動第二層、太低則全是雜訊）。排序用<b>勝率下界</b>不是原始勝率——
       12 戰 10 勝（83%）的下界只有 55%，小樣本的漂亮數字會被自動打回原形。</div>`;
 
   const pathTbl = c.path.length ? `<div style="margin-top:10px;font-weight:600;font-size:0.78rem">② 逐層加條件（每層挑「加進來讓勝率下界進步最多」的）</div>
