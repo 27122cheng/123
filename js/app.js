@@ -11103,6 +11103,13 @@ function tagPerformance(field, labelMap) {
 /* 面板改為按鈕觸發：這個搜尋就算已經優化過，仍是幾十萬次集合運算，
    放在渲染路徑上等於每次切分頁都卡一下。使用者按了才跑，跑完快取 60 秒。 */
 let _comboRun = false;
+/* 深度分析總開關：預設關閉，避免任何分析掛在渲染路徑上（頁面卡死的根本原因） */
+let _labAnalysisRun = false;
+function runLabAnalysis() {
+  _labAnalysisRun = true; _comboRun = true;
+  try { showToast('深度分析執行中…', 'info'); } catch(_e) {}
+  setTimeout(() => { try { renderTradeLogPage(); } catch(_e) {} }, 30);
+}
 function runComboSearch() {
   _comboRun = true;
   try { showToast('條件組合搜尋執行中…', 'info'); } catch(_e) {}
@@ -19507,7 +19514,7 @@ function renderTradeLogPage() {
 
   // 目前的進場門檻與其依據——加嚴到哪一級、為什麼，應該看得到
   let gateHtml = '';
-  try {
+  if (_labAnalysisRun) try {
     const g = getAdaptiveGates();
     const e = sqEdgeProfile();
     const be = accountBreakeven();
@@ -19546,9 +19553,9 @@ function renderTradeLogPage() {
     </div>`;
   } catch(_e) {}
 
-  // 進場條件邊際：哪些條件實測該排除、哪些該當必要條件
+  // 進場條件邊際：哪些條件實測該排除、哪些該當必要條件（同樣只在深度分析時算）
   let condHtml = '';
-  try {
+  if (_labAnalysisRun) try {
     const cp = condEdgeProfile();
     const be = accountBreakeven();
     const vTag = { block: ['已封鎖', '#ef4444'], watch: ['觀察中', '#f59e0b'],
@@ -19587,33 +19594,34 @@ function renderTradeLogPage() {
     </div>`;
   } catch(_e) {}
 
-  // 出場實驗室：止盈一減倉比例／鎖利／移動停利回吐，用實際成交重放比較
-  let exitHtml = '';
-  try { exitHtml = buildExitLabPanel(); } catch(_e) {}
-
-  // 實驗室 → 實盤的連動狀態：每條學習成果現在到底有沒有在影響交易
-  let linkHtml = '';
-  try { linkHtml = buildLabLinkPanel(); } catch(_e) {}
-
-  // 近期趨勢：勝率與兩平門檻並排，避免只看勝率誤判
-  let trendHtml = '';
-  try { trendHtml = buildTrendPanel(30); } catch(_e) {}
-
-  // 交易可行性自檢：疊了這麼多門檻，會不會變成完全沒有交易
-  let feasHtml = '';
-  try { feasHtml = buildFeasibilityPanel(); } catch(_e) {}
-
-  // 條件組合搜尋：哪幾個條件一起用勝率最好
-  let comboHtml = '';
-  try { comboHtml = buildComboPanel(); } catch(_e) {}
-
-  // 進場邏輯別：哪一條分支真的會賺
-  let tagHtml = '';
-  try { tagHtml = buildTagPanel(); } catch(_e) {}
-
-  // 進場掛單深度：勝率低於隨機基準時，兇手通常在這裡
-  let pullHtml = '';
-  try { pullHtml = buildPullDepthPanel(); } catch(_e) {}
+  /* ── 分析面板一律改為手動觸發 ────────────────────────────────
+     這一頁陸續加了九個分析面板（趨勢、連動狀態、可行性自檢、掛單深度、
+     條件邊際、組合搜尋、理由與邏輯績效、出場實驗室…），每一個都在渲染時
+     同步跑完整統計。單獨看都不慢，疊在一起就是每次進頁面都做一輪全量分析——
+     資料量一大就卡死，而且卡的是主執行緒，整個瀏覽器分頁都動不了。
+     使用者回報兩次卡死，我修了個別面板還是卡，因為根本問題是
+     「分析放在渲染路徑上」這件事本身。改為預設不跑，按按鈕才算。 */
+  let trendHtml = '', linkHtml = '', feasHtml = '', pullHtml = '',
+      comboHtml = '', tagHtml = '', exitHtml = '';
+  if (_labAnalysisRun) {
+    try { trendHtml = buildTrendPanel(30); } catch(_e) {}
+    try { linkHtml  = buildLabLinkPanel(); } catch(_e) {}
+    try { feasHtml  = buildFeasibilityPanel(); } catch(_e) {}
+    try { pullHtml  = buildPullDepthPanel(); } catch(_e) {}
+    try { comboHtml = buildComboPanel(); } catch(_e) {}
+    try { tagHtml   = buildTagPanel(); } catch(_e) {}
+    try { exitHtml  = buildExitLabPanel(); } catch(_e) {}
+  } else {
+    trendHtml = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:12px 14px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+      <div style="font-weight:700;margin-bottom:4px">🔬 深度分析（趨勢／條件邊際／進場理由與邏輯／掛單深度／出場實驗室／組合搜尋）</div>
+      <div style="font-size:0.76rem;color:var(--text2)">
+        這些分析要把整份交易紀錄與封存重新統計一遍，資料量大時會佔住主執行緒。
+        先前頁面卡死就是因為它們掛在渲染路徑上、每次進頁面都自動跑一次。
+        現在改成按需執行——按下去才算，算完會留在畫面上。</div>
+      <button class="btn-ghost" onclick="runLabAnalysis()" style="margin-top:8px;font-size:0.85rem">▶ 執行深度分析</button>
+    </div>`;
+  }
 
   // AI 學習分析區塊
   const learnHtml = buildAILearnPanel(closed);
