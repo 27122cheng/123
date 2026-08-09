@@ -10010,6 +10010,7 @@ function saveTradeLog(log, opts = {}) {
   // 與 saveScalpLog 相同的防洗掉保護
   if (!opts.allowShrink && !_guardOverwrite(TRADE_LOG_KEY, log.length, 'trade')) return false;
   try { globalLossStreak._cache = null; } catch(_c) {}  // 交易紀錄變動 → 連虧統計快取失效
+  try { invalidateLearnCache(); } catch(_c2) {}        // 學習樣本快取一併失效（放在寫入層，不靠呼叫端記得）
   // 先封存再寫入：下方 catch 的救援路徑會直接裁到 250 筆並砍欄位，
   // 若等到那時才封存，被裁掉的樣本就永遠回不來了
   try { archiveClosedTrades(log); } catch(_a) {}
@@ -12263,17 +12264,40 @@ function estimateWinProb(sqScore) {
   return null;
 }
 const EV_MARGIN_R = 0.02;   // 期望值要為正並留一點餘裕，避免剛好貼在 0
-function evGateCheck(blendRR, sqScore) {
-  const p = estimateWinProb(sqScore);
-  if (p == null || !(blendRR > 0)) return { ok: true, why: '樣本不足以估勝率，不以期望值攔截' };
-  let avgLoss = 1.05;
-  try { const be = accountBreakeven(); if (be) { const _al = be.need > 0 && be.need < 100
-    ? (be.need / 100) * (blendRR + 1.05) / (1 - be.need / 100) : null; } } catch(_e) {}
+/* ⚠️ 這兩個統計原本寫在 evGateCheck 裡面，而 evGateCheck 是「每個候選幣呼叫
+   一次」——一輪掃描 100 個幣就跑 200 次全量統計（各含一次 learnSamples）。
+   使用者回報「頁面在第 54 秒崩潰」，54 秒正是掃描週期結束的時間點，兇手就是
+   這裡：掃描跑完最後一段時主執行緒被 200 次全量統計打死。
+   統計結果對整輪掃描是同一個值，抽出來算一次並快取 60 秒即可。 */
+let _evProfCache = null, _evProfTs = 0;
+function _evProfile() {
+  const now = Date.now();
+  if (_evProfCache && now - _evProfTs < 60000) return _evProfCache;
+  let avgLoss = 1.05, medRR = null;
   try {
     const closed = learnSamples().filter(t => t.status === 'closed');
     const L = closed.filter(isLossTrade);
     if (L.length >= 5) avgLoss = Math.abs(L.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / L.length);
+    const rs = closed.map(t => {
+      const dir = t.direction === 'long' ? 1 : -1;
+      const e = parseFloat(t.entry), sl = parseFloat(t.baseSl != null ? t.baseSl : t.sl);
+      const risk = Math.abs(e - sl);
+      if (!(risk > 0)) return null;
+      const r1 = (parseFloat(t.tp1) - e) * dir / risk;
+      const r2 = t.tp2 != null ? (parseFloat(t.tp2) - e) * dir / risk : null;
+      if (!isFinite(r1) || r1 <= 0) return null;
+      return (r2 != null && isFinite(r2) && r2 > 0) ? TP1_EXIT_FRAC * r1 + (1 - TP1_EXIT_FRAC) * r2 : r1;
+    }).filter(v => v != null && v > 0).sort((a, b) => a - b);
+    if (rs.length >= 20) medRR = rs[Math.floor(rs.length / 2)];
   } catch(_e) {}
+  _evProfCache = { avgLoss, medRR }; _evProfTs = now;
+  return _evProfCache;
+}
+function evGateCheck(blendRR, sqScore) {
+  const p = estimateWinProb(sqScore);
+  if (p == null || !(blendRR > 0)) return { ok: true, why: '樣本不足以估勝率，不以期望值攔截' };
+  const _ep = _evProfile();
+  const avgLoss = _ep.avgLoss;
   const ev = p * blendRR - (1 - p) * avgLoss;
   const needP = avgLoss / (blendRR + avgLoss) * 100;
   /* 這裡有個陷阱，我第一版就掉進去了：直接要求「期望值 > 0」會在帳戶勝率
@@ -12296,20 +12320,7 @@ function evGateCheck(blendRR, sqScore) {
      以上的那一半——正好對症：勝率上升但虧損擴大，就是因為低賺賠比的單被大量
      放進來。這個規則按建構就不會停擺（中位數以上永遠存在），而且會隨著資料
      自己往上走：整體賺賠比改善，門檻跟著提高。 */
-  let medRR = null;
-  try {
-    const rs = learnSamples().filter(t => t.status === 'closed').map(t => {
-      const dir = t.direction === 'long' ? 1 : -1;
-      const e = parseFloat(t.entry), sl = parseFloat(t.baseSl != null ? t.baseSl : t.sl);
-      const risk = Math.abs(e - sl);
-      if (!(risk > 0)) return null;
-      const r1 = (parseFloat(t.tp1) - e) * dir / risk;
-      const r2 = t.tp2 != null ? (parseFloat(t.tp2) - e) * dir / risk : null;
-      if (!isFinite(r1) || r1 <= 0) return null;
-      return (r2 != null && isFinite(r2) && r2 > 0) ? TP1_EXIT_FRAC * r1 + (1 - TP1_EXIT_FRAC) * r2 : r1;
-    }).filter(v => v != null && v > 0).sort((a, b) => a - b);
-    if (rs.length >= 20) medRR = rs[Math.floor(rs.length / 2)];
-  } catch(_e) {}
+  const medRR = _ep.medRR;
   const aboveMedian = medRR == null || blendRR >= medRR;
   const ok = ev > EV_MARGIN_R || aboveMedian;
   return { ok, ev: +ev.toFixed(3), p: +(p * 100).toFixed(1),
@@ -19582,13 +19593,19 @@ function archiveClosedTrades(log) {
    正常情況下封存 ⊆ 目前紀錄，兩者合併後與原本完全相同——只有在紀錄被
    裁切過之後才會補回差額，因此不會改變任何既有的顯示數字。 */
 function learnSamples() {
+  /* 快取（_learnCache 與 invalidateLearnCache 本來就在，只是沒被用上）。
+     沒有它的時候，evGateCheck 每個候選幣會呼叫兩次，一輪掃描 100 個幣
+     就是 200 次「JSON.parse 整份交易紀錄 ＋ 最多 1200 筆封存 ＋ Map 去重」，
+     掃描結束那一刻主執行緒直接被打死——使用者看到的就是「第 54 秒崩潰」。 */
+  if (_learnCache) return _learnCache;
   try {
     const byId = new Map();
     // 封存只收已完結，因此舊封存列缺 status 時補回 'closed'——否則下游那些
     // .filter(t => t.status === 'closed') 會把整批封存濾光，救回來也用不到。
     for (const t of loadLearnArchive()) if (t && t.id) byId.set(t.id, t.status ? t : { ...t, status: 'closed' });
     for (const t of loadTradeLog()) if (t && t.id && (t.status === 'closed' || t.status === 'expired')) byId.set(t.id, t);
-    return [...byId.values()];
+    _learnCache = [...byId.values()];
+    return _learnCache;
   } catch(_e) { try { return loadTradeLog().filter(t => t.status === 'closed'); } catch(_e2) { return []; } }
 }
 
