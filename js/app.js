@@ -10010,6 +10010,9 @@ function saveTradeLog(log, opts = {}) {
   // 與 saveScalpLog 相同的防洗掉保護
   if (!opts.allowShrink && !_guardOverwrite(TRADE_LOG_KEY, log.length, 'trade')) return false;
   try { globalLossStreak._cache = null; } catch(_c) {}  // 交易紀錄變動 → 連虧統計快取失效
+  // 學習樣本快取也要失效。放在寫入這一層而不是靠每個呼叫端記得叫，
+  // 漏掉一處就會讓實驗室整場顯示舊資料。
+  try { invalidateLearnCache(); } catch(_c2) {}
   // 先封存再寫入：下方 catch 的救援路徑會直接裁到 250 筆並砍欄位，
   // 若等到那時才封存，被裁掉的樣本就永遠回不來了
   try { archiveClosedTrades(log); } catch(_a) {}
@@ -19879,13 +19882,21 @@ function archiveClosedTrades(log) {
    正常情況下封存 ⊆ 目前紀錄，兩者合併後與原本完全相同——只有在紀錄被
    裁切過之後才會補回差額，因此不會改變任何既有的顯示數字。 */
 function learnSamples() {
+  /* ⚠️ 快取：_learnCache 這個變數與 invalidateLearnCache() 一直都在，但這個
+     函式從來沒有用過它——每次呼叫都重新 JSON.parse 整份交易紀錄＋最多 1200
+     筆封存。而實驗室一次渲染會呼叫它十幾次（兩平、SQ 級距、條件邊際、出場
+     樣本、掛單深度、理由績效、三個分支績效、組合搜尋、趨勢面板…），
+     等於每次重繪解析幾千筆資料十幾遍，頁面就是這樣卡死的。
+     寫入端早就都有呼叫 invalidateLearnCache()，接上即可。 */
+  if (_learnCache) return _learnCache;
   try {
     const byId = new Map();
     // 封存只收已完結，因此舊封存列缺 status 時補回 'closed'——否則下游那些
     // .filter(t => t.status === 'closed') 會把整批封存濾光，救回來也用不到。
     for (const t of loadLearnArchive()) if (t && t.id) byId.set(t.id, t.status ? t : { ...t, status: 'closed' });
     for (const t of loadTradeLog()) if (t && t.id && (t.status === 'closed' || t.status === 'expired')) byId.set(t.id, t);
-    return [...byId.values()];
+    _learnCache = [...byId.values()];
+    return _learnCache;
   } catch(_e) { try { return loadTradeLog().filter(t => t.status === 'closed'); } catch(_e2) { return []; } }
 }
 
