@@ -280,23 +280,41 @@ function startRefreshCycle() {
     const _pScan = withCreateLock("scanSignals", () => recordSignalsFromScan(data));
     // 非同步建單完成後補一次持倉頁重繪（否則新建的單要切頁才看得到）
     _rerenderPositionsAfter([_pAlerts, _pScan]);
+    /* 掃描後段同樣計時。使用者澄清「59 秒」是倒數——崩潰發生在掃描剛結束後
+       一兩秒，不是掃描開始後 59 秒。那段時間跑的不只 recordSignalsFromScan，
+       還有下面這一整串；只量前者會漏掉真正的兇手。 */
+    const _postProf = {};
+    const _pt = (name, fn) => {
+      const t = performance.now();
+      try { fn(); } catch(e) { console.warn('[post-scan ' + name + ']', e); }
+      const ms = Math.round(performance.now() - t);
+      _postProf[name] = (_postProf[name] || 0) + ms;
+      if (ms > 50) console.warn(`[post-scan] ${name} 耗時 ${ms}ms`);
+    };
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
-    try { recordLabOpportunities(data); } catch(e) { console.error('[refresh] lab record 錯誤:', e); }
-    try { updateLabOpportunities(data); } catch(e) { console.error('[refresh] lab update 錯誤:', e); }
-    try { updateSLTightnessWatch(data); } catch(e) {}
-    try { recordProvenStrategyTrades(data); } catch(e) { console.error('[refresh] proven 錯誤:', e); }
+    _pt('實驗室機會記錄', () => recordLabOpportunities(data));
+    _pt('實驗室機會更新', () => updateLabOpportunities(data));
+    _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
+    _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
-    try {
-      updateScalpTrades(data);
-      recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e));
-      console.debug('[scalp] 已觸發掃描，幣數', Array.isArray(data) ? data.length : 0);
-    } catch(e) { console.warn('[scalp]', e); }
+    _pt('快速單持倉更新', () => updateScalpTrades(data));
+    try { recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e)); }
+    catch(e) { console.warn('[scalp]', e); }
     try {
       // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
       if (state.currentPage === 'tradelog'  && _tlTab  === 'auto') renderTradeLogPage();
     } catch(e) {}
-    try { maybeAuditPenaltyFactors(); } catch(e) {}
+    _pt('扣分條件審查', () => maybeAuditPenaltyFactors());
+    try {
+      const tot = Object.values(_postProf).reduce((a, b) => a + b, 0);
+      const top = Object.entries(_postProf).sort((a, b) => b[1] - a[1])
+        .filter(([, v]) => v > 0).map(([k, v]) => `${k} ${v}ms`).join('  |  ');
+      if (tot > 200) console.warn(`[post-scan] 掃描後段總計 ${tot}ms　${top}`);
+      const arr = JSON.parse(localStorage.getItem(SCAN_PROF_KEY) || '[]');
+      if (arr[0]) { arr[0].post = _postProf; arr[0].postTotal = tot;
+        localStorage.setItem(SCAN_PROF_KEY, JSON.stringify(arr)); }
+    } catch(_e) {}
     try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
     try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
     // 自動掃描長線/短線狀態變化（異步，不阻塞主掃描；每幣種 30 分鐘最多一次）
@@ -13237,7 +13255,11 @@ function scanProfile() {
     for (const r of arr) {
       const top = Object.entries(r.phases).sort((a, b) => b[1] - a[1])
         .map(([k, v]) => `${k}=${v}ms×${r.counts[k] || 0}`).join('  ');
-      console.log(`${new Date(r.at).toLocaleTimeString('zh-TW')}　總計 ${r.total}ms　幣數 ${r.coins ?? '?'}　建單 ${r.built ?? '?'}\n   ${top}`);
+      const post = r.post ? Object.entries(r.post).sort((a, b) => b[1] - a[1])
+        .filter(([, v]) => v > 0).map(([k, v]) => `${k}=${v}ms`).join('  ') : '(無)';
+      console.log(`${new Date(r.at).toLocaleTimeString('zh-TW')}　建單迴圈 ${r.total}ms　掃描後段 ${r.postTotal ?? '?'}ms　幣數 ${r.coins ?? '?'}`);
+      console.log(`   迴圈：${top}`);
+      console.log(`   後段：${post}`);
     }
     return arr;
   } catch(_e) { return []; }
