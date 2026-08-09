@@ -13199,7 +13199,52 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
     return { sq: _sqRC, grade: _rcGrade, gradeLabel: _rcGradeLabel, learn: _rcLearn };
 }
 
+/* ── 掃描效能剖析 ────────────────────────────────────────────────
+   使用者回報「第 54 秒崩潰」，修掉 evGateCheck 之後變成「第 59 秒」——
+   只前進 5 秒，代表主要成本還在別的地方。我已經猜錯三次（實驗室面板、
+   組合搜尋、learnSamples），不該再猜。這裡直接量：把掃描分成幾個階段
+   計時，結果存進 localStorage 並印在主控台，看數字再修。
+   量測本身極輕（每階段一次 performance.now()），不會影響效能。 */
+const SCAN_PROF_KEY = 'csp_scan_profile';
+let _scanProf = null;
+function _profStart() { _scanProf = { t0: performance.now(), last: performance.now(), phases: {}, counts: {} }; }
+function _profMark(name) {
+  if (!_scanProf) return;
+  const now = performance.now();
+  _scanProf.phases[name] = +((_scanProf.phases[name] || 0) + (now - _scanProf.last)).toFixed(1);
+  _scanProf.counts[name] = (_scanProf.counts[name] || 0) + 1;
+  _scanProf.last = now;
+}
+function _profEnd(extra) {
+  if (!_scanProf) return;
+  const total = +(performance.now() - _scanProf.t0).toFixed(1);
+  const rec = { at: Date.now(), total, ...extra, phases: _scanProf.phases, counts: _scanProf.counts };
+  try {
+    const arr = JSON.parse(localStorage.getItem(SCAN_PROF_KEY) || '[]');
+    arr.unshift(rec);
+    localStorage.setItem(SCAN_PROF_KEY, JSON.stringify(arr.slice(0, 10)));
+  } catch(_e) {}
+  const top = Object.entries(_scanProf.phases).sort((a, b) => b[1] - a[1]).slice(0, 8)
+    .map(([k, v]) => `${k} ${v}ms×${_scanProf.counts[k]}`).join('  |  ');
+  console.warn(`[scan-prof] 總計 ${total}ms　${top}`);
+  _scanProf = null;
+}
+/* 主控台輸入 scanProfile() 就會印出最近 10 輪掃描的耗時分解 */
+function scanProfile() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(SCAN_PROF_KEY) || '[]');
+    if (!arr.length) { console.log('尚無掃描剖析資料，等下一輪掃描完成'); return arr; }
+    for (const r of arr) {
+      const top = Object.entries(r.phases).sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${k}=${v}ms×${r.counts[k] || 0}`).join('  ');
+      console.log(`${new Date(r.at).toLocaleTimeString('zh-TW')}　總計 ${r.total}ms　幣數 ${r.coins ?? '?'}　建單 ${r.built ?? '?'}\n   ${top}`);
+    }
+    return arr;
+  } catch(_e) { return []; }
+}
+
 async function recordSignalsFromScan(data) {
+  _profStart();
   if (!isSignalMaster()) return;  // 非訊號主機：不建單、不監控、不發通知
   const tlog = loadTradeLog();
   // 記錄本次掃描開始前已存在的掛單 ID，SQ 監控只處理這些（不重複驗證剛建立的掛單）
@@ -13333,6 +13378,7 @@ async function recordSignalsFromScan(data) {
     if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull')) && _no('週線+日線強勢逆向')) continue;
 
     // 完整風險評估（15 因子）
+    _profMark('前段門檻');
     let _scanRisk = { score: 0, level: '低風險', levelColor: '#22c55e', factors: [], recs: [] };
     try {
       _scanRisk = computeFullRisk(coin, setup, isLong);
@@ -13782,7 +13828,7 @@ async function recordSignalsFromScan(data) {
     // 之後若真被取消，必然是市場數據實際惡化 ≥3 分——那是該取消的單。
     try {
       const _auditTrade = { direction, entry: setup.entry, sl: setup.sl, tp1: setup.tp1, canScaleIn };
-      const _audit = computeSqMonitorScore(_auditTrade, coin, isLong, { wBias, tBias, btcChg24: _btcChg24 });
+      _profMark('SQ評分'); const _audit = computeSqMonitorScore(_auditTrade, coin, isLong, { wBias, tBias, btcChg24: _btcChg24 });
       const _auditSqGate = canScaleIn ? 21 : _scanGates.minSq;
       if (_audit.sq < _auditSqGate) {
         console.log(`[pre-audit] ${coin.symbol} 監控口徑評分 ${_audit.sq} < ${_auditSqGate}，不建單（杜絕建了又取消）`);
@@ -13902,12 +13948,13 @@ async function recordSignalsFromScan(data) {
     }
     // 進場條件封鎖：對「即將寫進紀錄的那個物件」求值，判定欄位與事後統計
     // 欄位保證是同一份。封鎖名單每次都由實測重算，條件轉好會自動解除。
-    const _condBlock = condBlockCheck(newTrade);
+    _profMark('終審'); const _condBlock = condBlockCheck(newTrade);
     if (_condBlock) {
       console.log(`[cond-block] ${coin.symbol} ${direction}：${_condBlock}，不建單`);
       _no('條件封鎖：' + _condBlock.split('（')[0]); continue;
     }
     // 建單唯一入口（原子：重新載入→去重→存檔），杜絕多路徑並行建出重複訊號
+    _profMark('條件封鎖');
     if (!commitNewTrade(newTrade)) {
       console.log(`[dedup] ${coin.symbol} 已有相同訊號，略過重複建單`);
       _no('去重（同訊號已存在）'); continue;
@@ -14061,6 +14108,8 @@ async function recordSignalsFromScan(data) {
     if (tlog.length > 500) tlog.splice(500);
     saveTradeLog(tlog);
   }
+  _profMark('掃描迴圈尾段');
+  try { _profEnd({ coins: _cand, built: Math.max(0, _cand - Object.values(_rej).reduce((a, b) => a + b, 0)) }); } catch(_e) {}
   // 淘汰漏斗存檔：實驗室據此顯示「這輪掃了幾個候選、各被什麼擋掉」
   try {
     const _built = Object.values(_rej).length ? _cand - Object.values(_rej).reduce((a, b) => a + b, 0) : _cand;
