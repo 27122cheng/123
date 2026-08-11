@@ -305,6 +305,11 @@ function startRefreshCycle() {
     await _pt('快速單持倉更新', () => updateScalpTrades(data));
     try { recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e)); }
     catch(e) { console.warn('[scalp]', e); }
+    // 策略沙盒（快速策略庫）：獨立資料流、每策略獨立、不受任何熔斷限制
+    await _pt('策略沙盒成交更新', () => sbxUpdateTrades(data));
+    try { sbxScanSignals(data).catch(e => console.warn('[sbx] 訊號流程錯誤', e)); }
+    catch(e) { console.warn('[sbx]', e); }
+    await _pt('策略沙盒治理', () => sbxGovernance());
     try {
       // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
@@ -18804,8 +18809,9 @@ function setLabTab(t) { _labTab = t; renderLabPage(); }
 function renderLabPage() {
   const el = document.getElementById('lab-content');
   if (!el) return;
-  const bar = _subTabBar(_labTab, [['main', '🧪 分析實驗室'], ['quant', '📐 量化實驗室']], 'setLabTab');
+  const bar = _subTabBar(_labTab, [['main', '🧪 分析實驗室'], ['quant', '📐 量化實驗室'], ['sbox', '🎯 策略沙盒']], 'setLabTab');
   if (_labTab === 'quant') { el.innerHTML = bar + buildQuantLabHtml(); return; }
+  if (_labTab === 'sbox')  { el.innerHTML = bar + buildSbxHtml(); return; }
   const lab = loadAILab();
   const closed  = lab.filter(o => o.status === 'closed');
   const active  = lab.filter(o => o.status === 'pending' || o.status === 'open');
@@ -25671,4 +25677,931 @@ function buildScalpLogHtml() {
         onclick="if(confirm('確定清空自動交易試跑紀錄？\n\n（封存不會被清除，之後仍可還原；不影響原有交易紀錄）')){localStorage.removeItem(SCALP_LOG_KEY);renderScalpLogPage();renderScalpPositionsPage();}">
         🗑 清空試跑紀錄</button>
     </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   策略沙盒（快速策略庫）
+   10 組常見量化策略各自獨立試跑：均值回歸、動量突破、布林通道、
+   RSI 背離、VWAP 偏離、開盤區間突破、資金費率、量能加權動量、
+   ATR 通道、支撐壓力反轉。
+
+   設計要點（依既有系統的教訓，不是隨手訂的）：
+   · 每個策略獨立建倉、獨立統計，「不受」主系統與快進快出的任何
+     熔斷／連虧暫停限制——沙盒的目的是量測策略本身的期望值，
+     熔斷會把樣本切得殘缺不全，量出來的東西沒有代表性。
+   · 淘汰／晉升以「期望值＋最大回撤」為準（rankScore＝期望值 −
+     0.5×回撤/筆），勝率只顯示作參考——高勝率小賺大賠的策略
+     在勝率榜上永遠好看，在權益曲線上永遠難看。
+   · 成交模型把「Telegram 發送 → 實際成交」的延遲算進去：訊號
+     產生後至少等 fillDelayMs，以「延遲後第一個報價」作為成交價，
+     止損止盈全部重錨到真實成交時點價格；追價過遠或已近止損則
+     判定錯過（missed），滑移與延遲逐筆記錄、計入損益。
+   · ≥100 筆自動調參（止損倍數 × 止盈 R）：網格重放 + 鄰域平均
+     （單格尖峰不採）+ 前後段驗證 + 最小差距 + 套用後複查回滾，
+     與 qlabAutoDecide／exitAutoDecide 同一套哲學。
+   · 滿 200 筆且達標（期望值 ≥0.05R、MAR ≥1.2）自動上實盤
+     （Telegram 發送）；實盤最多保留前 5 名、每月輪替、
+     前 10 名標記為追蹤。被淘汰的策略每月給一次重新觀察的機會，
+     累計淘汰 3 次永久停用。
+   · 分析一律「掃描後段 / 按鈕」觸發並快取（_sbxAnCache），
+     渲染路徑只讀快取；述詞先算成布林矩陣（sbxBuildFeatures），
+     策略迴圈內零字串比對；建單一律走 computeSimpleSetup；
+     存檔走 saveSbxLog（_guardOverwrite + _archiveMerge 簽章快取）。 */
+
+const SBX_LOG_KEY     = 'csp_sbx_log';
+const SBX_STATE_KEY   = 'csp_sbx_state';
+const SBX_ARCHIVE_KEY = 'csp_sbx_archive';
+const SBX_MAX         = 1500;
+const SBX_ARCHIVE_MAX = 2600;
+/* 封存欄位白名單：統計（pnlR/outcome/時序）、調參重放（baseRisk/
+   maeB/mfeB/endB/slMultUsed/tp1RUsed/feeR）、延遲統計（fillDelaySec/slipR） */
+const SBX_KEEP_FIELDS = [
+  'id', 'strat', 'symbol', 'direction', 'timestamp', 'entryTime', 'exitTime',
+  'outcome', 'pnlR', 'entry', 'exitPrice', 'baseRisk', 'riskDist',
+  'slMultUsed', 'tp1RUsed', 'maeB', 'mfeB', 'endB', 'feeR',
+  'fillDelaySec', 'slipR', 'holdMin', 'rsi', 'adx', 'live',
+];
+
+const SBX_CFG = {
+  // ── 成交模型（Telegram 發送 → 實際成交的延遲）──
+  fillDelayMs:   45 * 1000, // 訊號後至少等這麼久才「成交」（人看到訊息、下單的最短時間）
+  maxChaseR:     0.5,       // 延遲後價格已朝目標跑掉 >0.5R → 不追（missed）
+  maxAdverseR:   0.8,       // 延遲後價格已逆走 >0.8R → 等於一進場就貼著止損，不做
+  signalTtlMin:  30,        // 訊號 30 分鐘內沒等到報價（資料中斷）→ 作廢
+  maxHoldH:      36,        // 最長持有 36 小時 → 以現價結算（timeout）
+  // ── 建倉節流（每策略獨立，無全域熔斷）──
+  maxOpenPerStrat: 6,       // 單一策略同時在市上限
+  cooldownMin:   120,       // 同策略+同幣+同方向冷卻
+  feeRate:       0.0005,    // 單邊費率（與 computeTradePnlR 同一口徑）
+  maxFeeR:       0.2,       // 手續費 >20% R 的設置不做（止損太近，替交易所打工）
+  // ── 外部資料預算 ──
+  klineBudget:   8,         // 每輪最多抓幾檔 1h K 線（VWAP／開盤區間用）
+  k1hTtlMin:     20,        // 1h K 線快取有效期
+  fundingTtlMin: 15,        // 資金費率批量快取有效期（一個請求全市場）
+  // ── 出場預設（自動調參的起點）──
+  defSlMult:     1.0,       // computeSimpleSetup 止損距離的倍數
+  defTp1R:       1.3,       // 單一止盈（R）：全部出場，讓調參重放無歧義
+  // ── 淘汰／調參／晉升門檻 ──
+  minEvalN:      30,        // 進入排名（追蹤標記）的最少樣本
+  elimN:         60,        // 淘汰判定的最少樣本
+  elimExp:       -0.05,     // 期望值 ≤ −0.05R → 淘汰
+  tuneN:         100,       // ≥100 筆才自動調參
+  tuneCooldownH: 12,
+  tuneMinDelta:  0.04,      // 全樣本至少多 0.04R/筆才值得改
+  tuneWfMargin:  0.03,      // 前後段驗證：後段至少贏 0.03R/筆
+  tuneReviewN:   30,        // 調參後複查樣本數
+  tuneRollbackEdge: -0.04,  // 複查差 0.04R 以上 → 回滾
+  liveN:         200,       // 滿 200 筆達標才上實盤
+  liveExp:       0.05,      // 達標：期望值 ≥ +0.05R
+  liveMar:       1.2,       // 達標：總損益/最大回撤 ≥ 1.2
+  liveMax:       5,         // 實盤保留前 5 名
+  trackMax:      10,        // 追蹤前 10 名
+  maxElim:       3,         // 累計淘汰 3 次 → 永久停用
+};
+
+/* ── 10 組策略定義 ──────────────────────────────────────────────
+   detect(f) 只讀 sbxBuildFeatures 算好的布林/數值矩陣（規則②：
+   迴圈內不做字串比對）。門檻都對照掃描資料的實際數值範圍訂：
+   atr 為 15m ATR（約 0.3~1.2% 價格）、adx 常態 10~40、
+   volumeStrength 是「24h 絕對成交額」分級＝流動性門檻而非放量確認。 */
+const SBX_STRATS = [
+  { id: 'meanrev', name: '均值回歸', icon: '🔁', detect: f => {
+      if (f.adx >= 22) return null;                       // 只在非趨勢段做回歸
+      const dev = (f.price - f.ema20) / f.atr;
+      if (dev <= -1.8 && f.rsi <= 35 && !f.bearDay)
+        return { isLong: true,  why: `偏離EMA20 ${dev.toFixed(1)}×ATR、RSI ${f.rsi} 超賣` };
+      if (dev >= 1.8 && f.rsi >= 65 && !f.bullDay)
+        return { isLong: false, why: `偏離EMA20 +${dev.toFixed(1)}×ATR、RSI ${f.rsi} 超買` };
+      return null;
+    } },
+  { id: 'breakout', name: '動量突破', icon: '🚀', detect: f => {
+      if (f.adx < 22 || f.volLow) return null;
+      if (f.h4Hi > 0 && f.price > f.h4Hi * 1.001 && f.bull15 && f.macd > 0)
+        return { isLong: true,  why: `突破 4H 前高、15m 多頭、MACD 同向` };
+      if (f.h4Lo > 0 && f.price < f.h4Lo * 0.999 && f.bear15 && f.macd < 0)
+        return { isLong: false, why: `跌破 4H 前低、15m 空頭、MACD 同向` };
+      return null;
+    } },
+  { id: 'boll', name: '布林通道', icon: '🎢', detect: f => {
+      if (!(f.bbLo > 0 && f.bbUp > 0) || f.adx >= 30) return null;
+      if (f.walkBear || f.walkBull) return null;          // 走軌行情不做通道回歸
+      if (f.price <= f.bbLo * 1.002 && f.rsi <= 32)
+        return { isLong: true,  why: `觸及布林下軌、RSI ${f.rsi} → 回歸中軌` };
+      if (f.price >= f.bbUp * 0.998 && f.rsi >= 68)
+        return { isLong: false, why: `觸及布林上軌、RSI ${f.rsi} → 回歸中軌` };
+      return null;
+    } },
+  { id: 'rsidiv', name: 'RSI 背離', icon: '🪞', detect: f => {
+      if (f.div === 1)  return { isLong: true,  why: `價創新低、RSI 未創新低（底背離）` };
+      if (f.div === -1) return { isLong: false, why: `價創新高、RSI 未創新高（頂背離）` };
+      return null;
+    } },
+  { id: 'vwap', name: 'VWAP 偏離', icon: '🧲', detect: f => {
+      if (!f.k1h || !(f.k1h.vwap > 0) || f.adx >= 26) return null;
+      const dev = (f.price - f.k1h.vwap) / f.atr;
+      if (dev >= 2.2 && f.rsi >= 60)
+        return { isLong: false, why: `高於當日VWAP ${dev.toFixed(1)}×ATR → 回歸成本線` };
+      if (dev <= -2.2 && f.rsi <= 40)
+        return { isLong: true,  why: `低於當日VWAP ${(-dev).toFixed(1)}×ATR → 回歸成本線` };
+      return null;
+    } },
+  { id: 'orb', name: '開盤區間突破', icon: '🌅', cooldownMin: 600, detect: f => {
+      const k = f.k1h;
+      if (!k || !(k.orbHi > 0) || !(k.orbLo > 0)) return null;
+      const now = Date.now();
+      // 區間＝UTC 當日第一根 1h：需已完成、且仍是同一交易日
+      if (now - k.day < 3600e3 || now - k.day > 86400e3) return null;
+      // 只抓「剛突破」（距區間邊界 0.5×ATR 內），不追已走遠的
+      if (f.price > k.orbHi && f.price < k.orbHi + 0.5 * f.atr && f.bull15 && f.macd > 0)
+        return { isLong: true,  why: `突破開盤區間上緣（UTC 首小時高點）` };
+      if (f.price < k.orbLo && f.price > k.orbLo - 0.5 * f.atr && f.bear15 && f.macd < 0)
+        return { isLong: false, why: `跌破開盤區間下緣（UTC 首小時低點）` };
+      return null;
+    } },
+  { id: 'funding', name: '資金費率', icon: '💰', cooldownMin: 240, detect: f => {
+      if (f.fr == null) return null;
+      // 常態費率 ±0.01%；±0.04% 以上代表單邊擁擠（8 小時期）→ 反向
+      if (f.fr >= 0.0004 && f.rsi >= 55 && !f.bull4h)
+        return { isLong: false, why: `資金費率 ${(f.fr * 100).toFixed(3)}% 多頭擁擠` };
+      if (f.fr <= -0.0004 && f.rsi <= 45 && !f.bear4h)
+        return { isLong: true,  why: `資金費率 ${(f.fr * 100).toFixed(3)}% 空頭擁擠` };
+      return null;
+    } },
+  { id: 'vwmom', name: '量能加權動量', icon: '📊', detect: f => {
+      if (f.volLow) return null;              // 量能分級是 24h 絕對成交額 → 當流動性門檻
+      const th = f.volHigh ? 3 : 5;           // 量能越強，要求的動量門檻越低（量能加權）
+      if (f.chg24 >= th && f.macd > 0 && f.rsi >= 55 && f.rsi <= 78 && f.bull1h)
+        return { isLong: true,  why: `24h +${f.chg24}%、量能${f.volHigh ? '高' : '中'}、1H 多頭延續` };
+      if (f.chg24 <= -th && f.macd < 0 && f.rsi <= 45 && f.rsi >= 22 && f.bear1h)
+        return { isLong: false, why: `24h ${f.chg24}%、量能${f.volHigh ? '高' : '中'}、1H 空頭延續` };
+      return null;
+    } },
+  { id: 'atrchan', name: 'ATR 通道', icon: '📏', detect: f => {
+      if (f.adx < 25) return null;            // Keltner 突破是順勢策略，要趨勢確立
+      const up = f.ema20 + 2.2 * f.atr, dn = f.ema20 - 2.2 * f.atr;
+      if (f.price > up && f.bull4h && f.macd > 0)
+        return { isLong: true,  why: `突破 ATR 通道上緣（EMA20+2.2×ATR）順勢` };
+      if (f.price < dn && f.bear4h && f.macd < 0)
+        return { isLong: false, why: `跌破 ATR 通道下緣（EMA20−2.2×ATR）順勢` };
+      return null;
+    } },
+  { id: 'srrev', name: '支撐壓力反轉', icon: '🧱', detect: f => {
+      if (f.adx >= 28) return null;           // 強趨勢會直接輾過支撐壓力
+      if (f.wSup && f.wSup.wicks >= 3 && f.price > f.wSup.level
+          && (f.price - f.wSup.level) <= 0.35 * f.atr && f.rsi <= 45)
+        return { isLong: true,  why: `貼近影線支撐（${f.wSup.wicks} 次拒絕）、RSI ${f.rsi}` };
+      if (f.wRes && f.wRes.wicks >= 3 && f.price < f.wRes.level
+          && (f.wRes.level - f.price) <= 0.35 * f.atr && f.rsi >= 55)
+        return { isLong: false, why: `貼近影線壓力（${f.wRes.wicks} 次拒絕）、RSI ${f.rsi}` };
+      return null;
+    } },
+];
+const SBX_STRAT_BY_ID = {};
+for (const s of SBX_STRATS) SBX_STRAT_BY_ID[s.id] = s;
+
+/* ── 儲存（規則⑤：一律走 saveSbxLog，_guardOverwrite + 封存簽章快取）── */
+function loadSbxLog() {
+  try { const a = JSON.parse(localStorage.getItem(SBX_LOG_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+function saveSbxLog(log, opts = {}) {
+  if (!opts.allowShrink && !_guardOverwrite(SBX_LOG_KEY, log.length, 'sbx')) return false;
+  // 先封存再截斷（_archiveMerge 內建 _archSig 簽章快取，無新完結單時零成本）
+  try { _archiveMerge(SBX_ARCHIVE_KEY, SBX_ARCHIVE_MAX, _slimBy(SBX_KEEP_FIELDS), log, 'sbx'); } catch(_e) {}
+  try { localStorage.setItem(SBX_LOG_KEY, JSON.stringify(log.slice(0, SBX_MAX))); }
+  catch(_e) { console.warn('[sbx] 儲存失敗', _e); }
+  return true;
+}
+function loadSbxArchive() { return _loadArchive(SBX_ARCHIVE_KEY); }
+
+function sbxDefaultState() {
+  const st = { strategies: {}, lastRotationMonth: '', };
+  for (const s of SBX_STRATS) st.strategies[s.id] = {
+    status: 'candidate',   // candidate / tracking / live / eliminated / retired
+    applied: null,         // 自動調參結果 { active, slMult, tp1R, at, prevExpectancy, reviewed }
+    tuneAt: 0, elimN: 0, liveSince: 0, history: [],
+  };
+  return st;
+}
+let _sbxStateCache = null;
+function loadSbxState() {
+  if (_sbxStateCache) return _sbxStateCache;
+  try {
+    const o = JSON.parse(localStorage.getItem(SBX_STATE_KEY) || 'null');
+    _sbxStateCache = (o && typeof o === 'object' && o.strategies) ? o : sbxDefaultState();
+  } catch(_e) { _sbxStateCache = sbxDefaultState(); }
+  // 日後新增策略時補齊預設欄位
+  for (const s of SBX_STRATS) {
+    if (!_sbxStateCache.strategies[s.id]) _sbxStateCache.strategies[s.id] = sbxDefaultState().strategies[s.id];
+  }
+  return _sbxStateCache;
+}
+function saveSbxState(st) {
+  _sbxStateCache = st;
+  try { localStorage.setItem(SBX_STATE_KEY, JSON.stringify(st)); } catch(_e) {}
+}
+function sbxEffectiveParams(ss) {
+  const a = ss && ss.applied;
+  if (a && a.active && isFinite(a.slMult) && isFinite(a.tp1R))
+    return { slMult: a.slMult, tp1R: a.tp1R, src: 'tuned' };
+  return { slMult: SBX_CFG.defSlMult, tp1R: SBX_CFG.defTp1R, src: 'default' };
+}
+
+/* ── 外部資料：資金費率（單一批量請求全市場）＋ 1h K 線（VWAP/開盤區間）── */
+let _sbxFunding = null, _sbxFundingTs = 0;
+async function sbxEnsureFunding() {
+  const now = Date.now();
+  if (_sbxFunding && now - _sbxFundingTs < SBX_CFG.fundingTtlMin * 60000) return;
+  try {
+    const ctrl = new AbortController();
+    const tm = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch('https://fapi.binance.com/fapi/v1/premiumIndex', { signal: ctrl.signal });
+    clearTimeout(tm);
+    if (!r.ok) return;
+    const arr = await r.json();
+    if (!Array.isArray(arr)) return;
+    const map = {};
+    for (const it of arr) {
+      const s = String(it.symbol || '');
+      if (s.slice(-4) !== 'USDT') continue;
+      const fr = parseFloat(it.lastFundingRate);
+      if (isFinite(fr)) map[s.slice(0, -4) + '/USDT'] = fr;
+    }
+    _sbxFunding = map; _sbxFundingTs = now;
+  } catch(_e) {}
+}
+const _sbxK1h = {};
+async function sbxEnsureK1h(symbols) {
+  const now = Date.now();
+  const due = symbols.filter(s => {
+    const c = _sbxK1h[s]; return !c || now - c.ts > SBX_CFG.k1hTtlMin * 60000;
+  }).slice(0, SBX_CFG.klineBudget);   // 每輪預算上限；TTL 讓不同幣輪流補上
+  await Promise.allSettled(due.map(async symbol => {
+    try {
+      const sym = symbol.replace('/', '');
+      const k = await (typeof fetchKlinesExec === 'function'
+        ? fetchKlinesExec(sym, '1h', 26) : fetchKlines(sym, '1h', 26));
+      if (!k || k.length < 3) return;
+      const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+      const t0 = dayStart.getTime();
+      let pv = 0, vv = 0, orbHi = 0, orbLo = 0;
+      for (const c of k) {
+        const ot = +c[0];
+        if (ot < t0) continue;
+        const hi = +c[2], lo = +c[3], cl = +c[4], vol = +c[5];
+        if (ot === t0) { orbHi = hi; orbLo = lo; }   // 當日第一根 1h＝開盤區間
+        pv += (hi + lo + cl) / 3 * vol; vv += vol;
+      }
+      _sbxK1h[symbol] = { ts: now, vwap: vv > 0 ? pv / vv : 0, orbHi, orbLo, day: t0 };
+    } catch(_e) {}
+  }));
+}
+
+/* ── RSI 背離：掃描節點的記憶體滾動視窗（重新整理後重新累積）── */
+const _sbxHist = {};
+function sbxDetectDivergence(sym, price, rsi) {
+  const h = _sbxHist[sym];
+  if (!h || h.length < 90) return 0;   // 至少 ~1.5 小時的節點才有「前高/前低」可比
+  const past = h.slice(0, h.length - 20);   // 排除最近 20 節點：比的是上一個極值，不是剛剛的自己
+  let hiI = 0, loI = 0;
+  for (let i = 1; i < past.length; i++) {
+    if (past[i].p > past[hiI].p) hiI = i;
+    if (past[i].p < past[loI].p) loI = i;
+  }
+  if (price >= past[hiI].p * 1.0005 && rsi <= past[hiI].r - 5 && rsi >= 55) return -1;  // 頂背離
+  if (price <= past[loI].p * 0.9995 && rsi >= past[loI].r + 5 && rsi <= 45) return 1;   // 底背離
+  return 0;
+}
+
+/* ── 述詞布林矩陣（規則②）：字串比對只在這裡做一次，策略迴圈零字串 ── */
+function sbxBuildFeatures(data) {
+  const rows = [];
+  const now = Date.now();
+  for (const coin of data) {
+    if (!coin || !coin.symbol) continue;
+    const price = parseFloat(coin.price) || 0;
+    if (!(price > 0)) continue;
+    const rsi = parseFloat(coin.rsi) || 50;
+    const h4 = String(coin.h4Signal || ''), h1 = String(coin.h1Signal || '');
+    const s15 = String(coin.signal15m || ''), dd = String(coin.dailySignal || '');
+    const bb = coin.bb || null;
+    let wSup = null, wRes = null;    // 距現價最近的影線拒絕區
+    for (const z of (coin.wickSupports || [])) {
+      const lv = parseFloat(z.level) || 0;
+      if (lv > 0 && lv < price && (!wSup || lv > wSup.level)) wSup = { level: lv, wicks: z.wicks || 0 };
+    }
+    for (const z of (coin.wickResistances || [])) {
+      const lv = parseFloat(z.level) || 0;
+      if (lv > price && (!wRes || lv < wRes.level)) wRes = { level: lv, wicks: z.wicks || 0 };
+    }
+    const k1hC = _sbxK1h[coin.symbol];
+    const volStr = coin.volumeStrength || '';
+    const f = {
+      coin, symbol: coin.symbol, price, rsi,
+      adx: parseFloat(coin.adx) || 0,
+      atr: (parseFloat(coin.atr) > 0) ? parseFloat(coin.atr) : price * 0.008,
+      ema20: parseFloat(coin.ema20) || 0,
+      macd: parseFloat(coin.macdHist) || 0,
+      chg24: parseFloat(coin.change24h) || 0,
+      volHigh: volStr === '高', volLow: volStr === '低',
+      bull15: s15.indexOf('bull') >= 0, bear15: s15.indexOf('bear') >= 0,
+      bull1h: h1.indexOf('bull') >= 0, bear1h: h1.indexOf('bear') >= 0,
+      bull4h: h4.indexOf('bull') >= 0, bear4h: h4.indexOf('bear') >= 0,
+      bullDay: dd.indexOf('bull') >= 0, bearDay: dd.indexOf('bear') >= 0,
+      h4Hi: parseFloat(coin.h4SwingHigh) || 0, h4Lo: parseFloat(coin.h4SwingLow) || 0,
+      bbUp: bb ? parseFloat(bb.upper) || 0 : 0,
+      bbLo: bb ? parseFloat(bb.lower) || 0 : 0,
+      walkBull: !!(bb && bb.walkingBull), walkBear: !!(bb && bb.walkingBear),
+      wSup, wRes,
+      fr: _sbxFunding ? (_sbxFunding[coin.symbol] ?? null) : null,
+      k1h: (k1hC && now - k1hC.ts < SBX_CFG.k1hTtlMin * 60000 * 2) ? k1hC : null,
+      div: sbxDetectDivergence(coin.symbol, price, rsi),
+    };
+    rows.push(f);
+    // 背離視窗在偵測之後才推入本節點（避免拿自己跟自己比）
+    const h = _sbxHist[coin.symbol] || (_sbxHist[coin.symbol] = []);
+    h.push({ t: now, p: price, r: rsi });
+    if (h.length > 240) h.splice(0, h.length - 240);
+  }
+  return rows;
+}
+
+/* ── 訊號掃描（掃描後段呼叫；每策略獨立，無全域熔斷）───────────── */
+let _sbxDiag = null;
+async function sbxScanSignals(data) {
+  if (!isSignalMaster()) return;   // 與實驗室同理：多裝置各自累積會產生分歧樣本
+  if (!Array.isArray(data) || !data.length) return;
+  try { await sbxEnsureFunding(); } catch(_e) {}
+  // 1h K 線只抓通過便宜前置條件的幣（VWAP 偏離候選 + 開盤區間候選）
+  try {
+    const want = [];
+    for (const coin of data) {
+      const p = parseFloat(coin && coin.price) || 0;
+      if (!(p > 0)) continue;
+      const atr = (parseFloat(coin.atr) > 0) ? parseFloat(coin.atr) : p * 0.008;
+      const ema20 = parseFloat(coin.ema20) || 0;
+      const stretched = ema20 > 0 && Math.abs(p - ema20) >= 1.2 * atr;
+      if (stretched || (parseFloat(coin.adx) || 0) >= 18) want.push(coin.symbol);
+    }
+    await sbxEnsureK1h(want);
+  } catch(_e) {}
+
+  const rows = sbxBuildFeatures(data);
+  const st = loadSbxState();
+  const log = loadSbxLog();
+  const now = Date.now();
+  let changed = false;
+  _sbxDiag = { at: now, trig: {} };
+  // 一趟掃出去重／冷卻／在市數，策略×紀錄不做 O(N×M) 反覆掃描
+  const openCount = {}, lastSig = {}, openKey = new Set();
+  for (const t of log) {
+    if (t.status === 'open' || t.status === 'signal') {
+      openCount[t.strat] = (openCount[t.strat] || 0) + 1;
+      openKey.add(t.strat + '|' + t.symbol);
+    }
+    const k = t.strat + '|' + t.symbol + '|' + t.direction;
+    const ts = t.timestamp || 0;
+    if (!lastSig[k] || ts > lastSig[k]) lastSig[k] = ts;
+  }
+  for (const f of rows) {
+    for (const strat of SBX_STRATS) {
+      const ss = st.strategies[strat.id];
+      if (ss.status === 'eliminated' || ss.status === 'retired') continue;
+      if ((openCount[strat.id] || 0) >= SBX_CFG.maxOpenPerStrat) continue;
+      if (openKey.has(strat.id + '|' + f.symbol)) continue;
+      let hit = null;
+      try { hit = strat.detect(f); } catch(_e) {}
+      if (!hit) continue;
+      const dir = hit.isLong ? 'long' : 'short';
+      const lk = strat.id + '|' + f.symbol + '|' + dir;
+      if (lastSig[lk] && now - lastSig[lk] < (strat.cooldownMin || SBX_CFG.cooldownMin) * 60000) continue;
+      // 建單一律走 computeSimpleSetup（規則③）：取它的止損距離作風險基準
+      let setup = null;
+      try { setup = computeSimpleSetup(f.coin, hit.isLong); } catch(_e) {}
+      if (!setup || !(setup.entry > 0) || !(setup.sl > 0)) continue;
+      const baseRisk = Math.abs(setup.entry - setup.sl);
+      if (!(baseRisk > 0)) continue;
+      const P = sbxEffectiveParams(ss);
+      const riskDist = baseRisk * P.slMult;
+      const feeR = 2 * SBX_CFG.feeRate * f.price / riskDist;
+      if (feeR > SBX_CFG.maxFeeR) continue;   // 手續費守門（與快進快出同一套數學）
+      const t = {
+        id: `sbx-${strat.id}-${f.symbol}-${now}`,
+        strat: strat.id, symbol: f.symbol, direction: dir,
+        timestamp: now, signalTime: now, signalPrice: f.price,
+        baseRisk: +baseRisk.toPrecision(6), riskDist: +riskDist.toPrecision(6),
+        slMultUsed: P.slMult, tp1RUsed: P.tp1R, paramSrc: P.src,
+        entry: null, sl: null, tp1: null,
+        status: 'signal', outcome: null, pnlR: null,
+        entryTime: null, exitTime: null, exitPrice: null,
+        fillDelaySec: null, slipR: null,
+        maeB: 0, mfeB: 0, endB: null, feeR: +feeR.toFixed(3),
+        why: hit.why, live: ss.status === 'live',
+        rsi: f.rsi, adx: f.adx,
+      };
+      log.unshift(t); changed = true;
+      openCount[strat.id] = (openCount[strat.id] || 0) + 1;
+      openKey.add(strat.id + '|' + f.symbol);
+      lastSig[lk] = now;
+      _sbxDiag.trig[strat.id] = (_sbxDiag.trig[strat.id] || 0) + 1;
+      if (t.live) sbxSendTelegram(t, 'signal');
+    }
+  }
+  if (changed) saveSbxLog(log);
+}
+
+/* ── 成交／持倉更新（掃描後段呼叫）──────────────────────────────
+   成交模型：訊號後至少等 fillDelayMs，以「延遲後第一個報價」為成交價，
+   止損止盈重錨到成交價（真實成交時點基準）；追價／逆走過遠判 missed。 */
+function sbxUpdateTrades(data) {
+  if (!isSignalMaster()) return;
+  if (!Array.isArray(data) || !data.length) return;
+  const log = loadSbxLog();
+  const now = Date.now();
+  let changed = false;
+  const px = {};
+  for (const c of data) { const p = parseFloat(c && c.price) || 0; if (p > 0) px[c.symbol] = p; }
+  for (const t of log) {
+    if (t.status === 'signal') {
+      if (now - t.signalTime > SBX_CFG.signalTtlMin * 60000) {
+        t.status = 'expired'; t.outcome = 'expired'; changed = true; continue;
+      }
+      const cur = px[t.symbol] || 0;
+      if (!cur) continue;
+      if (now - t.signalTime < SBX_CFG.fillDelayMs) continue;   // Telegram → 成交的最短延遲
+      const dirMul = t.direction === 'long' ? 1 : -1;
+      const moveR = dirMul * (cur - t.signalPrice) / t.riskDist;
+      t.fillDelaySec = Math.round((now - t.signalTime) / 1000);
+      t.slipR = +moveR.toFixed(3);   // 正值＝延遲期間價格已朝目標跑（buy 得更貴）
+      if (moveR > SBX_CFG.maxChaseR)    { t.status = 'missed'; t.outcome = 'missed_chase';   changed = true; continue; }
+      if (moveR < -SBX_CFG.maxAdverseR) { t.status = 'missed'; t.outcome = 'missed_adverse'; changed = true; continue; }
+      // 真實成交時點價為基準：SL/TP 全部重錨到成交價
+      t.entry = cur; t.entryTime = now;
+      t.sl  = cur - dirMul * t.riskDist;
+      t.tp1 = cur + dirMul * t.tp1RUsed * t.riskDist;
+      t.feeR = +(2 * SBX_CFG.feeRate * cur / t.riskDist).toFixed(3);
+      t.status = 'open'; changed = true;
+      continue;
+    }
+    if (t.status !== 'open') continue;
+    const cur = px[t.symbol] || 0;
+    if (!cur) continue;
+    const dirMul = t.direction === 'long' ? 1 : -1;
+    const curR = dirMul * (cur - t.entry) / t.riskDist;     // 本筆實際風險單位
+    const curB = dirMul * (cur - t.entry) / t.baseRisk;     // 基準風險單位（調參重放用）
+    if (-curB > (t.maeB || 0)) { t.maeB = +(-curB).toFixed(3); changed = true; }
+    if (curB > (t.mfeB || 0))  { t.mfeB = +curB.toFixed(3);   changed = true; }
+    let outcome = null, gross = null, exitPx = null;
+    if (dirMul * (cur - t.sl) <= 0) {
+      outcome = 'sl'; gross = Math.min(-1, curR); exitPx = cur;   // 跳空按實價計，誠實記錄
+    } else if (dirMul * (cur - t.tp1) >= 0) {
+      outcome = 'tp'; gross = t.tp1RUsed; exitPx = t.tp1;         // 止盈掛限價單，按目標價計
+    } else if (now - t.entryTime > SBX_CFG.maxHoldH * 3600e3) {
+      outcome = 'timeout'; gross = curR; exitPx = cur;
+    }
+    if (outcome) {
+      t.status = 'closed'; t.outcome = outcome; t.exitTime = now;
+      t.exitPrice = exitPx;
+      t.pnlR = +(gross - t.feeR).toFixed(3);
+      t.endB = +curB.toFixed(3);
+      t.holdMin = Math.round((now - t.entryTime) / 60000);
+      changed = true;
+      if (t.live) sbxSendTelegram(t, 'close');
+    }
+  }
+  if (changed) saveSbxLog(log);
+}
+
+/* ── 樣本與統計 ────────────────────────────────────────────────── */
+function sbxSamples(stratId) {
+  const byId = new Map();
+  for (const t of loadSbxArchive()) byId.set(t.id, t);
+  for (const t of loadSbxLog()) byId.set(t.id, t);
+  const out = [];
+  for (const t of byId.values()) {
+    if (t.status !== 'closed') continue;
+    if (stratId && t.strat !== stratId) continue;
+    if (!isFinite(parseFloat(t.pnlR))) continue;
+    out.push(t);
+  }
+  out.sort((a, b) => (a.exitTime || 0) - (b.exitTime || 0));   // 舊→新：權益曲線與前後段驗證要時序
+  return out;
+}
+function sbxComputeStats(arr) {
+  const n = arr.length;
+  let wins = 0, losses = 0, tot = 0, eq = 0, peak = 0, maxDD = 0;
+  let delaySum = 0, delayN = 0, slipSum = 0, slipN = 0;
+  for (const t of arr) {
+    const r = parseFloat(t.pnlR) || 0;
+    tot += r; eq += r;
+    if (eq > peak) peak = eq;
+    if (peak - eq > maxDD) maxDD = peak - eq;
+    if (r > FLAT_R_EPS) wins++; else if (r < -FLAT_R_EPS) losses++;
+    const d = parseFloat(t.fillDelaySec), sp = parseFloat(t.slipR);
+    if (isFinite(d)) { delaySum += d; delayN++; }
+    if (isFinite(sp)) { slipSum += sp; slipN++; }
+  }
+  const exp = n ? tot / n : 0;
+  // 排名分數：期望值為主、回撤為輔（勝率不進判準，只作參考顯示）
+  const rankScore = exp - (n ? 0.5 * maxDD / n : 0);
+  return {
+    n, wins, losses, totalR: +tot.toFixed(2), expectancy: +exp.toFixed(3),
+    winRate: (wins + losses) ? +(wins / (wins + losses) * 100).toFixed(1) : null,
+    maxDD: +maxDD.toFixed(2),
+    mar: maxDD > 0 ? +(tot / maxDD).toFixed(2) : (tot > 0 ? 99 : 0),
+    rankScore: +rankScore.toFixed(3),
+    avgDelay: delayN ? Math.round(delaySum / delayN) : null,
+    avgSlipR: slipN ? +(slipSum / slipN).toFixed(3) : null,
+  };
+}
+
+/* ── 分析快取（規則①）：只在掃描後段／按鈕時計算，渲染只讀這份 ── */
+let _sbxAnCache = null;
+function sbxRunAnalysis() {
+  const log = loadSbxLog();
+  const all = sbxSamples('');
+  const byStrat = {};
+  for (const t of all) (byStrat[t.strat] = byStrat[t.strat] || []).push(t);
+  const missBy = {}, openBy = {}, sigBy = {};
+  for (const t of log) {
+    if (t.status === 'missed') missBy[t.strat] = (missBy[t.strat] || 0) + 1;
+    if (t.status === 'open')   openBy[t.strat] = (openBy[t.strat] || 0) + 1;
+    if (t.status === 'signal') sigBy[t.strat]  = (sigBy[t.strat]  || 0) + 1;
+  }
+  const st = loadSbxState();
+  const per = SBX_STRATS.map(s => {
+    const ss = st.strategies[s.id];
+    return {
+      id: s.id, name: s.name, icon: s.icon,
+      stats: sbxComputeStats(byStrat[s.id] || []),
+      status: ss.status, applied: ss.applied, elimN: ss.elimN || 0,
+      liveSince: ss.liveSince || 0, history: ss.history || [],
+      missN: missBy[s.id] || 0, openN: openBy[s.id] || 0, sigN: sigBy[s.id] || 0,
+    };
+  });
+  per.sort((a, b) => b.stats.rankScore - a.stats.rankScore);
+  _sbxAnCache = { at: Date.now(), per, diag: _sbxDiag };
+  return _sbxAnCache;
+}
+function sbxAnalyzeNow() {
+  sbxRunAnalysis();
+  renderLabPage();
+  try { showToast('策略沙盒分析已更新', 'success'); } catch(_e) {}
+}
+
+/* ── 自動調參：止損倍數 × 止盈 R 的網格重放 ─────────────────────
+   重放單位是「基準風險」（computeSimpleSetup 的止損距離）：
+   maeB/mfeB/endB 都以它記錄，因此不同時期、不同已套用參數下
+   成交的樣本可以放在同一張網格上比。同時觸及止損與止盈時以
+   止損計（保守，與實驗室同一口徑）。 */
+const SBX_M_GRID = [0.6, 0.8, 1.0, 1.2, 1.4];
+const SBX_T_GRID = [0.8, 1.0, 1.3, 1.6, 2.0, 2.5];
+function sbxReplay(samples, m, tp) {
+  let tot = 0, n = 0;
+  for (const t of samples) {
+    const mae = parseFloat(t.maeB), mfe = parseFloat(t.mfeB);
+    if (!isFinite(mae) || !isFinite(mfe)) continue;
+    const feeB = 2 * SBX_CFG.feeRate * (parseFloat(t.entry) || 0) / (parseFloat(t.baseRisk) || 1);
+    const tpB = tp * m;
+    let gross;
+    if (mae >= m) gross = -m;
+    else if (mfe >= tpB) gross = tpB;
+    else gross = isFinite(parseFloat(t.endB)) ? parseFloat(t.endB) : 0;
+    tot += (gross - feeB) / m;    // 歸一到「每筆下注 1R」
+    n++;
+  }
+  return n ? +(tot / n).toFixed(4) : null;
+}
+function sbxGrid(samples) {
+  const cell = SBX_M_GRID.map(m => SBX_T_GRID.map(tp => sbxReplay(samples, m, tp)));
+  // 鄰域平均選格：單格尖峰是過擬合的長相，要的是參數平原（同出場實驗室）
+  let best = null;
+  for (let i = 0; i < SBX_M_GRID.length; i++) {
+    for (let j = 0; j < SBX_T_GRID.length; j++) {
+      if (cell[i][j] == null) continue;
+      let s = 0, c = 0;
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        const v = (cell[i + di] || [])[j + dj];
+        if (v != null) { s += v; c++; }
+      }
+      const nbAvg = c ? s / c : null;
+      if (nbAvg != null && (!best || nbAvg > best.nbAvg))
+        best = { slMult: SBX_M_GRID[i], tp1R: SBX_T_GRID[j], nbAvg: +nbAvg.toFixed(4), own: cell[i][j] };
+    }
+  }
+  return { cell, best };
+}
+function sbxWalkForward(samples, base) {
+  if (samples.length < 60) return { ok: false, why: '樣本不足以前後段驗證' };
+  const cut = Math.floor(samples.length * 0.6);
+  const train = samples.slice(0, cut), test = samples.slice(cut);
+  const g = sbxGrid(train);
+  if (!g.best) return { ok: false, why: '前段網格無結果' };
+  const opt = sbxReplay(test, g.best.slMult, g.best.tp1R);
+  const cur = sbxReplay(test, base.slMult, base.tp1R);
+  if (opt == null || cur == null) return { ok: false, why: '後段重放無結果' };
+  const delta = +(opt - cur).toFixed(4);
+  return { ok: true, pass: delta >= SBX_CFG.tuneWfMargin, delta, nTrain: train.length, nTest: test.length };
+}
+function sbxAutoDecide(stratId, opts = {}) {
+  const dry = !!opts.dryRun;
+  const now = Date.now();
+  const out = { at: now, strat: stratId, action: 'none', why: '' };
+  try {
+    const st = loadSbxState();
+    const ss = st.strategies[stratId];
+    if (!ss) { out.why = '未知策略'; return out; }
+    const samples = sbxSamples(stratId);
+    const commit = () => { if (!dry) saveSbxState(st); };
+    const pushHist = (h) => { ss.history = (ss.history || []).concat([h]).slice(-20); };
+
+    // ── 套用後複查：實際成交轉差就回滾（不等冷卻）──
+    const a = ss.applied;
+    if (a && a.active && !a.reviewed) {
+      const since = samples.filter(t => (t.exitTime || 0) > (a.at || 0));
+      if (since.length >= SBX_CFG.tuneReviewN) {
+        const exp = since.reduce((s, t) => s + (parseFloat(t.pnlR) || 0), 0) / since.length;
+        const edge = +(exp - (a.prevExpectancy ?? 0)).toFixed(3);
+        if (edge <= SBX_CFG.tuneRollbackEdge) {
+          pushHist({ at: now, action: 'tune_rollback',
+            why: `調參後 ${since.length} 筆實際期望值 ${exp.toFixed(3)}R，比調參前差 ${edge}R → 回滾預設` });
+          ss.applied = null;
+          commit();
+          out.action = 'rollback'; out.why = ss.history[ss.history.length - 1].why;
+          return out;
+        }
+        a.reviewed = true; a.reviewEdge = edge; a.reviewN = since.length; commit();
+      }
+    }
+
+    if (samples.length < SBX_CFG.tuneN) {
+      out.why = `樣本 ${samples.length}/${SBX_CFG.tuneN}，不足以自動調參`; return out;
+    }
+    if (!opts.force && now - (ss.tuneAt || 0) < SBX_CFG.tuneCooldownH * 3600e3) {
+      out.why = `調參冷卻中（需距上次 ≥${SBX_CFG.tuneCooldownH} 小時）`; return out;
+    }
+    if (!dry) ss.tuneAt = now;   // 無論結果如何都消耗一次冷卻，讓各策略輪流被評
+    const base = sbxEffectiveParams(ss);
+    const g = sbxGrid(samples);
+    if (!g.best) { out.why = '網格無有效結果'; commit(); return out; }
+    const curScore = sbxReplay(samples, base.slMult, base.tp1R);
+    const delta = curScore == null ? null : +(g.best.own - curScore).toFixed(4);
+    if (g.best.slMult === base.slMult && g.best.tp1R === base.tp1R) {
+      out.why = '現行參數已是鄰域平均最佳'; commit(); return out;
+    }
+    if (delta == null || delta < SBX_CFG.tuneMinDelta) {
+      out.why = `最佳僅多 ${delta}R/筆（需 ≥${SBX_CFG.tuneMinDelta}），不值得改動`; commit(); return out;
+    }
+    const wf = sbxWalkForward(samples, base);
+    if (!wf.ok || !wf.pass) {
+      out.why = wf.ok
+        ? `未通過前後段驗證（後段只贏 ${wf.delta}R，需 ≥${SBX_CFG.tuneWfMargin}）→ 判定過擬合`
+        : wf.why;
+      commit(); return out;
+    }
+    const prevExp = samples.reduce((s, t) => s + (parseFloat(t.pnlR) || 0), 0) / samples.length;
+    ss.applied = {
+      active: true, slMult: g.best.slMult, tp1R: g.best.tp1R, at: now,
+      prevExpectancy: +prevExp.toFixed(3), reviewed: false,
+      evidence: { n: samples.length, delta, wfDelta: wf.delta, nTrain: wf.nTrain, nTest: wf.nTest },
+    };
+    pushHist({ at: now, action: 'tune_apply',
+      why: `樣本 ${samples.length} 筆、網格多 ${delta}R/筆、前後段後段仍多 ${wf.delta}R `
+         + `→ 止損 ×${g.best.slMult}、止盈 ${g.best.tp1R}R` });
+    commit();
+    out.action = 'apply'; out.to = { slMult: g.best.slMult, tp1R: g.best.tp1R };
+    out.why = ss.history[ss.history.length - 1].why;
+    return out;
+  } catch(e) { out.why = '判斷失敗：' + e.message; return out; }
+}
+
+/* ── 治理：淘汰、調參排程、晉升上實盤、月度輪替 ─────────────────── */
+let _sbxGovAt = 0;
+function sbxGovernance() {
+  if (!isSignalMaster()) return;
+  const now = Date.now();
+  if (now - _sbxGovAt < 10 * 60000) return;   // 10 分鐘一次就夠（分析快取同步更新）
+  _sbxGovAt = now;
+  const an = sbxRunAnalysis();                // 掃描後段路徑，允許算（規則①限制的是渲染路徑）
+  const st = loadSbxState();
+  let changed = false;
+  const pushHist = (ss, h) => { ss.history = (ss.history || []).concat([h]).slice(-20); };
+
+  // ── 淘汰：期望值為主、回撤為輔（勝率不進判準）。實盤中的策略轉差同樣立即下線 ──
+  for (const p of an.per) {
+    const ss = st.strategies[p.id];
+    if (ss.status === 'retired' || ss.status === 'eliminated') continue;
+    const s = p.stats;
+    const bad = (s.n >= SBX_CFG.elimN && s.expectancy <= SBX_CFG.elimExp)
+             || (s.n >= SBX_CFG.tuneN && s.rankScore < -0.02);
+    if (bad) {
+      const was = ss.status;
+      ss.status = 'eliminated'; ss.elimN = (ss.elimN || 0) + 1; ss.liveSince = 0;
+      pushHist(ss, { at: now, action: 'eliminate',
+        why: `期望值 ${s.expectancy}R／回撤 ${s.maxDD}R（${s.n} 筆）→ 淘汰`
+           + (was === 'live' ? '（自實盤下線）' : '') + `，累計第 ${ss.elimN} 次` });
+      changed = true;
+    }
+  }
+
+  // ── 自動調參：≥100 筆且過冷卻；一輪只跑一個（掃描後段時間預算）──
+  const due = SBX_STRATS.filter(s => {
+    const ss = st.strategies[s.id];
+    if (ss.status === 'retired') return false;
+    const p = an.per.find(x => x.id === s.id);
+    return p && p.stats.n >= SBX_CFG.tuneN
+      && now - (ss.tuneAt || 0) >= SBX_CFG.tuneCooldownH * 3600e3;
+  }).sort((x, y) => (st.strategies[x.id].tuneAt || 0) - (st.strategies[y.id].tuneAt || 0));
+  if (due.length) {
+    const r = sbxAutoDecide(due[0].id);
+    if (r.action !== 'none') { changed = true; console.info('[sbx-tune]', due[0].id, r.action, r.why); }
+  }
+
+  // 達標名單（an.per 已按 rankScore 排序，qualified 保持該順序）
+  const qualified = an.per.filter(p => {
+    const ss = st.strategies[p.id];
+    return ss.status !== 'retired' && ss.status !== 'eliminated'
+      && p.stats.n >= SBX_CFG.liveN && p.stats.expectancy >= SBX_CFG.liveExp
+      && p.stats.mar >= SBX_CFG.liveMar;
+  });
+
+  const ym = new Date(now).toISOString().slice(0, 7);
+  if (st.lastRotationMonth !== ym) {
+    // ── 月度輪替：重排實盤名單；被淘汰者每月一次重新觀察的機會（累計 3 次永久停用）──
+    st.lastRotationMonth = ym;
+    for (const s of SBX_STRATS) {
+      const ss = st.strategies[s.id];
+      if (ss.status !== 'eliminated') continue;
+      if ((ss.elimN || 0) >= SBX_CFG.maxElim) {
+        ss.status = 'retired';
+        pushHist(ss, { at: now, action: 'retire', why: `累計淘汰 ${ss.elimN} 次 → 永久停用` });
+      } else {
+        ss.status = 'candidate';
+        pushHist(ss, { at: now, action: 'revive', why: '月度輪替：重新啟用觀察' });
+      }
+      changed = true;
+    }
+    const liveSet = new Set(qualified.slice(0, SBX_CFG.liveMax).map(p => p.id));
+    let rank = 0;
+    for (const p of an.per) {
+      const ss = st.strategies[p.id];
+      rank++;
+      if (ss.status === 'retired' || ss.status === 'eliminated') continue;
+      const want = liveSet.has(p.id) ? 'live'
+        : (rank <= SBX_CFG.trackMax && p.stats.n >= SBX_CFG.minEvalN) ? 'tracking' : 'candidate';
+      if (ss.status !== want) {
+        pushHist(ss, { at: now, action: want === 'live' ? 'promote' : ss.status === 'live' ? 'demote' : 'rank',
+          why: `月度輪替：${ss.status} → ${want}（排名分數 ${p.stats.rankScore}）` });
+        if (want === 'live' && ss.status !== 'live') ss.liveSince = now;
+        if (want !== 'live') ss.liveSince = 0;
+        ss.status = want; changed = true;
+      }
+    }
+  } else {
+    // ── 即時晉升：滿 200 筆達標且實盤未滿 5 名 → 不必等月度 ──
+    let liveNow = SBX_STRATS.filter(s => st.strategies[s.id].status === 'live').length;
+    for (const p of qualified) {
+      if (liveNow >= SBX_CFG.liveMax) break;
+      const ss = st.strategies[p.id];
+      if (ss.status === 'live') continue;
+      ss.status = 'live'; ss.liveSince = now; liveNow++;
+      pushHist(ss, { at: now, action: 'promote',
+        why: `滿 ${SBX_CFG.liveN} 筆達標（期望值 ${p.stats.expectancy}R、回撤 ${p.stats.maxDD}R、`
+           + `MAR ${p.stats.mar}）→ 自動上實盤` });
+      changed = true;
+      try { showToast(`🎯 策略沙盒：「${p.name}」達標，自動上實盤`, 'success'); } catch(_e) {}
+    }
+    // 追蹤標記（前 10 名）平時只在 candidate ↔ tracking 之間流動
+    let rank = 0;
+    for (const p of an.per) {
+      const ss = st.strategies[p.id];
+      rank++;
+      if (ss.status === 'candidate' && rank <= SBX_CFG.trackMax && p.stats.n >= SBX_CFG.minEvalN) {
+        ss.status = 'tracking'; changed = true;
+      } else if (ss.status === 'tracking' && (rank > SBX_CFG.trackMax || p.stats.n < SBX_CFG.minEvalN)) {
+        ss.status = 'candidate'; changed = true;
+      }
+    }
+  }
+  if (changed) { saveSbxState(st); sbxRunAnalysis(); }
+}
+
+/* ── Telegram（僅實盤策略；沿用快進快出頻道與開關）──────────────── */
+function sbxSendTelegram(t, kind) {
+  try {
+    const s = loadSettings();
+    if (!s.notifScalp || !s.tgToken2 || !s.tgChatId2) return;
+    const name = (SBX_STRAT_BY_ID[t.strat] || {}).name || t.strat;
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const sym = t.symbol.replace('/USDT', '');
+    const dir = t.direction === 'long' ? '▲ 做多' : '▼ 做空';
+    let text;
+    if (kind === 'signal') {
+      const dirMul = t.direction === 'long' ? 1 : -1;
+      text = [
+        `🎯 <b>策略沙盒實盤訊號</b> — ${sym} ${dir}（${name}）`,
+        ``,
+        `📍 訊號價：<b>$${fmt(t.signalPrice)}</b>（市價進場）`,
+        `🛑 止損：約 $${fmt(t.signalPrice - dirMul * t.riskDist)}（以你的實際成交價 ∓ 同距離為準）`,
+        `🎯 止盈：約 $${fmt(t.signalPrice + dirMul * t.tp1RUsed * t.riskDist)}（${t.tp1RUsed}R，單一止盈全出）`,
+        t.why ? `🧠 ${t.why}` : '',
+        `⏱️ 統計以「訊號後首個報價」作為模擬成交價重錨止損止盈——發送到成交的延遲已算進損益`,
+        ``,
+        `#${sym.toLowerCase()} #sandbox #${t.strat}`,
+      ].filter(Boolean).join('\n');
+    } else {
+      const win = (parseFloat(t.pnlR) || 0) > 0;
+      const oLabel = t.outcome === 'tp' ? '🎯 止盈' : t.outcome === 'sl' ? '🛑 止損' : '⏱️ 到期平倉';
+      text = [
+        `${win ? '✅' : '❌'} <b>策略沙盒結束</b> — ${sym} ${dir}（${name}）`,
+        ``,
+        `${oLabel}｜出場 $${fmt(t.exitPrice)}｜損益 <b>${t.pnlR > 0 ? '+' : ''}${t.pnlR}R</b>`,
+        `成交延遲 ${t.fillDelaySec ?? '--'} 秒、進場滑移 ${t.slipR ?? '--'}R（已含在損益內）`,
+        ``,
+        `#${sym.toLowerCase()} #sandbox #${t.strat}`,
+      ].join('\n');
+    }
+    sendTelegramMessage(s.tgToken2, s.tgChatId2, text);
+  } catch(_e) {}
+}
+
+/* ── 頁面（渲染只讀 _sbxAnCache，絕不觸發分析——規則①）──────────── */
+function buildSbxHtml() {
+  const head = `
+    <div class="page-header"><div>
+      <h1 class="page-title">🎯 策略沙盒（快速策略庫）</h1>
+      <p class="page-subtitle">10 組常見量化策略各自獨立試跑、獨立統計，不受主系統與快進快出的
+        熔斷限制。淘汰／晉升以<b>期望值＋最大回撤</b>為準（勝率只作參考）；
+        ≥${SBX_CFG.tuneN} 筆自動調參（網格＋鄰域平均＋前後段驗證）；
+        滿 ${SBX_CFG.liveN} 筆達標自動上實盤（保留前 ${SBX_CFG.liveMax} 名、每月輪替、
+        追蹤前 ${SBX_CFG.trackMax} 名）。成交模型把「Telegram 發送 → 實際成交」的延遲算進去：
+        訊號後至少 ${Math.round(SBX_CFG.fillDelayMs / 1000)} 秒、以延遲後首個報價成交，
+        止盈止損重錨到真實成交時點價格。</p>
+    </div></div>`;
+  const c = _sbxAnCache;
+  const btn = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <button class="btn-ghost" style="font-size:0.8rem" onclick="sbxAnalyzeNow()">🔬 重新分析</button>
+      <span style="font-size:0.72rem;color:var(--text3)">分析只在掃描後段與按鈕觸發時計算並快取，
+        看頁面不會觸發任何重算${c ? `　·　快取時間 ${new Date(c.at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}` : ''}</span>
+    </div>`;
+  if (!c) {
+    return head + btn + `<div style="background:var(--card);border:1px solid var(--border);
+      border-radius:10px;padding:20px;text-align:center;color:var(--text3);font-size:0.84rem">
+      尚無分析快取——等下一輪掃描完成，或按上方「重新分析」。</div>`;
+  }
+  const chip = (status) => {
+    const m = {
+      live:       ['🟢 實盤中', '#22c55e'],
+      tracking:   ['🔭 追蹤中', '#818cf8'],
+      candidate:  ['⚪ 觀察中', 'var(--text3)'],
+      eliminated: ['🚫 已淘汰', '#ef4444'],
+      retired:    ['⛔ 永久停用', '#6b7280'],
+    }[status] || ['—', 'var(--text3)'];
+    return `<span style="font-size:0.72rem;padding:2px 9px;border-radius:12px;
+      background:rgba(148,163,184,.10);color:${m[1]};font-weight:700">${m[0]}</span>`;
+  };
+  const fmtT = ts => new Date(ts).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  let rank = 0;
+  const cards = c.per.map(p => {
+    const s = p.stats;
+    rank++;
+    const expCol = s.expectancy > 0 ? '#22c55e' : s.expectancy < 0 ? '#ef4444' : 'var(--text2)';
+    const lastH = (p.history || []).slice(-2).reverse();
+    const prog = s.n >= SBX_CFG.liveN ? '' :
+      `<span style="color:var(--text3)">（上實盤門檻 ${s.n}/${SBX_CFG.liveN} 筆）</span>`;
+    return `<div style="background:var(--card);border:1px solid ${p.status === 'live' ? '#22c55e' : 'var(--border)'};
+        border-radius:10px;padding:11px 13px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="font-size:0.9rem;font-weight:700">#${rank} ${p.icon} ${p.name}</span>
+        ${chip(p.status)}
+        <span style="font-size:0.72rem;color:var(--text3)">在市 ${p.openN}｜待成交 ${p.sigN}${p.elimN ? `｜淘汰 ${p.elimN} 次` : ''}</span>
+        ${p.status === 'live' && p.liveSince ? `<span style="font-size:0.72rem;color:#22c55e">上線 ${fmtT(p.liveSince)}</span>` : ''}
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.8rem;line-height:1.7">
+        <span>樣本 <b>${s.n}</b> 筆 ${prog}</span>
+        <span>期望值 <b style="color:${expCol}">${s.expectancy > 0 ? '+' : ''}${s.expectancy}R/筆</b></span>
+        <span>總計 ${s.totalR > 0 ? '+' : ''}${s.totalR}R</span>
+        <span>最大回撤 <b>${s.maxDD}R</b>（MAR ${s.mar}）</span>
+        <span>排名分數 <b>${s.rankScore}</b></span>
+        <span style="color:var(--text3)">勝率 ${s.winRate == null ? '—' : s.winRate + '%'}（參考）</span>
+      </div>
+      <div style="font-size:0.74rem;color:var(--text3);margin-top:3px">
+        延遲成交模型：平均成交延遲 ${s.avgDelay == null ? '—' : s.avgDelay + ' 秒'}、
+        平均進場滑移 ${s.avgSlipR == null ? '—' : (s.avgSlipR > 0 ? '+' : '') + s.avgSlipR + 'R'}、
+        錯過 ${p.missN} 筆（追價/逆走過遠不成交）
+        　·　參數：止損 ×${p.applied && p.applied.active ? p.applied.slMult : SBX_CFG.defSlMult}、
+        止盈 ${p.applied && p.applied.active ? p.applied.tp1R : SBX_CFG.defTp1R}R
+        ${p.applied && p.applied.active ? '<b style="color:#22c55e">（已自動調參）</b>' : '（預設）'}
+      </div>
+      ${lastH.length ? `<div style="font-size:0.72rem;color:var(--text2);margin-top:5px;
+          border-top:1px solid var(--border);padding-top:5px">
+        ${lastH.map(h => `<div>· ${fmtT(h.at)}　${h.why}</div>`).join('')}</div>` : ''}
+    </div>`;
+  }).join('');
+  const diag = c.diag && c.diag.trig && Object.keys(c.diag.trig).length
+    ? `<div style="font-size:0.72rem;color:var(--text3);margin-top:8px">
+        本輪觸發：${Object.entries(c.diag.trig).map(([k, v]) =>
+          `${(SBX_STRAT_BY_ID[k] || {}).name || k} ×${v}`).join('、')}</div>`
+    : '';
+  return head + btn + cards + diag;
 }
