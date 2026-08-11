@@ -45,6 +45,7 @@ async function init() {
   applySettingsToUI();
   animateLoadingBar();
   registerSW();        // 後台通知 Service Worker
+  riskCtlResetV1();    // 一次性：清除快取互撞期間累積的風控學習資料（見函式說明）
   monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
 
   try {
@@ -301,6 +302,8 @@ function startRefreshCycle() {
     await _pt('實驗室機會更新', () => updateLabOpportunities(data));
     await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
     await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
+    await _pt('條件配對分析',   () => maybePairLabAnalyze());
+    await _pt('配對策略建單',   () => recordPairStrategyTrades(data));
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
     await _pt('快速單持倉更新', () => updateScalpTrades(data));
     try { recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e)); }
@@ -13910,6 +13913,20 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_auE) { console.warn('[pre-audit]', _auE); }
 
+    // ── 條件配對研究所：記錄標籤 + stage 2 時的漸進替代閘門 ────────
+    // stage 0/1：只記錄（entryTags/pairHit 落在單子上，讓配對統計有實倉樣本），不擋任何單。
+    // stage 2：配對實倉證據已勝過原路徑 → 未命中驗證配對的原路徑訊號不再建單。
+    let _scanEntryTags = [], _scanPairHit = null;
+    try {
+      _scanEntryTags = computeLabTags(coin, isLong, _btcChg24);
+      const _pg = pairGateState();
+      _scanPairHit = pairHitOf(_scanEntryTags, _pg.pairs);
+      if (_pg.stage >= 2 && !_scanPairHit) {
+        console.log(`[pair-gate] ${coin.symbol} 未命中驗證配對（stage 2），原路徑不建單`);
+        _no('未命中驗證配對（研究所已替代原邏輯）'); continue;
+      }
+    } catch(_pgE) {}
+
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -13924,6 +13941,8 @@ async function recordSignalsFromScan(data) {
       conf: Math.max(0, (setup.conf || 0) - (_scanRiskPen || 0)), rawConf: setup.rawConf,
       rr1: setup.rr1, rr2: setup.rr2,  // SQ 監控 computeFullRisk 需要，缺失會被誤判 R/R 過低 +18 風險分
       riskKeys: _scanRisk.keys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
+      entryTags: _scanEntryTags,       // 建單時的分析標籤（條件配對研究所的實倉樣本）
+      pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
       riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
@@ -16567,8 +16586,15 @@ function checkPostDataReversal(data) {
 }
 
 /* ── AI 學習系統 ─────────────────────────────────────────────── */
-let _learnCache = null;
-function invalidateLearnCache() { _learnCache = null; }
+/* ⚠️ 兩個快取必須是兩個變數。歷史教訓（2026-08 全站崩潰的根因）：
+   learnSamples() 快取的是「交易樣本陣列」，getLearnProfile() 快取的是
+   「分析 profile 物件」——之前兩者共用 _learnCache 一個槽位，先跑哪個
+   另一個就拿到錯誤型別：learnSamples 回傳 profile 物件時，所有呼叫端的
+   .filter() 直接 TypeError（頁面一進去就白屏）；getLearnProfile 拿到陣列時
+   profile.ready/closed 全是 undefined，整套風控學習靜默算出垃圾。 */
+let _learnCache = null;         // getLearnProfile 專用：profile 物件
+let _learnSampleCache = null;   // learnSamples 專用：樣本陣列
+function invalidateLearnCache() { _learnCache = null; _learnSampleCache = null; }
 
 /* ── AI 持久記憶（localStorage）─────────────────────────────── */
 const AI_MEMORY_KEY = 'csp_ai_memory';
@@ -16583,6 +16609,37 @@ function loadAIMemory() {
 function saveAIMemory(mem) {
   mem.updatedAt = Date.now();
   localStorage.setItem(AI_MEMORY_KEY, JSON.stringify(mem));
+}
+
+/* ── 一次性風控資料重置（v1，2026-08）───────────────────────────
+   為什麼要刪：learnSamples/getLearnProfile 共用快取槽位的型別互撞期間
+   （見 _learnCache 註解），整套風控學習拿到的是錯誤型別的資料——
+   扣分條件權重（csp_risk_weights）、豁免名單（csp_risk_mute）、
+   AI 記憶裡的累計勝負統計（歷史止損率扣分／硬封鎖的燃料）都是在
+   壞資料上算出來的，留著只會讓「止損多 → 扣分重 → 門檻更高 → 更容易
+   選到極端單 → 更多止損」的循環繼續。全部清掉，讓修好的程式用乾淨的
+   樣本重新學。原始交易紀錄與封存「不動」——那是樣本，不是風控產物。
+   已匯入（imported）的記憶規則保留：那是使用者從備份帶進來的，不是
+   這段期間算出來的。 */
+function riskCtlResetV1() {
+  try {
+    if (localStorage.getItem('csp_riskctl_reset_v1')) return;
+    try { localStorage.removeItem(RISK_W_KEY); } catch(_e) {}
+    try { localStorage.removeItem(RISK_MUTE_KEY); } catch(_e) {}
+    try {
+      const mem = loadAIMemory();
+      mem.cumStats = { totalClosed: 0, totalWins: 0, totalLosses: 0 };
+      mem.issues = {};
+      const kept = {};
+      for (const [k, r] of Object.entries(mem.rules || {})) if (r && r.imported) kept[k] = r;
+      mem.rules = kept;
+      mem.bestConditions = [];
+      saveAIMemory(mem);
+    } catch(_e) {}
+    _riskWCache = null; _riskMuteCache = null; invalidateLearnCache();
+    localStorage.setItem('csp_riskctl_reset_v1', String(Date.now()));
+    console.info('[riskctl] 已執行一次性風控資料重置：權重/豁免/止損率統計歸零，交易樣本保留');
+  } catch(_e) {}
 }
 
 function mergeRulesIntoMemory(freshRules, freshIssues, freshBest, freshStats) {
@@ -16915,6 +16972,8 @@ function computeLearnProfile() {
 }
 
 function getLearnProfile() {
+  // 防禦：快取槽位若被塞成陣列（舊 bug 的殘留型別）一律重算
+  if (Array.isArray(_learnCache)) _learnCache = null;
   if (!_learnCache) {
     try {
       _learnCache = computeLearnProfile();
@@ -18964,9 +19023,18 @@ function renderLabPage() {
   } catch(_se) {}
 
   // ── 扣分條件有效性審查面板 ──
+  // 渲染路徑不得重跑全量審查（規則：分析按鈕/掃描後段觸發＋快取）。
+  // 這裡原本每次打開頁面都跑一次 auditPenaltyFactors() 全量統計＋寫入
+  // localStorage——正是「看一眼頁面就卡住」的風控熱點之一。改為 10 分鐘快取。
   let auditHtml = '';
   try {
-    const audit = auditPenaltyFactors() || [];
+    const audit = (() => {
+      const c = renderLabPage._auditCache;
+      if (c && Date.now() - c.ts < 10 * 60 * 1000) return c.v;
+      const v = auditPenaltyFactors() || [];
+      renderLabPage._auditCache = { ts: Date.now(), v };
+      return v;
+    })();
     const auditShown = audit.filter(a => a.n > 0);
     if (auditShown.length) {
       auditHtml = `
@@ -19020,6 +19088,7 @@ function renderLabPage() {
       <h1 class="page-title">🧪 AI 機會實驗室</h1>
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
+    ${buildPairLabHtml()}
     ${provenHtml}
     ${scorecardHtml}
     ${auditHtml}
@@ -19719,15 +19788,15 @@ function learnSamples() {
      沒有它的時候，evGateCheck 每個候選幣會呼叫兩次，一輪掃描 100 個幣
      就是 200 次「JSON.parse 整份交易紀錄 ＋ 最多 1200 筆封存 ＋ Map 去重」，
      掃描結束那一刻主執行緒直接被打死——使用者看到的就是「第 54 秒崩潰」。 */
-  if (_learnCache) return _learnCache;
+  if (Array.isArray(_learnSampleCache)) return _learnSampleCache;
   try {
     const byId = new Map();
     // 封存只收已完結，因此舊封存列缺 status 時補回 'closed'——否則下游那些
     // .filter(t => t.status === 'closed') 會把整批封存濾光，救回來也用不到。
     for (const t of loadLearnArchive()) if (t && t.id) byId.set(t.id, t.status ? t : { ...t, status: 'closed' });
     for (const t of loadTradeLog()) if (t && t.id && (t.status === 'closed' || t.status === 'expired')) byId.set(t.id, t);
-    _learnCache = [...byId.values()];
-    return _learnCache;
+    _learnSampleCache = [...byId.values()];
+    return _learnSampleCache;
   } catch(_e) { try { return loadTradeLog().filter(t => t.status === 'closed'); } catch(_e2) { return []; } }
 }
 
@@ -26604,4 +26673,288 @@ function buildSbxHtml() {
           `${(SBX_STRAT_BY_ID[k] || {}).name || k} ×${v}`).join('、')}</div>`
     : '';
   return head + btn + cards + diag;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   條件配對研究所（一般單進場邏輯的資料驅動替代）
+   問題：一般單的進場條件是「寫死的啟發式組合」，勝率連日走低時
+   沒有任何機制回頭檢驗「到底哪些條件組合真的會贏」。
+   做法（與快速單的模式篩選同一哲學，但作用在一般單）：
+   ① 對已完結樣本（實驗室紙上機會 ∪ 帶 entryTags 的實倉單）做
+      「分析標籤兩兩配對」統計：勝率、Wilson 95% 下界、平均 R。
+   ② 配對樣本 ≥40、勝率下界 ≥55%、平均 R > 0 → 晉升「驗證配對」。
+   ③ 驗證配對直接接上實倉：
+      · recordPairStrategyTrades：命中配對即建一般單（與驗證策略
+        白名單同一路徑與守門）——這是「加入實倉的建議邏輯」。
+      · 漸進替代閘門（三階段，證據不足自動退回）：
+        stage 0：無驗證配對 → 原本進場邏輯完全不變
+        stage 1：≥1 組驗證配對 → 一般單記錄命中狀況（entryTags/pairHit），
+                 開始在實倉累積配對證據，不擋任何單
+        stage 2：≥5 組驗證配對、且配對建單實倉已完結 ≥30 筆、期望值
+                 ≥+0.05R 且不輸原路徑近期表現 → 未命中任何驗證配對的
+                 原路徑訊號不再建單（原進場條件正式被配對取代）；
+                 配對實倉期望值一轉負，自動退回 stage 1。
+   ④ 分析一律按鈕／掃描後段觸發並快取（_pairLabCache），渲染只讀快取。 */
+
+const PAIR_PROVEN_KEY = 'csp_pair_proven';
+const PAIR_CFG = {
+  minN:            40,    // 晉升門檻：配對完結樣本數
+  minWLB:          55,    // 晉升門檻：勝率 Wilson 95% 下界（%）
+  minAvgR:         0.02,  // 晉升門檻：平均 R 需為正（略高於 0 以扣掉手續費雜訊）
+  displayMinN:     8,     // 頁面排行的最低樣本（觀察用，非晉升）
+  stage2MinPairs:  5,     // 進入 stage 2 所需的驗證配對數
+  stage2MinTrades: 30,    // 進入 stage 2 所需的配對實倉完結筆數
+  stage2MinExp:    0.05,  // 進入 stage 2 所需的配對實倉期望值（R/筆）
+  analyzeCooldownMin: 30, // 掃描後段自動重算的節流
+};
+
+/* 樣本池：實驗室紙上機會（tags）∪ 帶 entryTags 的實倉已完結單。
+   實倉單是 2026-08 之後建的才有 entryTags——池子會隨時間自然變「實」。 */
+function pairSamples() {
+  const out = [];
+  try {
+    for (const o of labSamples()) {
+      if (!Array.isArray(o.tags) || o.tags.length < 2) continue;
+      const r = parseFloat(o.pnlR) || 0;
+      out.push({ tags: o.tags, win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r, src: 'lab' });
+    }
+  } catch(_e) {}
+  try {
+    for (const t of learnSamples()) {
+      if (t.status !== 'closed' || !Array.isArray(t.entryTags) || t.entryTags.length < 2) continue;
+      const r = parseFloat(t.pnlR) || 0;
+      out.push({ tags: t.entryTags, win: isWinTrade(t), loss: isLossTrade(t), r, src: 'real' });
+    }
+  } catch(_e) {}
+  return out;
+}
+
+let _pairLabCache = null;
+let _pairLabRunAt = 0;
+function pairLabAnalyze() {
+  const samples = pairSamples();
+  const stats = {};
+  for (const s of samples) {
+    const tg = s.tags.slice().sort();
+    for (let i = 0; i < tg.length; i++) for (let j = i + 1; j < tg.length; j++) {
+      const key = tg[i] + '｜' + tg[j];
+      const c = stats[key] || (stats[key] = { a: tg[i], b: tg[j], n: 0, w: 0, l: 0, r: 0, real: 0 });
+      c.n++; c.r += s.r;
+      if (s.win) c.w++; else if (s.loss) c.l++;
+      if (s.src === 'real') c.real++;
+    }
+  }
+  const rows = [];
+  for (const c of Object.values(stats)) {
+    if (c.n < PAIR_CFG.displayMinN) continue;
+    const denom = c.w + c.l;                       // 勝率口徑與全站一致：平手不進分母
+    const wr = denom ? c.w / denom * 100 : 0;
+    const wlb = denom ? wilsonLB(c.w, denom) * 100 : 0;
+    rows.push({ a: c.a, b: c.b, n: c.n, real: c.real, wr: +wr.toFixed(1),
+      wlb: +wlb.toFixed(1), totalR: +c.r.toFixed(2), avgR: +(c.r / c.n).toFixed(3) });
+  }
+  rows.sort((x, y) => y.wlb - x.wlb || y.avgR - x.avgR);
+  const proven = rows.filter(r => r.n >= PAIR_CFG.minN && r.wlb >= PAIR_CFG.minWLB && r.avgR > PAIR_CFG.minAvgR);
+
+  // ── 階段判定（漸進替代 + 自動退回）──────────────────────────────
+  // 配對建單的實倉表現：stage 2 的鑰匙必須由「真金白銀的完結單」轉動，
+  // 紙上樣本再漂亮也只能到 stage 1。
+  let pairTradeN = 0, pairTradeExp = 0, otherExp = null;
+  try {
+    const closedReal = learnSamples().filter(t => t.status === 'closed');
+    const pairT = closedReal.filter(t => Array.isArray(t.pairStrategy) && isFinite(parseFloat(t.pnlR)));
+    pairTradeN = pairT.length;
+    pairTradeExp = pairT.length ? pairT.reduce((s, t) => s + parseFloat(t.pnlR), 0) / pairT.length : 0;
+    const others = closedReal.filter(t => !Array.isArray(t.pairStrategy) && isFinite(parseFloat(t.pnlR)))
+      .sort((x, y) => (y.exitTime || 0) - (x.exitTime || 0)).slice(0, 60);
+    otherExp = others.length >= 10 ? others.reduce((s, t) => s + parseFloat(t.pnlR), 0) / others.length : null;
+  } catch(_e) {}
+  let stage = 0, why = '';
+  if (!proven.length) {
+    why = `尚無配對達晉升門檻（需樣本 ≥${PAIR_CFG.minN}、勝率下界 ≥${PAIR_CFG.minWLB}%、平均 R > 0）`;
+  } else if (proven.length < PAIR_CFG.stage2MinPairs) {
+    stage = 1;
+    why = `${proven.length} 組驗證配對（stage 2 需 ≥${PAIR_CFG.stage2MinPairs} 組）→ 配對建單已啟用，原邏輯照常`;
+  } else if (pairTradeN < PAIR_CFG.stage2MinTrades) {
+    stage = 1;
+    why = `${proven.length} 組驗證配對，但配對實倉完結僅 ${pairTradeN}/${PAIR_CFG.stage2MinTrades} 筆——`
+        + `替代原邏輯的鑰匙必須由實倉成績轉動，紙上樣本不算`;
+  } else if (pairTradeExp < PAIR_CFG.stage2MinExp) {
+    stage = 1;
+    why = `配對實倉 ${pairTradeN} 筆期望值 ${pairTradeExp.toFixed(3)}R < ${PAIR_CFG.stage2MinExp}R → 維持 stage 1（不足以取代原邏輯）`;
+  } else if (otherExp != null && pairTradeExp < otherExp) {
+    stage = 1;
+    why = `配對實倉期望值 ${pairTradeExp.toFixed(3)}R 未勝過原路徑近期 ${otherExp.toFixed(3)}R → 維持 stage 1`;
+  } else {
+    stage = 2;
+    why = `${proven.length} 組驗證配對、配對實倉 ${pairTradeN} 筆期望值 ${pairTradeExp.toFixed(3)}R`
+        + (otherExp != null ? `（原路徑近期 ${otherExp.toFixed(3)}R）` : '')
+        + ` → 未命中驗證配對的原路徑訊號不再建單`;
+  }
+  const gate = { at: Date.now(), stage, why,
+    pairs: proven.map(p => [p.a, p.b]),
+    evidence: { provenN: proven.length, pairTradeN, pairTradeExp: +pairTradeExp.toFixed(3),
+                otherExp: otherExp == null ? null : +otherExp.toFixed(3), sampleN: samples.length } };
+  try { localStorage.setItem(PAIR_PROVEN_KEY, JSON.stringify(gate)); _pairGateCache = gate; } catch(_e) {}
+  _pairLabCache = { at: Date.now(), rows: rows.slice(0, 20), proven, stage, why,
+    sampleN: samples.length, realN: samples.filter(s => s.src === 'real').length,
+    evidence: gate.evidence };
+  return _pairLabCache;
+}
+function maybePairLabAnalyze() {
+  const now = Date.now();
+  if (now - _pairLabRunAt < PAIR_CFG.analyzeCooldownMin * 60000) return;
+  _pairLabRunAt = now;
+  try { pairLabAnalyze(); } catch(e) { console.warn('[pair-lab]', e); }
+}
+function pairAnalyzeNow() {
+  _pairLabRunAt = Date.now();
+  try { pairLabAnalyze(); } catch(e) { console.warn('[pair-lab]', e); }
+  renderLabPage();
+  try { showToast('條件配對分析已更新', 'success'); } catch(_e) {}
+}
+
+/* 建單路徑讀的閘門（60 秒記憶體快取；讀不到＝stage 0，永不擋單） */
+let _pairGateCache = null, _pairGateCacheTs = 0;
+function pairGateState() {
+  const now = Date.now();
+  if (_pairGateCache && now - _pairGateCacheTs < 60000) return _pairGateCache;
+  try {
+    const g = JSON.parse(localStorage.getItem(PAIR_PROVEN_KEY) || 'null');
+    _pairGateCache = (g && Array.isArray(g.pairs)) ? g : { stage: 0, pairs: [], why: '尚未分析' };
+  } catch(_e) { _pairGateCache = { stage: 0, pairs: [], why: '' }; }
+  _pairGateCacheTs = now;
+  return _pairGateCache;
+}
+function pairHitOf(tags, pairs) {
+  if (!Array.isArray(tags) || tags.length < 2 || !Array.isArray(pairs) || !pairs.length) return null;
+  const s = new Set(tags);
+  for (const p of pairs) if (s.has(p[0]) && s.has(p[1])) return p;
+  return null;
+}
+
+/* ── 配對策略建單（實倉建議邏輯）───────────────────────────────
+   與 recordProvenStrategyTrades 同一路徑與守門（冷卻／同向控管／熔斷／
+   原子去重），差別只在依據：命中「驗證配對」而不是單一驗證標籤。 */
+function recordPairStrategyTrades(data) {
+  if (!isSignalMaster()) return;
+  const gate = pairGateState();
+  if (!gate.pairs.length || !Array.isArray(data) || !data.length) return;
+  const tlog = loadTradeLog();
+  const btcChg = parseFloat(data.find(d => d.symbol === 'BTC/USDT')?.change24h);
+  for (const coin of data) {
+    if (!coin || coin.score === 50) continue;
+    const isLong = coin.score > 50;
+    const dir = isLong ? 'long' : 'short';
+    if (tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
+    if (inCooldown(tlog, coin.symbol, dir)) continue;
+    if (btcVolGuardBlocks(coin.symbol)) continue;
+    if (sameDirGuard(tlog, dir, 99)) continue;
+    if (lossStreakGuard().blocked) continue;
+    const h4Ok = isLong ? (coin.h4Signal || '').includes('bull') : (coin.h4Signal || '').includes('bear');
+    const s15 = coin.signal15m || (isLong ? ((coin.score || 50) >= 55 ? 'bull' : '') : ((coin.score || 50) <= 45 ? 'bear' : ''));
+    if (!h4Ok || !(isLong ? s15.includes('bull') : s15.includes('bear'))) continue;
+    let tags = [];
+    try { tags = computeLabTags(coin, isLong, btcChg); } catch(_e) {}
+    const hit = pairHitOf(tags, gate.pairs);
+    if (!hit) continue;
+    let setup = null;
+    try { setup = computeSimpleSetup(coin, isLong); } catch(_e) {}
+    if (!setup || !(setup.entry > 0) || !(setup.sl > 0) || !(setup.tp1 > 0)) continue;
+    let risk = { score: 0, level: '低風險', keys: [] };
+    try { risk = computeFullRisk(coin, setup, isLong); } catch(_e) {}
+    const nt = {
+      id: `${coin.symbol}-${Date.now()}`,
+      symbol: coin.symbol, direction: dir, timestamp: Date.now(),
+      entryPrice: parseFloat(coin.price) || 0,
+      entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
+      entryReason: `🧩 驗證配對（${hit[0]}＋${hit[1]}）：研究所配對樣本 ≥${PAIR_CFG.minN} 筆、勝率下界 ≥${PAIR_CFG.minWLB}%`,
+      slReason: setup.slReason, tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
+      rsi: parseFloat(coin.rsi) || 50, adx: parseFloat(coin.adx) || 20,
+      score: coin.score, trend: coin.trend,
+      conf: setup.conf ?? null, rawConf: setup.rawConf,
+      rr1: setup.rr1, rr2: setup.rr2,
+      riskScore: risk.score, riskLevel: risk.level, riskKeys: risk.keys || [], riskPenalty: 0,
+      learnPenalty: setup.learnPenalty || 0,
+      status: 'pending', outcome: null, tp1Hit: false,
+      entryTime: null, exitPrice: null, exitTime: null, pnlR: null, analysis: null,
+      refined: true,
+      provenStrategy: [`${hit[0]}＋${hit[1]}`],  // 沿用驗證策略的監控豁免（讓配對自然跑完）
+      pairStrategy: hit,                         // 配對標記：stage 2 的實倉證據以此欄位統計
+      entryTags: tags,
+      confGate: 0, sqGate: 0,
+      tradeType: 'directional', longTermBias: null, canScaleIn: false,
+      scaleIns: [], peakPrice: null,
+      sqGrade: 'A', sqScore: null, sqGradeLabel: '驗證配對',
+      sqFactors: [`🧩 驗證配對命中：${hit[0]}＋${hit[1]}`, `📊 全部標籤：${tags.join('、')}`],
+    };
+    if (!commitNewTrade(nt)) continue;
+    tlog.splice(0, tlog.length, ...loadTradeLog());
+    try { showToast(`🧩 驗證配對：${coin.symbol} ${isLong ? '▲做多' : '▼做空'}（${hit[0]}＋${hit[1]}）`, 'success'); } catch(_t) {}
+    try {
+      const s = loadSettings();
+      if (s.notifTelegram && s.tgToken && s.tgChatId) {
+        sendTelegramMessage(s.tgToken, s.tgChatId,
+          buildTelegramText(coin, dir, Object.assign({}, nt, setup, { conf: nt.conf }), _macroCache,
+            typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '',
+            { headerOverride: '🧩 <b>加密掃描 Pro — 驗證配對信號</b>' }));
+        nt.telegramSent = true;
+        saveTradeLog(tlog);
+      }
+    } catch(_te) {}
+  }
+}
+
+/* ── 頁面面板（只讀快取；重算靠按鈕與掃描後段）──────────────── */
+function buildPairLabHtml() {
+  const c = _pairLabCache;
+  const g = pairGateState();
+  const stageChip = (st) => {
+    const m = { 0: ['stage 0 · 觀察', 'var(--text3)'], 1: ['stage 1 · 配對建單中', '#f59e0b'], 2: ['stage 2 · 已替代原邏輯', '#22c55e'] }[st] || ['—', 'var(--text3)'];
+    return `<span style="font-size:0.72rem;padding:2px 10px;border-radius:12px;background:rgba(148,163,184,.1);color:${m[1]};font-weight:700">${m[0]}</span>`;
+  };
+  const head = `
+    <div style="background:var(--card);border:1px solid ${g.stage >= 2 ? '#22c55e' : 'var(--border)'};border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="font-size:0.85rem;font-weight:700">🧩 條件配對研究所（進場邏輯的資料驅動替代）</span>
+        ${stageChip(g.stage)}
+        <button class="btn-ghost" style="font-size:0.76rem;padding:3px 10px" onclick="pairAnalyzeNow()">🔬 重新分析配對</button>
+      </div>
+      <div style="font-size:0.76rem;color:var(--text2);line-height:1.7">
+        對所有已完結樣本做「分析標籤兩兩配對」統計，配對樣本 ≥${PAIR_CFG.minN} 筆、
+        勝率 Wilson 下界 ≥${PAIR_CFG.minWLB}%、平均 R 為正 → 晉升驗證配對並直接接上實倉建單；
+        驗證配對夠多且<b>實倉</b>成績確實更好時，未命中配對的原路徑訊號停止建單（自動退回機制見下）。
+      </div>
+      <div style="font-size:0.74rem;color:var(--text3);margin-top:5px">目前判定：${g.why || '尚未分析'}</div>
+      ${g.pairs && g.pairs.length ? `<div style="margin-top:7px;display:flex;gap:5px;flex-wrap:wrap">
+        ${g.pairs.map(p => `<span style="font-size:0.68rem;background:rgba(34,197,94,.1);color:#22c55e;border:1px solid rgba(34,197,94,.3);padding:2px 8px;border-radius:10px">✓ ${p[0]}＋${p[1]}</span>`).join('')}
+      </div>` : ''}
+      ${!c ? `<div style="font-size:0.72rem;color:var(--text3);margin-top:6px">配對排行尚未計算——按「重新分析配對」，或等下一輪掃描（每 ${PAIR_CFG.analyzeCooldownMin} 分鐘自動算一次）。分析不佔頁面渲染。</div>` : ''}
+    </div>`;
+  if (!c || !c.rows.length) return head;
+  const _wrC2 = wr => wr >= 60 ? 'var(--bull)' : wr >= 45 ? 'var(--text2)' : 'var(--bear)';
+  return head + `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.8rem;font-weight:700;margin-bottom:8px">配對排行（樣本 ${c.sampleN} 筆，其中實倉 ${c.realN} 筆 · ${new Date(c.at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 快取）</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+        <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+          <th style="padding:4px 6px">配對</th><th style="padding:4px 6px;text-align:right">樣本(實倉)</th>
+          <th style="padding:4px 6px;text-align:right">勝率</th><th style="padding:4px 6px;text-align:right">勝率下界</th>
+          <th style="padding:4px 6px;text-align:right">平均 R</th><th style="padding:4px 6px;text-align:right">晉升</th></tr></thead>
+        <tbody>${c.rows.map(r => {
+          const ok = r.n >= PAIR_CFG.minN && r.wlb >= PAIR_CFG.minWLB && r.avgR > PAIR_CFG.minAvgR;
+          return `<tr style="${ok ? 'background:rgba(34,197,94,.06)' : ''}">
+          <td style="padding:4px 6px;font-weight:600">${r.a}＋${r.b}</td>
+          <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.n}（${r.real}）</td>
+          <td style="padding:4px 6px;text-align:right;font-weight:700;color:${_wrC2(r.wr)}">${r.wr.toFixed(0)}%</td>
+          <td style="padding:4px 6px;text-align:right;color:${r.wlb >= PAIR_CFG.minWLB ? 'var(--bull)' : 'var(--text3)'}">${r.wlb.toFixed(0)}%</td>
+          <td style="padding:4px 6px;text-align:right;color:${r.avgR > 0 ? 'var(--bull)' : 'var(--bear)'}">${r.avgR > 0 ? '+' : ''}${r.avgR}</td>
+          <td style="padding:4px 6px;text-align:right">${ok ? '✅' : `<span style="color:var(--text3);font-size:0.68rem">${r.n < PAIR_CFG.minN ? `樣本 ${r.n}/${PAIR_CFG.minN}` : r.wlb < PAIR_CFG.minWLB ? '下界不足' : 'R 不足'}</span>`}</td>
+        </tr>`; }).join('')}</tbody>
+      </table></div>
+      <div style="font-size:0.68rem;color:var(--text3);margin-top:6px">
+        勝率下界＝Wilson 95% 保守估計：樣本少的高勝率會被自動打折，避免被運氣晉升。
+        「實倉」欄是帶 entryTags 的真實完結單（2026-08 起記錄），配對池會隨時間從紙上樣本過渡到實倉樣本。
+      </div>
+    </div>`;
 }
