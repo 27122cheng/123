@@ -13877,12 +13877,20 @@ async function recordSignalsFromScan(data) {
       const _slDistPct = Math.abs(setup.entry - setup.sl) / setup.entry;
       const _atrPctG = (parseFloat(coin.atr) > 0 && parseFloat(coin.price) > 0)
         ? parseFloat(coin.atr) / parseFloat(coin.price) : 0.008;
-      const _slFloorPct = Math.max(0.008, 0.9 * _atrPctG);
+      // 地板 × 秒損學習倍數：實測「成交後 45 分鐘內止損」比例偏高時自動加寬
+      const _floorM = (typeof mainSlFloorMult === 'function') ? mainSlFloorMult() : 1;
+      const _slFloorPct = Math.max(0.008, 0.9 * _atrPctG) * _floorM;
       if (_slDistPct < _slFloorPct) {
-        console.log(`[sl-floor] ${coin.symbol} 止損距離 ${(_slDistPct * 100).toFixed(2)}% < 地板 ${(_slFloorPct * 100).toFixed(2)}%，不建單`);
+        console.log(`[sl-floor] ${coin.symbol} 止損距離 ${(_slDistPct * 100).toFixed(2)}% < 地板 ${(_slFloorPct * 100).toFixed(2)}%${_floorM > 1 ? `（秒損學習 ×${_floorM}）` : ''}，不建單`);
         _no(`止損距離 ${(_slDistPct * 100).toFixed(2)}% 低於波動地板（成交即在雜訊內）`); continue;
       }
     } catch(_slfE) {}
+
+    // 勝率強化：時段／幣種的實測負期望封鎖（樣本門檻＋Wilson，回升自動解除）
+    try {
+      const _wgM = winupSessionBlocked('main') || winupSymbolBlocked('main', coin.symbol);
+      if (_wgM) { _no(_wgM); continue; }
+    } catch(_e) {}
 
     // ── 建單前終審（根本解法，取代 30 分鐘時間寬限）──────────────
     // 用「SQ 監控完全相同的評分函式」預演下一輪監控會怎麼評這筆單：
@@ -13962,6 +13970,7 @@ async function recordSignalsFromScan(data) {
       riskKeys: _scanRisk.keys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
       entryTags: _scanEntryTags,       // 建單時的分析標籤（條件配對研究所的實倉樣本）
       pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
+      kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
       riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
@@ -19760,7 +19769,7 @@ const QLAB_ARCHIVE_MAX = 1200;
 const QLAB_KEEP_FIELDS = [
   'id', 'symbol', 'mode', 'family', 'direction', 'timestamp', 'exitTime', 'holdMin',
   'outcome', 'pnlR', 'entry', 'exitPrice', 'atrAtEntry', 'levelGapAtr', 'slDistAtr',
-  'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality',
+  'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid',
   'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed',
 ];
 function _qlabSlim(t) {
@@ -19878,6 +19887,8 @@ const LEARN_KEEP_FIELDS = [
   'entryH1Aligned', 'entryWeeklyAgainst', 'entryBBWalkingBear', 'entryBBWalkingBull',
   'entryTag', 'slTag', 'tp1Tag', 'tp2Tag',   // 進場邏輯別，供逐分支績效分析
   'entryReasonCodes',                        // 進場理由（正規化代碼），供逐理由績效分析
+  'kz', 'entryTime',                         // 時段勝率學習＋秒損統計（成交→止損耗時）
+  'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -20361,7 +20372,7 @@ function buildQuantLabHtml() {
   </div>`;
 
   if (trades.length < QLAB_MIN) {
-    return head + modeBar + applyCard + archCard + caveat + `
+    return head + modeBar + buildWinupHtml() + applyCard + archCard + caveat + `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
           text-align:center;color:var(--text3);font-size:0.86rem">
         可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
@@ -20540,7 +20551,7 @@ function buildQuantLabHtml() {
       避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
   </div>`;
 
-  return head + modeBar + applyCard + archCard + caveat + bestCard + wfCard
+  return head + modeBar + buildWinupHtml() + applyCard + archCard + caveat + bestCard + wfCard
     + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
         '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
     + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
@@ -24255,7 +24266,7 @@ const SCALP_KEEP_FIELDS = new Set([
   'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter',
   'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed',
   // 分群用（時段／波動／量能／多週期）
-  'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel',
+  'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel', 'slHuntAvoid',
   // 旗標
   'okxAdjusted', '_pruned',
 ]);
@@ -24749,6 +24760,18 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   let _buf = atr * _slL.mult;
   if (mode === 'range' && rangeSpan > 0) _buf = Math.min(_buf, rangeSpan * SCALP_CFG.rangeSlSpanFrac);
   let slRaw = isLong ? level - _buf : level + _buf;
+  // ── 掃損位迴避：近端擺動極值是全市場都看得到的獵殺磁鐵 ──────────
+  // 止損若落在該極值 ±0.3×ATR 的獵殺帶內，插針掃過極值（常見深度
+  // 0.1~0.3×ATR）就順手帶走。推到極值外側 0.35×ATR：多付一點距離，
+  // 換掉最常見的被獵形態。是否值得由 slHuntAvoid 欄位的實測統計回答。
+  let _huntAvoided = false;
+  try {
+    const _huntLv = isLong ? swingLo : swingHi;
+    if (isFinite(_huntLv) && Math.abs(slRaw - _huntLv) < atr * 0.3) {
+      const _pushed = isLong ? _huntLv - atr * 0.35 : _huntLv + atr * 0.35;
+      if (isLong ? _pushed < slRaw : _pushed > slRaw) { slRaw = _pushed; _huntAvoided = true; }
+    }
+  } catch(_e) {}
   /* 「做多下方要有支撐、做空上方要有壓力」——止損本身已經釘在該模式自己的
      結構位（回踩位／假突破位／區間邊緣／擺動極值）外側，這點原本就成立。
      這裡補上第二階：確認止損<b>外側還有另一道結構</b>，而不是懸在真空中。
@@ -24822,7 +24845,7 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
            slMult: +_slL.mult.toFixed(3), slMultSrc: _slL.src, slMultWhy: _slL.why,
            // 止損釘在模式自己的結構位外側；outerLv＝止損外側的次一道結構（無則 null）
            slAnchor: +level.toFixed(8), slOuter: _outerLv != null ? +_outerLv.toFixed(8) : null,
-           slHasOuter: _outerLv != null,
+           slHasOuter: _outerLv != null, slHuntAvoid: _huntAvoided,
            levelGapAtr: atr > 0 ? +(Math.abs(entry - level) / atr).toFixed(3) : null,
            slDistAtr:   atr > 0 ? +(risk / atr).toFixed(3) : null };
 }
@@ -24864,6 +24887,11 @@ async function recordScalpSignals(data) {
     const _acct = scalpAccount();
     const _gate = scalpRiskGate(_acct);
     if (_gate) { _scalpReject._blocked = _gate; return; }
+    // 勝率強化：本時段實測顯著虧錢 → 整輪暫停開新單（樣本回升自動解除）
+    try {
+      const _wgS = winupSessionBlocked('scalp');
+      if (_wgS) { _scalpReject._blocked = _wgS; return; }
+    } catch(_e) {}
     let room = SCALP_CFG.maxActive - active.length;
     let changed = false;
 
@@ -24939,6 +24967,8 @@ async function recordScalpSignals(data) {
 
     for (const { coin, isLong, dir, family } of cands) {
       if (room <= 0) break;
+      // 勝率強化：此幣近 20 筆實測負期望 → 暫停（統計自己指出的「做不贏的幣」）
+      if (winupSymbolBlocked('scalp', coin.symbol)) { _sr('幣種負期望封鎖'); continue; }
       const setup = buildScalpSetup(coin, isLong, family);
       if (!setup) continue;
       // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
@@ -25004,6 +25034,7 @@ async function recordScalpSignals(data) {
         slWidened: setup.slWidened, tp1Atr: setup.tp1Atr,
         atrAtEntry: setup.atr, slMult: setup.slMult, slMultSrc: setup.slMultSrc,
         slMultWhy: setup.slMultWhy, levelGapAtr: setup.levelGapAtr, slDistAtr: setup.slDistAtr,
+        slHuntAvoid: setup.slHuntAvoid || false,   // 掃損位迴避是否觸發（實測值不值得由統計回答）
         maeAtr: 0, mfeAtr: 0,     // 最大不利／有利偏移（ATR 單位），持倉期間即時更新
         breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
         volRatio: setup.volRatio, oiState: setup.oiState,
@@ -27366,4 +27397,176 @@ function liqNote(symbol) {
   return s.dom === 'long'
     ? `30分鐘多單清算 $${w(s.longUsd)}（空僅 $${w(s.shortUsd)}）——跌勢含清算瀑布成分，殺完常見 V 轉`
     : `30分鐘空單清算 $${w(s.shortUsd)}（多僅 $${w(s.longUsd)}）——漲勢含軋空成分，軋完即斷、追高危險`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   勝率強化學習層（winup）——一般單與快速單共用
+   原則：只做「資料早就在記、決策從來沒做」的缺口，每一條都有
+   樣本門檻與 Wilson 保守估計，樣本回升就自動解除，不寫死黑名單。
+
+   ① 時段閘門：分時段勝率（快速單存 kzQuality、一般單新增 kz）
+      n≥30、期望值<0、勝率上界仍低於整體 −8pp → 該時段暫停開新單。
+      快速單的時段統計本來就有（qlab 分群），但只顯示從不決策——
+      SCALP_CFG.killZoneOnly 的註解寫著「用數據再決定」，這就是那個決定。
+   ② 幣種閘門：同幣種近 20 筆完結單期望值 ≤ −0.25R 且 n≥10 →
+      暫停該幣新單。有些幣的微結構（插針深、費率怪）就是做不贏，
+      統計會自己指出來。
+   ③ 一般單秒損學習：成交後 ≤45 分鐘即止損的比例，Wilson 下界
+      ≥30% → 止損波動地板 ×1.25、≥40% → ×1.5。快速單早有同款
+      （slImmLbCap），一般單一直沒有。
+   ④ 輸單曾浮盈統計：輸單中途曾 ≥+0.8R 的比例——高就代表問題在
+      出場端不在進場端（顯示供出場實驗室對照，不自動動參數）。 */
+
+const WINUP_CFG = {
+  ttlMin: 10,
+  sessMinN: 30, sessGapPP: 8,
+  symWin: 20, symMinN: 10, symBadExp: -0.25,
+  quickSlMin: 45, quickSlMinN: 10,
+};
+let _winupCache = null;
+function invalidateWinup() { _winupCache = null; }
+
+function _winupBuckets(rows) {
+  // rows: [{ k, win, loss, r }] → { buckets: {k:{n,w,l,exp,wrUB}}, overallWr }
+  const by = {};
+  let W = 0, L = 0;
+  for (const s of rows) {
+    if (s.win) W++; else if (s.loss) L++;
+    if (!s.k) continue;
+    const b = by[s.k] || (by[s.k] = { n: 0, w: 0, l: 0, r: 0 });
+    b.n++; b.r += s.r;
+    if (s.win) b.w++; else if (s.loss) b.l++;
+  }
+  const overallWr = (W + L) ? W / (W + L) * 100 : 50;
+  for (const b of Object.values(by)) {
+    const d = b.w + b.l;
+    b.wr = d ? +(b.w / d * 100).toFixed(1) : null;
+    b.wrUB = d ? +((1 - wilsonLB(b.l, d)) * 100).toFixed(1) : 100;
+    b.exp = b.n ? +(b.r / b.n).toFixed(3) : 0;
+  }
+  return { buckets: by, overallWr: +overallWr.toFixed(1) };
+}
+function _winupSymBad(samples) {
+  // 同幣種「近 symWin 筆」滾動窗：老包袱不會永遠拖著一個幣
+  const by = {};
+  for (const t of samples) (by[t.symbol] = by[t.symbol] || []).push(t);
+  const bad = {};
+  for (const [sym, arr] of Object.entries(by)) {
+    const recent = arr.sort((a, b) => (b.exitTime || 0) - (a.exitTime || 0)).slice(0, WINUP_CFG.symWin);
+    if (recent.length < WINUP_CFG.symMinN) continue;
+    const exp = recent.reduce((s, t) => s + (parseFloat(t.pnlR) || 0), 0) / recent.length;
+    if (exp <= WINUP_CFG.symBadExp) {
+      bad[sym] = `${sym} 近 ${recent.length} 筆實測期望值 ${exp.toFixed(2)}R → 暫停新單（實測改善自動解除）`;
+    }
+  }
+  return bad;
+}
+
+function winupStats() {
+  const c = _winupCache;
+  if (c && Date.now() - c.ts < WINUP_CFG.ttlMin * 60000) return c.v;
+  const v = { sess: {}, sessBlocked: { main: {}, scalp: {} }, symBad: { main: {}, scalp: {} },
+              quickSl: null, floorMult: 1, loserMfe: {} };
+  try {
+    // ── 一般單 ──
+    const main = learnSamples().filter(t => t.status === 'closed');
+    v.sess.main = _winupBuckets(main.map(t => ({ k: t.kz || '',
+      win: isWinTrade(t), loss: isLossTrade(t), r: parseFloat(t.pnlR) || 0 })));
+    v.symBad.main = _winupSymBad(main.filter(t => isFinite(parseFloat(t.pnlR))));
+    // 秒損：成交後 ≤45 分鐘就止損（一般單的時間尺度是小時級，45 分鐘＝進場即遭雜訊處決）
+    const slT = main.filter(t => t.outcome === 'sl' && t.entryTime && t.exitTime);
+    const quick = slT.filter(t => (t.exitTime - t.entryTime) <= WINUP_CFG.quickSlMin * 60000).length;
+    if (slT.length >= WINUP_CFG.quickSlMinN) {
+      const lb = wilsonLB(quick, slT.length);
+      v.quickSl = { n: slT.length, quick, lb: +(lb * 100).toFixed(1) };
+      v.floorMult = lb >= 0.40 ? 1.5 : lb >= 0.30 ? 1.25 : 1;
+    }
+    // 輸單曾浮盈 ≥0.8R 的比例（出場端 vs 進場端的診斷）
+    const mLoss = main.filter(t => isLossTrade(t) && isFinite(parseFloat(t.mfeR)));
+    if (mLoss.length >= 8) {
+      const had = mLoss.filter(t => parseFloat(t.mfeR) >= 0.8).length;
+      v.loserMfe.main = { n: mLoss.length, had, pct: +(had / mLoss.length * 100).toFixed(0) };
+    }
+    // ── 快速單（封存 ∪ 目前紀錄）──
+    const m = new Map();
+    try {
+      for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
+      for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
+    } catch(_e) {}
+    const scalp = [...m.values()].filter(t => isFinite(parseFloat(t.pnlR)));
+    v.sess.scalp = _winupBuckets(scalp.map(t => {
+      const r = parseFloat(t.pnlR) || 0;
+      return { k: t.kzQuality || '', win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r };
+    }));
+    v.symBad.scalp = _winupSymBad(scalp);
+    const sLoss = scalp.filter(t => (parseFloat(t.pnlR) || 0) < -FLAT_R_EPS
+      && isFinite(parseFloat(t.mfeAtr)) && isFinite(parseFloat(t.slDistAtr)) && parseFloat(t.slDistAtr) > 0);
+    if (sLoss.length >= 8) {
+      const had = sLoss.filter(t => parseFloat(t.mfeAtr) / parseFloat(t.slDistAtr) >= 0.8).length;
+      v.loserMfe.scalp = { n: sLoss.length, had, pct: +(had / sLoss.length * 100).toFixed(0) };
+    }
+    // ── 時段封鎖判定（兩套各自對照自己的整體勝率）──
+    for (const kind of ['main', 'scalp']) {
+      const S = v.sess[kind];
+      if (!S) continue;
+      for (const [k, b] of Object.entries(S.buckets)) {
+        if (b.n >= WINUP_CFG.sessMinN && b.exp < 0 && b.wrUB < S.overallWr - WINUP_CFG.sessGapPP) {
+          v.sessBlocked[kind][k] =
+            `${kind === 'main' ? '一般單' : '快速單'}在此時段 ${b.n} 筆、期望值 ${b.exp}R、`
+            + `勝率上界 ${b.wrUB}%（整體 ${S.overallWr}%）→ 本時段暫停開新單`;
+        }
+      }
+    }
+  } catch(_e) {}
+  _winupCache = { ts: Date.now(), v };
+  return v;
+}
+
+function winupSessionBlocked(kind) {
+  try {
+    const kz = computeKillZone();
+    const key = kind === 'main' ? (kz.code || '') : (kz.quality || '');
+    return winupStats().sessBlocked[kind][key] || '';
+  } catch(_e) { return ''; }
+}
+function winupSymbolBlocked(kind, symbol) {
+  try { return winupStats().symBad[kind][symbol] || ''; } catch(_e) { return ''; }
+}
+function mainSlFloorMult() {
+  try { return winupStats().floorMult || 1; } catch(_e) { return 1; }
+}
+
+/* 量化實驗室的狀態卡（讀 10 分鐘快取，同扣分審查面板的快取模式） */
+function buildWinupHtml() {
+  let v = null;
+  try { v = winupStats(); } catch(_e) { return ''; }
+  if (!v) return '';
+  const kzName = { asian: '亞洲', london: '倫敦', ny: '紐約', lclose: '倫敦收盤', off: '盤整時段',
+                   high: '主力時段', medium: '亞洲時段', low: '冷門時段' };
+  const sessLine = (kind, label) => {
+    const S = v.sess[kind];
+    if (!S || !Object.keys(S.buckets).length) return `${label}：時段樣本累積中`;
+    const parts = Object.entries(S.buckets).map(([k, b]) =>
+      `${kzName[k] || k} ${b.n}筆 ${b.wr == null ? '—' : b.wr + '%'}/${b.exp > 0 ? '+' : ''}${b.exp}R`
+      + (v.sessBlocked[kind][k] ? ' <b style="color:#ef4444">⛔封鎖</b>' : ''));
+    return `${label}（整體 ${S.overallWr}%）：${parts.join('　')}`;
+  };
+  const symBadN = (k) => Object.keys(v.symBad[k]).length;
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.78rem;line-height:1.8">
+    <div style="font-weight:700;margin-bottom:5px">🎛 勝率強化學習（時段/幣種/秒損/出場端診斷，全部樣本門檻＋Wilson 保守估計）</div>
+    <div>${sessLine('scalp', '快速單時段')}</div>
+    <div>${sessLine('main', '一般單時段')}</div>
+    <div>幣種負期望封鎖：快速單 <b>${symBadN('scalp')}</b> 檔、一般單 <b>${symBadN('main')}</b> 檔
+      ${symBadN('scalp') + symBadN('main')
+        ? `<span style="color:var(--text3);font-size:0.72rem">（${[...Object.keys(v.symBad.scalp), ...Object.keys(v.symBad.main)].slice(0, 6).join('、')}…近 ${WINUP_CFG.symWin} 筆滾動窗，改善自動解除）</span>` : ''}</div>
+    <div>一般單秒損（成交後 ≤${WINUP_CFG.quickSlMin} 分鐘止損）：
+      ${v.quickSl ? `${v.quickSl.quick}/${v.quickSl.n} 筆、下界 ${v.quickSl.lb}%
+        → 止損波動地板 <b>×${v.floorMult}</b>${v.floorMult > 1 ? '（自動加寬中）' : ''}`
+        : `樣本 <b>0/${WINUP_CFG.quickSlMinN}</b> 累積中（快速單的同款機制早已存在：秒損率下界 >35% 強制放寬）`}</div>
+    <div style="color:var(--text2)">出場端診斷（輸單曾浮盈 ≥0.8R 比例）：
+      快速單 ${v.loserMfe.scalp ? `<b>${v.loserMfe.scalp.pct}%</b>（${v.loserMfe.scalp.had}/${v.loserMfe.scalp.n}）` : '樣本不足'}
+      一般單 ${v.loserMfe.main ? `<b>${v.loserMfe.main.pct}%</b>（${v.loserMfe.main.had}/${v.loserMfe.main.n}）` : '樣本不足'}
+      <span style="color:var(--text3);font-size:0.72rem">——比例高代表「進場對了、出場漏了」，該調的是出場實驗室的鎖利/回吐，不是進場條件</span></div>
+  </div>`;
 }
