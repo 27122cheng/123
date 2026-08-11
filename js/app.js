@@ -284,7 +284,12 @@ function startRefreshCycle() {
        一兩秒，不是掃描開始後 59 秒。那段時間跑的不只 recordSignalsFromScan，
        還有下面這一整串；只量前者會漏掉真正的兇手。 */
     const _postProf = {};
-    const _pt = (name, fn) => {
+    /* 每一步之間 await 讓出主執行緒：整串同步跑完會把「掃描收尾那一秒」變成
+       一整塊不可中斷的長任務，畫面凍結、事件排不進去，弱機器直接崩潰。
+       切開之後每步之間瀏覽器都能喘一口氣（繪製、GC、輸入），同樣的總工作量
+       就不再是同一塊巨石。 */
+    const _pt = async (name, fn) => {
+      await new Promise(r => setTimeout(r, 0));
       const t = performance.now();
       try { fn(); } catch(e) { console.warn('[post-scan ' + name + ']', e); }
       const ms = Math.round(performance.now() - t);
@@ -292,12 +297,12 @@ function startRefreshCycle() {
       if (ms > 50) console.warn(`[post-scan] ${name} 耗時 ${ms}ms`);
     };
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
-    _pt('實驗室機會記錄', () => recordLabOpportunities(data));
-    _pt('實驗室機會更新', () => updateLabOpportunities(data));
-    _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
-    _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
+    await _pt('實驗室機會記錄', () => recordLabOpportunities(data));
+    await _pt('實驗室機會更新', () => updateLabOpportunities(data));
+    await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
+    await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
-    _pt('快速單持倉更新', () => updateScalpTrades(data));
+    await _pt('快速單持倉更新', () => updateScalpTrades(data));
     try { recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e)); }
     catch(e) { console.warn('[scalp]', e); }
     try {
@@ -305,7 +310,7 @@ function startRefreshCycle() {
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
       if (state.currentPage === 'tradelog'  && _tlTab  === 'auto') renderTradeLogPage();
     } catch(e) {}
-    _pt('扣分條件審查', () => maybeAuditPenaltyFactors());
+    await _pt('扣分條件審查', () => maybeAuditPenaltyFactors());
     try {
       const tot = Object.values(_postProf).reduce((a, b) => a + b, 0);
       const top = Object.entries(_postProf).sort((a, b) => b[1] - a[1])
@@ -18542,6 +18547,26 @@ function getAdaptiveSlWiden() {
     if      (s.n >= 6 && s.pct >= 60) v = 1.35;
     else if (s.n >= 6 && s.pct >= 45) v = 1.2;
     else if (s.n >= 4 && s.pct >= 75) v = 1.25;
+    /* 第二個證據源：贏單的最大逆走（maeR，R 為單位，主系統已開始逐筆記錄）。
+       這回答的是「最後有賺的單，途中最深曾經逆走到離止損多近」——
+       快速單的學習止損早就用這個方法，主系統一直只有 slReversal 一條路，
+       而 slReversal 要等止損單再觀察 24 小時，累積極慢。maeR 每筆贏單都有。
+       贏單 MAE 的第 85 百分位若已達止損距離的 75%，代表正常獲利路徑就會
+       走到離止損一步之遙——那不是進場錯，是止損放在正常波動裡面，稍寬就能
+       把「本來會贏卻先被掃」的單救回來。這正是「一直止損」的主要形態之一。 */
+    try {
+      const wins = learnSamples().filter(t => t.status === 'closed' && isWinTrade(t)
+        && isFinite(parseFloat(t.maeR)) && parseFloat(t.maeR) >= 0);
+      if (wins.length >= 8) {
+        const maes = wins.map(t => parseFloat(t.maeR)).sort((a, b) => a - b);
+        const p85 = maes[Math.min(maes.length - 1, Math.floor(maes.length * 0.85))];
+        const vMae = p85 >= 0.9 ? 1.35 : p85 >= 0.75 ? 1.2 : p85 >= 0.6 ? 1.1 : 1.0;
+        if (vMae > v) {
+          v = vMae;
+          console.info(`[adaptive-sl] 贏單 MAE p85 = ${p85.toFixed(2)}R（${wins.length} 筆）→ 噪音底線加寬 ×${v}`);
+        }
+      }
+    } catch(_me) {}
     if (v > 1) console.info(`[adaptive-sl] 止損太緊比例 ${s.pct.toFixed(0)}%（${s.tooTight}/${s.n}），噪音底線加寬 ×${v}`);
     getAdaptiveSlWiden._c = { ts: Date.now(), v };
     return v;
@@ -19594,14 +19619,25 @@ function _loadArchive(key) {
   catch(_e) { return []; }
 }
 /* 併入封存（以 id 去重，新的覆蓋舊的）；空間不足時縮減重試，絕不向外拋例外 */
+/* 封存合併的免解析捷徑：沒有新完結單就完全不碰 localStorage。
+   原本「沒有新樣本就不寫入」的檢查要先 JSON.parse 整份封存（最多 1200 筆）
+   才做得出判斷——而 updateOpenTrades 因為 MAE／峰值每 15 秒都在變、每 15 秒
+   存檔一次，等於每 15 秒解析＋重建幾 MB 的 JSON 只為了發現「沒東西要加」。
+   這種持續的記憶體攪動正是弱機器上分頁崩潰（Aw, Snap）的典型成因。
+   改用記憶體內簽章（完結筆數＋最新出場時間）先擋掉無效呼叫。 */
+const _archSig = {};
 function _archiveMerge(key, max, slimFn, items, tag) {
   try {
     const src = (items || []).filter(t => t && t.id && (t.status === 'closed' || t.status === 'expired'));
     if (!src.length) return;
+    let maxExit = 0;
+    for (const t of src) { const e = t.exitTime || t.timestamp || 0; if (e > maxExit) maxExit = e; }
+    const sig = src.length + '|' + maxExit;
+    if (_archSig[key] === sig) return;      // 與上次合併時完全相同 → 免解析直接跳過
     const byId = new Map(_loadArchive(key).map(t => [t.id, t]));
     let added = 0;
     for (const t of src) { if (!byId.has(t.id)) added++; byId.set(t.id, slimFn(t)); }
-    if (!added) return;                                    // 沒有新樣本就不必寫入
+    if (!added) { _archSig[key] = sig; return; }           // 沒有新樣本：記下簽章，之後連解析都省
     // 空間吃緊時主動縮減封存：封存是「輔助樣本」，不能為了它把主要紀錄擠掉
     let cap = max;
     try {
@@ -19612,7 +19648,7 @@ function _archiveMerge(key, max, slimFn, items, tag) {
       .sort((a, b) => (b.exitTime || b.timestamp || 0) - (a.exitTime || a.timestamp || 0))
       .slice(0, cap);
     for (let attempt = 0; attempt < 3; attempt++) {
-      try { localStorage.setItem(key, JSON.stringify(out)); return; }
+      try { localStorage.setItem(key, JSON.stringify(out)); _archSig[key] = sig; return; }
       catch(_e) { out = out.slice(0, Math.floor(out.length / 2)); }
     }
     console.warn(`[${tag}] 封存寫入失敗（儲存空間不足）`);
