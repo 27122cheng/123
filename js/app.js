@@ -12311,7 +12311,10 @@ function _evProfile() {
       if (!isFinite(r1) || r1 <= 0) return null;
       return (r2 != null && isFinite(r2) && r2 > 0) ? TP1_EXIT_FRAC * r1 + (1 - TP1_EXIT_FRAC) * r2 : r1;
     }).filter(v => v != null && v > 0).sort((a, b) => a - b);
-    if (rs.length >= 20) medRR = rs[Math.floor(rs.length / 2)];
+    /* 加嚴：從中位數（只收上半部）提高到第 60 百分位（只收上四成）。
+       這個門檻按建構不會停擺——分佈的上四成永遠存在——而且會隨整體
+       賺賠比改善自動上移。 */
+    if (rs.length >= 20) medRR = rs[Math.floor(rs.length * 0.6)];
   } catch(_e) {}
   _evProfCache = { avgLoss, medRR }; _evProfTs = now;
   return _evProfCache;
@@ -12356,7 +12359,13 @@ function evGateCheck(blendRR, sqScore) {
 }
 
 function getAdaptiveGates() {
-  const strict = { minConf: 60, minSq: 12, minRR: minRequiredRR(), relaxed: false, label: '' };
+  /* 基準門檻加嚴（2026-08，使用者指示）：風控分 60→65、SQ 12→14。
+     14 分仍在 A 級區間內、65 分也是常見高分單的水準，實測都到得了——
+     加嚴的原則是「往分佈的上半部移」，不是「移到分佈外面」；後者不是
+     嚴格，是停擺（這個教訓已經犯過一次，R/R 門檻 1.6 高於結構上限，
+     把訊號全部擋掉還以為是市場沒機會）。SQ 門檻若實測支持會再由
+     sqEdgeProfile 自動往上推，這裡只是地板。 */
+  const strict = { minConf: 65, minSq: 14, minRR: minRequiredRR(), relaxed: false, label: '' };
   try {
     // ── 加嚴優先於一切放寬 ──────────────────────────────────────
     // 帳戶期望值為負時，絕不因為「今天訊號還不夠多」而降低門檻。
