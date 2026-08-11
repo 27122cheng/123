@@ -67,6 +67,7 @@ async function init() {
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
   loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro]', e));
+  try { liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連）
   startRefreshCycle();
   startDailyBriefingCheck();
   startEconCalendarCheck();
@@ -15195,6 +15196,21 @@ async function verifyIntrabarHits() {
           if (isFinite(lo)) trade.loSince = Math.min(trade.loSince ?? lo, lo);
         }
         if (isLimitFilled(trade)) {
+          // 與 updateOpenTrades 同一道模糊單防護：1m 補價後若區間同時掃過進場與止損，
+          // 單根 K 內往返、成交順序無從得知 → 作廢（未成交、無虧損），不是成交後秒損。
+          // 這裡原本沒有這道檢查，等於防護可以被 1m 補價路徑繞過。
+          const _wSl = parseFloat(trade.sl) || 0;
+          const _wAmbig = _wSl > 0 && (isLong ? trade.loSince <= _wSl : trade.hiSince >= _wSl);
+          if (_wAmbig) {
+            const _wReason = `1m 補價後區間 $${fmtPrice(trade.loSince)}–$${fmtPrice(trade.hiSince)} 同時掃過`
+              + `進場 $${fmtPrice(entry)} 與止損 $${fmtPrice(_wSl)}，單根 K 內往返，掛單作廢（未成交、無虧損）`;
+            trade.status = 'expired';
+            addCancelCooldown(trade, _wReason);
+            sendCancelTelegramNotification(trade, _wReason);
+            changed = true;
+            trade.lastWickCheck = Date.now();
+            continue;
+          }
           trade.status = 'open'; trade.entryTime = Date.now(); changed = true;
         }
         trade.lastWickCheck = Date.now(); changed = true;
@@ -18827,6 +18843,14 @@ function computeLabTags(coin, isLong, btcChg) {
         else if (_oi.trap) tags.push('OI-陷阱疑慮');
       }
     }
+    // 清算流（30 分鐘單邊清算）：順向擠壓＝對手方被強平推著走；逆向瀑布＝自己人剛被殺完
+    {
+      const _ls = (typeof liqStats === 'function') ? liqStats(coin.symbol) : { dom: '' };
+      if (_ls.dom) {
+        const oppKilled = isLong ? _ls.dom === 'short' : _ls.dom === 'long';
+        tags.push(oppKilled ? '清算-順向擠壓' : '清算-逆向瀑布');
+      }
+    }
   } catch(_e) {}
   return tags;
 }
@@ -22352,29 +22376,53 @@ function computeSimpleSetup(coin, isLong) {
      當作安全上下限（止損不得過緊或過寬）。
 
      做多時由高到低取出「價格下方」的結構，相鄰太近的視為同一道： */
-  const LADDER_SEP = 0.35;   // 相鄰結構至少隔開（×ATR），太近視為同一道
-  const _lvPool = [
-    _ob && _ob.low  > 0 ? _ob.low  : null,
-    _ob && _ob.high > 0 ? _ob.high : null,
-    _fvg && parseFloat(_fvg.mid) > 0 ? parseFloat(_fvg.mid) : null,
-    _bbLo > 0 ? _bbLo : null, _bbUp > 0 ? _bbUp : null,
-    ema20 > 0 ? ema20 : null, ema50 > 0 ? ema50 : null, ema200 > 0 ? ema200 : null,
-  ].filter(v => v != null && isFinite(v) && v > 0);
-  const _ladderOf = (fromPrice, wantBelow) => {
-    const out = [];
-    const sorted = _lvPool
-      .filter(v => wantBelow ? v < fromPrice * 0.999 : v > fromPrice * 1.001)
-      .sort((a, b) => wantBelow ? b - a : a - b);
-    for (const v of sorted) {
-      if (out.length && Math.abs(out[out.length - 1] - v) < atr * LADDER_SEP) continue;
-      out.push(v);
-    }
-    return out;
+  const LADDER_SEP = 0.35;   // 相鄰結構至少隔開（×ATR），太近視為同一道（＝同一個合流區）
+  /* 帶標籤的結構池（2026-08 擴充）：使用者要求「止損止盈放在支撐壓力上，
+     佐證越多越好」。原池只有 OB/FVG/BB/EMA 且不記來源；補上兩種最能作證的：
+     · 影線拒絕區（wickSupports/Resistances）：實際被打回來 N 次的價位，
+       拒絕次數就是可量化的佐證強度
+     · 4H 前高/前低：波段結構的錨
+     相鄰 0.35×ATR 內的結構視為同一道「合流區」，佐證清單合併——
+     止損釘在佐證最多的區外側、止盈放在對向合流區前緣。 */
+  const _srcPool = [];
+  const _addLv = (v, label, w) => {
+    const n = parseFloat(v);
+    if (isFinite(n) && n > 0) _srcPool.push({ v: n, label, w: w || 1 });
   };
-  const _ladder = _ladderOf(price, isLong);          // 做多＝下方支撐，做空＝上方壓力
-  const _ladderOpp = _ladderOf(price, !isLong);      // 反向那側（供加倉位用）
+  _addLv(_ob && _ob.low,  'OB下緣'); _addLv(_ob && _ob.high, 'OB上緣');
+  _addLv(_fvg && _fvg.mid, 'FVG中點');
+  _addLv(_bbLo, 'BB下軌'); _addLv(_bbUp, 'BB上軌');
+  _addLv(ema20, 'EMA20'); _addLv(ema50, 'EMA50'); _addLv(ema200, 'EMA200');
+  _addLv(_h4Hi, '4H前高', 2); _addLv(_h4Lo, '4H前低', 2);
+  for (const z of (coin.wickSupports || []).slice(0, 4))
+    _addLv(z.level, `影線支撐×${z.wicks}`, Math.min(4, z.wicks || 1));
+  for (const z of (coin.wickResistances || []).slice(0, 4))
+    _addLv(z.level, `影線壓力×${z.wicks}`, Math.min(4, z.wicks || 1));
+  /* 合流區合併：回傳 [{price(錨), far(離進場最遠緣), near(最近緣), evidence[], score}] */
+  const _zonesOf = (fromPrice, wantBelow) => {
+    const sorted = _srcPool
+      .filter(s => wantBelow ? s.v < fromPrice * 0.999 : s.v > fromPrice * 1.001)
+      .sort((a, b) => wantBelow ? b.v - a.v : a.v - b.v);   // 由近到遠
+    const zones = [];
+    for (const s of sorted) {
+      const zc = zones[zones.length - 1];
+      if (zc && Math.abs(zc.anchor - s.v) < atr * LADDER_SEP) {
+        zc.members.push(s); zc.score += s.w;
+        zc.far  = wantBelow ? Math.min(zc.far,  s.v) : Math.max(zc.far,  s.v);
+        zc.near = wantBelow ? Math.max(zc.near, s.v) : Math.min(zc.near, s.v);
+      } else {
+        zones.push({ anchor: s.v, far: s.v, near: s.v, members: [s], score: s.w });
+      }
+    }
+    for (const z of zones) z.evidence = z.members.map(m => m.label);
+    return zones;
+  };
+  const _zones    = _zonesOf(price, isLong);     // 做多＝下方支撐區，做空＝上方壓力區
+  const _zonesOpp = _zonesOf(price, !isLong);    // 獲利方向的對向結構區（止盈用）
+  const _ladder = _zones.map(z => z.anchor);     // 相容舊介面（外側備援判斷）
+  const _ladderOpp = _zonesOpp.map(z => z.anchor);
   // 需要兩道：一道給止損釘，另一道確保止損外側還有結構撐著
-  const _ladderOk = _ladder.length >= 2;
+  const _ladderOk = _zones.length >= 2;
 
   // ═══════════════════════════════════════════════
   // 2. 止損：結構失效點（最小化止損）
@@ -22389,20 +22437,26 @@ function computeSimpleSetup(coin, isLong) {
   const _ladderPick = (() => {
     if (!_ladderOk) return null;
     const budget = price * 0.03;
-    for (let i = Math.min(_ladder.length - 2, 1); i >= 0; i--) {
-      const lv = _ladder[i];
-      const slTry = isLong ? lv - atr * _atrBuf : lv + atr * _atrBuf;
+    // 預算內的兩道候選區，取「佐證分數較高」的那道當錨——
+    // 同樣放得進預算時，被拒絕 4 次的影線區勝過孤零零的一條 EMA
+    let best = null;
+    for (let i = Math.min(_zones.length - 2, 1); i >= 0; i--) {
+      const z = _zones[i];
+      const slTry = isLong ? z.far - atr * _atrBuf : z.far + atr * _atrBuf;
       if (Math.abs(entry - slTry) > budget) continue;
-      return { level: lv, next: _ladder[i + 1] ?? null };
+      if (!best || z.score > best.zone.score) best = { zone: z, next: _zones[i + 1] ?? null };
     }
-    return null;
+    return best;
   })();
   if (_ladderPick) {
-    sl = isLong ? _ladderPick.level - atr * _atrBuf : _ladderPick.level + atr * _atrBuf;
+    // 釘在合流區「離進場最遠的成員」外側：區內任何一個結構被掃穿都還有其餘成員擋著
+    const _zp = _ladderPick.zone;
+    sl = isLong ? _zp.far - atr * _atrBuf : _zp.far + atr * _atrBuf;
     _slTag = 'ladder';
-    _slStructure = `${isLong ? '支撐' : '壓力'} $${_ladderPick.level.toPrecision(5).replace(/\.?0+$/, '')}`
-      + `${isLong ? '下' : '上'}方`
-      + (_ladderPick.next ? `（外側仍有 $${_ladderPick.next.toPrecision(5).replace(/\.?0+$/, '')}）` : '');
+    _slStructure = `${isLong ? '支撐' : '壓力'}合流區 $${_zp.anchor.toPrecision(5).replace(/\.?0+$/, '')}`
+      + `${isLong ? '下' : '上'}方（佐證：${_zp.evidence.join('、')}）`
+      + (_ladderPick.next ? `，外側仍有 $${_ladderPick.next.anchor.toPrecision(5).replace(/\.?0+$/, '')}`
+         + `（${_ladderPick.next.evidence.join('、')}）` : '');
   } else if (_ob && _ob.priceInOB && _ob.high > 0 && _ob.low > 0) {
     const _buf = atr * _atrBuf;
     sl      = isLong ? _ob.low - _buf : _ob.high + _buf;
@@ -22476,8 +22530,33 @@ function computeSimpleSetup(coin, isLong) {
   const _prevHTP1 = _swHigh > entry + risk * 0.8 && _swHigh <= entry + _tp1Cap;
   const _prevLTP1 = _swLow > 0 && _swLow < entry - risk * 0.8 && _swLow >= entry - _tp1Cap;
 
-  // 優先順序：FVG缺口（最精確）→ EMA50 → BB對向軌 → 近期前高/低（≤2.5%）→ R:R 1.5 保底
-  if (_fvgTP1) {
+  // ── 對向合流區優先（2026-08）：止盈放在「佐證最多的壓力/支撐區前緣」──
+  // 前緣稍內側 0.2%：在人群掛單的位置之前出場，而不是跟人群搶同一個價位。
+  // 距離需 ≥0.8R（太近沒意義）且在近程上限內；佐證清單寫進理由讓每個目標可驗證。
+  let _tp1Structure = '', _tp2Structure = '';
+  const _tpZonePick = (minDist, maxDist, after) => {
+    for (const z of _zonesOpp) {
+      const tgt = isLong ? z.near * 0.998 : z.near * 1.002;
+      if (after != null && (isLong ? tgt < after * 1.003 : tgt > after * 0.997)) continue;
+      const dist = Math.abs(tgt - entry);
+      if (dist < minDist) continue;
+      if (dist > maxDist) break;          // 區由近到遠排序，超出上限即可停
+      return { z, tgt };
+    }
+    return null;
+  };
+  // 合流區目標的距離上限隨風險距離伸縮：固定 2.5% 在止損 2% 的單上等於
+  // 只肯找 1.2R 內的結構——結構明明在 1.5R 處也會被迫退回固定 R 湊數。
+  // 放寬到 max(2.5%, 1.6R)、絕對上限 4%（TP1 仍是「要容易到」的近程目標）。
+  const _tp1ZoneCap = Math.min(entry * 0.04, Math.max(_tp1Cap, risk * 1.6));
+  const _tp1Zone = _tpZonePick(risk * 0.8, _tp1ZoneCap, null);
+
+  // 優先順序：對向合流區（佐證最多）→ FVG缺口 → EMA50 → BB對向軌 → 近期前高/低（≤2.5%）→ R:R 保底
+  if (_tp1Zone) {
+    tp1 = _tp1Zone.tgt; _tp1Tag = 'zone';
+    _tp1Structure = `${isLong ? '壓力' : '支撐'}合流區 $${_tp1Zone.z.anchor.toPrecision(5).replace(/\.?0+$/, '')} 前緣`
+      + `（佐證：${_tp1Zone.z.evidence.join('、')}）`;
+  } else if (_fvgTP1) {
     tp1 = parseFloat(_fvg.mid); _tp1Tag = 'fvg';
   } else if (isLong && _ema50TP1) {
     tp1 = ema50; _tp1Tag = 'ema50';
@@ -22501,7 +22580,13 @@ function computeSimpleSetup(coin, isLong) {
   const _prevLTP2 = _swLow > 0 && _swLow < tp1 * 0.997 && _swLow >= entry - _tp2Cap;
   const _tp2MinRisk = _mtfBothAlign ? 2.0 : 1.5;
 
-  if (isLong && _prevHTP2) {
+  const _tp2ZoneCap = Math.min(entry * 0.08, Math.max(_tp2Cap, risk * 3));
+  const _tp2Zone = _tpZonePick(risk * _tp2MinRisk, _tp2ZoneCap, tp1);
+  if (_tp2Zone) {
+    tp2 = _tp2Zone.tgt; _tp2Tag = 'zone';
+    _tp2Structure = `${isLong ? '壓力' : '支撐'}合流區 $${_tp2Zone.z.anchor.toPrecision(5).replace(/\.?0+$/, '')} 前緣`
+      + `（佐證：${_tp2Zone.z.evidence.join('、')}）`;
+  } else if (isLong && _prevHTP2) {
     tp2 = _swHigh; _tp2Tag = 'prevhigh';
   } else if (!isLong && _prevLTP2) {
     tp2 = _swLow; _tp2Tag = 'prevlow';
@@ -22837,13 +22922,23 @@ function computeSimpleSetup(coin, isLong) {
     if (_mtfContraWk)  reasons.push(`⚠️ 週線逆向，止損已放寬，謹慎持倉`);
     if (_mtfContraDay && !_mtfContraWk) reasons.push(`⚠️ 日線逆向，需嚴格止損`);
   }
+  // 進場位佐證：進場價 0.35×ATR 內的所有結構（佐證越多越可信，逐一列出供驗證）
+  try {
+    const _nearEv = _srcPool.filter(s => Math.abs(s.v - entry) < atr * 0.35).map(s => s.label);
+    if (_nearEv.length) reasons.push(`📍 進場位佐證：${_nearEv.join('、')}`);
+  } catch(_e) {}
   // R:R 不足警告（僅記錄，實際 blocked 在掃描層已過濾）
   if (rrBlocked) reasons.push(`⚠️ ${rrReason}`);
 
   // ── 止損說明 ──
   const slPct = ((Math.abs(entry - sl) / price) * 100).toFixed(2);
   let slReason;
-  if (_slTag === 'ob') {
+  if (_slTag === 'ladder') {
+    // 修正既有缺漏：ladder 分支原本沒有對應說明，會落到 else 顯示成「ATR 動態止損」，
+    // 使用者看到的理由和實際決定價位的邏輯對不上
+    slReason = `結構合流區失效點（${_slStructure}），現價 ${isLong ? '下' : '上'}方 ${slPct}%；`
+      + `區內全部結構被收盤突破才算趨勢翻轉`;
+  } else if (_slTag === 'ob') {
     slReason = `ICT Order Block 結構失效點（${_slStructure}），現價 ${isLong ? '下' : '上'}方 ${slPct}%；${_kzHigh ? _kzNow.name + ' Kill Zone 縮緊止損' : 'OB 邊界無效視為趨勢翻轉'}`;
   } else if (_slTag === '2b') {
     slReason = `2B 型態假突破失效點（${_slStructure}），現價 ${isLong ? '下' : '上'}方 ${slPct}%；假突破結束後反向動能強`;
@@ -22869,8 +22964,9 @@ function computeSimpleSetup(coin, isLong) {
     prevlow:  `${_plSrc}結構目標（${_prevLow  > 0 ? '$' + _prevLow.toPrecision(5).replace(/\.?0+$/, '')  : '–'}）`,
     fvg: 'FVG 缺口回補目標', ema50: 'EMA50 動態壓力/支撐',
     bbup: 'BB 上軌結構目標', bblo: 'BB 下軌結構目標', rr: `固定 R/R ${_rr1}:1`,
+    zone: _tp1Structure,
   };
-  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1`, prevhigh: `${_phSrc}波段目標`, prevlow: `${_plSrc}波段目標` };
+  const _tp2DescMap = { ema200: 'EMA200 長期均線目標', ext: _isLongTerm ? '長線雙確認延伸目標' : 'MTF 延伸目標', rr: `波段 R/R ${_rr2}:1`, prevhigh: `${_phSrc}波段目標`, prevlow: `${_plSrc}波段目標`, zone: _tp2Structure };
   const _mtfLabel = _isLongTerm ? '（週/日/4H/1H/15m 五週期確認）'
                   : _isShortTerm ? '（日/4H/1H/15m 四週期確認）'
                   : _mtfContraWk ? '（週線逆向，注意風險）'
@@ -27166,7 +27262,10 @@ async function oiWatchScan(data) {
       const p30 = _oiPrice30mAgo(symbol);
       const priceChgPct = (curP > 0 && p30 > 0) ? (curP - p30) / p30 * 100 : 0;
       const fr = (typeof _sbxFunding === 'object' && _sbxFunding) ? _sbxFunding[symbol] : null;
-      const { cls, trap, note } = _oiClassify(chgPct, priceChgPct, fr);
+      const { cls, trap, note: _baseNote } = _oiClassify(chgPct, priceChgPct, fr);
+      // 清算流交叉作證：陷阱判讀若同時看到單邊清算，可信度大幅升級
+      let note = _baseNote;
+      try { const _ln = liqNote(symbol); if (_ln) note += `；${_ln}`; } catch(_e) {}
       const strong = Math.abs(chgPct) >= OI_CFG.strongPct;
       _oiWatchCache[symbol] = { at: now, ok: true, chgPct: +chgPct.toFixed(2),
         priceChgPct: +priceChgPct.toFixed(2), cls, trap, note, strong };
@@ -27194,4 +27293,77 @@ async function oiWatchScan(data) {
       _oiTgAt[symbol] = now;
     } catch(_e) { _oiWatchCache[symbol] = { at: now, ok: false }; }
   }));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   清算數據（強制平倉流）
+   來源：幣安合約公開清算 WebSocket（!forceOrder@arr，全市場、免金鑰）。
+   REST 版全市場清算端點已於 2021 年下線，WS 是唯一公開管道——
+   因此這是「開著頁面就累積」的即時流，重新整理後從零開始。
+
+   用途（與 OI 偵測互相作證）：
+   · 清算瀑布：30 分鐘內單邊清算金額大且遠超對邊 → 行情是「強制平倉」
+     推出來的，不是新錢方向——OI 陷阱判讀（誘多/誘空）的最強佐證。
+   · 空頭擠壓：空單被大量清算的上漲 = 軋空，軋完即斷，追多危險。
+   · 進入分析標籤（清算擠壓順向／清算瀑布逆向），配對研究所直接學它。 */
+
+const LIQ_CFG = {
+  bufMax:    600,     // 事件緩衝上限（全市場，記憶體內）
+  winMin:    30,      // 統計窗口（分鐘）
+  minUsd:    100000,  // 單邊清算 ≥ $10 萬才視為顯著（小額清算是常態噪音）
+  domMult:   3,       // 且 ≥ 對邊的 3 倍才算「單邊」
+  reconnectMs: 30000,
+};
+let _liqWs = null, _liqWsTriedAt = 0;
+const _liqBuf = [];   // { t, sym, side('long'|'short' 被清算方), usd }
+
+function liqWatchStart() {
+  if (typeof WebSocket === 'undefined') return;
+  if (_liqWs && (_liqWs.readyState === 0 || _liqWs.readyState === 1)) return;
+  const now = Date.now();
+  if (now - _liqWsTriedAt < LIQ_CFG.reconnectMs) return;
+  _liqWsTriedAt = now;
+  try {
+    _liqWs = new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
+    _liqWs.onmessage = (e) => {
+      try {
+        const m = JSON.parse(e.data);
+        const o = m && m.o;
+        if (!o || !o.s || String(o.s).slice(-4) !== 'USDT') return;
+        const usd = (parseFloat(o.ap) || parseFloat(o.p) || 0) * (parseFloat(o.q) || 0);
+        if (!(usd > 0)) return;
+        // 強平單 side=SELL ＝ 多單被清算；side=BUY ＝ 空單被清算
+        _liqBuf.push({ t: Date.now(), sym: String(o.s).slice(0, -4) + '/USDT',
+                       side: o.S === 'SELL' ? 'long' : 'short', usd });
+        if (_liqBuf.length > LIQ_CFG.bufMax) _liqBuf.splice(0, _liqBuf.length - LIQ_CFG.bufMax);
+      } catch(_e) {}
+    };
+    _liqWs.onclose = () => { _liqWs = null; setTimeout(liqWatchStart, LIQ_CFG.reconnectMs); };
+    _liqWs.onerror = () => { try { _liqWs.close(); } catch(_e) {} };
+  } catch(_e) { _liqWs = null; }
+}
+
+/* 指定幣種近 N 分鐘的清算統計；dom = 顯著單邊方向（'long'=多單被殺、'short'=空單被殺、''=無） */
+function liqStats(symbol, winMin = LIQ_CFG.winMin) {
+  const since = Date.now() - winMin * 60000;
+  let longUsd = 0, shortUsd = 0, n = 0;
+  for (let i = _liqBuf.length - 1; i >= 0; i--) {
+    const ev = _liqBuf[i];
+    if (ev.t < since) break;
+    if (ev.sym !== symbol) continue;
+    n++;
+    if (ev.side === 'long') longUsd += ev.usd; else shortUsd += ev.usd;
+  }
+  let dom = '';
+  if (longUsd >= LIQ_CFG.minUsd && longUsd >= shortUsd * LIQ_CFG.domMult) dom = 'long';
+  else if (shortUsd >= LIQ_CFG.minUsd && shortUsd >= longUsd * LIQ_CFG.domMult) dom = 'short';
+  return { longUsd: Math.round(longUsd), shortUsd: Math.round(shortUsd), n, dom };
+}
+function liqNote(symbol) {
+  const s = liqStats(symbol);
+  if (!s.dom) return '';
+  const w = v => (v / 10000).toFixed(1) + '萬';
+  return s.dom === 'long'
+    ? `30分鐘多單清算 $${w(s.longUsd)}（空僅 $${w(s.shortUsd)}）——跌勢含清算瀑布成分，殺完常見 V 轉`
+    : `30分鐘空單清算 $${w(s.shortUsd)}（多僅 $${w(s.longUsd)}）——漲勢含軋空成分，軋完即斷、追高危險`;
 }
