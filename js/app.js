@@ -45,6 +45,7 @@ async function init() {
   applySettingsToUI();
   animateLoadingBar();
   registerSW();        // 後台通知 Service Worker
+  fullDataResetV2();   // 一次性：依使用者要求刪除全部歷史紀錄（設定/幣種/備份保留）
   riskCtlResetV1();    // 一次性：清除快取互撞期間累積的風控學習資料（見函式說明）
   monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
 
@@ -308,6 +309,8 @@ function startRefreshCycle() {
     await _pt('快速單持倉更新', () => updateScalpTrades(data));
     try { recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e)); }
     catch(e) { console.warn('[scalp]', e); }
+    // 未平倉量突增偵測（背景異步，自帶預算與節流；判讀進 Telegram 與分析標籤）
+    try { oiWatchScan(data).catch(e => console.warn('[oi-watch]', e)); } catch(e) {}
     // 策略沙盒（快速策略庫）：獨立資料流、每策略獨立、不受任何熔斷限制
     await _pt('策略沙盒成交更新', () => sbxUpdateTrades(data));
     try { sbxScanSignals(data).catch(e => console.warn('[sbx] 訊號流程錯誤', e)); }
@@ -13865,6 +13868,21 @@ async function recordSignalsFromScan(data) {
     // 全局連續止損熔斷：只剩重大連虧的硬停；漸進壓制交給自適應 learnDrag
     if (lossStreakGuard().blocked && _no('全局連續止損熔斷')) continue;
 
+    // ── 止損最小距離守門（AI/USDT 實案：止損僅 0.57%，一根 1m 雜訊就掃掉）──
+    // 地板取「0.8%」與「0.9 × 15m ATR」較大者：止損距離低於當下正常波動，
+    // 成交即秒損是必然，不是運氣。不硬推遠止損（會破壞結構邏輯與 R/R 的意義），
+    // 而是判定這個結構在目前波動下不可交易，不建單。
+    try {
+      const _slDistPct = Math.abs(setup.entry - setup.sl) / setup.entry;
+      const _atrPctG = (parseFloat(coin.atr) > 0 && parseFloat(coin.price) > 0)
+        ? parseFloat(coin.atr) / parseFloat(coin.price) : 0.008;
+      const _slFloorPct = Math.max(0.008, 0.9 * _atrPctG);
+      if (_slDistPct < _slFloorPct) {
+        console.log(`[sl-floor] ${coin.symbol} 止損距離 ${(_slDistPct * 100).toFixed(2)}% < 地板 ${(_slFloorPct * 100).toFixed(2)}%，不建單`);
+        _no(`止損距離 ${(_slDistPct * 100).toFixed(2)}% 低於波動地板（成交即在雜訊內）`); continue;
+      }
+    } catch(_slfE) {}
+
     // ── 建單前終審（根本解法，取代 30 分鐘時間寬限）──────────────
     // 用「SQ 監控完全相同的評分函式」預演下一輪監控會怎麼評這筆單：
     // 終審要求 ≥ 建單門檻（無緩衝），監控取消門檻 = 建單門檻−2（遲滯帶），
@@ -14645,6 +14663,24 @@ function updateOpenTrades(data) {
         }
       }
       if (isLimitFilled(trade)) {
+        // ── 同輪掃過「進場點＋止損」的模糊單：作廢，不是成交後秒止損 ──
+        // 實案（AI/USDT 空單）：9:47 訊號、9:48 成交、9:48 止損 -1.18R——
+        // 同一根 K 的區間同時涵蓋進場與止損，先後順序在 tick 粒度下無從得知，
+        // 舊邏輯一律「先成交、下一輪止損」，把 K 棒往返的假象記成真虧損。
+        // 這種一根 K 就能往返進場與止損的行情，本來就不該建立部位：
+        // 改為作廢（未成交、無虧損）＋冷卻＋通知，統計不再被 tick 假象污染。
+        const _fillSl = parseFloat(trade.sl) || 0;
+        const _fillAmbig = _fillSl > 0 && (isLong ? trade.loSince <= _fillSl : trade.hiSince >= _fillSl);
+        if (_fillAmbig) {
+          const _amReason = `同一輪價格區間同時掃過進場點 $${fmtPrice(entry)} 與止損 $${fmtPrice(_fillSl)}`
+            + `（區間 $${fmtPrice(trade.loSince)}–$${fmtPrice(trade.hiSince)}），單根 K 內往返、無法判定成交順序，掛單作廢（未成交、無虧損）`;
+          addCancelCooldown(trade, _amReason);
+          toDeleteIds.add(trade.id);
+          changed = true;
+          cancelledSymbols.add(trade.symbol);
+          sendCancelTelegramNotification(trade, _amReason);
+          continue;
+        }
         trade.status    = 'open';
         trade.entryTime = Date.now();
         changed = true;
@@ -16621,6 +16657,35 @@ function saveAIMemory(mem) {
    樣本重新學。原始交易紀錄與封存「不動」——那是樣本，不是風控產物。
    已匯入（imported）的記憶規則保留：那是使用者從備份帶進來的，不是
    這段期間算出來的。 */
+/* ── 一次性全量紀錄清除（v2，2026-08，使用者要求）───────────────
+   v1 只清風控產物、保留樣本，但使用者的裝置仍然崩潰且明確要求
+   「把所有紀錄刪掉」。v2 照辦：所有 csp_* 紀錄一律刪除，只保留
+   「設定與身分」——Telegram token、幣種清單、裝置/主機識別、
+   完整備份（那是使用者自己的救生索，刪了就真的救不回來）。
+   交易紀錄、封存、實驗室、快速單、沙盒、風控學習全部歸零重來。 */
+function fullDataResetV2() {
+  try {
+    if (localStorage.getItem('csp_full_reset_v2')) return;
+    const KEEP = new Set(['csp_settings', 'csp_pairs', 'csp_tab_id', 'csp_signal_master',
+                          'csp_ls_probe', 'csp_okx_sync_at', 'csp_riskctl_reset_v1']);
+    const kill = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || k.indexOf('csp_') !== 0) continue;
+      if (KEEP.has(k) || k.indexOf('csp_full_backup') === 0) continue;
+      kill.push(k);
+    }
+    for (const k of kill) { try { localStorage.removeItem(k); } catch(_e) {} }
+    // 記憶體快取全部失效，避免舊資料從快取還魂
+    try { invalidateLearnCache(); } catch(_e) {}
+    try { _riskWCache = null; _riskMuteCache = null; _labTagWeightCache = null; } catch(_e) {}
+    try { _sbxStateCache = null; _sbxAnCache = null; _pairGateCache = null; _pairLabCache = null; } catch(_e) {}
+    localStorage.setItem('csp_full_reset_v2', String(Date.now()));
+    console.info(`[full-reset] 已依要求刪除全部紀錄（${kill.length} 個鍵），設定/幣種/備份保留`);
+    try { showToast(`🧹 已清除全部歷史紀錄（${kill.length} 項），設定與備份保留，系統從乾淨狀態重新累積`, 'info'); } catch(_e) {}
+  } catch(_e) {}
+}
+
 function riskCtlResetV1() {
   try {
     if (localStorage.getItem('csp_riskctl_reset_v1')) return;
@@ -18754,6 +18819,14 @@ function computeLabTags(coin, isLong, btcChg) {
       if (isLong ? _ctxNd.includes('bull') : _ctxNd.includes('bear'))      tags.push('宏觀順風');
       else if (isLong ? _ctxNd.includes('bear') : _ctxNd.includes('bull')) tags.push('宏觀逆風');
     }
+    // OI 突增判讀（oiWatchScan 的快取，10 分鐘內有效；進標籤後配對研究所能學它）
+    {
+      const _oi = (typeof _oiWatchCache !== 'undefined') ? _oiWatchCache[coin.symbol] : null;
+      if (_oi && _oi.ok && _oi.cls && Date.now() - _oi.at < 10 * 60000) {
+        if ((_oi.cls === 'long_build' && isLong) || (_oi.cls === 'short_build' && !isLong)) tags.push('OI-新錢同向');
+        else if (_oi.trap) tags.push('OI-陷阱疑慮');
+      }
+    }
   } catch(_e) {}
   return tags;
 }
@@ -19685,6 +19758,11 @@ function _qlabSlim(t) {
 /* 目前 localStorage 用量（位元組）與各鍵排行——空間不足是靜默的，
    必須量得出來才處理得了 */
 function storageUsage() {
+  // 60 秒快取：這個函式會把整個 localStorage（可能好幾 MB）的值全部讀出來量長度，
+  // 而它被 _archiveMerge 在「每一次存檔」時呼叫——快速單持倉每輪掃描都在存檔，
+  // 等於每分鐘反覆搬動幾 MB 字串。這種持續的記憶體攪動正是弱機器崩潰的養分。
+  const _c = storageUsage._c;
+  if (_c && Date.now() - _c.ts < 60 * 1000) return _c.v;
   let total = 0; const rows = [];
   try {
     for (let i = 0; i < localStorage.length; i++) {
@@ -19694,7 +19772,9 @@ function storageUsage() {
     }
   } catch(_e) {}
   rows.sort((a, b) => b.n - a.n);
-  return { bytes: total, mb: +(total / 1048576).toFixed(2), rows: rows.slice(0, 12) };
+  const v = { bytes: total, mb: +(total / 1048576).toFixed(2), rows: rows.slice(0, 12) };
+  storageUsage._c = { ts: Date.now(), v };
+  return v;
 }
 const STORAGE_SOFT_LIMIT = 3.2 * 1048576;   // 超過就開始縮減封存，別等到寫不進去
 
@@ -26957,4 +27037,161 @@ function buildPairLabHtml() {
         「實倉」欄是帶 entryTags 的真實完結單（2026-08 起記錄），配對池會隨時間從紙上樣本過渡到實倉樣本。
       </div>
     </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   未平倉量（OI）突增偵測與陷阱判讀
+   需求：OI 突然增加時，判斷是新錢定向進場還是陷阱（誘多/誘空），
+   結合價格與資金費率給出多空判讀，推送 Telegram 並納入交易分析。
+
+   判讀矩陣（30 分鐘窗口，OI 名目值 vs 同窗價格變化）：
+     OI ↑ + 價格 ↑   → 新多進場（趨勢有新錢背書，順勢可信度高）
+     OI ↑ + 價格 ↓   → 新空進場（下跌有新錢背書）
+     OI ↑ + 價格持平 → 蓄勢／埋伏：大資金建倉但刻意壓平價格，
+                       常見於掃損行情前——雙向都要提防假突破
+     OI ↓ + 價格 ↑   → 空頭回補推升：漲勢沒有新錢，是平倉單堆出來的
+                       → 誘多疑慮（回補結束漲勢即斷）
+     OI ↓ + 價格 ↓   → 多頭平倉殺跌：跌勢是清算/平倉推動
+                       → 誘空疑慮（殺完常見 V 轉）
+   資金費率交叉驗證（沙盒的批量快取，零額外請求）：
+     誘多疑慮 + 費率偏正（多頭擁擠）→ 陷阱可信度升級
+     誘空疑慮 + 費率偏負（空頭擁擠）→ 陷阱可信度升級
+
+   成本控制：每輪最多 10 檔（持倉/掛單幣優先，其次 24h 大波動幣），
+   每檔 5 分鐘 TTL，一檔一個 openInterestHist 請求（5m × 7 根 = 30 分鐘窗）。
+   價格窗口用策略沙盒的掃描節點歷史（_sbxHist），同樣零額外請求。 */
+
+const OI_CFG = {
+  ttlMin:       5,     // 每檔快取有效期
+  budget:       10,    // 每輪最多請求數
+  surgePct:     3,     // OI 30 分鐘變化 ≥3% 視為突增（常態 5m 檔位噪音 <1%）
+  strongPct:    6,     // ≥6% 視為強烈突增
+  flatPricePct: 0.35,  // 同窗價格 |變化| < 0.35% 視為「持平」（埋伏判定）
+  tgCooldownMin: 45,   // 同幣種 Telegram 推送冷卻
+  frCrowded:    0.0003,// 資金費率 |0.03%| 視為單邊擁擠（陷阱交叉驗證）
+};
+const _oiWatchCache = {};   // symbol → { at, ok, chgPct, priceChgPct, cls, trap, note, strong }
+const _oiTgAt = {};         // symbol → 上次推送時間
+
+function _oiPrice30mAgo(symbol) {
+  try {
+    const h = _sbxHist[symbol];
+    if (!h || h.length < 5) return 0;
+    const target = Date.now() - 30 * 60000;
+    let best = h[0];
+    for (const p of h) { if (Math.abs(p.t - target) < Math.abs(best.t - target)) best = p; }
+    // 節點太新（不足 15 分鐘的歷史）代表窗口不完整，不判讀
+    return (Date.now() - best.t) >= 15 * 60000 ? best.p : 0;
+  } catch(_e) { return 0; }
+}
+
+function _oiClassify(chgPct, priceChgPct, fr) {
+  const flat = Math.abs(priceChgPct) < OI_CFG.flatPricePct;
+  let cls = '', trap = false, note = '';
+  if (chgPct > 0) {
+    if (flat) {
+      cls = 'ambush'; trap = true;
+      note = `OI 突增 +${chgPct.toFixed(1)}% 但價格持平（${priceChgPct >= 0 ? '+' : ''}${priceChgPct.toFixed(2)}%）`
+           + `——大資金建倉卻壓平價格，掃損/假突破前的典型埋伏，雙向提防`;
+    } else if (priceChgPct > 0) {
+      cls = 'long_build';
+      note = `OI +${chgPct.toFixed(1)}%、價格 +${priceChgPct.toFixed(2)}%——新多進場，漲勢有新錢背書`;
+    } else {
+      cls = 'short_build';
+      note = `OI +${chgPct.toFixed(1)}%、價格 ${priceChgPct.toFixed(2)}%——新空進場，跌勢有新錢背書`;
+    }
+  } else {
+    if (priceChgPct > OI_CFG.flatPricePct) {
+      cls = 'short_cover'; trap = true;
+      note = `OI ${chgPct.toFixed(1)}% 但價格 +${priceChgPct.toFixed(2)}%——漲勢由空頭回補推動、沒有新錢`
+           + `，誘多疑慮（回補結束漲勢即斷）`;
+    } else if (priceChgPct < -OI_CFG.flatPricePct) {
+      cls = 'long_flush'; trap = true;
+      note = `OI ${chgPct.toFixed(1)}%、價格 ${priceChgPct.toFixed(2)}%——跌勢由多頭平倉/清算推動`
+           + `，誘空疑慮（殺完常見 V 轉）`;
+    } else {
+      cls = 'unwind';
+      note = `OI ${chgPct.toFixed(1)}%、價格持平——雙向減倉降溫`;
+    }
+  }
+  // 資金費率交叉驗證（有批量快取才驗，沒有就略過）
+  if (trap && isFinite(fr)) {
+    if (cls === 'short_cover' && fr >= OI_CFG.frCrowded) note += `；資金費率 ${(fr * 100).toFixed(3)}% 多頭擁擠 → 誘多可信度升級`;
+    if (cls === 'long_flush' && fr <= -OI_CFG.frCrowded) note += `；資金費率 ${(fr * 100).toFixed(3)}% 空頭擁擠 → 誘空可信度升級`;
+  }
+  return { cls, trap, note };
+}
+
+async function oiWatchScan(data) {
+  if (!isSignalMaster()) return;
+  if (!Array.isArray(data) || !data.length) return;
+  const now = Date.now();
+  // 對象：持倉/掛單幣優先（它們的 OI 異動直接關係到手上的單），其次 24h 大波動幣
+  let holding = new Set();
+  try {
+    holding = new Set(loadTradeLog().filter(t => t.status === 'open' || t.status === 'pending').map(t => t.symbol));
+    for (const t of loadScalpLog()) if (t.status === 'open') holding.add(t.symbol);
+  } catch(_e) {}
+  const want = [];
+  for (const c of data) if (c && holding.has(c.symbol)) want.push(c.symbol);
+  for (const c of data) {
+    if (want.length >= OI_CFG.budget * 2) break;
+    if (c && !holding.has(c.symbol) && Math.abs(parseFloat(c.change24h) || 0) >= 3) want.push(c.symbol);
+  }
+  const due = want.filter(s => { const c = _oiWatchCache[s]; return !c || now - c.at > OI_CFG.ttlMin * 60000; })
+    .slice(0, OI_CFG.budget);
+  if (!due.length) return;
+
+  await Promise.allSettled(due.map(async symbol => {
+    try {
+      const sym = symbol.replace('/', '');
+      const ctrl = new AbortController();
+      const tm = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=7`,
+        { signal: ctrl.signal });
+      clearTimeout(tm);
+      if (!r.ok) { _oiWatchCache[symbol] = { at: now, ok: false }; return; }
+      const arr = await r.json();
+      if (!Array.isArray(arr) || arr.length < 4) { _oiWatchCache[symbol] = { at: now, ok: false }; return; }
+      const first = parseFloat(arr[0].sumOpenInterestValue) || 0;
+      const last  = parseFloat(arr[arr.length - 1].sumOpenInterestValue) || 0;
+      if (!(first > 0 && last > 0)) { _oiWatchCache[symbol] = { at: now, ok: false }; return; }
+      const chgPct = (last - first) / first * 100;
+      if (Math.abs(chgPct) < OI_CFG.surgePct) {
+        _oiWatchCache[symbol] = { at: now, ok: true, chgPct: +chgPct.toFixed(2), cls: '', trap: false };
+        return;
+      }
+      const coin = data.find(d => d.symbol === symbol);
+      const curP = parseFloat(coin?.price) || 0;
+      const p30 = _oiPrice30mAgo(symbol);
+      const priceChgPct = (curP > 0 && p30 > 0) ? (curP - p30) / p30 * 100 : 0;
+      const fr = (typeof _sbxFunding === 'object' && _sbxFunding) ? _sbxFunding[symbol] : null;
+      const { cls, trap, note } = _oiClassify(chgPct, priceChgPct, fr);
+      const strong = Math.abs(chgPct) >= OI_CFG.strongPct;
+      _oiWatchCache[symbol] = { at: now, ok: true, chgPct: +chgPct.toFixed(2),
+        priceChgPct: +priceChgPct.toFixed(2), cls, trap, note, strong };
+      console.info(`[oi-watch] ${symbol} ${note}`);
+      // ── Telegram：持倉/掛單幣一律推；非持倉幣只推「強烈突增或陷阱」──
+      const held = holding.has(symbol);
+      if (!held && !strong && !trap) return;
+      if (now - (_oiTgAt[symbol] || 0) < OI_CFG.tgCooldownMin * 60000) return;
+      const s = loadSettings();
+      if (!(s.notifTelegram && s.tgToken && s.tgChatId)) return;
+      const icon = trap ? '⚠️' : chgPct > 0 ? '📈' : '📉';
+      const clsLabel = { long_build: '新多進場', short_build: '新空進場', ambush: '埋伏/蓄勢（陷阱警戒）',
+        short_cover: '空頭回補（誘多疑慮）', long_flush: '多頭平倉（誘空疑慮）', unwind: '雙向減倉' }[cls] || cls;
+      const text = [
+        `${icon} <b>未平倉量異動</b> — ${symbol.replace('/USDT', '')}`,
+        ``,
+        `📊 OI 30分鐘 <b>${chgPct > 0 ? '+' : ''}${chgPct.toFixed(1)}%</b>｜價格 ${priceChgPct >= 0 ? '+' : ''}${priceChgPct.toFixed(2)}%｜判讀：<b>${clsLabel}</b>`,
+        `🧠 ${note}`,
+        held ? `📌 你在此幣有持倉/掛單——${trap ? '陷阱側寫成立，留意止損別掛在明顯掃損位' : '異動方向可與持倉方向對照'}` : '',
+        ``,
+        `⏰ ${new Date().toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`,
+        `#${sym.toLowerCase()} #oi ${trap ? '#trap' : ''}`,
+      ].filter(Boolean).join('\n');
+      sendTelegramMessage(s.tgToken, s.tgChatId, text);
+      _oiTgAt[symbol] = now;
+    } catch(_e) { _oiWatchCache[symbol] = { at: now, ok: false }; }
+  }));
 }
