@@ -47,6 +47,7 @@ async function init() {
   registerSW();        // 後台通知 Service Worker
   fullDataResetV2();   // 一次性：依使用者要求刪除全部歷史紀錄（設定/幣種/備份保留）
   riskCtlResetV1();    // 一次性：清除快取互撞期間累積的風控學習資料（見函式說明）
+  try { await archInit(); } catch(e) { console.warn('[arch-idb]', e); }  // 封存層：IDB → 記憶體（含 localStorage 遷移）
   monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
 
   try {
@@ -19812,6 +19813,8 @@ function storageUsage() {
 const STORAGE_SOFT_LIMIT = 3.2 * 1048576;   // 超過就開始縮減封存，別等到寫不進去
 
 function _loadArchive(key) {
+  // IDB 就緒後記憶體是唯一同步來源；未就緒（啟動極早期/隱私模式）退回 localStorage
+  if (_archMem[key] !== undefined) return _archMem[key];
   try { const a = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(a) ? a : []; }
   catch(_e) { return []; }
 }
@@ -19835,7 +19838,16 @@ function _archiveMerge(key, max, slimFn, items, tag) {
     let added = 0;
     for (const t of src) { if (!byId.has(t.id)) added++; byId.set(t.id, slimFn(t)); }
     if (!added) { _archSig[key] = sig; return; }           // 沒有新樣本：記下簽章，之後連解析都省
-    // 空間吃緊時主動縮減封存：封存是「輔助樣本」，不能為了它把主要紀錄擠掉
+    // IDB 模式：上限 ×4、不受 localStorage 空間壓力影響（GB 級空間，樣本不再被迫輪替）
+    if (_archReady && _archMem[key] !== undefined) {
+      const out = [...byId.values()]
+        .sort((a, b) => (b.exitTime || b.timestamp || 0) - (a.exitTime || a.timestamp || 0))
+        .slice(0, max * 4);
+      _archPersist(key, out);
+      _archSig[key] = sig;
+      return;
+    }
+    // localStorage 後備模式（IDB 不可用）：原本的空間壓力縮減邏輯
     let cap = max;
     try {
       const used = storageUsage().bytes;
@@ -20690,6 +20702,14 @@ function exportFullBackup() {
         _pairCount = _pairs.length;
       }
     } catch(_pe) {}
+    // 封存已移居 IndexedDB，上面的 localStorage 掃描抓不到 → 由記憶體明確補進備份。
+    // 還原時封存會被寫回 localStorage，下次啟動 archInit 自動吸回 IDB，不需另寫還原邏輯。
+    try {
+      for (const _ak of ARCH_KEYS()) {
+        const _aa = _loadArchive(_ak);
+        if (_aa && _aa.length) backup.data[_ak] = JSON.stringify(_aa);
+      }
+    } catch(_ae) {}
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -27569,4 +27589,85 @@ function buildWinupHtml() {
       一般單 ${v.loserMfe.main ? `<b>${v.loserMfe.main.pct}%</b>（${v.loserMfe.main.had}/${v.loserMfe.main.n}）` : '樣本不足'}
       <span style="color:var(--text3);font-size:0.72rem">——比例高代表「進場對了、出場漏了」，該調的是出場實驗室的鎖利/回吐，不是進場條件</span></div>
   </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   IndexedDB 封存層（樣本天花板解除）
+   localStorage 只有 ~5MB，封存被迫瘦身、裁切、輪替——樣本是所有
+   學習層的糧食，天花板就是學習速度的天花板。IndexedDB 給 GB 級空間。
+
+   設計（把風險壓到最低）：
+   · 記憶體（_archMem）是唯一的「同步讀取來源」：_loadArchive 讀它，
+     所有既有呼叫端零改動。IDB 只負責持久化（async、fire-and-forget）。
+   · 啟動時 archInit()：IDB → 記憶體；localStorage 若還有舊封存，
+     併入 IDB 後從 localStorage 移除（一口氣釋放大半配額）。
+     這個遷移是無條件的（非一次性旗標）——備份還原會把封存寫回
+     localStorage，下次啟動自然再被吸進 IDB，不需要另寫還原邏輯。
+   · IDB 就緒後封存上限自動 ×4（進一步擴大等資料長起來再說），
+     且不再受 localStorage 空間壓力縮減的影響。
+   · IDB 不可用（隱私模式等）→ 一切退回原本的 localStorage 行為。 */
+
+const ARCH_IDB_NAME  = 'csp-archive';
+const ARCH_IDB_STORE = 'kv';
+const ARCH_KEYS = () => [QLAB_ARCHIVE_KEY, LEARN_ARCHIVE_KEY, LAB_ARCHIVE_KEY, SBX_ARCHIVE_KEY];
+const _archMem = {};
+let _archReady = false;
+
+function _archIdbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(ARCH_IDB_NAME, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(ARCH_IDB_STORE);
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+async function _archIdbGet(key) {
+  const db = await _archIdbOpen();
+  return new Promise((resolve, reject) => {
+    const rq = db.transaction(ARCH_IDB_STORE, 'readonly').objectStore(ARCH_IDB_STORE).get(key);
+    rq.onsuccess = () => resolve(rq.result ?? null);
+    rq.onerror   = () => reject(rq.error);
+  });
+}
+async function _archIdbSet(key, val) {
+  const db = await _archIdbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ARCH_IDB_STORE, 'readwrite');
+    tx.objectStore(ARCH_IDB_STORE).put(val, key);
+    tx.oncomplete = resolve;
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+async function archInit() {
+  if (typeof indexedDB === 'undefined') return;   // 不支援 → 全程 localStorage 模式
+  for (const key of ARCH_KEYS()) {
+    try {
+      let arr = await _archIdbGet(key);
+      if (!Array.isArray(arr)) arr = null;
+      let ls = null;
+      try { ls = JSON.parse(localStorage.getItem(key) || 'null'); } catch(_e) {}
+      if (Array.isArray(ls) && ls.length) {
+        const byId = new Map((arr || []).map(t => [t && t.id, t]));
+        let added = 0;
+        for (const t of ls) if (t && t.id && !byId.has(t.id)) { byId.set(t.id, t); added++; }
+        arr = [...byId.values()];
+        await _archIdbSet(key, arr);
+        try { localStorage.removeItem(key); } catch(_e) {}
+        if (added || ls.length) console.info(`[arch-idb] ${key} 已遷移至 IndexedDB（${arr.length} 筆，localStorage 釋放）`);
+      }
+      _archMem[key] = arr || [];
+    } catch(e) {
+      console.warn('[arch-idb] 初始化失敗，此鍵維持 localStorage 模式：', key, e);
+    }
+  }
+  _archReady = true;
+}
+/* 封存寫入的統一出口（_archiveMerge 專用）：IDB 就緒 → 記憶體＋IDB；否則 localStorage */
+function _archPersist(key, out) {
+  if (_archReady && _archMem[key] !== undefined) {
+    _archMem[key] = out;
+    _archIdbSet(key, out).catch(e => console.warn('[arch-idb] 寫入失敗', key, e));
+    return true;
+  }
+  return false;
 }
