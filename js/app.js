@@ -13899,6 +13899,23 @@ async function recordSignalsFromScan(data) {
       if (_wgM) { _no(_wgM); continue; }
     } catch(_e) {}
 
+    // ── 未平倉量納入建單分析 ──────────────────────────────────────
+    // 已確認（連兩次一致）的 OI 判讀：強烈反向新錢 → 不建單（跌勢有新空
+    // 背書時不做多、漲勢有新多背書時不做空）；陷阱判讀與一般判讀附在單上
+    // 與 Telegram 訊息裡，讓每張單看得到 OI 語境。
+    let _scanOiNote = '';
+    try {
+      const _oiG = (typeof _oiWatchCache !== 'undefined') ? _oiWatchCache[coin.symbol] : null;
+      if (_oiG && _oiG.ok && _oiG.confirmed && _oiG.cls && Date.now() - _oiG.at < 15 * 60000) {
+        const _oiContra = (isLong && _oiG.cls === 'short_build') || (!isLong && _oiG.cls === 'long_build');
+        if (_oiContra && _oiG.strong) {
+          _no(`OI 強烈${_oiG.cls === 'short_build' ? '新空' : '新多'}進場與交易方向對撞`); continue;
+        }
+        _scanOiNote = _oiG.note || '';
+        if (_scanOiNote) _scanSqFactors.push(`📊 OI 語境：${_scanOiNote}`);
+      }
+    } catch(_e) {}
+
     // ── 建單前終審（根本解法，取代 30 分鐘時間寬限）──────────────
     // 用「SQ 監控完全相同的評分函式」預演下一輪監控會怎麼評這筆單：
     // 終審要求 ≥ 建單門檻（無緩衝），監控取消門檻 = 建單門檻−2（遲滯帶），
@@ -13981,6 +13998,7 @@ async function recordSignalsFromScan(data) {
       regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
       rsPct: isFinite(_rsRank[coin.symbol]) ? _rsRank[coin.symbol] : null,  // 相對強弱百分位
       tpZones: setup.tpZones || null,       // 獲利側合流區（結構跟隨停利用）
+      oiCtx: _scanOiNote || null,           // 建單當下的 OI 語境（已確認判讀）
       riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
@@ -18875,10 +18893,10 @@ function computeLabTags(coin, isLong, btcChg) {
       if (isLong ? _ctxNd.includes('bull') : _ctxNd.includes('bear'))      tags.push('宏觀順風');
       else if (isLong ? _ctxNd.includes('bear') : _ctxNd.includes('bull')) tags.push('宏觀逆風');
     }
-    // OI 突增判讀（oiWatchScan 的快取，10 分鐘內有效；進標籤後配對研究所能學它）
+    // OI 突增判讀（oiWatchScan 的快取，10 分鐘內有效；只認「連兩次一致」的確認判讀）
     {
       const _oi = (typeof _oiWatchCache !== 'undefined') ? _oiWatchCache[coin.symbol] : null;
-      if (_oi && _oi.ok && _oi.cls && Date.now() - _oi.at < 10 * 60000) {
+      if (_oi && _oi.ok && _oi.confirmed && _oi.cls && Date.now() - _oi.at < 10 * 60000) {
         if ((_oi.cls === 'long_build' && isLong) || (_oi.cls === 'short_build' && !isLong)) tags.push('OI-新錢同向');
         else if (_oi.trap) tags.push('OI-陷阱疑慮');
       }
@@ -19949,7 +19967,7 @@ const LEARN_KEEP_FIELDS = [
   'entryReasonCodes',                        // 進場理由（正規化代碼），供逐理由績效分析
   'kz', 'entryTime',                         // 時段勝率學習＋秒損統計（成交→止損耗時）
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
-  'regime', 'rsPct',                         // 市場狀態×方向勝率學習＋相對強弱分析
+  'regime', 'rsPct', 'oiCtx',                // 市場狀態×方向勝率學習＋相對強弱＋OI 語境
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -25044,6 +25062,14 @@ async function recordScalpSignals(data) {
       if (winupSymbolBlocked('scalp', coin.symbol)) { _sr('幣種負期望封鎖'); continue; }
       // 市場狀態×方向：此天氣下這個方向實測顯著虧 → 暫停
       if (winupRegimeBlocked('scalp', dir)) { _sr('市場狀態負期望封鎖'); continue; }
+      // 未平倉量納入建單分析：已確認的強烈反向新錢 → 不做（快速單同一標準）
+      {
+        const _oiS = _oiWatchCache[coin.symbol];
+        if (_oiS && _oiS.ok && _oiS.confirmed && _oiS.strong && Date.now() - _oiS.at < 15 * 60000
+            && ((isLong && _oiS.cls === 'short_build') || (!isLong && _oiS.cls === 'long_build'))) {
+          _sr('OI強烈反向新錢'); continue;
+        }
+      }
       const setup = buildScalpSetup(coin, isLong, family);
       if (!setup) continue;
       // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
@@ -26311,6 +26337,7 @@ async function sbxEnsureK1h(symbols) {
 
 /* ── RSI 背離：掃描節點的記憶體滾動視窗（重新整理後重新累積）── */
 const _sbxHist = {};
+const _sbxGlitch = {};   // 疑似資料源跳動的暫存（見 sbxBuildFeatures 的防污染說明）
 function sbxDetectDivergence(sym, price, rsi) {
   const h = _sbxHist[sym];
   if (!h || h.length < 90) return 0;   // 至少 ~1.5 小時的節點才有「前高/前低」可比
@@ -26372,7 +26399,23 @@ function sbxBuildFeatures(data) {
     rows.push(f);
     // 背離視窗在偵測之後才推入本節點（避免拿自己跟自己比）
     const h = _sbxHist[coin.symbol] || (_sbxHist[coin.symbol] = []);
-    h.push({ t: now, p: price, r: rsi });
+    /* 節點防污染（2026-08，實案：ONE 的 OI 通知出現 30 分鐘 ±27% 的價格變化，
+       兩則判讀互相矛盾——掃描價偶發跳到另一個資料源/精度的價格空間，污染了
+       30 分鐘比較窗）。單一節點與前一節點差 >10% → 先扣住不入窗；下一輪若
+       又出現且與扣住的價一致（±5%）＝真行情，兩筆一起補入；否則丟棄。 */
+    const _lastT = h[h.length - 1];
+    const _gl = _sbxGlitch[coin.symbol];
+    if (_lastT && now - _lastT.t < 5 * 60000 && Math.abs(price - _lastT.p) / _lastT.p > 0.10) {
+      if (_gl && Math.abs(price - _gl.p) / _gl.p < 0.05) {
+        h.push({ t: _gl.t, p: _gl.p, r: rsi }, { t: now, p: price, r: rsi });   // 連兩筆一致 → 真行情
+        delete _sbxGlitch[coin.symbol];
+      } else {
+        _sbxGlitch[coin.symbol] = { t: now, p: price };                          // 扣住觀察
+      }
+    } else {
+      if (_gl) delete _sbxGlitch[coin.symbol];
+      h.push({ t: now, p: price, r: rsi });
+    }
     if (h.length > 240) h.splice(0, h.length - 240);
   }
   return rows;
@@ -27281,17 +27324,24 @@ const OI_CFG = {
   surgePct:     3,     // OI 30 分鐘變化 ≥3% 視為突增（常態 5m 檔位噪音 <1%）
   strongPct:    6,     // ≥6% 視為強烈突增
   flatPricePct: 0.35,  // 同窗價格 |變化| < 0.35% 視為「持平」（埋伏判定）
-  tgCooldownMin: 45,   // 同幣種 Telegram 推送冷卻
+  tgCooldownMin: 90,   // 同幣種 Telegram 推送冷卻（45→90：實測 45 分鐘會出現連環推播）
   frCrowded:    0.0003,// 資金費率 |0.03%| 視為單邊擁擠（陷阱交叉驗證）
+  maxOiChg:     40,    // 30 分鐘 OI 變化 >40% 視為可疑資料（小幣常見 API 毛刺）
+  maxPriceChg:  15,    // 30 分鐘價格 |變化| >15% 視為可疑（多半是節點污染，非真行情）
 };
-const _oiWatchCache = {};   // symbol → { at, ok, chgPct, priceChgPct, cls, trap, note, strong }
+const _oiWatchCache = {};   // symbol → { at, ok, chgPct, priceChgPct, cls, trap, note, strong, confirmed }
 const _oiTgAt = {};         // symbol → 上次推送時間
+const _oiPendingCls = {};   // symbol → { cls, at }（判讀需連續兩次一致才算確認）
+const _oiLastAlert = {};    // symbol → { cls, at }（方向翻面抑制）
 
 function _oiPrice30mAgo(symbol) {
   try {
     const h = _sbxHist[symbol];
     if (!h || h.length < 5) return 0;
     const target = Date.now() - 30 * 60000;
+    // 取目標時點 ±6 分鐘內全部節點的「中位數」：單一污染節點不再左右整個判讀
+    const near = h.filter(p => Math.abs(p.t - target) <= 6 * 60000).map(p => p.p).sort((a, b) => a - b);
+    if (near.length >= 2) return near[Math.floor(near.length / 2)];
     let best = h[0];
     for (const p of h) { if (Math.abs(p.t - target) < Math.abs(best.t - target)) best = p; }
     // 節點太新（不足 15 分鐘的歷史）代表窗口不完整，不判讀
@@ -27380,18 +27430,34 @@ async function oiWatchScan(data) {
       const p30 = _oiPrice30mAgo(symbol);
       const priceChgPct = (curP > 0 && p30 > 0) ? (curP - p30) / p30 * 100 : 0;
       const fr = (typeof _sbxFunding === 'object' && _sbxFunding) ? _sbxFunding[symbol] : null;
+      // ── 可疑資料守門（實案：ONE 出現 30 分鐘 ±27% 價格、+86% OI 的判讀，
+      //    48 分鐘內兩則互相矛盾——那不是行情，是資料毛刺/節點污染）──
+      if (Math.abs(chgPct) > OI_CFG.maxOiChg || Math.abs(priceChgPct) > OI_CFG.maxPriceChg) {
+        console.info(`[oi-watch] ${symbol} 讀數可疑（OI ${chgPct.toFixed(1)}%／價 ${priceChgPct.toFixed(1)}%），本輪不判讀`);
+        _oiWatchCache[symbol] = { at: now, ok: true, chgPct: +chgPct.toFixed(2), cls: '', trap: false, confirmed: false };
+        return;
+      }
       const { cls, trap, note: _baseNote } = _oiClassify(chgPct, priceChgPct, fr);
       // 清算流交叉作證：陷阱判讀若同時看到單邊清算，可信度大幅升級
       let note = _baseNote;
       try { const _ln = liqNote(symbol); if (_ln) note += `；${_ln}`; } catch(_e) {}
       const strong = Math.abs(chgPct) >= OI_CFG.strongPct;
+      // ── 確認機制：同一判讀連續兩次（≤12 分鐘內）一致才算數 ──
+      // 標籤、建單閘門、Telegram 全部只認 confirmed——單次讀數不再有話語權
+      const pend = _oiPendingCls[symbol];
+      const confirmed = !!(pend && pend.cls === cls && now - pend.at <= 12 * 60000);
+      _oiPendingCls[symbol] = { cls, at: now };
       _oiWatchCache[symbol] = { at: now, ok: true, chgPct: +chgPct.toFixed(2),
-        priceChgPct: +priceChgPct.toFixed(2), cls, trap, note, strong };
-      console.info(`[oi-watch] ${symbol} ${note}`);
+        priceChgPct: +priceChgPct.toFixed(2), cls, trap, note, strong, confirmed };
+      console.info(`[oi-watch] ${symbol} ${note}${confirmed ? '（已確認）' : '（待下輪確認）'}`);
+      if (!confirmed) return;
       // ── Telegram：持倉/掛單幣一律推；非持倉幣只推「強烈突增或陷阱」──
       const held = holding.has(symbol);
       if (!held && !strong && !trap) return;
       if (now - (_oiTgAt[symbol] || 0) < OI_CFG.tgCooldownMin * 60000) return;
+      // 方向翻面抑制：2 小時內判讀換邊（新多↔新空）＝雜訊環境，只有陷阱級才值得再吵一次
+      const lastA = _oiLastAlert[symbol];
+      if (lastA && lastA.cls !== cls && now - lastA.at < 2 * 3600e3 && !trap) return;
       const s = loadSettings();
       if (!(s.notifTelegram && s.tgToken && s.tgChatId)) return;
       const icon = trap ? '⚠️' : chgPct > 0 ? '📈' : '📉';
@@ -27409,6 +27475,7 @@ async function oiWatchScan(data) {
       ].filter(Boolean).join('\n');
       sendTelegramMessage(s.tgToken, s.tgChatId, text);
       _oiTgAt[symbol] = now;
+      _oiLastAlert[symbol] = { cls, at: now };
     } catch(_e) { _oiWatchCache[symbol] = { at: now, ok: false }; }
   }));
 }
