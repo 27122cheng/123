@@ -19019,9 +19019,10 @@ function setLabTab(t) { _labTab = t; renderLabPage(); }
 function renderLabPage() {
   const el = document.getElementById('lab-content');
   if (!el) return;
-  const bar = _subTabBar(_labTab, [['main', '🧪 分析實驗室'], ['quant', '📐 量化實驗室'], ['sbox', '🎯 策略沙盒']], 'setLabTab');
+  const bar = _subTabBar(_labTab, [['main', '🧪 分析實驗室'], ['quant', '📐 量化實驗室'], ['sbox', '🎯 策略沙盒'], ['bt', '⏪ 回測']], 'setLabTab');
   if (_labTab === 'quant') { el.innerHTML = bar + buildQuantLabHtml(); return; }
   if (_labTab === 'sbox')  { el.innerHTML = bar + buildSbxHtml(); return; }
+  if (_labTab === 'bt')    { el.innerHTML = bar + buildBtHtml(); return; }
   const lab = loadAILab();
   const closed  = lab.filter(o => o.status === 'closed');
   const active  = lab.filter(o => o.status === 'pending' || o.status === 'open');
@@ -26156,7 +26157,7 @@ const SBX_STRATS = [
   { id: 'orb', name: '開盤區間突破', icon: '🌅', cooldownMin: 600, detect: f => {
       const k = f.k1h;
       if (!k || !(k.orbHi > 0) || !(k.orbLo > 0)) return null;
-      const now = Date.now();
+      const now = f.now || Date.now();   // 回測注入歷史時間；實盤沿用現在
       // 區間＝UTC 當日第一根 1h：需已完成、且仍是同一交易日
       if (now - k.day < 3600e3 || now - k.day > 86400e3) return null;
       // 只抓「剛突破」（距區間邊界 0.5×ATR 內），不追已走遠的
@@ -27823,4 +27824,403 @@ function updateMarketContext(data) {
 function currentRegimeKey() {
   // 15 分鐘內的判定才可信；過期寧可回空（不擋單、不貼標籤）
   return (_regimeCache && Date.now() - _regimeCache.at < 15 * 60000) ? _regimeCache.key : '';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   歷史回測引擎（沙盒 10 策略）
+   目的：沙盒前向試跑要幾個月才滿 200 筆——回測用歷史 K 線幾分鐘掃完
+   近 10 天 × 多幣，把「明顯不行的」先淘汰、把參數起點擺對，前向試跑
+   只驗證倖存者。
+
+   誠實聲明（顯示在結果頁，不是小字）：
+   · 進場判定用「與實盤完全相同」的 SBX_STRATS.detect 函式與特徵欄位
+   · 風險距離用 1.2×ATR 近似（實盤走 computeSimpleSetup 結構止損），
+     成交延遲以「下一根 15m 開盤價」近似（實盤是 45 秒後首個報價）——
+     因此絕對數字只能「排序比較」，不能當未來報酬預期
+   · 同一根 K 同時觸及止損與止盈 → 一律算止損（保守）
+   · 資金費率用歷史費率、VWAP/開盤區間用 1h K 重建、RSI 背離用 15m
+     收盤近似（實盤是分鐘級節點）
+   規則遵守：只在按鈕觸發時執行（絕不進渲染路徑/掃描路徑），逐段讓出
+   主執行緒（每 200 根 K 一次），可中途取消，結果快取供渲染。 */
+
+const BT_CFG = {
+  bars15m: 1000,      // 幣安單次上限 → 約 10.4 天
+  symbols: 6,         // 預設回測檔數（取掃描中 24h 成交額前幾名）
+  warmup:  220,       // 指標暖機根數
+  riskAtrMult: 1.2,   // 風險距離近似：1.2×ATR(15m)
+  maxHoldBars: 144,   // 36 小時 = 144 根 15m（與沙盒 maxHoldH 一致）
+  feeRate: 0.0005,
+};
+let _btState = { running: false, cancel: false, progress: '', results: null, at: 0 };
+
+/* ── 序列版指標（indicators.js 是「最後一值」版，回測需要整條序列）── */
+function btEmaSeries(closes, period) {
+  const out = new Array(closes.length).fill(null);
+  const k = 2 / (period + 1);
+  let ema = null;
+  for (let i = 0; i < closes.length; i++) {
+    ema = ema == null ? closes[i] : closes[i] * k + ema * (1 - k);
+    if (i >= period - 1) out[i] = ema;
+  }
+  return out;
+}
+function btRsiSeries(closes, period = 14) {
+  const out = new Array(closes.length).fill(50);
+  let ag = 0, al = 0;
+  for (let i = 1; i < closes.length; i++) {
+    const ch = closes[i] - closes[i - 1];
+    const g = Math.max(0, ch), l = Math.max(0, -ch);
+    if (i <= period) { ag += g / period; al += l / period; }
+    else { ag = (ag * (period - 1) + g) / period; al = (al * (period - 1) + l) / period; }
+    if (i >= period) out[i] = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+  }
+  return out;
+}
+function btAtrSeries(highs, lows, closes, period = 14) {
+  const out = new Array(closes.length).fill(null);
+  let atr = 0;
+  for (let i = 1; i < closes.length; i++) {
+    const tr = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+    if (i <= period) { atr += tr / period; }
+    else atr = (atr * (period - 1) + tr) / period;
+    if (i >= period) out[i] = atr;
+  }
+  return out;
+}
+function btAdxSeries(highs, lows, closes, period = 14) {
+  const n = closes.length;
+  const out = new Array(n).fill(0);
+  let trS = 0, pS = 0, mS = 0, adx = null;
+  for (let i = 1; i < n; i++) {
+    const up = highs[i] - highs[i - 1], dn = lows[i - 1] - lows[i];
+    const pDM = (up > dn && up > 0) ? up : 0;
+    const mDM = (dn > up && dn > 0) ? dn : 0;
+    const tr = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+    if (i <= period) { trS += tr; pS += pDM; mS += mDM; if (i < period) continue; }
+    else { trS = trS - trS / period + tr; pS = pS - pS / period + pDM; mS = mS - mS / period + mDM; }
+    const pDI = trS > 0 ? 100 * pS / trS : 0, mDI = trS > 0 ? 100 * mS / trS : 0;
+    const dx = (pDI + mDI) > 0 ? 100 * Math.abs(pDI - mDI) / (pDI + mDI) : 0;
+    adx = adx == null ? dx : (adx * (period - 1) + dx) / period;
+    out[i] = adx;
+  }
+  return out;
+}
+function btMacdHistSeries(closes) {
+  const e12 = btEmaSeries(closes, 12), e26 = btEmaSeries(closes, 26);
+  const macd = closes.map((_, i) => (e12[i] != null && e26[i] != null) ? e12[i] - e26[i] : null);
+  const out = new Array(closes.length).fill(0);
+  const k = 2 / 10;
+  let sig = null;
+  for (let i = 0; i < macd.length; i++) {
+    if (macd[i] == null) continue;
+    sig = sig == null ? macd[i] : macd[i] * k + sig * (1 - k);
+    out[i] = macd[i] - sig;
+  }
+  return out;
+}
+function btBbSeries(closes, period = 20, mult = 2) {
+  const up = new Array(closes.length).fill(0), lo = new Array(closes.length).fill(0);
+  let sum = 0, sumSq = 0;
+  for (let i = 0; i < closes.length; i++) {
+    sum += closes[i]; sumSq += closes[i] * closes[i];
+    if (i >= period) { sum -= closes[i - period]; sumSq -= closes[i - period] * closes[i - period]; }
+    if (i >= period - 1) {
+      const mean = sum / period;
+      const sd = Math.sqrt(Math.max(0, sumSq / period - mean * mean));
+      up[i] = mean + mult * sd; lo[i] = mean - mult * sd;
+    }
+  }
+  return { up, lo };
+}
+/* 高週期訊號序列：每根該週期 K 用與實盤相同的 analyzeTimeframeSignal */
+function btTfSignals(raw) {
+  const out = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (i < 30) { out.push(null); continue; }
+    try { out.push(analyzeTimeframeSignal(raw.slice(Math.max(0, i - 99), i + 1))); }
+    catch(_e) { out.push(null); }
+  }
+  return out;
+}
+/* 依 15m 棒收盤時間找「已收完」的高週期棒索引（用走針，整體 O(n)） */
+function btTfPointer(raw15, rawTf) {
+  const idx = new Array(raw15.length).fill(-1);
+  let p = 0;
+  for (let i = 0; i < raw15.length; i++) {
+    const t = +raw15[i][6];   // 15m closeTime
+    while (p < rawTf.length && +rawTf[p][6] <= t) p++;
+    idx[i] = p - 1;           // 最後一根已完整收盤的高週期棒
+  }
+  return idx;
+}
+
+async function btFetchAll(symbol) {
+  const sym = symbol.replace('/', '');
+  const f = (tf, n) => (typeof fetchKlinesExec === 'function' ? fetchKlinesExec : fetchKlines)(sym, tf, n);
+  const [k15, k1h, k4h, k1d, k1w, fr] = await Promise.all([
+    f('15m', BT_CFG.bars15m), f('1h', 300), f('4h', 120), f('1d', 60), f('1w', 40),
+    (async () => {
+      try {
+        const r = await fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${sym}&limit=100`);
+        return r.ok ? await r.json() : [];
+      } catch(_e) { return []; }
+    })(),
+  ]);
+  return { k15, k1h, k4h, k1d, k1w, fr: Array.isArray(fr) ? fr : [] };
+}
+
+async function btRunSymbol(symbol, params) {
+  const { k15, k1h, k4h, k1d, k1w, fr } = await btFetchAll(symbol);
+  if (!k15 || k15.length < BT_CFG.warmup + 50) return null;
+  const n = k15.length;
+  const opens  = k15.map(b => +b[1]), highs = k15.map(b => +b[2]);
+  const lows   = k15.map(b => +b[3]), closes = k15.map(b => +b[4]);
+  const qvols  = k15.map(b => +b[7] || 0);
+  const ema20 = btEmaSeries(closes, 20), rsi = btRsiSeries(closes), atr = btAtrSeries(highs, lows, closes);
+  const adx = btAdxSeries(highs, lows, closes), macd = btMacdHistSeries(closes);
+  const bb = btBbSeries(closes);
+  // 高週期訊號 + 走針對映
+  const sig1h = k1h && k1h.length >= 30 ? btTfSignals(k1h) : null;
+  const sig4h = k4h && k4h.length >= 30 ? btTfSignals(k4h) : null;
+  const sig1d = k1d && k1d.length >= 30 ? btTfSignals(k1d) : null;
+  const p1h = sig1h ? btTfPointer(k15, k1h) : null;
+  const p4h = sig4h ? btTfPointer(k15, k4h) : null;
+  const p1d = sig1d ? btTfPointer(k15, k1d) : null;
+  // 資金費率走針
+  const frArr = fr.map(x => ({ t: +x.fundingTime, v: parseFloat(x.fundingRate) })).sort((a, b) => a.t - b.t);
+  // 1h 日內累計（VWAP/開盤區間）
+  const dayAgg = {};   // dayStart → [{t, pv, v, hi0, lo0}] 累計
+  if (k1h) {
+    let pvC = 0, vC = 0, curDay = 0, orbHi = 0, orbLo = 0;
+    for (const b of k1h) {
+      const ot = +b[0];
+      const d = ot - (ot % 86400000);
+      if (d !== curDay) { curDay = d; pvC = 0; vC = 0; orbHi = +b[2]; orbLo = +b[3]; }
+      pvC += (+b[2] + +b[3] + +b[4]) / 3 * (+b[5]); vC += +b[5];
+      (dayAgg[d] = dayAgg[d] || []).push({ t: +b[6], vwap: vC > 0 ? pvC / vC : 0, orbHi, orbLo });
+    }
+  }
+  const volAvgN = 96;
+  // ── 主迴圈 ──
+  const trades = [];       // 已平倉
+  const open = [];         // { strat, dir, entry, sl, tp, feeR, openedAt(i), slipR }
+  const lastSig = {};      // strat|dir → i（冷卻）
+  const pending = [];      // 本棒訊號 → 下一棒開盤成交
+  let wickCache = null, wickCacheAt = -99;
+  for (let i = BT_CFG.warmup; i < n; i++) {
+    if (_btState.cancel) break;
+    if (i % 200 === 0) await new Promise(r => setTimeout(r, 0));
+    const price = closes[i], barT = +k15[i][6];
+    // ① 成交上一棒的訊號（下一棒開盤價=本棒開盤）
+    while (pending.length) {
+      const s = pending.shift();
+      const fill = opens[i];
+      const slipR = (fill - s.sigPrice) / s.riskDist * (s.dir === 'long' ? 1 : -1);
+      if (slipR > 0.5 || slipR < -0.8) continue;   // 與實盤同款追價/逆走守門
+      open.push({ strat: s.strat, dir: s.dir, entry: fill,
+        sl: s.dir === 'long' ? fill - s.riskDist : fill + s.riskDist,
+        tp: s.dir === 'long' ? fill + s.tp1R * s.riskDist : fill - s.tp1R * s.riskDist,
+        riskDist: s.riskDist, feeR: 2 * BT_CFG.feeRate * fill / s.riskDist,
+        openedAt: i, slipR });
+    }
+    // ② 管理持倉（本棒高低；同棒雙觸保守算止損）
+    for (let j = open.length - 1; j >= 0; j--) {
+      const t = open[j];
+      const isL = t.dir === 'long';
+      const slHit = isL ? lows[i] <= t.sl : highs[i] >= t.sl;
+      const tpHit = isL ? highs[i] >= t.tp : lows[i] <= t.tp;
+      let gross = null, outcome = null;
+      if (slHit) { gross = -1; outcome = 'sl'; }
+      else if (tpHit) { gross = Math.abs(t.tp - t.entry) / t.riskDist; outcome = 'tp'; }
+      else if (i - t.openedAt >= BT_CFG.maxHoldBars) {
+        gross = (isL ? price - t.entry : t.entry - price) / t.riskDist; outcome = 'timeout';
+      }
+      if (outcome) {
+        trades.push({ strat: t.strat, pnlR: +(gross - t.feeR).toFixed(3), outcome, slipR: t.slipR });
+        open.splice(j, 1);
+      }
+    }
+    // ③ 特徵列（欄位與實盤 sbxBuildFeatures 對齊）
+    if (i - wickCacheAt >= 16) {   // 影線區每 4 小時重算一次（O(150) 不必每棒付）
+      try {
+        const s0 = Math.max(0, i - 150);
+        wickCache = findWickZones(highs.slice(s0, i + 1), lows.slice(s0, i + 1),
+          opens.slice(s0, i + 1), closes.slice(s0, i + 1), atr[i] || 0, 150);
+      } catch(_e) { wickCache = null; }
+      wickCacheAt = i;
+    }
+    const s1 = sig1h && p1h[i] >= 0 ? sig1h[p1h[i]] : null;
+    const s4 = sig4h && p4h[i] >= 0 ? sig4h[p4h[i]] : null;
+    const sD = sig1d && p1d[i] >= 0 ? sig1d[p1d[i]] : null;
+    const sigStr = (s) => String((s && s.signal) || '');
+    const chg24 = closes[i - 96] ? (price - closes[i - 96]) / closes[i - 96] * 100 : 0;
+    let q24 = 0; for (let q = Math.max(0, i - volAvgN); q < i; q++) q24 += qvols[q];
+    const volStr = (typeof getVolStr === 'function') ? getVolStr(q24) : '中';
+    let frNow = null;
+    for (let q = frArr.length - 1; q >= 0; q--) { if (frArr[q].t <= barT) { frNow = frArr[q].v; break; } }
+    const d0 = barT - (barT % 86400000);
+    let k1hRow = null;
+    if (dayAgg[d0]) { for (const r of dayAgg[d0]) { if (r.t <= barT) k1hRow = r; else break; } }
+    // RSI 背離（15m 近 96 棒、排除最近 8 棒的極值，近似實盤分鐘節點視窗）
+    let div = 0;
+    {
+      const w0 = Math.max(0, i - 96), w1 = i - 8;
+      if (w1 - w0 > 30) {
+        let hiI = w0, loI = w0;
+        for (let q = w0; q <= w1; q++) { if (highs[q] > highs[hiI]) hiI = q; if (lows[q] < lows[loI]) loI = q; }
+        if (price >= closes[hiI] * 1.0005 && rsi[i] <= rsi[hiI] - 5 && rsi[i] >= 55) div = -1;
+        else if (price <= closes[loI] * 0.9995 && rsi[i] >= rsi[loI] + 5 && rsi[i] <= 45) div = 1;
+      }
+    }
+    let wSup = null, wRes = null;
+    if (wickCache) {
+      for (const z of (wickCache.wickSupports || [])) {
+        const lv = parseFloat(z.level) || 0;
+        if (lv > 0 && lv < price && (!wSup || lv > wSup.level)) wSup = { level: lv, wicks: z.wicks || 0 };
+      }
+      for (const z of (wickCache.wickResistances || [])) {
+        const lv = parseFloat(z.level) || 0;
+        if (lv > price && (!wRes || lv < wRes.level)) wRes = { level: lv, wicks: z.wicks || 0 };
+      }
+    }
+    const f = {
+      symbol, price, now: barT,
+      rsi: rsi[i], adx: adx[i] || 0, atr: atr[i] || price * 0.008,
+      ema20: ema20[i] || 0, macd: macd[i] || 0, chg24,
+      volHigh: volStr === '高', volLow: volStr === '低',
+      bull15: false, bear15: false,   // 15m 訊號以動能替代：與實盤 signal15m 缺席時的 score 邏輯一致
+      bull1h: sigStr(s1).indexOf('bull') >= 0, bear1h: sigStr(s1).indexOf('bear') >= 0,
+      bull4h: sigStr(s4).indexOf('bull') >= 0, bear4h: sigStr(s4).indexOf('bear') >= 0,
+      bullDay: sigStr(sD).indexOf('bull') >= 0, bearDay: sigStr(sD).indexOf('bear') >= 0,
+      h4Hi: s4 && parseFloat(s4.swingHigh) > 0 ? parseFloat(s4.swingHigh) : 0,
+      h4Lo: s4 && parseFloat(s4.swingLow) > 0 ? parseFloat(s4.swingLow) : 0,
+      bbUp: bb.up[i] || 0, bbLo: bb.lo[i] || 0,
+      walkBull: false, walkBear: false,
+      wSup, wRes, fr: frNow,
+      k1h: k1hRow ? { vwap: k1hRow.vwap, orbHi: k1hRow.orbHi, orbLo: k1hRow.orbLo, day: d0, ts: barT } : null,
+      div,
+    };
+    // 15m 方向近似：RSI 動能（與實盤 signal15m 缺席時 score>=55 的精神一致）
+    f.bull15 = f.rsi >= 55 && f.macd > 0;
+    f.bear15 = f.rsi <= 45 && f.macd < 0;
+    // ④ 逐策略偵測 → 掛下一棒成交
+    for (const strat of SBX_STRATS) {
+      if (open.some(t => t.strat === strat.id)) continue;                   // 同幣同策略單一持倉
+      let hit = null;
+      try { hit = strat.detect(f); } catch(_e) {}
+      if (!hit) continue;
+      const dir = hit.isLong ? 'long' : 'short';
+      const lk = strat.id + '|' + dir;
+      const cdBars = Math.ceil((strat.cooldownMin || SBX_CFG.cooldownMin) / 15);
+      if (lastSig[lk] != null && i - lastSig[lk] < cdBars) continue;
+      const P = params[strat.id] || { slMult: SBX_CFG.defSlMult, tp1R: SBX_CFG.defTp1R };
+      const riskDist = (atr[i] || price * 0.008) * BT_CFG.riskAtrMult * P.slMult;
+      const feeR = 2 * BT_CFG.feeRate * price / riskDist;
+      if (feeR > SBX_CFG.maxFeeR) continue;
+      lastSig[lk] = i;
+      pending.push({ strat: strat.id, dir, sigPrice: price, riskDist, tp1R: P.tp1R });
+    }
+  }
+  return { symbol, trades, bars: n - BT_CFG.warmup,
+    from: +k15[BT_CFG.warmup][0], to: +k15[n - 1][6] };
+}
+
+async function btRun() {
+  if (_btState.running) { showToast('回測進行中', 'info'); return; }
+  _btState = { running: true, cancel: false, progress: '準備中…', results: null, at: Date.now() };
+  try { renderLabPage(); } catch(_e) {}
+  try {
+    // 幣種：掃描資料裡 24h 成交額前 N（含 BTC）
+    const data = (typeof state !== 'undefined' && Array.isArray(state.data)) ? state.data : [];
+    if (!data.length) { showToast('請等主掃描完成後再回測（需要幣種清單）', 'warning'); _btState.running = false; return; }
+    const syms = [...data].filter(c => c && c.symbol)
+      .sort((a, b) => (parseFloat(b.volume) || 0) - (parseFloat(a.volume) || 0))
+      .slice(0, BT_CFG.symbols).map(c => c.symbol);
+    // 目前生效參數（含已自動調參的）
+    const st = loadSbxState();
+    const params = {};
+    for (const s of SBX_STRATS) params[s.id] = sbxEffectiveParams(st.strategies[s.id]);
+    const perSym = [];
+    for (let i = 0; i < syms.length; i++) {
+      if (_btState.cancel) break;
+      _btState.progress = `回測 ${syms[i]}（${i + 1}/${syms.length}）…`;
+      try { renderLabPage(); } catch(_e) {}
+      try {
+        const r = await btRunSymbol(syms[i], params);
+        if (r) perSym.push(r);
+      } catch(e) { console.warn('[bt]', syms[i], e); }
+      await new Promise(r => setTimeout(r, 50));
+    }
+    // 彙整：策略 × 全幣
+    const byStrat = {};
+    for (const r of perSym) for (const t of r.trades) (byStrat[t.strat] = byStrat[t.strat] || []).push(t);
+    const rows = SBX_STRATS.map(s => {
+      const arr = byStrat[s.id] || [];
+      const stats = sbxComputeStats(arr.map(t => ({ pnlR: t.pnlR, slipR: t.slipR })));
+      return { id: s.id, name: s.name, icon: s.icon, stats };
+    }).sort((a, b) => b.stats.rankScore - a.stats.rankScore);
+    _btState.results = {
+      at: Date.now(), rows, syms: perSym.map(r => r.symbol),
+      cancelled: _btState.cancel,
+      from: perSym.length ? Math.min(...perSym.map(r => r.from)) : 0,
+      to: perSym.length ? Math.max(...perSym.map(r => r.to)) : 0,
+      totalTrades: Object.values(byStrat).reduce((a, x) => a + x.length, 0),
+    };
+    try { localStorage.setItem('csp_bt_last', JSON.stringify(_btState.results)); } catch(_e) {}
+    _btState.progress = '';
+  } catch(e) { console.warn('[bt]', e); _btState.progress = '回測失敗：' + e.message; }
+  _btState.running = false;
+  try { renderLabPage(); } catch(_e) {}
+}
+function btCancel() { _btState.cancel = true; }
+
+function buildBtHtml() {
+  let last = _btState.results;
+  if (!last) { try { last = JSON.parse(localStorage.getItem('csp_bt_last') || 'null'); } catch(_e) {} }
+  const head = `
+    <div class="page-header"><div>
+      <h1 class="page-title">⏪ 歷史回測（沙盒 10 策略）</h1>
+      <p class="page-subtitle">用歷史 15m K 線重放「與實盤完全相同」的策略偵測函式，近 ~10 天 ×
+        成交額前 ${BT_CFG.symbols} 幣。風險距離以 1.2×ATR 近似、成交以下一根開盤近似、同棒雙觸保守算止損——
+        <b>絕對數字只能拿來排序比較，不能當未來報酬預期</b>。用途：先淘汰明顯不行的、把前向試跑的重心擺對。</p>
+    </div></div>`;
+  const btn = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      ${_btState.running
+        ? `<button class="btn-ghost" style="font-size:0.8rem;color:#ef4444" onclick="btCancel()">⏹ 取消</button>
+           <span style="font-size:0.76rem;color:#f59e0b">${_btState.progress || '執行中…'}</span>`
+        : `<button class="btn-ghost" style="font-size:0.8rem" onclick="btRun()">▶ 開始回測</button>`}
+      <span style="font-size:0.72rem;color:var(--text3)">只在按下時執行（約 ${BT_CFG.symbols}×7 個 K 線請求，跑 10~30 秒），結果快取於本機</span>
+    </div>`;
+  if (!last) return head + btn + `<div style="background:var(--card);border:1px solid var(--border);
+    border-radius:10px;padding:20px;text-align:center;color:var(--text3);font-size:0.84rem">尚無回測結果</div>`;
+  const fmtD = ts => new Date(ts).toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' });
+  return head + btn + `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.8rem;font-weight:700;margin-bottom:8px">
+        ${fmtD(last.from)} ~ ${fmtD(last.to)}　·　${(last.syms || []).map(s => s.replace('/USDT', '')).join('、')}
+        　·　共 ${last.totalTrades} 筆模擬交易${last.cancelled ? '　·　<span style="color:#f59e0b">（中途取消，結果不完整）</span>' : ''}
+        　·　${new Date(last.at).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.76rem">
+        <thead><tr style="color:var(--text3);text-align:right;font-size:0.7rem">
+          <th style="padding:4px 6px;text-align:left">策略</th><th style="padding:4px 6px">筆數</th>
+          <th style="padding:4px 6px">期望值/筆</th><th style="padding:4px 6px">總計</th>
+          <th style="padding:4px 6px">最大回撤</th><th style="padding:4px 6px">排序分</th>
+          <th style="padding:4px 6px">勝率(參考)</th></tr></thead>
+        <tbody>${last.rows.map((r, i) => {
+          const s = r.stats;
+          const ec = s.expectancy > 0 ? 'var(--bull)' : s.expectancy < 0 ? 'var(--bear)' : 'var(--text3)';
+          return `<tr style="text-align:right;${i < 3 && s.n >= 10 && s.expectancy > 0 ? 'background:rgba(34,197,94,.06)' : ''}">
+            <td style="padding:4px 6px;text-align:left;font-weight:600">${r.icon} ${r.name}</td>
+            <td style="padding:4px 6px;color:var(--text3)">${s.n}</td>
+            <td style="padding:4px 6px;font-weight:700;color:${ec}">${s.expectancy > 0 ? '+' : ''}${s.expectancy}R</td>
+            <td style="padding:4px 6px">${s.totalR > 0 ? '+' : ''}${s.totalR}R</td>
+            <td style="padding:4px 6px">${s.maxDD}R</td>
+            <td style="padding:4px 6px">${s.rankScore}</td>
+            <td style="padding:4px 6px;color:var(--text3)">${s.winRate == null ? '—' : s.winRate + '%'}</td></tr>`;
+        }).join('')}</tbody>
+      </table></div>
+      <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">
+        排序分＝期望值 −0.5×回撤/筆（與沙盒同一公式）。樣本 &lt;10 筆的行不具參考性。
+        回測「不會」寫入沙盒統計——前向試跑的樣本才是晉升實盤的依據，回測只負責把重心擺對。</div>
+    </div>`;
 }
