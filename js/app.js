@@ -301,6 +301,7 @@ function startRefreshCycle() {
       if (ms > 50) console.warn(`[post-scan] ${name} 耗時 ${ms}ms`);
     };
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
+    await _pt('市場狀態更新',   () => updateMarketContext(data));
     await _pt('實驗室機會記錄', () => recordLabOpportunities(data));
     await _pt('實驗室機會更新', () => updateLabOpportunities(data));
     await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
@@ -381,6 +382,7 @@ async function manualRefresh() {
   // 資料取得成功，後續渲染步驟各自保護
   state.data       = data;
   state.dataSource = source;
+  try { updateMarketContext(data); } catch(e) {}   // regime/RS 與自動掃描同步更新
   hideScanBar();
   try { applyFilters(); renderAll(); } catch(e) { console.error('[manualRefresh] renderAll 錯誤:', e); }
   let _cancelled2 = new Set();
@@ -13887,9 +13889,10 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_slfE) {}
 
-    // 勝率強化：時段／幣種的實測負期望封鎖（樣本門檻＋Wilson，回升自動解除）
+    // 勝率強化：時段／幣種／市場狀態×方向的實測負期望封鎖（樣本門檻＋Wilson，回升自動解除）
     try {
-      const _wgM = winupSessionBlocked('main') || winupSymbolBlocked('main', coin.symbol);
+      const _wgM = winupSessionBlocked('main') || winupSymbolBlocked('main', coin.symbol)
+                || winupRegimeBlocked('main', direction);
       if (_wgM) { _no(_wgM); continue; }
     } catch(_e) {}
 
@@ -13972,6 +13975,8 @@ async function recordSignalsFromScan(data) {
       entryTags: _scanEntryTags,       // 建單時的分析標籤（條件配對研究所的實倉樣本）
       pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
+      regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
+      rsPct: isFinite(_rsRank[coin.symbol]) ? _rsRank[coin.symbol] : null,  // 相對強弱百分位
       riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
@@ -18861,6 +18866,23 @@ function computeLabTags(coin, isLong, btcChg) {
         tags.push(oppKilled ? '清算-順向擠壓' : '清算-逆向瀑布');
       }
     }
+    // 市場狀態（regime）：交易方向與大盤天氣的關係 → 配對研究所驗證它值多少
+    {
+      const _rg = (typeof _regimeCache !== 'undefined') ? _regimeCache : null;
+      if (_rg && Date.now() - _rg.at < 15 * 60000) {
+        if (_rg.dir === 'range') tags.push('市場-盤整');
+        else tags.push((isLong ? _rg.dir === 'bull' : _rg.dir === 'bear') ? '市場-趨勢順向' : '市場-趨勢逆向');
+        if (_rg.vol === 'hv') tags.push('市場-高波動');
+      }
+    }
+    // 相對強弱（RS）：對 BTC 超額報酬的橫斷面百分位
+    {
+      const _rs = (typeof _rsRank !== 'undefined') ? _rsRank[coin.symbol] : null;
+      if (isFinite(_rs)) {
+        if (isLong ? _rs >= 80 : _rs <= 20) tags.push('RS-順向強弱');
+        else if (isLong ? _rs <= 20 : _rs >= 80) tags.push('RS-逆向強弱');
+      }
+    }
   } catch(_e) {}
   return tags;
 }
@@ -19770,7 +19792,7 @@ const QLAB_ARCHIVE_MAX = 1200;
 const QLAB_KEEP_FIELDS = [
   'id', 'symbol', 'mode', 'family', 'direction', 'timestamp', 'exitTime', 'holdMin',
   'outcome', 'pnlR', 'entry', 'exitPrice', 'atrAtEntry', 'levelGapAtr', 'slDistAtr',
-  'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid',
+  'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid', 'regime',
   'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed',
 ];
 function _qlabSlim(t) {
@@ -19901,6 +19923,7 @@ const LEARN_KEEP_FIELDS = [
   'entryReasonCodes',                        // 進場理由（正規化代碼），供逐理由績效分析
   'kz', 'entryTime',                         // 時段勝率學習＋秒損統計（成交→止損耗時）
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
+  'regime', 'rsPct',                         // 市場狀態×方向勝率學習＋相對強弱分析
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -24286,7 +24309,7 @@ const SCALP_KEEP_FIELDS = new Set([
   'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter',
   'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed',
   // 分群用（時段／波動／量能／多週期）
-  'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel', 'slHuntAvoid',
+  'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel', 'slHuntAvoid', 'regime',
   // 旗標
   'okxAdjusted', '_pruned',
 ]);
@@ -24989,6 +25012,8 @@ async function recordScalpSignals(data) {
       if (room <= 0) break;
       // 勝率強化：此幣近 20 筆實測負期望 → 暫停（統計自己指出的「做不贏的幣」）
       if (winupSymbolBlocked('scalp', coin.symbol)) { _sr('幣種負期望封鎖'); continue; }
+      // 市場狀態×方向：此天氣下這個方向實測顯著虧 → 暫停
+      if (winupRegimeBlocked('scalp', dir)) { _sr('市場狀態負期望封鎖'); continue; }
       const setup = buildScalpSetup(coin, isLong, family);
       if (!setup) continue;
       // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
@@ -25064,6 +25089,7 @@ async function recordScalpSignals(data) {
         riskScore, riskLevel, riskRecs, conf,
         riskKeys,                 // 建單時成立的風險條件 → 讓快進快出也回饋扣分條件的學習
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
+        regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
         note: `快進快出（${SCALP_MODE_LABEL[setup.mode] || setup.mode}）`,
       };
       t.okxAdjusted = true;   // 資料層已對齊 OKX 價格空間，無需再換算
@@ -26394,6 +26420,7 @@ async function sbxScanSignals(data) {
         maeB: 0, mfeB: 0, endB: null, feeR: +feeR.toFixed(3),
         why: hit.why, live: ss.status === 'live',
         rsi: f.rsi, adx: f.adx,
+        regime: currentRegimeKey() || null,
       };
       log.unshift(t); changed = true;
       openCount[strat.id] = (openCount[strat.id] || 0) + 1;
@@ -27486,11 +27513,14 @@ function winupStats() {
   const c = _winupCache;
   if (c && Date.now() - c.ts < WINUP_CFG.ttlMin * 60000) return c.v;
   const v = { sess: {}, sessBlocked: { main: {}, scalp: {} }, symBad: { main: {}, scalp: {} },
+              regime: {}, regimeBlocked: { main: {}, scalp: {} },
               quickSl: null, floorMult: 1, loserMfe: {} };
   try {
     // ── 一般單 ──
     const main = learnSamples().filter(t => t.status === 'closed');
     v.sess.main = _winupBuckets(main.map(t => ({ k: t.kz || '',
+      win: isWinTrade(t), loss: isLossTrade(t), r: parseFloat(t.pnlR) || 0 })));
+    v.regime.main = _winupBuckets(main.map(t => ({ k: t.regime ? t.regime + '|' + t.direction : '',
       win: isWinTrade(t), loss: isLossTrade(t), r: parseFloat(t.pnlR) || 0 })));
     v.symBad.main = _winupSymBad(main.filter(t => isFinite(parseFloat(t.pnlR))));
     // 秒損：成交後 ≤45 分鐘就止損（一般單的時間尺度是小時級，45 分鐘＝進場即遭雜訊處決）
@@ -27518,6 +27548,10 @@ function winupStats() {
       const r = parseFloat(t.pnlR) || 0;
       return { k: t.kzQuality || '', win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r };
     }));
+    v.regime.scalp = _winupBuckets(scalp.map(t => {
+      const r = parseFloat(t.pnlR) || 0;
+      return { k: t.regime ? t.regime + '|' + t.direction : '', win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r };
+    }));
     v.symBad.scalp = _winupSymBad(scalp);
     const sLoss = scalp.filter(t => (parseFloat(t.pnlR) || 0) < -FLAT_R_EPS
       && isFinite(parseFloat(t.mfeAtr)) && isFinite(parseFloat(t.slDistAtr)) && parseFloat(t.slDistAtr) > 0);
@@ -27525,15 +27559,24 @@ function winupStats() {
       const had = sLoss.filter(t => parseFloat(t.mfeAtr) / parseFloat(t.slDistAtr) >= 0.8).length;
       v.loserMfe.scalp = { n: sLoss.length, had, pct: +(had / sLoss.length * 100).toFixed(0) };
     }
-    // ── 時段封鎖判定（兩套各自對照自己的整體勝率）──
+    // ── 時段／市場狀態封鎖判定（兩套各自對照自己的整體勝率）──
     for (const kind of ['main', 'scalp']) {
+      const kindLabel = kind === 'main' ? '一般單' : '快速單';
       const S = v.sess[kind];
-      if (!S) continue;
-      for (const [k, b] of Object.entries(S.buckets)) {
+      if (S) for (const [k, b] of Object.entries(S.buckets)) {
         if (b.n >= WINUP_CFG.sessMinN && b.exp < 0 && b.wrUB < S.overallWr - WINUP_CFG.sessGapPP) {
           v.sessBlocked[kind][k] =
-            `${kind === 'main' ? '一般單' : '快速單'}在此時段 ${b.n} 筆、期望值 ${b.exp}R、`
+            `${kindLabel}在此時段 ${b.n} 筆、期望值 ${b.exp}R、`
             + `勝率上界 ${b.wrUB}%（整體 ${S.overallWr}%）→ 本時段暫停開新單`;
+        }
+      }
+      const R = v.regime[kind];
+      if (R) for (const [k, b] of Object.entries(R.buckets)) {
+        if (b.n >= WINUP_CFG.sessMinN && b.exp < 0 && b.wrUB < R.overallWr - WINUP_CFG.sessGapPP) {
+          const [rk, dir] = k.split('|');
+          v.regimeBlocked[kind][k] =
+            `${kindLabel}在「${rk}」狀態下${dir === 'long' ? '做多' : '做空'} ${b.n} 筆、`
+            + `期望值 ${b.exp}R、勝率上界 ${b.wrUB}%（整體 ${R.overallWr}%）→ 此市場狀態暫停該方向新單`;
         }
       }
     }
@@ -27551,6 +27594,13 @@ function winupSessionBlocked(kind) {
 }
 function winupSymbolBlocked(kind, symbol) {
   try { return winupStats().symBad[kind][symbol] || ''; } catch(_e) { return ''; }
+}
+function winupRegimeBlocked(kind, dir) {
+  try {
+    const rk = currentRegimeKey();
+    if (!rk) return '';
+    return winupStats().regimeBlocked[kind][rk + '|' + dir] || '';
+  } catch(_e) { return ''; }
 }
 function mainSlFloorMult() {
   try { return winupStats().floorMult || 1; } catch(_e) { return 1; }
@@ -27577,6 +27627,9 @@ function buildWinupHtml() {
     <div style="font-weight:700;margin-bottom:5px">🎛 勝率強化學習（時段/幣種/秒損/出場端診斷，全部樣本門檻＋Wilson 保守估計）</div>
     <div>${sessLine('scalp', '快速單時段')}</div>
     <div>${sessLine('main', '一般單時段')}</div>
+    <div>市場狀態：目前 <b>${(typeof _regimeCache !== 'undefined' && _regimeCache) ? _regimeCache.label : '未判定'}</b>
+      　·　狀態×方向封鎖：快速單 ${Object.keys(v.regimeBlocked.scalp).length} 項、一般單 ${Object.keys(v.regimeBlocked.main).length} 項
+      <span style="color:var(--text3);font-size:0.72rem">（regime 記錄在每筆單上，某狀態×方向實測顯著虧才封鎖）</span></div>
     <div>幣種負期望封鎖：快速單 <b>${symBadN('scalp')}</b> 檔、一般單 <b>${symBadN('main')}</b> 檔
       ${symBadN('scalp') + symBadN('main')
         ? `<span style="color:var(--text3);font-size:0.72rem">（${[...Object.keys(v.symBad.scalp), ...Object.keys(v.symBad.main)].slice(0, 6).join('、')}…近 ${WINUP_CFG.symWin} 筆滾動窗，改善自動解除）</span>` : ''}</div>
@@ -27670,4 +27723,68 @@ function _archPersist(key, out) {
     return true;
   }
   return false;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   市場狀態分層（regime）＋ 相對強弱排名（RS）
+   ── regime ──
+   以 BTC 為錨把「整個市場今天是什麼天氣」分成 6 格：
+   方向（趨勢多／趨勢空／盤整）× 波動（高／低）。
+   應用不是寫死「盤整不准突破」，而是資料驅動：
+   · regime 記錄在每筆單上（一般單/快速單/沙盒）
+   · 「市場-順向／逆向／盤整」進分析標籤 → 配對研究所學它
+   · winup 加 regime×方向分桶：某狀態下某方向實測顯著虧 → 該
+     狀態自動暫停該方向新單（樣本門檻＋Wilson，回升自動解除）
+   ── RS ──
+   橫斷面相對強弱：每輪掃描把各幣的 24h 漲跌對 BTC 的超額報酬排
+   百分位。做多強於大盤的、做空弱於大盤的，比絕對指標更穩——
+   先進標籤讓配對研究所驗證它在這個市場值多少。 */
+
+let _regimeCache = null;   // { at, key, dir, vol, label }
+let _rsRank = {};          // symbol → 0~100 百分位（越高越強）
+function computeMarketRegime(data) {
+  try {
+    const btc = data.find(d => d && d.symbol === 'BTC/USDT');
+    if (!btc) return null;
+    const h4 = String(btc.h4Signal || ''), dd = String(btc.dailySignal || '');
+    const adx = parseFloat(btc.adx) || 0;
+    const price = parseFloat(btc.price) || 0;
+    const atrPct = (parseFloat(btc.atr) > 0 && price > 0) ? parseFloat(btc.atr) / price : 0;
+    const bull = h4.indexOf('bull') >= 0 && dd.indexOf('bull') >= 0;
+    const bear = h4.indexOf('bear') >= 0 && dd.indexOf('bear') >= 0;
+    // 方向要「4H+日線同向且 ADX 成形」才算趨勢，其餘一律盤整——
+    // 寧可把弱趨勢當盤整（保守），也不把盤整誤判成趨勢（危險）
+    const dir = bull && adx >= 22 ? 'bull' : bear && adx >= 22 ? 'bear' : 'range';
+    // BTC 15m ATR 常態約 0.2~0.5%；≥0.6% 屬事件級波動
+    const vol = atrPct >= 0.006 ? 'hv' : 'lv';
+    const label = ({ bull: '趨勢多', bear: '趨勢空', range: '盤整' })[dir]
+                + '/' + (vol === 'hv' ? '高波動' : '低波動');
+    return { at: Date.now(), key: dir + '_' + vol, dir, vol, label };
+  } catch(_e) { return null; }
+}
+function computeRsRank(data) {
+  try {
+    const btcChg = parseFloat(data.find(d => d && d.symbol === 'BTC/USDT')?.change24h) || 0;
+    const rows = [];
+    for (const c of data) {
+      if (!c || !c.symbol) continue;
+      const chg = parseFloat(c.change24h);
+      if (!isFinite(chg)) continue;
+      rows.push({ s: c.symbol, x: chg - btcChg });   // 對 BTC 的超額報酬
+    }
+    rows.sort((a, b) => a.x - b.x);
+    const out = {};
+    const n = rows.length;
+    for (let i = 0; i < n; i++) out[rows[i].s] = n > 1 ? Math.round(i / (n - 1) * 100) : 50;
+    return out;
+  } catch(_e) { return {}; }
+}
+function updateMarketContext(data) {
+  const r = computeMarketRegime(data);
+  if (r) _regimeCache = r;
+  _rsRank = computeRsRank(data);
+}
+function currentRegimeKey() {
+  // 15 分鐘內的判定才可信；過期寧可回空（不擋單、不貼標籤）
+  return (_regimeCache && Date.now() - _regimeCache.at < 15 * 60000) ? _regimeCache.key : '';
 }
