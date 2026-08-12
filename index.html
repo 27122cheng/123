@@ -387,6 +387,15 @@
         <div id="tv-chart-container" class="tv-chart"></div>
       </div>
 
+      <!-- 結構圖（自繪：K 線 + 合流區 + 進場/止損/止盈） -->
+      <div class="chart-card" style="margin-top:12px">
+        <div class="chart-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="chart-title">🧱 結構圖（合流區疊加）</span>
+          <span id="struct-chart-note" style="font-size:0.7rem;color:var(--text3)"></span>
+        </div>
+        <canvas id="struct-chart" style="width:100%;height:280px;display:block"></canvas>
+      </div>
+
       <!-- 指标卡片 -->
       <div class="metrics-row">
         <div class="metric-card">
@@ -905,8 +914,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260812a"></script>
-  <script src="js/api.js?v=20260812a"></script>
-  <script src="js/app.js?v=20260812a"></script>
+  <script src="js/indicators.js?v=20260812b"></script>
+  <script src="js/api.js?v=20260812b"></script>
+  <script src="js/app.js?v=20260812b"></script>
 </body>
 </html>

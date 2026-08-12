@@ -9424,6 +9424,9 @@ async function renderCoinDetail(symbol) {
   const coin = state.data.find(d => d.symbol === symbol);
   if (!coin) return;
 
+  // 結構圖（自繪合流區疊加）：非同步繪製，不阻塞詳情頁其餘渲染
+  try { renderStructChart(symbol).catch(e => console.warn('[struct-chart]', e)); } catch(_e) {}
+
   const base = symbol.replace('/USDT','');
 
   document.getElementById('coin-avatar').textContent  = base.slice(0, 3);
@@ -28223,4 +28226,110 @@ function buildBtHtml() {
         排序分＝期望值 −0.5×回撤/筆（與沙盒同一公式）。樣本 &lt;10 筆的行不具參考性。
         回測「不會」寫入沙盒統計——前向試跑的樣本才是晉升實盤的依據，回測只負責把重心擺對。</div>
     </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   結構圖（自繪 Canvas）：K 線 + 合流區 + 進場/止損/止盈
+   TradingView 內嵌小組件畫不了我們自己的合流區——這張圖補上「系統
+   到底看到什麼結構」：支撐/壓力合流區畫成色帶（佐證越多越不透明），
+   當前 setup 的進場/止損/止盈畫成水平線。人工覆核訊號時一眼看出
+   系統是不是把結構看錯了。零外部依賴、深色主題、繪製失敗靜默略過。 */
+
+let _structChartBusy = false;
+async function renderStructChart(symbol) {
+  const cv = document.getElementById('struct-chart');
+  const note = document.getElementById('struct-chart-note');
+  if (!cv || _structChartBusy) return;
+  _structChartBusy = true;
+  try {
+    const coin = (state.data || []).find(c => c && c.symbol === symbol);
+    if (!coin) { if (note) note.textContent = '等待掃描資料…'; return; }
+    const isLong = (parseFloat(coin.score) || 50) >= 50;
+    let setup = null;
+    try { setup = computeSimpleSetup(coin, isLong); } catch(_e) {}
+    // 已有掛單/持倉 → 以那筆單的實際價位為準（畫的是「正在承諾的」而不是「現在會建的」）
+    let trade = null;
+    try {
+      trade = loadTradeLog().find(t => t.symbol === symbol && (t.status === 'open' || t.status === 'pending'));
+    } catch(_e) {}
+    const sym = symbol.replace('/', '');
+    const raw = await (typeof fetchKlinesExec === 'function' ? fetchKlinesExec : fetchKlines)(sym, '15m', 96);
+    if (!raw || raw.length < 20) { if (note) note.textContent = 'K 線資料不足'; return; }
+
+    // ── 版面 ──
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth || cv.parentElement.clientWidth || 600, H = 280;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    const padR = 56, padT = 8, padB = 16;
+    const plotW = W - padR - 6, plotH = H - padT - padB;
+
+    const highs = raw.map(b => +b[2]), lows = raw.map(b => +b[3]);
+    let pMin = Math.min(...lows), pMax = Math.max(...highs);
+    const levels = [];
+    const pushLv = (v) => { const x = parseFloat(v); if (isFinite(x) && x > 0) levels.push(x); };
+    if (trade) { pushLv(trade.entry); pushLv(trade.sl); pushLv(trade.tp1); pushLv(trade.tp2); }
+    else if (setup) { pushLv(setup.entry); pushLv(setup.sl); pushLv(setup.tp1); pushLv(setup.tp2); }
+    const zones = [];
+    const src = (trade && Array.isArray(trade.tpZones)) ? { tp: trade.tpZones, sl: [] }
+              : setup ? { tp: setup.tpZones || [], sl: setup.slZones || [] } : { tp: [], sl: [] };
+    for (const z of [...src.tp, ...src.sl]) {
+      if (!z) continue;
+      const lo = Math.min(+z.near, +z.far), hi = Math.max(+z.near, +z.far);
+      if (isFinite(lo) && isFinite(hi)) { zones.push({ lo, hi, ev: z.ev || [], n: (z.ev || []).length }); pushLv(lo); pushLv(hi); }
+    }
+    for (const v of levels) { if (v < pMin) pMin = v; if (v > pMax) pMax = v; }
+    const pad = (pMax - pMin) * 0.06 || pMax * 0.01;
+    pMin -= pad; pMax += pad;
+    const y = p => padT + (pMax - p) / (pMax - pMin) * plotH;
+
+    // ── 合流區色帶（佐證越多越不透明）──
+    for (const z of zones) {
+      const a = Math.min(0.30, 0.10 + z.n * 0.05);
+      g.fillStyle = `rgba(99, 102, 241, ${a})`;
+      const yTop = y(z.hi), yBot = y(z.lo);
+      g.fillRect(0, yTop, plotW, Math.max(2, yBot - yTop));
+      if (z.ev.length) {
+        g.fillStyle = 'rgba(165, 180, 252, 0.9)';
+        g.font = '9px sans-serif';
+        g.fillText(z.ev.slice(0, 3).join('·'), 4, Math.max(10, yTop - 2));
+      }
+    }
+    // ── K 線 ──
+    const bw = Math.max(2, plotW / raw.length - 1.2);
+    for (let i = 0; i < raw.length; i++) {
+      const o = +raw[i][1], h = +raw[i][2], l = +raw[i][3], c = +raw[i][4];
+      const x = 2 + i * (plotW - 4) / raw.length;
+      const up = c >= o;
+      g.strokeStyle = g.fillStyle = up ? '#22c55e' : '#ef4444';
+      g.beginPath(); g.moveTo(x + bw / 2, y(h)); g.lineTo(x + bw / 2, y(l)); g.stroke();
+      const yO = y(o), yC = y(c);
+      g.fillRect(x, Math.min(yO, yC), bw, Math.max(1, Math.abs(yC - yO)));
+    }
+    // ── 進場/止損/止盈 ──
+    const drawLv = (v, color, label) => {
+      const p = parseFloat(v);
+      if (!isFinite(p) || p <= 0) return;
+      const yy = y(p);
+      g.strokeStyle = color; g.setLineDash([5, 4]);
+      g.beginPath(); g.moveTo(0, yy); g.lineTo(plotW, yy); g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = color; g.font = 'bold 10px sans-serif';
+      g.fillText(`${label} ${p.toPrecision(6).replace(/\.?0+$/, '')}`, plotW + 3, yy + 3);
+    };
+    const ref = trade || setup;
+    if (ref) {
+      drawLv(ref.entry, '#facc15', '進場');
+      drawLv(ref.sl,    '#ef4444', '止損');
+      drawLv(ref.tp1,   '#22c55e', '止盈一');
+      drawLv(ref.tp2,   '#4ade80', '止盈二');
+    }
+    if (note) {
+      note.textContent = (trade ? `📌 依現有${trade.status === 'open' ? '持倉' : '掛單'}價位` : `依當前 setup（${isLong ? '多' : '空'}）`)
+        + `　·　色帶＝合流區（越深佐證越多）　·　15m × ${raw.length} 根`;
+    }
+  } catch(e) { console.warn('[struct-chart]', e); }
+  finally { _structChartBusy = false; }
 }
