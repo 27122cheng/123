@@ -13977,6 +13977,7 @@ async function recordSignalsFromScan(data) {
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
       regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
       rsPct: isFinite(_rsRank[coin.symbol]) ? _rsRank[coin.symbol] : null,  // 相對強弱百分位
+      tpZones: setup.tpZones || null,       // 獲利側合流區（結構跟隨停利用）
       riskScore: _scanRisk.score || 0,
       riskPenalty: _scanRiskPen || 0,
       hardAdxPenalty: setup.hardAdxPenalty || 0,
@@ -14845,12 +14846,33 @@ function updateOpenTrades(data) {
         if (exitShadowUpdate(trade, _curR, _peakR, _tp2R)) changed = true;
       }
       const _lockR   = Math.max(_xc.tp1LockR, _peakR - _xc.trailGiveR);   // 鎖住峰值後方 trailGiveR，地板為 TP1 鎖利位
-      const _trailSL = isLong ? entry + _lockR * baseRisk : entry - _lockR * baseRisk;
+      let _trailSL = isLong ? entry + _lockR * baseRisk : entry - _lockR * baseRisk;
+      /* ── 結構跟隨（2026-08）：R 版移動停利只認「距離」，不認「地形」。
+         價格每收復一道獲利側合流區（越過區遠緣 0.25R 以上），止損至少推到
+         該區遠緣外側 0.25R——收復的結構翻向變成支撐/壓力，止損躲在它後面
+         比躲在一個裸數字後面實在。R 版仍是地板（兩者取較有利），佐證來自
+         建單時 computeSimpleSetup 存下的 tpZones。 */
+      let _structNote = '';
+      try {
+        if (Array.isArray(trade.tpZones)) {
+          for (const z of trade.tpZones) {
+            const farP = parseFloat(z.far ?? z.p);
+            if (!isFinite(farP)) continue;
+            if (!(isLong ? cur >= farP + baseRisk * 0.25 : cur <= farP - baseRisk * 0.25)) continue;
+            const cand = isLong ? farP - baseRisk * 0.25 : farP + baseRisk * 0.25;
+            if (isLong ? cand > _trailSL : cand < _trailSL) {
+              _trailSL = cand;
+              _structNote = `；已收復結構區 $${(+farP).toPrecision(5).replace(/\.?0+$/, '')}`
+                + `（${(z.ev || []).slice(0, 3).join('、')}），止損躲到它外側`;
+            }
+          }
+        }
+      } catch(_e) {}
       if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) {
         const _oldSL = trade.sl;
         trade.sl = _trailSL; changed = true;
         // 止損調整 → 立即通知（移動停利往獲利方向推進，實盤需同步改單）
-        sendSLChangeNotification(trade, _oldSL, _trailSL, `移動停利推進（峰值 ${_peakR.toFixed(2)}R，鎖住 ${_lockR.toFixed(2)}R）`);
+        sendSLChangeNotification(trade, _oldSL, _trailSL, `移動停利推進（峰值 ${_peakR.toFixed(2)}R，鎖住 ${_lockR.toFixed(2)}R${_structNote}）`);
       }
     }
 
@@ -23041,6 +23063,10 @@ function computeSimpleSetup(coin, isLong) {
        addSl   ：加倉後止損＝同向第一道結構外側，其外側仍有次一道 */
     ladderOk: _ladderOk,
     ladder: { side: _ladder.slice(0, 3), opp: _ladderOpp.slice(0, 1), sep: LADDER_SEP },
+    /* 獲利側合流區清單（由近到遠，最多 4 區）：結構跟隨停利與結構圖表用。
+       near/far＝區的近緣/遠緣（相對進場），ev＝佐證清單 */
+    tpZones: _zonesOpp.slice(0, 4).map(z => ({ p: +z.anchor, near: +z.near, far: +z.far, ev: z.evidence })),
+    slZones: _zones.slice(0, 3).map(z => ({ p: +z.anchor, near: +z.near, far: +z.far, ev: z.evidence })),
     /* 進場邏輯別：這筆單實際是走哪一條分支決定進場／止損／止盈的。
        這幾個標籤本來就算好了，卻從來沒有被回傳、也沒被記進交易紀錄——
        於是「哪一種進場邏輯真的會賺」這個問題根本問不出口，只能整包看勝率。
@@ -27008,7 +27034,13 @@ function pairLabAnalyze() {
       wlb: +wlb.toFixed(1), totalR: +c.r.toFixed(2), avgR: +(c.r / c.n).toFixed(3) });
   }
   rows.sort((x, y) => y.wlb - x.wlb || y.avgR - x.avgR);
-  const proven = rows.filter(r => r.n >= PAIR_CFG.minN && r.wlb >= PAIR_CFG.minWLB && r.avgR > PAIR_CFG.minAvgR);
+  /* 多重檢定控制：同時檢定幾百組配對，總有幾組純靠運氣越線。
+     有效門檻隨「實際被檢定的配對數」抬高：10 組以內維持基準 55%，
+     100 組 → +3pp、1000 組 → +6pp（對數尺度）。stage 2 的「實倉成績
+     轉鑰匙」仍是最終防線，這裡把第一道門也上鎖。 */
+  const testedN = rows.filter(r => r.n >= PAIR_CFG.minN).length;
+  const wlbEff = +(PAIR_CFG.minWLB + Math.max(0, 3 * Math.log10(Math.max(1, testedN) / 10))).toFixed(1);
+  const proven = rows.filter(r => r.n >= PAIR_CFG.minN && r.wlb >= wlbEff && r.avgR > PAIR_CFG.minAvgR);
 
   // ── 階段判定（漸進替代 + 自動退回）──────────────────────────────
   // 配對建單的實倉表現：stage 2 的鑰匙必須由「真金白銀的完結單」轉動，
@@ -27052,6 +27084,7 @@ function pairLabAnalyze() {
   try { localStorage.setItem(PAIR_PROVEN_KEY, JSON.stringify(gate)); _pairGateCache = gate; } catch(_e) {}
   _pairLabCache = { at: Date.now(), rows: rows.slice(0, 20), proven, stage, why,
     sampleN: samples.length, realN: samples.filter(s => s.src === 'real').length,
+    wlbEff, testedN,
     evidence: gate.evidence };
   return _pairLabCache;
 }
@@ -27189,14 +27222,17 @@ function buildPairLabHtml() {
   const _wrC2 = wr => wr >= 60 ? 'var(--bull)' : wr >= 45 ? 'var(--text2)' : 'var(--bear)';
   return head + `
     <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
-      <div style="font-size:0.8rem;font-weight:700;margin-bottom:8px">配對排行（樣本 ${c.sampleN} 筆，其中實倉 ${c.realN} 筆 · ${new Date(c.at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 快取）</div>
+      <div style="font-size:0.8rem;font-weight:700;margin-bottom:8px">配對排行（樣本 ${c.sampleN} 筆，其中實倉 ${c.realN} 筆
+        · 被檢定 ${c.testedN ?? '—'} 組 → 有效晉升門檻 勝率下界 ≥${c.wlbEff ?? PAIR_CFG.minWLB}%（多重檢定自動抬高）
+        · ${new Date(c.at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 快取）</div>
       <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
         <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
           <th style="padding:4px 6px">配對</th><th style="padding:4px 6px;text-align:right">樣本(實倉)</th>
           <th style="padding:4px 6px;text-align:right">勝率</th><th style="padding:4px 6px;text-align:right">勝率下界</th>
           <th style="padding:4px 6px;text-align:right">平均 R</th><th style="padding:4px 6px;text-align:right">晉升</th></tr></thead>
         <tbody>${c.rows.map(r => {
-          const ok = r.n >= PAIR_CFG.minN && r.wlb >= PAIR_CFG.minWLB && r.avgR > PAIR_CFG.minAvgR;
+          const _wlbTh = c.wlbEff || PAIR_CFG.minWLB;
+          const ok = r.n >= PAIR_CFG.minN && r.wlb >= _wlbTh && r.avgR > PAIR_CFG.minAvgR;
           return `<tr style="${ok ? 'background:rgba(34,197,94,.06)' : ''}">
           <td style="padding:4px 6px;font-weight:600">${r.a}＋${r.b}</td>
           <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.n}（${r.real}）</td>
