@@ -40,7 +40,83 @@ const state = {
 /* ── 启动 ───────────────────────────────────────────────────── */
 window.addEventListener('DOMContentLoaded', init);
 
+/* ── 全域錯誤看板 ─────────────────────────────────────────────
+   手機上看不到 console——真正的錯誤（TypeError/ReferenceError…）直接
+   顯示成畫面底部的紅色小條，截圖即可診斷；網路類雜訊（fetch 失敗、
+   逾時）只進環形紀錄不上畫面。最近 20 筆存 csp_err_log。 */
+function _bootErrHook() {
+  const NOISY = /fetch|network|load failed|abort|timeout|websocket/i;
+  const log = (kind, msg) => {
+    const text = String(msg || 'unknown').slice(0, 300);
+    try {
+      const arr = JSON.parse(localStorage.getItem('csp_err_log') || '[]');
+      arr.unshift({ t: Date.now(), kind, msg: text });
+      localStorage.setItem('csp_err_log', JSON.stringify(arr.slice(0, 20)));
+    } catch(_e) {}
+    if (NOISY.test(text)) return;   // 網路雜訊不上畫面
+    try {
+      let el = document.getElementById('err-chip');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'err-chip';
+        el.style.cssText = 'position:fixed;bottom:8px;left:8px;right:8px;z-index:99999;'
+          + 'background:rgba(127,29,29,.96);color:#fff;font-size:11px;line-height:1.5;'
+          + 'padding:7px 34px 7px 10px;border-radius:8px;word-break:break-all;max-height:90px;overflow:auto';
+        const x = document.createElement('span');
+        x.textContent = '✕';
+        x.style.cssText = 'position:absolute;right:6px;top:3px;padding:5px;cursor:pointer;font-size:14px';
+        x.onclick = () => el.remove();
+        el.appendChild(x);
+        const b = document.createElement('div');
+        b.id = 'err-chip-body';
+        el.appendChild(b);
+        (document.body || document.documentElement).appendChild(el);
+      }
+      const b = document.getElementById('err-chip-body');
+      if (b) b.textContent = `[${kind}] ${text}`;
+    } catch(_e) {}
+  };
+  try {
+    window.addEventListener('error', e => log('error',
+      (e.message || '') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || '')));
+    window.addEventListener('unhandledrejection', e =>
+      log('promise', e.reason && (e.reason.message || e.reason)));
+  } catch(_e) {}
+}
+
+/* 儀表板四張資訊卡的載入函式（逾時重試共用） */
+function retryDashboardWidgets() {
+  try {
+    const ph = (id, label) => { const el = document.getElementById(id);
+      if (el) el.innerHTML = `<div class="adv-loading">${label}</div>`; };
+    ph('er-dashboard-body', '載入反轉分析...');
+    ph('market-outlook-body', '載入市場大方向分析...');
+    ph('news-body', '載入財經新聞...');
+    ph('capital-flow-body', '載入資金流動事件...');
+  } catch(_e) {}
+  try { loadDashboardMacro().catch(e => console.warn('[retry-macro]', e)); } catch(_e) {}
+  try { if (typeof loadDashboardNews === 'function') loadDashboardNews().catch(e => console.warn('[retry-news]', e)); } catch(_e) {}
+  try { backgroundExtremeRevScan().then(() => renderErDashboardWidget()).catch(e => console.warn('[retry-er]', e)); } catch(_e) {}
+  _dashWidgetWatchdog();
+}
+/* 25 秒後仍卡在「載入中」的卡片 → 換成明確的失敗狀態＋重試鈕，
+   不再無限轉圈讓人以為整站壞掉（掃描與交易功能不受這四張卡影響） */
+function _dashWidgetTimeoutNow() {
+  for (const id of ['er-dashboard-body', 'market-outlook-body', 'news-body', 'capital-flow-body']) {
+    const el = document.getElementById(id);
+    if (el && el.querySelector('.adv-loading')) {
+      el.innerHTML = `<div style="padding:10px;color:var(--text3);font-size:0.8rem">
+        外部資料源未回應（不影響掃描與交易功能）
+        <button class="btn-ghost" style="font-size:0.76rem;margin-left:8px" onclick="retryDashboardWidgets()">↻ 重試</button></div>`;
+    }
+  }
+}
+function _dashWidgetWatchdog() {
+  setTimeout(() => { try { _dashWidgetTimeoutNow(); } catch(_e) {} }, 25000);
+}
+
 async function init() {
+  _bootErrHook();      // 最先掛：之後任何一步爆掉都看得見
   state.settings = loadSettings();
   applySettingsToUI();
   animateLoadingBar();
@@ -78,12 +154,15 @@ async function init() {
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
   loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro]', e));
+  _dashWidgetWatchdog();                 // 資訊卡 25 秒逾時 → 失敗狀態＋重試鈕
   try { liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連）
-  startRefreshCycle();
-  startDailyBriefingCheck();
-  startEconCalendarCheck();
-  bindEvents();
-  checkApiStatus();
+  // init 尾段逐步防護：任何一步失敗都不准拖垮後面的（事件綁定死掉＝整頁不能操作）
+  const _step = (name, fn) => { try { fn(); } catch(e) { console.error(`[init:${name}]`, e); } };
+  _step('refreshCycle', startRefreshCycle);
+  _step('briefing',     startDailyBriefingCheck);
+  _step('econ',         startEconCalendarCheck);
+  _step('bindEvents',   bindEvents);
+  _step('apiStatus',    checkApiStatus);
   // 預載宏觀快取（背景計時器每 15 秒會自動掃描，不需在 init 立即呼叫 recordSignalsFromScan）
   _prefetchMacroCache();
 }
@@ -7256,7 +7335,8 @@ function analyzeFOMCText(text) {
 
   // Extract up to 3 key sentences containing signal keywords
   const allKws = [...hawkKws, ...doveKws, 'inflation', 'interest rate', 'employment', 'economy', 'target', 'growth'];
-  const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 30 && s.length < 220);
+  // 不用 lookbehind：iOS 16.4 以下的 Safari 會在「解析階段」直接把整份腳本判成語法錯誤
+  const sentences = (text.match(/[^.!?]+[.!?]+["')\]]*|[^.!?]+$/g) || []).map(s => s.trim()).filter(s => s.length > 30 && s.length < 220);
   const keySentences = [];
   for (const s of sentences) {
     if (keySentences.length >= 3) break;
@@ -7725,7 +7805,7 @@ function aiProcessNews(title, body) {
 
   // 若關鍵詞不足，從 body 提取首句
   if (points.length < 2 && body && body.length > 40) {
-    const firstSent = body.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+/).find(s => s.length > 30 && s.length < 160);
+    const firstSent = ((body.replace(/\s+/g, ' ').match(/[^.!?]+[.!?]+["')\]]*|[^.!?]+$/g)) || []).map(s => s.trim()).find(s => s.length > 30 && s.length < 160);
     if (firstSent) points.push(firstSent.trim());
   }
   if (points.length === 0) points.push('加密市場持續受到宏觀環境與監管動態雙重影響，短線需關注外部催化劑');
