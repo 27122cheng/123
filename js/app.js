@@ -117,6 +117,16 @@ function _dashWidgetWatchdog() {
 
 async function init() {
   _bootErrHook();      // 最先掛：之後任何一步爆掉都看得見
+  // 版本徽章：固定顯示在右下角——任何截圖都能立刻判斷裝置實際跑的版本，
+  // 「雲端沒部署」與「裝置快取舊版」從此一眼可分
+  try {
+    const v = document.createElement('div');
+    v.id = 'ver-badge';
+    v.textContent = 'v' + APP_VERSION;
+    v.style.cssText = 'position:fixed;bottom:2px;right:6px;z-index:99998;font-size:9px;'
+      + 'color:rgba(148,163,184,.65);pointer-events:none;font-family:monospace';
+    document.body.appendChild(v);
+  } catch(_e) {}
   state.settings = loadSettings();
   applySettingsToUI();
   animateLoadingBar();
@@ -12747,18 +12757,25 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260716o';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260812f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
+/* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
+   （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
+   回來一定是新版。實測教訓：只彈提示的版本，使用者的手機停在一個月前的
+   舊版跑到現在。5 分鐘檢查一次（原 30 分鐘，對「修了 bug 等生效」太慢）。 */
 setInterval(async () => {
   try {
     const html = await fetch(window.location.pathname + '?_vchk=' + Date.now(), { cache: 'no-store' }).then(r => r.text());
     const m = html.match(/app\.js\?v=([\w-]+)/);
     if (m && m[1] !== APP_VERSION && m[1] !== _verNotified) {
       _verNotified = m[1];
-      try { if (typeof showToast === 'function') showToast('🔄 偵測到新版本，請重新整理頁面以套用最新交易邏輯', 'warning'); } catch(_t) {}
+      try { if (typeof showToast === 'function') showToast('🔄 偵測到新版本，切換分頁或稍後將自動更新', 'warning'); } catch(_t) {}
+      const _doReload = () => { try { location.reload(); } catch(_e) {} };
+      document.addEventListener('visibilitychange', () => { if (document.hidden) _doReload(); }, { once: true });
+      setTimeout(_doReload, 10 * 60 * 1000);   // 最遲 10 分鐘後自動套用
     }
   } catch(_e) {}
-}, 30 * 60 * 1000);
+}, 5 * 60 * 1000);
 
 /* ── 真實 ATR14（Binance kline 陣列格式：k[2]=high k[3]=low k[4]=close）──
    取代 computeSimpleSetup 內以 ADX 估算的波動率，讓止損/止盈貼近實際波動。 */
