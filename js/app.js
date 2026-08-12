@@ -144,6 +144,11 @@ async function init() {
   // 12 秒後強制收掉載入畫面讓使用者進得來——空畫面也比永遠的轉圈好，
   // 背景排程會自己把資料補上。
   setTimeout(() => { try { hideLoading(); hideScanBar(); } catch(_e) {} }, 12000);
+  // 四張資訊卡「與市場掃描並行」載入：原本排在整輪掃描之後才開始，
+  // 行動網路上掃描要 20~40 秒，等於每次打開前一分鐘四張卡必然在轉圈——
+  // 它們用的 API 與掃描完全獨立，沒有理由排隊。
+  loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro:early]', e));
+  _dashWidgetWatchdog();
   monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
 
   try {
@@ -163,8 +168,7 @@ async function init() {
   hideLoading();
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
-  loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro]', e));
-  _dashWidgetWatchdog();                 // 資訊卡 25 秒逾時 → 失敗狀態＋重試鈕
+  // 資訊卡已於 init 前段與掃描並行載入（見上方），此處不再重複
   try { liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連）
   // init 尾段逐步防護：任何一步失敗都不准拖垮後面的（事件綁定死掉＝整頁不能操作）
   const _step = (name, fn) => { try { fn(); } catch(e) { console.error(`[init:${name}]`, e); } };
@@ -8012,8 +8016,9 @@ async function loadDashboardMacro() {
   } catch {
     if (el) el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
   }
-  renderErDashboardWidget();
-  loadDashboardNews();
+  // 各卡互相獨立：一張炸掉不准拖死另一張
+  try { renderErDashboardWidget(); } catch(e) { console.warn('[er-widget]', e); }
+  try { loadDashboardNews(); } catch(e) { console.warn('[news-widget]', e); }
 }
 
 function renderDailyBriefCard(fg, mkt) {
@@ -12757,7 +12762,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260812f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260812g';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
