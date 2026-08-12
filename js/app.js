@@ -47,7 +47,17 @@ async function init() {
   registerSW();        // 後台通知 Service Worker
   fullDataResetV2();   // 一次性：依使用者要求刪除全部歷史紀錄（設定/幣種/備份保留）
   riskCtlResetV1();    // 一次性：清除快取互撞期間累積的風控學習資料（見函式說明）
-  try { await archInit(); } catch(e) { console.warn('[arch-idb]', e); }  // 封存層：IDB → 記憶體（含 localStorage 遷移）
+  // 封存層：IDB → 記憶體（含 localStorage 遷移）。上限 2.5 秒——封存讀取
+  // 有 localStorage 後備（_archReady=false 時自動退回），絕不允許它擋住開頁。
+  // 超時後 archInit 仍在背景繼續跑，完成時 _archReady 翻真、之後照常用 IDB。
+  await Promise.race([
+    archInit().catch(e => console.warn('[arch-idb]', e)),
+    new Promise(r => setTimeout(r, 2500)),
+  ]);
+  // 開頁看門狗：無論後面哪一步出意外（行動網路逾時、API 全掛…），
+  // 12 秒後強制收掉載入畫面讓使用者進得來——空畫面也比永遠的轉圈好，
+  // 背景排程會自己把資料補上。
+  setTimeout(() => { try { hideLoading(); hideScanBar(); } catch(_e) {} }, 12000);
   monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
 
   try {
@@ -27775,10 +27785,18 @@ let _archReady = false;
 
 function _archIdbOpen() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(ARCH_IDB_NAME, 1);
+    // 3 秒硬超時 + onblocked 一律 reject：iOS Safari 的 indexedDB.open 有
+    // 「永不觸發任何事件」的已知問題（WebKit，冷啟動/鎖定模式下常見）。
+    // 沒有超時的話 await 這個 Promise 的人會永遠等下去——init 裡等它
+    // 就是整個網頁進不去。reject 之後一切退回 localStorage 模式，功能不減。
+    const tm = setTimeout(() => reject(new Error('idb open timeout')), 3000);
+    let req;
+    try { req = indexedDB.open(ARCH_IDB_NAME, 1); }
+    catch(e) { clearTimeout(tm); reject(e); return; }
     req.onupgradeneeded = e => e.target.result.createObjectStore(ARCH_IDB_STORE);
-    req.onsuccess = e => resolve(e.target.result);
-    req.onerror   = () => reject(req.error);
+    req.onsuccess = e => { clearTimeout(tm); resolve(e.target.result); };
+    req.onerror   = () => { clearTimeout(tm); reject(req.error); };
+    req.onblocked = () => { clearTimeout(tm); reject(new Error('idb open blocked')); };
   });
 }
 async function _archIdbGet(key) {
@@ -27800,6 +27818,14 @@ async function _archIdbSet(key, val) {
 }
 async function archInit() {
   if (typeof indexedDB === 'undefined') return;   // 不支援 → 全程 localStorage 模式
+  // 先開一次資料庫：開不起來（iOS WebKit 卡死/隱私模式/超時）就整體放棄，
+  // 維持 localStorage 模式。原本逐鍵各自 catch 有兩個錯：每鍵各等 3 秒超時
+  // 把失敗拖成十幾秒；且失敗後仍把 _archReady 設 true——記憶體明明是空的
+  // 卻宣稱就緒，封存讀取會回空陣列而不是退回 localStorage（形同資料消失）。
+  let _db = null;
+  try { _db = await _archIdbOpen(); } catch(e) { console.warn('[arch-idb] 無法開啟，維持 localStorage 模式：', e && e.message); return; }
+  try { _db.close(); } catch(_e) {}
+  let _failed = false;
   for (const key of ARCH_KEYS()) {
     try {
       let arr = await _archIdbGet(key);
@@ -27817,10 +27843,13 @@ async function archInit() {
       }
       _archMem[key] = arr || [];
     } catch(e) {
+      _failed = true;
       console.warn('[arch-idb] 初始化失敗，此鍵維持 localStorage 模式：', key, e);
     }
   }
-  _archReady = true;
+  // 任何鍵失敗都不宣稱就緒：_archReady=true 代表「記憶體是完整的事實來源」，
+  // 缺一鍵就不是——寧可整體退回 localStorage，也不能拿空陣列冒充封存。
+  if (!_failed) _archReady = true;
 }
 /* 封存寫入的統一出口（_archiveMerge 專用）：IDB 就緒 → 記憶體＋IDB；否則 localStorage */
 function _archPersist(key, out) {
