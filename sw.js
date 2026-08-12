@@ -32,8 +32,20 @@ async function idbSet(key, val) {
 }
 
 /* ── SW 生命週期 ────────────────────────────────────────────── */
+/* SW_VERSION：內容一變，瀏覽器就會判定 SW 更新並重新安裝（skipWaiting +
+   clients.claim 讓新版立即接管，不用等所有分頁關閉）。
+   2026-08-12 全站重置：activate 時順手清空 Cache API 裡的一切——本 SW
+   從未用 Cache API 存過東西，但任何歷史版本或瀏覽器自行留下的暫存都在
+   這裡一併清掉，保證裝置上不殘留任何舊版程式。 */
+const SW_VERSION = '20260812a';
 self.addEventListener('install',  e => e.waitUntil(self.skipWaiting()));
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('activate', e => e.waitUntil((async () => {
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => caches.delete(k)));
+  } catch (_e) {}
+  await self.clients.claim();
+})()));
 
 /* ── 後台週期同步（Chrome PWA / Android）───────────────────── */
 self.addEventListener('periodicsync', event => {
