@@ -12818,7 +12818,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260813b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260813c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -19093,6 +19093,23 @@ function computeLabTags(coin, isLong, btcChg) {
         tags.push(oppKilled ? '清算-順向擠壓' : '清算-逆向瀑布');
       }
     }
+    // 裸 K 型態（15m）：只收「與交易方向同向」的型態進標籤——
+    // 研究所據此統計每種裸 K 在實戰的真實勝率，好不好用讓數據說話
+    {
+      const _nk = coin.nakedK;
+      if (_nk) {
+        if (isLong) {
+          if (_nk.bullEngulf) tags.push('裸K-多頭吞噬');
+          if (_nk.pinBull)    tags.push('裸K-下影拒絕');
+          if (_nk.threeUp)    tags.push('裸K-紅三兵');
+        } else {
+          if (_nk.bearEngulf) tags.push('裸K-空頭吞噬');
+          if (_nk.pinBear)    tags.push('裸K-上影拒絕');
+          if (_nk.threeDown)  tags.push('裸K-黑三鴉');
+        }
+        if (_nk.insideBar) tags.push('裸K-內包蓄勢');
+      }
+    }
     // 市場狀態（regime）：交易方向與大盤天氣的關係 → 配對研究所驗證它值多少
     {
       const _rg = (typeof _regimeCache !== 'undefined') ? _regimeCache : null;
@@ -23180,6 +23197,19 @@ function computeSimpleSetup(coin, isLong) {
     if (isLong  && _sPat.bull2B)  reasons.push(`🔄 2B多頭型態：假跌破前低後強力反彈，空頭陷阱解除`);
     if (!isLong && _sPat.bear2B)  reasons.push(`🔄 2B空頭型態：假突破前高後快速回落，多頭陷阱確認`);
   }
+  // ── 裸 K 型態（15m 價格行為，與方向同向者列為佐證）──
+  try {
+    const _nkR = coin.nakedK;
+    if (_nkR) {
+      if (isLong  && _nkR.bullEngulf) reasons.push(`🕯️ 裸K多頭吞噬：買方實體完整吞沒前一根空方棒`);
+      if (!isLong && _nkR.bearEngulf) reasons.push(`🕯️ 裸K空頭吞噬：賣方實體完整吞沒前一根多方棒`);
+      if (isLong  && _nkR.pinBull)    reasons.push(`🕯️ 裸K下影線拒絕（錘子）：低點被買方立刻買回`);
+      if (!isLong && _nkR.pinBear)    reasons.push(`🕯️ 裸K上影線拒絕（射擊之星）：高點被賣方立刻打回`);
+      if (isLong  && _nkR.threeUp)    reasons.push(`🕯️ 紅三兵：連三根實體推進，買方持續控盤`);
+      if (!isLong && _nkR.threeDown)  reasons.push(`🕯️ 黑三鴉：連三根實體下壓，賣方持續控盤`);
+      if (_nkR.insideBar)             reasons.push(`🕯️ 內包蓄勢：波動收縮，等突破方向表態`);
+    }
+  } catch(_e) {}
 
   // 把 AI 學習警告加入進場依據
   learnWarn.forEach(w => reasons.push(`⚠️ ${w}`));
@@ -28102,6 +28132,15 @@ function computeDirectionConviction(coin) {
   try {
     const fr = _sbxFunding ? _sbxFunding[coin.symbol] : null;   // 擁擠是反向訊號，權重刻意小
     if (isFinite(fr)) { if (fr >= 0.0004) add(-4, '費率多頭擁擠'); else if (fr <= -0.0004) add(4, '費率空頭擁擠'); }
+  } catch(_e) {}
+  // 裸 K 型態（15m，最後一根可能成形中 → 權重小，當投票不當定論）
+  try {
+    const nk = coin.nakedK;
+    if (nk) {
+      if (nk.bullEngulf) add(5, '多頭吞噬'); if (nk.bearEngulf) add(-5, '空頭吞噬');
+      if (nk.pinBull) add(4, '下影拒絕');    if (nk.pinBear) add(-4, '上影拒絕');
+      if (nk.threeUp) add(4, '紅三兵');      if (nk.threeDown) add(-4, '黑三鴉');
+    }
   } catch(_e) {}
   return { score: Math.max(-100, Math.min(100, s)), votes };
 }

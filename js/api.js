@@ -776,6 +776,7 @@ function enrichData(raw) {
       h4Rsi:           item.h4Rsi             ?? null,
       h1Rsi:           item.h1Rsi             ?? null,
       bb:              item.bb                ?? null,
+      nakedK:          item.nakedK            ?? null,
       patterns:        item.patterns          ?? null,
       strictTrend:     item.strictTrend       ?? null,
       dataSrc:         item.dataSrc           ?? null,

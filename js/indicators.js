@@ -308,6 +308,7 @@ function analyzeKlines(symbol, raw) {
 
   const bb       = computeBBSignal(raw);
   const patterns = detect123And2B(highs, lows, closes);
+  const nakedK   = detectNakedK(opens, highs, lows, closes, atr);
   const strictTrend = computeStrictTrend(highs, lows, closes, volumes);
 
   return {
@@ -330,6 +331,7 @@ function analyzeKlines(symbol, raw) {
     wickResistances: wickResistances.map(z => ({ level: fmtDecimals(z.level), wicks: z.wicks })),
     bb,
     patterns,
+    nakedK,
   };
 }
 
@@ -580,6 +582,48 @@ function computeBBSignal(raw) {
 }
 
 /* ── 123法則 / 2B法則 型態偵測 ───────────────────────────── */
+/* ── 裸 K 型態（經典價格行為，不用任何指標）──────────────────────
+   對最近幾根 K 棒辨識：吞噬、針形（錘子/射擊之星）、內包、十字星、
+   三兵/三鴉。門檻全部以 ATR 標準化——「大實體」在 BTC 和小幣上
+   意義不同，用絕對值判定會全錯。
+   注意：最後一根可能仍在形成中，型態會隨它變化；下游把這些當
+   「證據投票」而不是單獨的進場理由，成形中的抖動可以被其他證據平衡。 */
+function detectNakedK(opens, highs, lows, closes, atr) {
+  const n = closes.length;
+  const out = { bullEngulf: false, bearEngulf: false, pinBull: false, pinBear: false,
+                insideBar: false, doji: false, threeUp: false, threeDown: false, tags: [] };
+  if (n < 4 || !(atr > 0)) return out;
+  const bar = i => ({ o: opens[i], h: highs[i], l: lows[i], c: closes[i],
+    body: Math.abs(closes[i] - opens[i]), range: highs[i] - lows[i],
+    upWick: highs[i] - Math.max(opens[i], closes[i]),
+    dnWick: Math.min(opens[i], closes[i]) - lows[i],
+    bull: closes[i] > opens[i], bear: closes[i] < opens[i] });
+  const cur = bar(n - 1), prev = bar(n - 2), p2 = bar(n - 3);
+
+  // 吞噬：前一根反向，這一根實體完整包住前一根實體，且實體夠大（≥0.5×ATR）
+  if (prev.bear && cur.bull && cur.o <= prev.c && cur.c >= prev.o && cur.body >= 0.5 * atr)
+    { out.bullEngulf = true; out.tags.push('多頭吞噬'); }
+  if (prev.bull && cur.bear && cur.o >= prev.c && cur.c <= prev.o && cur.body >= 0.5 * atr)
+    { out.bearEngulf = true; out.tags.push('空頭吞噬'); }
+  // 針形：影線 ≥ 實體 2 倍且 ≥0.5×ATR，收盤收在有利側 40% 內（拒絕證據）
+  if (cur.range > 0) {
+    if (cur.dnWick >= 2 * cur.body && cur.dnWick >= 0.5 * atr
+        && (cur.c - cur.l) / cur.range >= 0.6) { out.pinBull = true; out.tags.push('下影線拒絕(錘子)'); }
+    if (cur.upWick >= 2 * cur.body && cur.upWick >= 0.5 * atr
+        && (cur.h - cur.c) / cur.range >= 0.6) { out.pinBear = true; out.tags.push('上影線拒絕(射擊之星)'); }
+  }
+  // 內包：整根被前一根高低完整包住（蓄勢，方向由突破決定）
+  if (cur.h < prev.h && cur.l > prev.l) { out.insideBar = true; out.tags.push('內包蓄勢'); }
+  // 十字星：實體 ≤ 15% 全幅且全幅不小（猶豫棒，配合位置才有意義）
+  if (cur.range >= 0.5 * atr && cur.body <= 0.15 * cur.range) { out.doji = true; out.tags.push('十字星'); }
+  // 三兵/三鴉：連三根同向且收盤逐步推進
+  if (p2.bull && prev.bull && cur.bull && prev.c > p2.c && cur.c > prev.c)
+    { out.threeUp = true; out.tags.push('紅三兵'); }
+  if (p2.bear && prev.bear && cur.bear && prev.c < p2.c && cur.c < prev.c)
+    { out.threeDown = true; out.tags.push('黑三鴉'); }
+  return out;
+}
+
 function detect123And2B(highs, lows, closes, lookback = 60) {
   const n = closes.length;
   if (n < 30) return { bull123: false, bear123: false, bull2B: false, bear2B: false };
