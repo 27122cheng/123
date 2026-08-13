@@ -12818,7 +12818,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260813a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260813b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -23302,6 +23302,9 @@ function computeSimpleSetup(coin, isLong) {
 }
 
 function sendBrowserNotification(title, body, tag) {
+  // iOS Safari 一般分頁沒有 Notification API（只有加入主畫面的 PWA 才有）——
+  // 不防護就是 ReferenceError，實案：iPhone 上每次要發通知就在畫面上炸紅條
+  if (typeof Notification === 'undefined') return;
   if (Notification.permission !== 'granted') return;
   try {
     new Notification(title, {
@@ -23335,6 +23338,7 @@ async function requestBrowserNotifPermission() {
 function updateNotifBtn() {
   const btn = document.getElementById('s-notif-browser-btn');
   if (!btn) return;
+  if (typeof Notification === 'undefined') { btn.textContent = '此瀏覽器不支援'; return; }
   const perm = Notification.permission;
   const on   = perm === 'granted' && loadSettings().notifBrowser;
   btn.textContent  = on ? '✓ 已啟用' : perm === 'denied' ? '⚠ 已被封鎖' : '點擊啟用';
@@ -28650,6 +28654,26 @@ async function renderStructChart(symbol) {
     if (note) {
       note.textContent = (trade ? `📌 依現有${trade.status === 'open' ? '持倉' : '掛單'}價位` : `依當前 setup（${isLong ? '多' : '空'}）`)
         + `　·　色帶＝合流區（越深佐證越多）　·　15m × ${raw.length} 根`;
+      // 注意事項（沒有交易時圖的正確讀法——使用者實際問過的困惑，寫在圖下方一勞永逸）
+      try {
+        let cv = document.getElementById('struct-chart-caveats');
+        if (!cv) {
+          cv = document.createElement('div');
+          cv.id = 'struct-chart-caveats';
+          cv.style.cssText = 'margin-top:7px;font-size:0.7rem;color:var(--text3);line-height:1.8;'
+            + 'border-top:1px solid var(--border);padding-top:6px';
+          if (note.parentNode) note.parentNode.appendChild(cv);
+        }
+        cv.innerHTML = trade
+          ? `<b>注意事項</b>：圖上畫的是這筆${trade.status === 'open' ? '持倉' : '掛單'}的<b>實際承諾價位</b>，與交易紀錄一致；`
+            + `移動停利推進時止損線會跟著更新。色帶＝支撐/壓力合流區（佐證：影線拒絕、EMA、OB、前高低），`
+            + `止損釘在合流區外側、止盈放對向區前緣。本圖僅 15m × 96 根（約一日），週/日線級別的結構不在圖內。`
+          : `<b>注意事項</b>：目前<b>沒有掛單/持倉</b>——圖上的進場/止損/止盈是「此刻的 setup 提案」，`
+            + `每輪掃描都會重算，價位會隨行情移動；它不是承諾，實際建單以通過全部門檻那一刻的價位為準。`
+            + `進場是<b>限價語意</b>：進場線在現價${isLong ? '下' : '上'}方＝等回踩才成交，不回踩就不進場、`
+            + `直接飛越止盈則機會作廢（不追價）。色帶＝支撐/壓力合流區（越深佐證越多：影線拒絕、EMA、OB、前高低）。`
+            + `本圖僅 15m × 96 根（約一日），週/日線級別的結構不在圖內；出場判定以 1 分鐘 K 補插針。`;
+      } catch(_e) {}
     }
   } catch(e) { console.warn('[struct-chart]', e); }
   finally { _structChartBusy = false; }
