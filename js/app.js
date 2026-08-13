@@ -12818,7 +12818,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260813c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260813d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -19110,6 +19110,16 @@ function computeLabTags(coin, isLong, btcChg) {
         if (_nk.insideBar) tags.push('裸K-內包蓄勢');
       }
     }
+    // 擺動結構（4H 為主）：同向結構/BOS 延續確認/反向 CHoCH 警訊——
+    // 研究所可統計「結構同向 vs 逆結構」的實戰勝率差
+    {
+      const _st4 = coin.h4Struct;
+      if (_st4) {
+        if (isLong ? _st4.dir === 'up' : _st4.dir === 'down') tags.push('結構-4H同向');
+        if (isLong ? _st4.bosUp : _st4.bosDown) tags.push('結構-BOS延續');
+        if (isLong ? _st4.chochDown : _st4.chochUp) tags.push('結構-CHoCH警訊');
+      }
+    }
     // 市場狀態（regime）：交易方向與大盤天氣的關係 → 配對研究所驗證它值多少
     {
       const _rg = (typeof _regimeCache !== 'undefined') ? _regimeCache : null;
@@ -23208,6 +23218,18 @@ function computeSimpleSetup(coin, isLong) {
       if (isLong  && _nkR.threeUp)    reasons.push(`🕯️ 紅三兵：連三根實體推進，買方持續控盤`);
       if (!isLong && _nkR.threeDown)  reasons.push(`🕯️ 黑三鴉：連三根實體下壓，賣方持續控盤`);
       if (_nkR.insideBar)             reasons.push(`🕯️ 內包蓄勢：波動收縮，等突破方向表態`);
+    }
+  } catch(_e) {}
+  // ── 擺動結構敘事（4H）：趨勢的骨架，含 BOS/CHoCH 事件 ──
+  try {
+    const _st4R = coin.h4Struct;
+    if (_st4R) {
+      if (_st4R.dir === 'up')
+        reasons.push(`🧱 4H 擺動結構上升：高低點同步抬升（HH/HL）${_st4R.bosUp ? '，且已突破前高（BOS 延續確認）' : ''}，趨勢直度 R² ${_st4R.r2}`);
+      else if (_st4R.dir === 'down')
+        reasons.push(`🧱 4H 擺動結構下降：高低點同步壓低（LH/LL）${_st4R.bosDown ? '，且已跌破前低（BOS 延續確認）' : ''}，趨勢直度 R² ${_st4R.r2}`);
+      if (isLong  && _st4R.chochDown) reasons.push(`⚠️ 4H CHoCH：最後一個 higher-low 已被跌破——上升結構的性格已變，追多風險升高`);
+      if (!isLong && _st4R.chochUp)   reasons.push(`⚠️ 4H CHoCH：最後一個 lower-high 已被突破——下降結構的性格已變，追空風險升高`);
     }
   } catch(_e) {}
 
@@ -28141,6 +28163,20 @@ function computeDirectionConviction(coin) {
       if (nk.pinBull) add(4, '下影拒絕');    if (nk.pinBear) add(-4, '上影拒絕');
       if (nk.threeUp) add(4, '紅三兵');      if (nk.threeDown) add(-4, '黑三鴉');
     }
+  } catch(_e) {}
+  // 擺動結構（權重最重的一類：結構是趨勢的骨架，指標只是皮）
+  // CHoCH 用 0.8 倍反向計——性格轉變是「第一個警訊」，還不是已確立的反轉
+  try {
+    const voteStruct = (st, w, name) => {
+      if (!st) return;
+      if (st.chochDown) add(-Math.round(w * 0.8), `${name}CHoCH轉空`);
+      else if (st.chochUp) add(Math.round(w * 0.8), `${name}CHoCH轉多`);
+      else if (st.dir === 'up') add(w, `${name}結構HH/HL`);
+      else if (st.dir === 'down') add(-w, `${name}結構LH/LL`);
+    };
+    voteStruct(coin.dayStruct, 14, '日線');
+    voteStruct(coin.h4Struct, 12, '4H');
+    voteStruct(coin.struct15, 4, '15m');
   } catch(_e) {}
   return { score: Math.max(-100, Math.min(100, s)), votes };
 }

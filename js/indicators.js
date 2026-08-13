@@ -309,6 +309,7 @@ function analyzeKlines(symbol, raw) {
   const bb       = computeBBSignal(raw);
   const patterns = detect123And2B(highs, lows, closes);
   const nakedK   = detectNakedK(opens, highs, lows, closes, atr);
+  const struct15 = computeSwingStructure(highs, lows, closes, atr);
   const strictTrend = computeStrictTrend(highs, lows, closes, volumes);
 
   return {
@@ -332,6 +333,7 @@ function analyzeKlines(symbol, raw) {
     bb,
     patterns,
     nakedK,
+    struct15,
   };
 }
 
@@ -481,6 +483,7 @@ function analyzeTimeframeSignal(raw) {
     signal, price, rsi: parseFloat(rsi.toFixed(1)), rsiSlope,
     ema20, ema50, swingHigh, swingLow,
     bullBreak, bearBreak, isHighVol, volRatio,
+    struct: computeSwingStructure(highs, lows, closes, atr),   // 擺動結構（HH/HL、BOS、CHoCH）
     atr, pivotLevels,
   };
 }
@@ -582,6 +585,61 @@ function computeBBSignal(raw) {
 }
 
 /* ── 123法則 / 2B法則 型態偵測 ───────────────────────────── */
+/* ── 擺動結構趨勢（HH/HL/LH/LL ＋ BOS/CHoCH）──────────────────────
+   成熟的趨勢判定讀的是「結構」不是指標快照：
+   · ZigZag 擺動點：反轉需 ≥1.5×ATR 才確認一個擺動（雜訊不進結構）
+   · HH+HL＝上升、LH+LL＝下降、混合＝區間
+   · BOS（Break of Structure）：現價突破最後確認擺動高/低＝趨勢延續確認
+   · CHoCH（Change of Character）：上升結構的最後 higher-low 被跌破
+     （或下降結構的 lower-high 被突破）＝趨勢性格轉變的第一個訊號——
+     這正是指標快照最晚才反映的時刻
+   · 品質：近 40 根線性回歸斜率（ATR 標準化）與 R²——趨勢不只有方向，
+     還有「走得直不直」 */
+function computeSwingStructure(highs, lows, closes, atr, revK = 1.5) {
+  const n = closes.length;
+  if (n < 40 || !(atr > 0)) return null;
+  const piv = [];
+  let dir = 1, extP = highs[0], extI = 0;
+  for (let i = 1; i < n; i++) {
+    if (dir === 1) {
+      if (highs[i] >= extP) { extP = highs[i]; extI = i; }
+      else if (extP - lows[i] >= revK * atr) {
+        piv.push({ i: extI, p: extP, hi: true });
+        dir = -1; extP = lows[i]; extI = i;
+      }
+    } else {
+      if (lows[i] <= extP) { extP = lows[i]; extI = i; }
+      else if (highs[i] - extP >= revK * atr) {
+        piv.push({ i: extI, p: extP, hi: false });
+        dir = 1; extP = highs[i]; extI = i;
+      }
+    }
+  }
+  const hiPiv = piv.filter(p => p.hi), loPiv = piv.filter(p => !p.hi);
+  if (hiPiv.length < 2 || loPiv.length < 2) return { dir: 'range', pivots: piv.length };
+  const h2 = hiPiv[hiPiv.length - 2], h1 = hiPiv[hiPiv.length - 1];
+  const l2 = loPiv[loPiv.length - 2], l1 = loPiv[loPiv.length - 1];
+  const hh = h1.p > h2.p, hl = l1.p > l2.p, lh = h1.p < h2.p, ll = l1.p < l2.p;
+  let sdir = 'range';
+  if (hh && hl) sdir = 'up'; else if (lh && ll) sdir = 'down';
+  const price = closes[n - 1];
+  const bosUp = price > h1.p, bosDown = price < l1.p;
+  const chochDown = (hh || hl) && sdir !== 'down' && price < l1.p;   // 上升性格被破
+  const chochUp   = (lh || ll) && sdir !== 'up' && price > h1.p;     // 下降性格被破
+  // 趨勢品質：近 40 根回歸斜率與 R²
+  const win = closes.slice(-40), m = win.length;
+  let sx = 0, sy = 0, sxy = 0, sxx = 0;
+  for (let i = 0; i < m; i++) { sx += i; sy += win[i]; sxy += i * win[i]; sxx += i * i; }
+  const slope = (m * sxy - sx * sy) / (m * sxx - sx * sx || 1);
+  const meanY = sy / m, b = meanY - slope * (sx / m);
+  let ssTot = 0, ssRes = 0;
+  for (let i = 0; i < m; i++) { const f = slope * i + b; ssTot += (win[i] - meanY) ** 2; ssRes += (win[i] - f) ** 2; }
+  const r2 = ssTot > 0 ? Math.max(0, 1 - ssRes / ssTot) : 0;
+  return { dir: sdir, hh, hl, lh, ll, bosUp, bosDown, chochUp, chochDown,
+    lastHigh: h1.p, lastLow: l1.p, pivots: piv.length,
+    slopeAtr: +(slope / atr).toFixed(3), r2: +r2.toFixed(2) };
+}
+
 /* ── 裸 K 型態（經典價格行為，不用任何指標）──────────────────────
    對最近幾根 K 棒辨識：吞噬、針形（錘子/射擊之星）、內包、十字星、
    三兵/三鴉。門檻全部以 ATR 標準化——「大實體」在 BTC 和小幣上

@@ -705,6 +705,8 @@ async function fetchAllFromBinance(timeframe) {
           h4SwingLow:     h4Sig?.swingLow   || null,
           h4Rsi:          h4Sig?.rsi        || null,
           h1Rsi:          h1Sig?.rsi        || null,
+          h4Struct:       h4Sig?.struct     || null,   // 4H 擺動結構（HH/HL、BOS、CHoCH）
+          dayStruct:      daySig?.struct    || null,   // 日線擺動結構
         };
       } else {
         const fallbackPrice = spotPrices[sym] || pair.p;
@@ -777,6 +779,9 @@ function enrichData(raw) {
       h1Rsi:           item.h1Rsi             ?? null,
       bb:              item.bb                ?? null,
       nakedK:          item.nakedK            ?? null,
+      struct15:        item.struct15          ?? null,
+      h4Struct:        item.h4Struct          ?? null,
+      dayStruct:       item.dayStruct         ?? null,
       patterns:        item.patterns          ?? null,
       strictTrend:     item.strictTrend       ?? null,
       dataSrc:         item.dataSrc           ?? null,
