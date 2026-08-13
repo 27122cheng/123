@@ -12820,7 +12820,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260814a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260814b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -20085,7 +20085,7 @@ const QLAB_ARCHIVE_MAX = 1200;
 const QLAB_KEEP_FIELDS = [
   'id', 'symbol', 'mode', 'family', 'direction', 'timestamp', 'exitTime', 'holdMin',
   'outcome', 'pnlR', 'entry', 'exitPrice', 'atrAtEntry', 'levelGapAtr', 'slDistAtr',
-  'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid', 'regime',
+  'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid', 'fillDelaySec', 'slipR', 'regime',
   'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed', 'extended', 'maxHoldExit',
 ];
 function _qlabSlim(t) {
@@ -24641,7 +24641,7 @@ const SCALP_KEEP_FIELDS = new Set([
   'riskScore', 'riskKeys', 'conf',
   // 止損建議／機器人學習止損與量化重放
   'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter',
-  'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed',
+  'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed', 'fillDelaySec', 'slipR',
   // 分群用（時段／波動／量能／多週期）
   'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel', 'slHuntAvoid', 'regime',
   // 旗標
@@ -25210,6 +25210,16 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
     const _netRRMin = isTrendFam ? 1.5 : 1.05;
     if (_rr - _feeR < _netRRMin) return _sr(`扣費後賺賠比不足(淨${(_rr - _feeR).toFixed(2)}<${_netRRMin})`);
   }
+  // ── 執行速度守門（實案：ONE 暴走段，訊號紙上 +1.55R、真人晚 30 秒
+  //    進場即虧——單根 5m 波動遠超止損距離時，訊號在人手上不可執行）──
+  //    門檻對照實際尺度（規則④）：常態 5m 單根全幅 ≈ 1×ATR、止損 ≥0.35×ATR
+  //    且被手續費守門推到 ≥0.67% 價格，2.5×risk 或 1.5% 價格只擋暴走棒。
+  {
+    const _lastRange = (parseFloat(last[2]) || 0) - (parseFloat(last[3]) || 0);
+    if (_lastRange >= 2.5 * risk || _lastRange / price >= 0.015) {
+      return _sr(`行情速度超出可執行範圍(單根5m波動 ${(_lastRange / price * 100).toFixed(2)}%)`);
+    }
+  }
   // 止損被推遠後止盈也跟著變遠，必須確認那個距離在最長持有時間內走得到。
   // 以 ATR 為尺：止盈一距離超過 maxTpAtr 個 ATR，就是在等一個不會來的行情，
   // 那種單只會一路拖到停滯出場——這是低波動幣真正不該做的原因，
@@ -25425,7 +25435,9 @@ async function recordScalpSignals(data) {
       const t = {
         id: `scalp-${coin.symbol}-${now}`,
         symbol: coin.symbol, direction: dir,
-        timestamp: now, entryTime: now,          // 市價成交：建立即進場
+        timestamp: now, entryTime: now,
+        // 延遲成交模型：訊號價只是錨，實際成交價＝訊號後首個報價（見 updateScalpTrades）
+        pendingFill: true, signalPrice: setup.entry, signalTime: now,
         entry: setup.entry, sl: setup.sl, baseSl: setup.sl,
         tp1: setup.tp1, tp2: setup.tp2,
         entryPrice: setup.entry, peakPrice: setup.entry,
@@ -25508,6 +25520,33 @@ function updateScalpTrades(data) {
       const cur = parseFloat(coin.price) || 0;
       if (!cur) continue;
       const isLong = t.direction === 'long';
+
+      // ── 延遲成交（實案：ONE 訊號 +1.55R、真人晚 30 秒進場實虧 4%——
+      //    舊模型「建立即以訊號價成交」量出來的是幻覺）───────────────
+      //    訊號後至少等一輪（45 秒），以「延遲後首個報價」成交並把 SL/TP
+      //    整組重錨到成交價；追價 >0.5R 或逆走 >0.8R ＝ 真人不會追、紙上
+      //    也不追（missed）。延遲秒數與滑移 R 逐筆入帳。
+      if (t.pendingFill) {
+        const _sigT = t.signalTime || t.timestamp || 0;
+        if (Date.now() - _sigT < 45000) continue;
+        const _dirF = isLong ? 1 : -1;
+        const _risk0 = Math.abs(t.entry - (t.baseSl ?? t.sl)) || 1e-9;
+        const _moveR = _dirF * (cur - (t.signalPrice ?? t.entry)) / _risk0;
+        t.fillDelaySec = Math.round((Date.now() - _sigT) / 1000);
+        t.slipR = +_moveR.toFixed(3);
+        if (_moveR > 0.5 || _moveR < -0.8) {
+          t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
+          t.pendingFill = false; changed = true;
+          if (_notifyOk) sendScalpTelegram(t, 'missed');
+          continue;
+        }
+        const _slD = Math.abs(t.entry - t.sl), _t1D = Math.abs(t.tp1 - t.entry), _t2D = Math.abs(t.tp2 - t.entry);
+        t.entry = cur; t.entryPrice = cur; t.peakPrice = cur;
+        t.sl = cur - _dirF * _slD; t.baseSl = t.sl;
+        t.tp1 = cur + _dirF * _t1D; t.tp2 = cur + _dirF * _t2D;
+        t.entryTime = Date.now(); t.pendingFill = false; changed = true;
+        continue;   // 成交這一輪不評出場，下一輪開始
+      }
       const baseRisk = Math.abs(t.entry - (t.baseSl ?? t.sl)) || 1;
       const heldMin  = (Date.now() - (t.entryTime || t.timestamp)) / 60000;
       let outcome = null;
@@ -25669,7 +25708,8 @@ function sendScalpTelegram(t, kind, extra = {}) {
         SCALP_CFG.beStop ? `🛡️ 浮盈達 +${SCALP_CFG.beTriggerR}R 自動移到保本` : '',
         t.feeR != null ? `💸 止損距離 ${t.slDistPct}%，來回手續費約 ${(t.feeR * 100).toFixed(0)}% 的 R`
           + (t.slWidened ? '（原始止損過近會被手續費吃掉，已推遠至可行距離；部位等比例縮小，風險金額不變）' : '') : '',
-        `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分`,
+        `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分（獲利 ≥${SCALP_CFG.extendMinR}R 自動延長讓利潤跑）`,
+        `📡 價位以「訊號後首個報價」重錨（延遲/滑移逐筆入帳）；行情速度過快的幣已在源頭過濾，仍請避免追價`,
         t.riskRecs && t.riskRecs.length ? `💡 ${_e(t.riskRecs[0])}` : '',
         ``,
         `⏰ ${ts}`,
@@ -25679,6 +25719,10 @@ function sendScalpTelegram(t, kind, extra = {}) {
       text = [`🎯 <b>快進快出｜觸及止盈一</b> — ${sym} ${dir}`, ``,
         `減倉 ${SCALP_CFG.tp1Frac * 100}%，止損上移至 <b>$${fmt(t.sl)}</b>（鎖 +0.5R）`,
         ``, `⏰ ${ts}`, `#${sym.toLowerCase()} #scalp #止盈一`].join('\n');
+    } else if (kind === 'missed') {
+      text = [`🚫 <b>快進快出｜訊號作廢（未成交）</b> — ${sym} ${dir}`, ``,
+        `延遲 ${t.fillDelaySec ?? '--'} 秒後價格已${(t.slipR || 0) > 0 ? `朝目標跑 ${t.slipR}R（不追價）` : `逆走 ${Math.abs(t.slipR || 0)}R（等於貼著止損進場）`}，此單不成交、不入統計`,
+        ``, `⏰ ${ts}`, `#${sym.toLowerCase()} #scalp #作廢`].join('\n');
     } else if (kind === 'be') {
       text = [`🛡️ <b>快進快出｜已移到保本</b> — ${sym} ${dir}`, ``,
         `浮盈達 +${SCALP_CFG.beTriggerR}R，止損移到成本價 <b>$${fmt(t.sl)}</b>`,
