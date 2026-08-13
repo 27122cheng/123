@@ -115,8 +115,35 @@ function _dashWidgetWatchdog() {
   setTimeout(() => { try { _dashWidgetTimeoutNow(); } catch(_e) {} }, 25000);
 }
 
+/* ── 開機軌跡＋安全模式 ────────────────────────────────────────
+   實案：使用者手機載入畫面凍在第一格（動畫 interval 連第二次都沒跑），
+   主執行緒在 init 前段被鎖死，但看不到卡在哪一步。
+   · _bootMark：init 每一步都在載入畫面下方即時顯示走到哪——凍住時
+     畫面上最後一個標記就是兇手，一張截圖定位。也存 csp_boot_trace。
+   · 安全模式（網址加 ?safe=1）：跳過 SW/封存層/資訊卡/清算流/月度
+     歸檔等所有非必要模組，只保留掃描與渲染——保證進得了頁面。 */
+const SAFE_MODE = /[?&]safe=1/.test(location.search);
+const _bootTraceArr = [];
+function _bootMark(name) {
+  try {
+    _bootTraceArr.push(name + '@' + (performance.now() / 1000).toFixed(1) + 's');
+    try { localStorage.setItem('csp_boot_trace', JSON.stringify(_bootTraceArr.slice(-30))); } catch(_e) {}
+    let el = document.getElementById('boot-trace');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'boot-trace';
+      el.style.cssText = 'position:fixed;bottom:14px;left:8px;right:8px;z-index:99997;font-size:9px;'
+        + 'color:rgba(148,163,184,.6);font-family:monospace;text-align:center;pointer-events:none';
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = _bootTraceArr.slice(-4).join(' → ');
+    if (name === 'done') setTimeout(() => { try { el.remove(); } catch(_e) {} }, 5000);
+  } catch(_e) {}
+}
+
 async function init() {
   _bootErrHook();      // 最先掛：之後任何一步爆掉都看得見
+  _bootMark(SAFE_MODE ? 'start(安全模式)' : 'start');
   // 版本徽章：固定顯示在右下角——任何截圖都能立刻判斷裝置實際跑的版本，
   // 「雲端沒部署」與「裝置快取舊版」從此一眼可分
   try {
@@ -130,16 +157,22 @@ async function init() {
   state.settings = loadSettings();
   applySettingsToUI();
   animateLoadingBar();
-  registerSW();        // 後台通知 Service Worker
+  _bootMark('設定');
+  if (!SAFE_MODE) registerSW();   // 後台通知 Service Worker
+  _bootMark('SW');
   fullDataResetV2();   // 一次性：依使用者要求刪除全部歷史紀錄（設定/幣種/備份保留）
   riskCtlResetV1();    // 一次性：清除快取互撞期間累積的風控學習資料（見函式說明）
+  _bootMark('重置檢查');
   // 封存層：IDB → 記憶體（含 localStorage 遷移）。上限 2.5 秒——封存讀取
   // 有 localStorage 後備（_archReady=false 時自動退回），絕不允許它擋住開頁。
   // 超時後 archInit 仍在背景繼續跑，完成時 _archReady 翻真、之後照常用 IDB。
-  await Promise.race([
-    archInit().catch(e => console.warn('[arch-idb]', e)),
-    new Promise(r => setTimeout(r, 2500)),
-  ]);
+  if (!SAFE_MODE) {
+    await Promise.race([
+      archInit().catch(e => console.warn('[arch-idb]', e)),
+      new Promise(r => setTimeout(r, 2500)),
+    ]);
+  }
+  _bootMark('封存層');
   // 開頁看門狗：無論後面哪一步出意外（行動網路逾時、API 全掛…），
   // 12 秒後強制收掉載入畫面讓使用者進得來——空畫面也比永遠的轉圈好，
   // 背景排程會自己把資料補上。
@@ -147,9 +180,12 @@ async function init() {
   // 四張資訊卡「與市場掃描並行」載入：原本排在整輪掃描之後才開始，
   // 行動網路上掃描要 20~40 秒，等於每次打開前一分鐘四張卡必然在轉圈——
   // 它們用的 API 與掃描完全獨立，沒有理由排隊。
-  loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro:early]', e));
-  _dashWidgetWatchdog();
-  monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
+  if (!SAFE_MODE) {
+    loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro:early]', e));
+    _dashWidgetWatchdog();
+    monthlyTradePrune(); // 歸檔超過一個月的交易記錄（AI 記憶保留）
+  }
+  _bootMark('掃描開始');
 
   try {
     const { data, source } = await fetchMarketData(state.timeframe);
@@ -162,23 +198,28 @@ async function init() {
     state.data     = [];
     state.filtered = [];
   }
+  _bootMark('掃描完成' + ((state.data || []).length ? `(${state.data.length}幣)` : '(無資料)'));
   // 後續處理獨立保護，不影響 state.data
   try { updateOpenTrades(state.data); } catch(e) { console.error('[init] updateOpenTrades 錯誤:', e); }
 
   hideLoading();
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
+  _bootMark('渲染');
   // 資訊卡已於 init 前段與掃描並行載入（見上方），此處不再重複
-  try { liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連）
+  try { if (!SAFE_MODE) liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連）
   // init 尾段逐步防護：任何一步失敗都不准拖垮後面的（事件綁定死掉＝整頁不能操作）
   const _step = (name, fn) => { try { fn(); } catch(e) { console.error(`[init:${name}]`, e); } };
   _step('refreshCycle', startRefreshCycle);
-  _step('briefing',     startDailyBriefingCheck);
-  _step('econ',         startEconCalendarCheck);
+  if (!SAFE_MODE) {
+    _step('briefing',   startDailyBriefingCheck);
+    _step('econ',       startEconCalendarCheck);
+  }
   _step('bindEvents',   bindEvents);
   _step('apiStatus',    checkApiStatus);
   // 預載宏觀快取（背景計時器每 15 秒會自動掃描，不需在 init 立即呼叫 recordSignalsFromScan）
-  _prefetchMacroCache();
+  if (!SAFE_MODE) _prefetchMacroCache();
+  _bootMark('done');
 }
 
 async function _prefetchMacroCache() {
@@ -12762,7 +12803,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260812g';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260812h';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
