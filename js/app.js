@@ -12820,7 +12820,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260813e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260814a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14068,10 +14068,12 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_slfE) {}
 
-    // 勝率強化：時段／幣種／市場狀態×方向的實測負期望封鎖（樣本門檻＋Wilson，回升自動解除）
+    // 勝率強化：時段／幣種／市場狀態×方向／進場邏輯分支的實測負期望封鎖
+    // （樣本門檻＋Wilson，回升自動解除）——進場條件由此持續學習
     try {
       const _wgM = winupSessionBlocked('main') || winupSymbolBlocked('main', coin.symbol)
-                || winupRegimeBlocked('main', direction);
+                || winupRegimeBlocked('main', direction)
+                || winupMainTagBlocked(setup.entryTag);
       if (_wgM) { _no(_wgM); continue; }
     } catch(_e) {}
 
@@ -20084,7 +20086,7 @@ const QLAB_KEEP_FIELDS = [
   'id', 'symbol', 'mode', 'family', 'direction', 'timestamp', 'exitTime', 'holdMin',
   'outcome', 'pnlR', 'entry', 'exitPrice', 'atrAtEntry', 'levelGapAtr', 'slDistAtr',
   'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid', 'regime',
-  'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed',
+  'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed', 'extended', 'maxHoldExit',
 ];
 function _qlabSlim(t) {
   const o = {};
@@ -24215,7 +24217,9 @@ const SCALP_CFG = {
   tp1Frac:     0.6,    // 觸及 TP1 減倉比例
   trailGiveR:  0.5,    // TP1 後移動停利回吐上限（鎖峰值 −0.5R）
   timeStopMin: 20,     // 停滯出場（分鐘）：突破沒延續代表論點已破
-  maxHoldMin:  60,     // 最長持有（分鐘）
+  maxHoldMin:  60,     // 最長持有（分鐘）——到期時輸單/停滯單出場；獲利單見下兩項
+  extendMinR:  0.5,    // 到期時浮盈 ≥ 此值 → 延長持有＋移動停利（讓贏家跑，只砍該砍的）
+  maxHoldHardMin: 180, // 延長的硬上限（快進快出仍不留隔夜倉）
   minAdx:      12,     // 最低 ADX（20→12，只排除完全無方向的死盤）
   cooldownMin: 15,     // 同幣種同方向冷卻（30→15 分）
   maxActive:   8,      // 同時最多持有筆數
@@ -24239,7 +24243,8 @@ const SCALP_CFG = {
   //      止損 2% → 0.05R　1% → 0.10R　0.5% → 0.20R　0.1% → 1.0R　0.01% → 10R
   //    也就是說止損越近，手續費吃掉的 R 越多，這對「小賺就跑」的策略是致命的。
   feeRate:             0.0005, // 單邊費率（與 computeTradePnlR 一致）
-  maxFeeR:             0.15,   // 手續費最多吃掉 15% 的 R
+  maxFeeR:             0.12,   // 手續費最多吃掉 12% 的 R（0.15→0.12：快進快出的費重
+                               //   天生是一般單的 2~3 倍，這裡每收 1pp 都直接墊高期望值下限）
                                // → 等於要求止損距離 ≥ 價格的 0.67%；
                                //   不足時「把止損推遠到這個距離」而不是放棄該筆
   maxTpAtr:            3.0,    // 止盈一距離的上限（ATR 倍數）。止損被推遠後止盈
@@ -25197,6 +25202,14 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   }
   const _rr = Math.abs(tp2 - entry) / risk;
   if (_rr < 0.9) return _sr('回歸目標太近(R/R不足)');
+  // 扣費後的賺賠比下限：毛 R/R 好看、淨值不行照樣賠。順勢家族需淨 ≥1.5；
+  // 回歸家族目標本來就近（賭均值回歸不賭延續），需淨 ≥1.05。
+  // 對照實際常數確認不會全擋：順勢預設 tp2R 1.8 − feeR ≤0.12 = 1.68 ✓、
+  // 回歸 1.3 − 0.12 = 1.18 ✓（規則④）。
+  {
+    const _netRRMin = isTrendFam ? 1.5 : 1.05;
+    if (_rr - _feeR < _netRRMin) return _sr(`扣費後賺賠比不足(淨${(_rr - _feeR).toFixed(2)}<${_netRRMin})`);
+  }
   // 止損被推遠後止盈也跟著變遠，必須確認那個距離在最長持有時間內走得到。
   // 以 ATR 為尺：止盈一距離超過 maxTpAtr 個 ATR，就是在等一個不會來的行情，
   // 那種單只會一路拖到停滯出場——這是低波動幣真正不該做的原因，
@@ -25360,6 +25373,10 @@ async function recordScalpSignals(data) {
       }
       const setup = buildScalpSetup(coin, isLong, family);
       if (!setup) continue;
+      // 進場條件持續學習：此 ADX/量能/MTF 條件桶實測顯著虧 → 暫停（回升自動解除）
+      if (winupScalpCondBlocked(setup.adx, parseFloat(setup.volRatio) || 0, setup.mtfAlign || 0)) {
+        _sr('條件桶負期望封鎖'); continue;
+      }
       // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
       if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) { _sr('同幣本輪已建倉'); continue; }
 
@@ -25531,11 +25548,25 @@ function updateScalpTrades(data) {
         }
       }
 
-      // ① 最長持有：到期一律出場（快進快出不留隔夜）
+      // ① 最長持有（不對稱版，2026-08）：到期時輸單/停滯單照砍，
+      //    「正在獲利 ≥extendMinR 的單」延長持有並改掛移動停利——
+      //    舊制到點一律以現價平倉，輸單全額 -1R、贏單常只拿半路的
+      //    +0.3~0.6R，右尾被制度性剪掉，是期望值難看的直接原因。
+      //    延長也有硬上限（maxHoldHardMin），快進快出仍不留隔夜。
       if (heldMin >= SCALP_CFG.maxHoldMin) {
-        t.exitPrice = cur; t.maxHoldExit = true;
         const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
-        outcome = outcomeByR(r);
+        const _canExtend = r >= (SCALP_CFG.extendMinR ?? 0.5) && heldMin < (SCALP_CFG.maxHoldHardMin ?? 180);
+        if (_canExtend) {
+          if (!t.extended) { t.extended = true; changed = true; }   // 存證：延長是否值得由統計回答
+          // 延長期間的移動停利：鎖「峰值 − trailGiveR」，地板為保本
+          const _peakR = Math.max(r, ((isLong ? ((t.peakPrice ?? cur) - t.entry) : (t.entry - (t.peakPrice ?? cur))) / baseRisk));
+          const _lockR = Math.max(0, _peakR - SCALP_CFG.trailGiveR);
+          const _extSL = isLong ? t.entry + _lockR * baseRisk : t.entry - _lockR * baseRisk;
+          if (isLong ? _extSL > t.sl : _extSL < t.sl) { t.sl = _extSL; changed = true; }
+        } else {
+          t.exitPrice = cur; t.maxHoldExit = true;
+          outcome = outcomeByR(r);
+        }
       }
       // ② 停滯止損：持有超過 timeStopMin 仍在 ±0.3R 內
       if (!outcome && heldMin >= SCALP_CFG.timeStopMin) {
@@ -27909,10 +27940,14 @@ function winupStats() {
   if (c && Date.now() - c.ts < WINUP_CFG.ttlMin * 60000) return c.v;
   const v = { sess: {}, sessBlocked: { main: {}, scalp: {} }, symBad: { main: {}, scalp: {} },
               regime: {}, regimeBlocked: { main: {}, scalp: {} },
+              cond: {}, condBlocked: { main: {}, scalp: {} },
               quickSl: null, floorMult: 1, loserMfe: {} };
   try {
     // ── 一般單 ──
     const main = learnSamples().filter(t => t.status === 'closed');
+    // 進場條件持續學習①：一般單的進場邏輯分支（entryTag：ob/2b/123/ema50/bbmid/ema20）
+    v.cond.main = _winupBuckets(main.map(t => ({ k: t.entryTag || '',
+      win: isWinTrade(t), loss: isLossTrade(t), r: parseFloat(t.pnlR) || 0 })));
     v.sess.main = _winupBuckets(main.map(t => ({ k: t.kz || '',
       win: isWinTrade(t), loss: isLossTrade(t), r: parseFloat(t.pnlR) || 0 })));
     v.regime.main = _winupBuckets(main.map(t => ({ k: t.regime ? t.regime + '|' + t.direction : '',
@@ -27948,6 +27983,13 @@ function winupStats() {
       return { k: t.regime ? t.regime + '|' + t.direction : '', win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r };
     }));
     v.symBad.scalp = _winupSymBad(scalp);
+    // 進場條件持續學習②：快速單的條件桶（ADX 檔位｜量能｜多週期同向數）——
+    // 這些欄位每筆都在記（封存也留著），現在把統計接上決策
+    v.cond.scalp = _winupBuckets(scalp.map(t => {
+      const r = parseFloat(t.pnlR) || 0;
+      return { k: _winupCondKey(parseFloat(t.adx) || 0, parseFloat(t.volRatio) || 0, t.mtfAlign || 0),
+        win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r };
+    }));
     const sLoss = scalp.filter(t => (parseFloat(t.pnlR) || 0) < -FLAT_R_EPS
       && isFinite(parseFloat(t.mfeAtr)) && isFinite(parseFloat(t.slDistAtr)) && parseFloat(t.slDistAtr) > 0);
     if (sLoss.length >= 8) {
@@ -27974,6 +28016,15 @@ function winupStats() {
             + `期望值 ${b.exp}R、勝率上界 ${b.wrUB}%（整體 ${R.overallWr}%）→ 此市場狀態暫停該方向新單`;
         }
       }
+      // 進場條件桶：顯著負期望的條件組合暫停（樣本回升自動解除）
+      const C = v.cond[kind];
+      if (C) for (const [k, b] of Object.entries(C.buckets)) {
+        if (b.n >= WINUP_CFG.sessMinN && b.exp <= -0.08 && b.wrUB < C.overallWr - WINUP_CFG.sessGapPP) {
+          v.condBlocked[kind][k] =
+            `${kindLabel}進場條件「${k}」${b.n} 筆實測期望值 ${b.exp}R、勝率上界 ${b.wrUB}%`
+            + `（整體 ${C.overallWr}%）→ 此條件組合暫停新單`;
+        }
+      }
     }
   } catch(_e) {}
   _winupCache = { ts: Date.now(), v };
@@ -27989,6 +28040,18 @@ function winupSessionBlocked(kind) {
 }
 function winupSymbolBlocked(kind, symbol) {
   try { return winupStats().symBad[kind][symbol] || ''; } catch(_e) { return ''; }
+}
+/* 進場條件持續學習的分桶鍵（快速單）：ADX 檔位｜量能｜多週期同向數 */
+function _winupCondKey(adx, volRatio, mtfAlign) {
+  const a = adx < 15 ? 'ADX低' : adx < 25 ? 'ADX中' : 'ADX高';
+  const vv = volRatio >= 1.2 ? '量增' : '量平';
+  return `${a}|${vv}|MTF${mtfAlign >= 2 ? '2+' : mtfAlign >= 1 ? '1' : '0'}`;
+}
+function winupScalpCondBlocked(adx, volRatio, mtfAlign) {
+  try { return winupStats().condBlocked.scalp[_winupCondKey(adx, volRatio, mtfAlign)] || ''; } catch(_e) { return ''; }
+}
+function winupMainTagBlocked(entryTag) {
+  try { return entryTag ? (winupStats().condBlocked.main[entryTag] || '') : ''; } catch(_e) { return ''; }
 }
 function winupRegimeBlocked(kind, dir) {
   try {
@@ -28025,6 +28088,13 @@ function buildWinupHtml() {
     <div>市場狀態：目前 <b>${(typeof _regimeCache !== 'undefined' && _regimeCache) ? _regimeCache.label : '未判定'}</b>
       　·　狀態×方向封鎖：快速單 ${Object.keys(v.regimeBlocked.scalp).length} 項、一般單 ${Object.keys(v.regimeBlocked.main).length} 項
       <span style="color:var(--text3);font-size:0.72rem">（regime 記錄在每筆單上，某狀態×方向實測顯著虧才封鎖）</span></div>
+    <div>進場條件學習：${(() => {
+      const cb = v.condBlocked || { main: {}, scalp: {} };
+      const nM = Object.keys(cb.main).length, nS = Object.keys(cb.scalp).length;
+      if (!nM && !nS) return '各條件桶（一般單分支／快速單 ADX×量能×MTF）樣本累積中，顯著虧損的組合會自動暫停';
+      return `已封鎖 快速單條件桶 <b>${nS}</b> 個、一般單進場分支 <b>${nM}</b> 個`
+        + `<span style="color:var(--text3);font-size:0.72rem">（${[...Object.keys(cb.scalp), ...Object.keys(cb.main)].slice(0, 4).join('、')}…回升自動解除）</span>`;
+    })()}</div>
     <div>幣種負期望封鎖：快速單 <b>${symBadN('scalp')}</b> 檔、一般單 <b>${symBadN('main')}</b> 檔
       ${symBadN('scalp') + symBadN('main')
         ? `<span style="color:var(--text3);font-size:0.72rem">（${[...Object.keys(v.symBad.scalp), ...Object.keys(v.symBad.main)].slice(0, 6).join('、')}…近 ${WINUP_CFG.symWin} 筆滾動窗，改善自動解除）</span>` : ''}</div>
