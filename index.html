@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260813d" />
+  <link rel="stylesheet" href="css/styles.css?v=20260813e" />
 </head>
 <body>
 
@@ -802,6 +802,19 @@
           </div>
         </div>
 
+        <!-- 基準權益（建議倉位用） -->
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">💰 基準權益（建議倉位）</div>
+            <div class="setting-desc">一般單訊號會附「建議倉位」：以此權益 × 單筆風險 1%（依方向確信度 0.6~1.2 倍調節）÷ 止損距離反推數量。填你的實際帳戶規模（USDT）</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" id="s-main-equity" class="setting-input" min="0" step="100"
+              style="width:90px;text-align:center" onchange="try{saveAllSettings()}catch(e){}" />
+            <span style="color:var(--text3);font-size:0.82rem">USDT</span>
+          </div>
+        </div>
+
         <!-- Telegram -->
         <div class="setting-row vertical" style="gap:10px;margin-top:6px">
           <div style="display:flex;justify-content:space-between;align-items:center">
@@ -914,8 +927,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260813d"></script>
-  <script src="js/api.js?v=20260813d"></script>
-  <script src="js/app.js?v=20260813d"></script>
+  <script src="js/indicators.js?v=20260813e"></script>
+  <script src="js/api.js?v=20260813e"></script>
+  <script src="js/app.js?v=20260813e"></script>
 </body>
 </html>

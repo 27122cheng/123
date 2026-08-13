@@ -484,6 +484,8 @@ function startRefreshCycle() {
       if (state.currentPage === 'tradelog'  && _tlTab  === 'auto') renderTradeLogPage();
     } catch(e) {}
     await _pt('扣分條件審查', () => maybeAuditPenaltyFactors());
+    await _pt('確信度權重校準', () => maybeConvictionAudit());
+    await _pt('學習日報', () => maybeSendLearnReport());
     try {
       const tot = Object.values(_postProf).reduce((a, b) => a + b, 0);
       const top = Object.entries(_postProf).sort((a, b) => b[1] - a[1])
@@ -12818,7 +12820,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260813d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260813e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -13107,6 +13109,12 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)\n` +
        `🎯 <b>止盈一：$${_fmt(_px(setup.tp1))}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${_rr1}:1)\n` +
        (_rr2 && setup.tp2 ? `🚀 <b>止盈二：$${_fmt(_px(setup.tp2))}</b>  (${_tp1Sign}${_tp2Pct}% | R:R ${_rr2}:1)\n` : ''));
+  // ── 建議倉位（有算才顯示）：固定分數法，數量與帳戶大小成正比 ──
+  const _sizeLine = (setup.sizeQty > 0 && setup.sizeNotional > 0)
+    ? `📦 建議倉位：<b>${setup.sizeQty}</b>（名目 $${setup.sizeNotional}｜風險 ${setup.sizeRiskPct}% 權益` +
+      `${setup.sizeWhy ? '，' + setup.sizeWhy : ''}）\n` +
+      `   └ 以權益 $${setup.sizeEquity || 1000} 計；帳戶不同請等比例縮放（設定頁可改基準權益）\n`
+    : '';
 
   // ── 組合輸出（新格式）──
   // 順序：方向+幣種 → 時間 → KZ → 品質 → 風控分 → 價格 → [加倉] → 方向確認 → 本週/日預測 → 扣分項 → [風險] → [反轉]
@@ -13116,7 +13124,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
     `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` +
-    `\n${_priceLines}\n` +
+    `\n${_priceLines}` + _sizeLine + `\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
     _riskBanner +
@@ -14149,16 +14157,41 @@ async function recordSignalsFromScan(data) {
     // ── 方向確信度：多空證據融合（以交易方向為正）──────────────────
     // 淨值 ≤ -25 ＝ 大多數證據指向反方向 → 不建單；數值與投票記錄在單上，
     // 研究所據此學「確信度 vs 實際勝率」，標籤進配對池。
-    let _convScan = null, _convVotes = [];
+    let _convScan = null, _convVotes = [], _convEvScan = null;
     try {
       const _cv = computeDirectionConviction(coin);
-      _convScan = _cv.score * (isLong ? 1 : -1);
+      const _dirMulCv = isLong ? 1 : -1;
+      _convScan = _cv.score * _dirMulCv;
       _convVotes = _cv.votes;
+      // 證據存證（方向相對化）：f=支持本單方向的證據鍵、a=反對——權重校準的原料
+      _convEvScan = {
+        f: (_cv.items || []).filter(it => it.v * _dirMulCv > 0).map(it => it.k),
+        a: (_cv.items || []).filter(it => it.v * _dirMulCv < 0).map(it => it.k),
+      };
       if (_convScan <= -25) { _no(`方向確信度 ${_convScan}（多空證據淨反向）`); continue; }
       if (_convScan >= 40) _scanEntryTags.push('方向共識-強');
       else if (_convScan <= 0) _scanEntryTags.push('方向共識-弱');
       _scanSqFactors.push(`🧭 方向確信度 ${_convScan >= 0 ? '+' : ''}${_convScan}（${_convVotes.slice(0, 5).join('、')}${_convVotes.length > 5 ? '…' : ''}）`);
     } catch(_e) {}
+
+    // ── 建議倉位（固定分數法）：權益 × 風險% ÷ 止損距離，確信度調節部位 ──
+    // 一般單一直只給價位不給倉位，手動執行時倉位全憑感覺——這是紀律漏洞。
+    let _sizeQty = null, _sizeNotional = null, _sizeRiskPct = null, _sizeWhy = '', _sizeEquity = 1000;
+    try {
+      const _eqS = parseFloat(loadSettings().mainEquity);
+      _sizeEquity = _eqS > 0 ? _eqS : 1000;
+      let _rp = 1.0;
+      if (_convScan != null && _convScan >= 40) { _rp = 1.2; _sizeWhy = '確信度強 ×1.2'; }
+      else if (_convScan != null && _convScan < 10) { _rp = 0.6; _sizeWhy = '確信度偏弱 ×0.6'; }
+      const _slDsz = Math.abs(setup.entry - setup.sl);
+      if (_slDsz > 0) {
+        _sizeQty = +((_sizeEquity * _rp / 100) / _slDsz).toPrecision(4);
+        _sizeNotional = +(_sizeQty * setup.entry).toFixed(2);
+        _sizeRiskPct = _rp;
+      }
+    } catch(_e) {}
+    setup.sizeQty = _sizeQty; setup.sizeNotional = _sizeNotional;
+    setup.sizeRiskPct = _sizeRiskPct; setup.sizeWhy = _sizeWhy; setup.sizeEquity = _sizeEquity;
 
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
@@ -14178,6 +14211,9 @@ async function recordSignalsFromScan(data) {
       pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
       conviction: _convScan,           // 方向確信度（多空證據融合淨值，供研究所學習）
+      convEv: _convEvScan,             // 證據支持/反對清單（權重校準的原料）
+      sizeQty: _sizeQty, sizeNotional: _sizeNotional, sizeRiskPct: _sizeRiskPct,
+      sizeWhy: _sizeWhy, sizeEquity: _sizeEquity,
       regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
       rsPct: isFinite(_rsRank[coin.symbol]) ? _rsRank[coin.symbol] : null,  // 相對強弱百分位
       tpZones: setup.tpZones || null,       // 獲利側合流區（結構跟隨停利用）
@@ -20179,6 +20215,7 @@ const LEARN_KEEP_FIELDS = [
   'kz', 'entryTime',                         // 時段勝率學習＋秒損統計（成交→止損耗時）
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
   'regime', 'rsPct', 'oiCtx', 'conviction',  // 市場狀態×方向勝率學習＋相對強弱＋OI 語境＋方向確信度
+  'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -23596,6 +23633,8 @@ function populateSettingsPage() {
   if (ci2) ci2.value = s.tgChatId2 || '';
   const idleInput = document.getElementById('s-idle-stop');
   if (idleInput) idleInput.value = (s.idleStopHours != null ? s.idleStopHours : IDLE_STOP_DEFAULT_H);
+  const eqInput = document.getElementById('s-main-equity');
+  if (eqInput) eqInput.value = (parseFloat(s.mainEquity) > 0 ? s.mainEquity : 1000);
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
@@ -23621,6 +23660,8 @@ function saveAllSettings() {
     tgChatId2:       document.getElementById('s-tg-chatid2')?.value.trim() || '',
     idleStopHours:   (() => { const v = parseFloat(document.getElementById('s-idle-stop')?.value);
                               return isFinite(v) && v >= 0 ? v : IDLE_STOP_DEFAULT_H; })(),
+    mainEquity:      (() => { const v = parseFloat(document.getElementById('s-main-equity')?.value);
+                              return isFinite(v) && v > 0 ? v : 1000; })(),
     tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
@@ -27991,6 +28032,16 @@ function buildWinupHtml() {
       ${v.quickSl ? `${v.quickSl.quick}/${v.quickSl.n} 筆、下界 ${v.quickSl.lb}%
         → 止損波動地板 <b>×${v.floorMult}</b>${v.floorMult > 1 ? '（自動加寬中）' : ''}`
         : `樣本 <b>0/${WINUP_CFG.quickSlMinN}</b> 累積中（快速單的同款機制早已存在：秒損率下界 >35% 強制放寬）`}</div>
+    <div>${(() => {
+      try {
+        const W = _convWeights();
+        const rows = Object.entries(W).filter(([, r]) => r && isFinite(r.w));
+        if (!rows.length) return `確信度權重校準：樣本累積中（每證據需 ≥25 筆支持樣本，convEv 已逐筆記錄）`;
+        rows.sort((x, y) => y[1].w - x[1].w);
+        const fmt2 = ([k, r]) => `${CONV_EV_LABELS[k] || k} ×${r.w}（支持時勝率 ${r.wrW}% vs ${r.wrO}%）`;
+        return `確信度權重校準：已學 ${rows.length} 項　最可信 ${fmt2(rows[0])}　最不可信 ${fmt2(rows[rows.length - 1])}`;
+      } catch(_e) { return ''; }
+    })()}</div>
     <div style="color:var(--text2)">出場端診斷（輸單曾浮盈 ≥0.8R 比例）：
       快速單 ${v.loserMfe.scalp ? `<b>${v.loserMfe.scalp.pct}%</b>（${v.loserMfe.scalp.had}/${v.loserMfe.scalp.n}）` : '樣本不足'}
       一般單 ${v.loserMfe.main ? `<b>${v.loserMfe.main.pct}%</b>（${v.loserMfe.main.had}/${v.loserMfe.main.n}）` : '樣本不足'}
@@ -28125,60 +28176,193 @@ let _regimeCache = null;   // { at, key, dir, vol, label }
    · 標籤（方向共識-強/弱）進配對池
    權重是初始啟發值（多週期結構最重、微觀證據次之），刻意保守：
    單一證據不足以翻盤，要翻盤需要多個證據同向。 */
+/* 證據權重學習：每張單都記錄哪些證據支持/反對（convEv），校準器每 6 小時
+   對比「證據支持的單 vs 沒有它的單」的實際勝率（Wilson 保守估計），把
+   每種證據的權重乘數學出來——準的加重（最高 ×1.5）、沒預測力的減輕
+   （最低 ×0.5）。手設的初始權重只是起點，數據會把它修正。 */
+const CONV_W_KEY = 'csp_conv_weights';
+const CONV_EV_LABELS = {
+  wk: '週線訊號', day: '日線訊號', h4: '4H訊號', h1: '1H訊號', macd: 'MACD',
+  ema200: 'EMA200位置', rs: '相對強弱', oi: 'OI新錢', liq: '清算單邊', fr: '費率擁擠',
+  nk_engulf: '裸K吞噬', nk_pin: '裸K針形', nk_three: '裸K三兵鴉',
+  st_day: '日線結構', st_h4: '4H結構', st_15: '15m結構',
+};
+let _convWCache = null, _convWTs = 0;
+function _convWeights() {
+  if (_convWCache && Date.now() - _convWTs < 10 * 60000) return _convWCache;
+  try { _convWCache = JSON.parse(localStorage.getItem(CONV_W_KEY) || '{}') || {}; } catch(_e) { _convWCache = {}; }
+  _convWTs = Date.now();
+  return _convWCache;
+}
 function computeDirectionConviction(coin) {
-  let s = 0; const votes = [];
-  const add = (v, why) => { s += v; votes.push((v > 0 ? '+' : '') + v + ' ' + why); };
+  let s = 0; const votes = [], items = [];
+  const W = _convWeights();
+  const add = (v, why, key) => {
+    const lw = W[key];
+    const mult = (lw && isFinite(lw.w)) ? Math.max(0.5, Math.min(1.5, lw.w)) : 1;
+    const vv = Math.round(v * mult);
+    s += vv;
+    votes.push((vv > 0 ? '+' : '') + vv + ' ' + why + (mult !== 1 ? `(×${mult})` : ''));
+    items.push({ k: key, v: vv });
+  };
   const sig = x => String(x || '');
-  if (sig(coin.weeklySignal).indexOf('bull') >= 0) add(15, '週線多'); else if (sig(coin.weeklySignal).indexOf('bear') >= 0) add(-15, '週線空');
-  if (sig(coin.dailySignal).indexOf('bull') >= 0) add(15, '日線多'); else if (sig(coin.dailySignal).indexOf('bear') >= 0) add(-15, '日線空');
-  if (sig(coin.h4Signal).indexOf('bull') >= 0) add(12, '4H多'); else if (sig(coin.h4Signal).indexOf('bear') >= 0) add(-12, '4H空');
-  if (sig(coin.h1Signal).indexOf('bull') >= 0) add(6, '1H多'); else if (sig(coin.h1Signal).indexOf('bear') >= 0) add(-6, '1H空');
+  if (sig(coin.weeklySignal).indexOf('bull') >= 0) add(15, '週線多', 'wk'); else if (sig(coin.weeklySignal).indexOf('bear') >= 0) add(-15, '週線空', 'wk');
+  if (sig(coin.dailySignal).indexOf('bull') >= 0) add(15, '日線多', 'day'); else if (sig(coin.dailySignal).indexOf('bear') >= 0) add(-15, '日線空', 'day');
+  if (sig(coin.h4Signal).indexOf('bull') >= 0) add(12, '4H多', 'h4'); else if (sig(coin.h4Signal).indexOf('bear') >= 0) add(-12, '4H空', 'h4');
+  if (sig(coin.h1Signal).indexOf('bull') >= 0) add(6, '1H多', 'h1'); else if (sig(coin.h1Signal).indexOf('bear') >= 0) add(-6, '1H空', 'h1');
   const m = parseFloat(coin.macdHist) || 0;
-  if (m > 0) add(5, 'MACD正'); else if (m < 0) add(-5, 'MACD負');
+  if (m > 0) add(5, 'MACD正', 'macd'); else if (m < 0) add(-5, 'MACD負', 'macd');
   const p = parseFloat(coin.price) || 0, e200 = parseFloat(coin.ema200) || 0;
-  if (p > 0 && e200 > 0) add(p > e200 ? 8 : -8, p > e200 ? '站上EMA200' : 'EMA200之下');
+  if (p > 0 && e200 > 0) add(p > e200 ? 8 : -8, p > e200 ? '站上EMA200' : 'EMA200之下', 'ema200');
   try {
     const rs = _rsRank[coin.symbol];
-    if (isFinite(rs)) { if (rs >= 70) add(10, `RS強${rs}`); else if (rs <= 30) add(-10, `RS弱${rs}`); }
+    if (isFinite(rs)) { if (rs >= 70) add(10, `RS強${rs}`, 'rs'); else if (rs <= 30) add(-10, `RS弱${rs}`, 'rs'); }
   } catch(_e) {}
   try {
     const oi = _oiWatchCache[coin.symbol];
     if (oi && oi.ok && oi.confirmed && Date.now() - oi.at < 15 * 60000) {
-      if (oi.cls === 'long_build') add(10, 'OI新多'); else if (oi.cls === 'short_build') add(-10, 'OI新空');
+      if (oi.cls === 'long_build') add(10, 'OI新多', 'oi'); else if (oi.cls === 'short_build') add(-10, 'OI新空', 'oi');
     }
   } catch(_e) {}
   try {
     const ls = liqStats(coin.symbol);
-    if (ls.dom === 'short') add(6, '軋空中'); else if (ls.dom === 'long') add(-6, '多殺多中');
+    if (ls.dom === 'short') add(6, '軋空中', 'liq'); else if (ls.dom === 'long') add(-6, '多殺多中', 'liq');
   } catch(_e) {}
   try {
     const fr = _sbxFunding ? _sbxFunding[coin.symbol] : null;   // 擁擠是反向訊號，權重刻意小
-    if (isFinite(fr)) { if (fr >= 0.0004) add(-4, '費率多頭擁擠'); else if (fr <= -0.0004) add(4, '費率空頭擁擠'); }
+    if (isFinite(fr)) { if (fr >= 0.0004) add(-4, '費率多頭擁擠', 'fr'); else if (fr <= -0.0004) add(4, '費率空頭擁擠', 'fr'); }
   } catch(_e) {}
   // 裸 K 型態（15m，最後一根可能成形中 → 權重小，當投票不當定論）
   try {
     const nk = coin.nakedK;
     if (nk) {
-      if (nk.bullEngulf) add(5, '多頭吞噬'); if (nk.bearEngulf) add(-5, '空頭吞噬');
-      if (nk.pinBull) add(4, '下影拒絕');    if (nk.pinBear) add(-4, '上影拒絕');
-      if (nk.threeUp) add(4, '紅三兵');      if (nk.threeDown) add(-4, '黑三鴉');
+      if (nk.bullEngulf) add(5, '多頭吞噬', 'nk_engulf'); if (nk.bearEngulf) add(-5, '空頭吞噬', 'nk_engulf');
+      if (nk.pinBull) add(4, '下影拒絕', 'nk_pin');    if (nk.pinBear) add(-4, '上影拒絕', 'nk_pin');
+      if (nk.threeUp) add(4, '紅三兵', 'nk_three');      if (nk.threeDown) add(-4, '黑三鴉', 'nk_three');
     }
   } catch(_e) {}
   // 擺動結構（權重最重的一類：結構是趨勢的骨架，指標只是皮）
   // CHoCH 用 0.8 倍反向計——性格轉變是「第一個警訊」，還不是已確立的反轉
   try {
-    const voteStruct = (st, w, name) => {
+    const voteStruct = (st, w, name, key) => {
       if (!st) return;
-      if (st.chochDown) add(-Math.round(w * 0.8), `${name}CHoCH轉空`);
-      else if (st.chochUp) add(Math.round(w * 0.8), `${name}CHoCH轉多`);
-      else if (st.dir === 'up') add(w, `${name}結構HH/HL`);
-      else if (st.dir === 'down') add(-w, `${name}結構LH/LL`);
+      if (st.chochDown) add(-Math.round(w * 0.8), `${name}CHoCH轉空`, key);
+      else if (st.chochUp) add(Math.round(w * 0.8), `${name}CHoCH轉多`, key);
+      else if (st.dir === 'up') add(w, `${name}結構HH/HL`, key);
+      else if (st.dir === 'down') add(-w, `${name}結構LH/LL`, key);
     };
-    voteStruct(coin.dayStruct, 14, '日線');
-    voteStruct(coin.h4Struct, 12, '4H');
-    voteStruct(coin.struct15, 4, '15m');
+    voteStruct(coin.dayStruct, 14, '日線', 'st_day');
+    voteStruct(coin.h4Struct, 12, '4H', 'st_h4');
+    voteStruct(coin.struct15, 4, '15m', 'st_15');
   } catch(_e) {}
-  return { score: Math.max(-100, Math.min(100, s)), votes };
+  return { score: Math.max(-100, Math.min(100, s)), votes, items };
+}
+
+/* ── 確信度權重校準（每 6 小時；與扣分條件審查同一套 Wilson 哲學）──
+   「證據支持的單」實際勝率顯著高於「沒有它的單」→ 加重；分不出差別 →
+   減輕。平滑：一次往目標移一半，樣本剛過門檻不會大跳。 */
+function convictionAudit() {
+  const all = learnSamples().filter(t => t.status === 'closed' && t.convEv
+    && (isWinTrade(t) || isLossTrade(t)));
+  if (all.length < 20) return null;
+  let W = {};
+  try { W = JSON.parse(localStorage.getItem(CONV_W_KEY) || '{}') || {}; } catch(_e) {}
+  const keys = Object.keys(CONV_EV_LABELS);
+  for (const key of keys) {
+    const withF = all.filter(t => (t.convEv.f || []).indexOf(key) >= 0);
+    const without = all.filter(t => (t.convEv.f || []).indexOf(key) < 0);
+    if (withF.length < 25 || without.length < 10) continue;
+    const wW = withF.filter(isWinTrade).length, wO = without.filter(isWinTrade).length;
+    const wrW = wW / withF.length * 100, wrO = wO / without.length * 100;
+    const gap = (wilsonLB(wW, withF.length) - (1 - wilsonLB(without.length - wO, without.length))) * 100;
+    let target = 1, why = '';
+    if (gap >= 8)      { target = 1.5; why = `支持時勝率保守估計仍高 ${gap.toFixed(0)}pp → 加重`; }
+    else if (gap >= 4) { target = 1.2; why = `支持時勝率高 ${gap.toFixed(0)}pp → 略加重`; }
+    else if (wrW < wrO - 8) { target = 0.5; why = `支持時勝率 ${wrW.toFixed(0)}% 反而低於未支持 ${wrO.toFixed(0)}% → 大幅減輕`; }
+    else if (wrW < wrO - 3) { target = 0.7; why = `看不出正向預測力 → 減輕`; }
+    else { target = 1.0; why = `與整體無顯著差異 → 維持`; }
+    const prev = (W[key] && isFinite(W[key].w)) ? W[key].w : 1;
+    const w = +(prev + (target - prev) * 0.5).toFixed(2);
+    W[key] = { w, n: withF.length, wrW: +wrW.toFixed(1), wrO: +wrO.toFixed(1), at: Date.now(), why };
+  }
+  try { localStorage.setItem(CONV_W_KEY, JSON.stringify(W)); _convWCache = null; } catch(_e) {}
+  return W;
+}
+let _convAuditAt = 0;
+function maybeConvictionAudit() {
+  const now = Date.now();
+  if (now - _convAuditAt < 6 * 3600 * 1000) return;
+  _convAuditAt = now;
+  try { convictionAudit(); } catch(e) { console.warn('[conv-audit]', e); }
+}
+
+/* ── 每日學習日報（Telegram）───────────────────────────────────
+   系統每天都在學（時段封鎖、幣種冷卻、調參、配對晉升、權重校準），
+   但全部藏在實驗室頁面裡。每天本地 9 點後的第一輪掃描推一則摘要——
+   不用開頁面就知道機器在想什麼，也更容易發現它學歪了。 */
+function maybeSendLearnReport() {
+  try {
+    if (!isSignalMaster()) return;
+    const s = loadSettings();
+    if (!(s.notifTelegram && s.tgToken && s.tgChatId)) return;
+    if (new Date().getHours() < 9) return;
+    const today = new Date().toLocaleDateString('zh-TW');
+    if (localStorage.getItem('csp_learn_report_date') === today) return;
+    const L = [];
+    // 昨日成績（一般單＋快速單）
+    try {
+      const yS = new Date(); yS.setDate(yS.getDate() - 1); yS.setHours(0, 0, 0, 0);
+      const yE = new Date(yS); yE.setHours(23, 59, 59, 999);
+      const inY = t => t.status === 'closed' && t.exitTime >= yS.getTime() && t.exitTime <= yE.getTime();
+      const mm = learnSamples().filter(inY);
+      const sc = loadScalpLog().filter(inY);
+      const sum = arr => arr.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0);
+      const wr = arr => { const w = arr.filter(t => (parseFloat(t.pnlR) || 0) > FLAT_R_EPS).length;
+        const l = arr.filter(t => (parseFloat(t.pnlR) || 0) < -FLAT_R_EPS).length;
+        return (w + l) ? `${Math.round(w / (w + l) * 100)}%` : '—'; };
+      L.push(`📊 昨日：一般單 ${mm.length} 筆（勝率 ${wr(mm)}，${sum(mm) >= 0 ? '+' : ''}${sum(mm).toFixed(1)}R）`
+        + `｜快速單 ${sc.length} 筆（${wr(sc)}，${sum(sc) >= 0 ? '+' : ''}${sum(sc).toFixed(1)}R）`);
+    } catch(_e) {}
+    // 勝率強化學習狀態
+    try {
+      const v = winupStats();
+      const sb = Object.keys(v.sessBlocked.main).length + Object.keys(v.sessBlocked.scalp).length;
+      const yb = Object.keys(v.symBad.main).length + Object.keys(v.symBad.scalp).length;
+      L.push(`🎛 閘門：時段封鎖 ${sb} 個｜幣種冷卻 ${yb} 檔｜秒損地板 ×${v.floorMult}`);
+      if (v.loserMfe.main || v.loserMfe.scalp) {
+        L.push(`🚪 出場診斷（輸單曾浮盈≥0.8R）：一般 ${v.loserMfe.main ? v.loserMfe.main.pct + '%' : '樣本不足'}｜快速 ${v.loserMfe.scalp ? v.loserMfe.scalp.pct + '%' : '樣本不足'}`);
+      }
+    } catch(_e) {}
+    // 配對研究所
+    try {
+      const g = pairGateState();
+      L.push(`🧩 配對研究所：stage ${g.stage}｜驗證配對 ${(g.pairs || []).length} 組`);
+    } catch(_e) {}
+    // 沙盒狀態
+    try {
+      const an = _sbxAnCache;
+      if (an && an.per) {
+        const live = an.per.filter(p => p.status === 'live').map(p => p.name);
+        const top = an.per[0];
+        L.push(`🎯 沙盒：實盤 ${live.length ? live.join('、') : '無'}｜排名第一 ${top ? `${top.name}（${top.stats.n} 筆 ${top.stats.expectancy > 0 ? '+' : ''}${top.stats.expectancy}R/筆）` : '—'}`);
+      }
+    } catch(_e) {}
+    // 確信度權重校準
+    try {
+      const W = _convWeights();
+      const rows = Object.entries(W).filter(([, r]) => r && isFinite(r.w) && r.w !== 1);
+      if (rows.length) {
+        rows.sort((a, b) => b[1].w - a[1].w);
+        const hi = rows[0], lo = rows[rows.length - 1];
+        L.push(`🧭 證據權重校準：已學 ${rows.length} 項`
+          + `（最可信 ${CONV_EV_LABELS[hi[0]] || hi[0]} ×${hi[1].w}、最不可信 ${CONV_EV_LABELS[lo[0]] || lo[0]} ×${lo[1].w}）`);
+      } else L.push(`🧭 證據權重校準：樣本累積中（每證據需 ≥25 筆支持樣本）`);
+    } catch(_e) {}
+    const text = [`🤖 <b>每日學習日報</b> — ${today}`, ``, ...L, ``,
+      `完整明細見網頁「機會實驗室」各分頁`].join('\n');
+    sendTelegramMessage(s.tgToken, s.tgChatId, text);
+    localStorage.setItem('csp_learn_report_date', today);
+  } catch(e) { console.warn('[learn-report]', e); }
 }
 
 let _rsRank = {};          // symbol → 0~100 百分位（越高越強）
