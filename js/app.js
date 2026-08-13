@@ -122,7 +122,18 @@ function _dashWidgetWatchdog() {
      畫面上最後一個標記就是兇手，一張截圖定位。也存 csp_boot_trace。
    · 安全模式（網址加 ?safe=1）：跳過 SW/封存層/資訊卡/清算流/月度
      歸檔等所有非必要模組，只保留掃描與渲染——保證進得了頁面。 */
-const SAFE_MODE = /[?&]safe=1/.test(location.search);
+let SAFE_MODE = /[?&]safe=1/.test(location.search);
+/* 自動安全模式：上一次開機軌跡沒走到 done（凍結/崩潰中途離場）→ 這一次
+   自動以安全模式啟動，不用使用者自己改網址。成功走完 done 會清掉軌跡，
+   下次恢復正常模式。中途關頁的誤判代價只是「下一次少四張資訊卡」，可接受。 */
+let AUTO_SAFE = false;
+try {
+  const _prevTrace = JSON.parse(localStorage.getItem('csp_boot_trace') || '[]');
+  if (_prevTrace.length && !_prevTrace.some(x => String(x).indexOf('done') === 0)) {
+    AUTO_SAFE = true; SAFE_MODE = true;
+    localStorage.setItem('csp_boot_trace_prev', JSON.stringify(_prevTrace));   // 留存上次卡住的位置供診斷
+  }
+} catch(_e) {}
 const _bootTraceArr = [];
 function _bootMark(name) {
   try {
@@ -137,13 +148,17 @@ function _bootMark(name) {
       (document.body || document.documentElement).appendChild(el);
     }
     el.textContent = _bootTraceArr.slice(-4).join(' → ');
-    if (name === 'done') setTimeout(() => { try { el.remove(); } catch(_e) {} }, 5000);
+    if (name === 'done') {
+      try { localStorage.removeItem('csp_boot_trace'); } catch(_e2) {}   // 走完＝下次正常模式
+      setTimeout(() => { try { el.remove(); } catch(_e2) {} }, 5000);
+    }
   } catch(_e) {}
 }
 
 async function init() {
   _bootErrHook();      // 最先掛：之後任何一步爆掉都看得見
-  _bootMark(SAFE_MODE ? 'start(安全模式)' : 'start');
+  _bootMark(AUTO_SAFE ? 'start(自動安全模式:上次未完成)' : SAFE_MODE ? 'start(安全模式)' : 'start');
+  if (AUTO_SAFE) { try { showToast('⚠️ 上次載入未完成，本次以安全模式啟動（資訊卡與背景模組暫停一輪）', 'warning'); } catch(_e) {} }
   // 版本徽章：固定顯示在右下角——任何截圖都能立刻判斷裝置實際跑的版本，
   // 「雲端沒部署」與「裝置快取舊版」從此一眼可分
   try {
@@ -12803,7 +12818,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260812h';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260813a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14131,6 +14146,20 @@ async function recordSignalsFromScan(data) {
       }
     } catch(_pgE) {}
 
+    // ── 方向確信度：多空證據融合（以交易方向為正）──────────────────
+    // 淨值 ≤ -25 ＝ 大多數證據指向反方向 → 不建單；數值與投票記錄在單上，
+    // 研究所據此學「確信度 vs 實際勝率」，標籤進配對池。
+    let _convScan = null, _convVotes = [];
+    try {
+      const _cv = computeDirectionConviction(coin);
+      _convScan = _cv.score * (isLong ? 1 : -1);
+      _convVotes = _cv.votes;
+      if (_convScan <= -25) { _no(`方向確信度 ${_convScan}（多空證據淨反向）`); continue; }
+      if (_convScan >= 40) _scanEntryTags.push('方向共識-強');
+      else if (_convScan <= 0) _scanEntryTags.push('方向共識-弱');
+      _scanSqFactors.push(`🧭 方向確信度 ${_convScan >= 0 ? '+' : ''}${_convScan}（${_convVotes.slice(0, 5).join('、')}${_convVotes.length > 5 ? '…' : ''}）`);
+    } catch(_e) {}
+
     const newTrade = {
       id: `${coin.symbol}-${Date.now()}`,
       symbol: coin.symbol, direction,
@@ -14148,6 +14177,7 @@ async function recordSignalsFromScan(data) {
       entryTags: _scanEntryTags,       // 建單時的分析標籤（條件配對研究所的實倉樣本）
       pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
+      conviction: _convScan,           // 方向確信度（多空證據融合淨值，供研究所學習）
       regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
       rsPct: isFinite(_rsRank[coin.symbol]) ? _rsRank[coin.symbol] : null,  // 相對強弱百分位
       tpZones: setup.tpZones || null,       // 獲利側合流區（結構跟隨停利用）
@@ -16894,7 +16924,8 @@ function fullDataResetV2() {
   try {
     if (localStorage.getItem('csp_full_reset_v2')) return;
     const KEEP = new Set(['csp_settings', 'csp_pairs', 'csp_tab_id', 'csp_signal_master',
-                          'csp_ls_probe', 'csp_okx_sync_at', 'csp_riskctl_reset_v1']);
+                          'csp_ls_probe', 'csp_okx_sync_at', 'csp_riskctl_reset_v1',
+                          'csp_boot_trace', 'csp_boot_trace_prev', 'csp_err_log']);   // 診斷鍵不清（清了就查不了問題）
     const kill = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
@@ -20120,7 +20151,7 @@ const LEARN_KEEP_FIELDS = [
   'entryReasonCodes',                        // 進場理由（正規化代碼），供逐理由績效分析
   'kz', 'entryTime',                         // 時段勝率學習＋秒損統計（成交→止損耗時）
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
-  'regime', 'rsPct', 'oiCtx',                // 市場狀態×方向勝率學習＋相對強弱＋OI 語境
+  'regime', 'rsPct', 'oiCtx', 'conviction',  // 市場狀態×方向勝率學習＋相對強弱＋OI 語境＋方向確信度
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -25223,6 +25254,13 @@ async function recordScalpSignals(data) {
           _sr('OI強烈反向新錢'); continue;
         }
       }
+      // 方向確信度：順勢家族逆著證據淨值做單沒有道理（回歸家族本來就是做反轉，不適用）
+      if (family === 'trend') {
+        try {
+          const _cvS = computeDirectionConviction(coin).score * (isLong ? 1 : -1);
+          if (_cvS <= -25) { _sr('方向確信度淨反向'); continue; }
+        } catch(_e) {}
+      }
       const setup = buildScalpSetup(coin, isLong, family);
       if (!setup) continue;
       // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
@@ -28020,6 +28058,50 @@ function _archPersist(key, out) {
    先進標籤讓配對研究所驗證它在這個市場值多少。 */
 
 let _regimeCache = null;   // { at, key, dir, vol, label }
+/* ── 方向確信度（多空證據融合）────────────────────────────────
+   「判斷幣種多空」的證據散落在十幾個地方（多週期訊號、相對強弱、OI、
+   清算、費率、均線結構），彼此從不對話——每個閘門只看自己那一項。
+   這裡把它們融合成一個 -100..+100 的淨值＋逐項投票清單：
+   · 記錄在每張單上（conviction 欄位）→ 研究所可以學「確信度高低 vs
+     實際勝率」的真實關係，讓權重未來由數據修正
+   · 證據淨值與交易方向強烈相反（≤-25）→ 不建單——「大部分證據都說
+     反向」的單不該只因為單一指標達標就進場
+   · 標籤（方向共識-強/弱）進配對池
+   權重是初始啟發值（多週期結構最重、微觀證據次之），刻意保守：
+   單一證據不足以翻盤，要翻盤需要多個證據同向。 */
+function computeDirectionConviction(coin) {
+  let s = 0; const votes = [];
+  const add = (v, why) => { s += v; votes.push((v > 0 ? '+' : '') + v + ' ' + why); };
+  const sig = x => String(x || '');
+  if (sig(coin.weeklySignal).indexOf('bull') >= 0) add(15, '週線多'); else if (sig(coin.weeklySignal).indexOf('bear') >= 0) add(-15, '週線空');
+  if (sig(coin.dailySignal).indexOf('bull') >= 0) add(15, '日線多'); else if (sig(coin.dailySignal).indexOf('bear') >= 0) add(-15, '日線空');
+  if (sig(coin.h4Signal).indexOf('bull') >= 0) add(12, '4H多'); else if (sig(coin.h4Signal).indexOf('bear') >= 0) add(-12, '4H空');
+  if (sig(coin.h1Signal).indexOf('bull') >= 0) add(6, '1H多'); else if (sig(coin.h1Signal).indexOf('bear') >= 0) add(-6, '1H空');
+  const m = parseFloat(coin.macdHist) || 0;
+  if (m > 0) add(5, 'MACD正'); else if (m < 0) add(-5, 'MACD負');
+  const p = parseFloat(coin.price) || 0, e200 = parseFloat(coin.ema200) || 0;
+  if (p > 0 && e200 > 0) add(p > e200 ? 8 : -8, p > e200 ? '站上EMA200' : 'EMA200之下');
+  try {
+    const rs = _rsRank[coin.symbol];
+    if (isFinite(rs)) { if (rs >= 70) add(10, `RS強${rs}`); else if (rs <= 30) add(-10, `RS弱${rs}`); }
+  } catch(_e) {}
+  try {
+    const oi = _oiWatchCache[coin.symbol];
+    if (oi && oi.ok && oi.confirmed && Date.now() - oi.at < 15 * 60000) {
+      if (oi.cls === 'long_build') add(10, 'OI新多'); else if (oi.cls === 'short_build') add(-10, 'OI新空');
+    }
+  } catch(_e) {}
+  try {
+    const ls = liqStats(coin.symbol);
+    if (ls.dom === 'short') add(6, '軋空中'); else if (ls.dom === 'long') add(-6, '多殺多中');
+  } catch(_e) {}
+  try {
+    const fr = _sbxFunding ? _sbxFunding[coin.symbol] : null;   // 擁擠是反向訊號，權重刻意小
+    if (isFinite(fr)) { if (fr >= 0.0004) add(-4, '費率多頭擁擠'); else if (fr <= -0.0004) add(4, '費率空頭擁擠'); }
+  } catch(_e) {}
+  return { score: Math.max(-100, Math.min(100, s)), votes };
+}
+
 let _rsRank = {};          // symbol → 0~100 百分位（越高越強）
 function computeMarketRegime(data) {
   try {
