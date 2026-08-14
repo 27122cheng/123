@@ -223,6 +223,7 @@ async function init() {
   _bootMark('渲染');
   // 資訊卡已於 init 前段與掃描並行載入（見上方），此處不再重複
   try { if (!SAFE_MODE) liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連）
+  try { if (!SAFE_MODE) extMacroTick(); } catch(e) {}    // 場外風險溫度：首次取得（失敗降級）
   // init 尾段逐步防護：任何一步失敗都不准拖垮後面的（事件綁定死掉＝整頁不能操作）
   const _step = (name, fn) => { try { fn(); } catch(e) { console.error(`[init:${name}]`, e); } };
   _step('refreshCycle', startRefreshCycle);
@@ -460,6 +461,7 @@ function startRefreshCycle() {
       if (ms > 50) console.warn(`[post-scan] ${name} 耗時 ${ms}ms`);
     };
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
+    try { extMacroTick(); } catch(e) {}   // 場外風險溫度（背景、5 分鐘快取、失敗降級）
     await _pt('市場狀態更新',   () => updateMarketContext(data));
     await _pt('實驗室機會記錄', () => recordLabOpportunities(data));
     await _pt('實驗室機會更新', () => updateLabOpportunities(data));
@@ -12820,7 +12822,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260814b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260814c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -19148,6 +19150,16 @@ function computeLabTags(coin, isLong, btcChg) {
         if (_nk.insideBar) tags.push('裸K-內包蓄勢');
       }
     }
+    // 場外風險溫度：狀態同向/逆向、以及「幣獨走而期指反向」的背離
+    {
+      const _es = (typeof extRiskState === 'function') ? extRiskState() : null;
+      if (_es && _es.state !== 'neutral') {
+        const _extAlign = isLong ? _es.state === 'on' : _es.state === 'off';
+        tags.push(_extAlign ? '場外-同向' : '場外-逆向');
+      }
+      const _dv = (typeof extDivergence === 'function') ? extDivergence(coin) : '';
+      if (_dv) tags.push('場外-背離');
+    }
     // 擺動結構（4H 為主）：同向結構/BOS 延續確認/反向 CHoCH 警訊——
     // 研究所可統計「結構同向 vs 逆結構」的實戰勝率差
     {
@@ -23637,6 +23649,13 @@ function populateSettingsPage() {
   if (idleInput) idleInput.value = (s.idleStopHours != null ? s.idleStopHours : IDLE_STOP_DEFAULT_H);
   const eqInput = document.getElementById('s-main-equity');
   if (eqInput) eqInput.value = (parseFloat(s.mainEquity) > 0 ? s.mainEquity : 1000);
+  const extTg = document.getElementById('s-ext-macro-toggle');
+  if (extTg) extTg.checked = s.extMacroEnabled !== false;   // 預設啟用（免費來源、失敗降級）
+  const extKey = document.getElementById('s-ext-macro-key');
+  if (extKey) extKey.value = s.extMacroKey || '';
+  const extUrl = document.getElementById('s-ext-macro-url');
+  if (extUrl) extUrl.value = s.extMacroUrl || '';
+  try { const p = document.getElementById('ext-macro-panel'); if (p) p.innerHTML = buildExtMacroPanel(); } catch(_e) {}
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
@@ -23664,6 +23683,9 @@ function saveAllSettings() {
                               return isFinite(v) && v >= 0 ? v : IDLE_STOP_DEFAULT_H; })(),
     mainEquity:      (() => { const v = parseFloat(document.getElementById('s-main-equity')?.value);
                               return isFinite(v) && v > 0 ? v : 1000; })(),
+    extMacroEnabled: document.getElementById('s-ext-macro-toggle')?.checked ?? true,
+    extMacroKey:     document.getElementById('s-ext-macro-key')?.value.trim()  || '',
+    extMacroUrl:     document.getElementById('s-ext-macro-url')?.value.trim()  || '',
     tgToken:         document.getElementById('s-tg-token')?.value.trim()  || '',
     tgChatId:        document.getElementById('s-tg-chatid')?.value.trim() || '',
     notifBullScore:  parseInt(document.getElementById('s-notif-bull-thr')?.value) || 65,
@@ -28300,6 +28322,7 @@ const CONV_EV_LABELS = {
   ema200: 'EMA200位置', rs: '相對強弱', oi: 'OI新錢', liq: '清算單邊', fr: '費率擁擠',
   nk_engulf: '裸K吞噬', nk_pin: '裸K針形', nk_three: '裸K三兵鴉',
   st_day: '日線結構', st_h4: '4H結構', st_15: '15m結構',
+  ext_idx: '美股期指', ext_dxy: '美元指數', ext_vix: 'VIX',
 };
 let _convWCache = null, _convWTs = 0;
 function _convWeights() {
@@ -28368,6 +28391,27 @@ function computeDirectionConviction(coin) {
     voteStruct(coin.dayStruct, 14, '日線', 'st_day');
     voteStruct(coin.h4Struct, 12, '4H', 'st_h4');
     voteStruct(coin.struct15, 4, '15m', 'st_15');
+  } catch(_e) {}
+  // 場外風險溫度（美股期指／DXY／VIX）：權重刻意小——它是「重力」不是
+  // 「訊號」，且校準器會用實際成交決定它值多少。取不到就完全不投票。
+  try {
+    const c = _extCache;
+    if (c && c.quotes) {
+      const idx = c.quotes.nq || c.quotes.spx;
+      if (idx) {
+        const f = idx.chg30mPct, d = idx.chgPct;
+        if (isFinite(f) && Math.abs(f) >= EXT_CFG.fastMovePct) add(f > 0 ? 6 : -6, `期指30分${f > 0 ? '+' : ''}${f}%`, 'ext_idx');
+        else if (isFinite(d) && Math.abs(d) >= EXT_CFG.dayMovePct) add(d > 0 ? 4 : -4, `期指日${d > 0 ? '+' : ''}${d}%`, 'ext_idx');
+      }
+      const dxy = c.quotes.dxy;
+      if (dxy && isFinite(dxy.chgPct) && Math.abs(dxy.chgPct) >= EXT_CFG.dxyMovePct)
+        add(dxy.chgPct > 0 ? -4 : 4, `美元${dxy.chgPct > 0 ? '走強' : '走弱'}`, 'ext_dxy');
+      const vix = c.quotes.vix;
+      if (vix && isFinite(vix.price)) {
+        if (vix.price >= EXT_CFG.vixHigh) add(-4, `VIX ${vix.price}`, 'ext_vix');
+        else if (vix.price <= EXT_CFG.vixLow) add(4, `VIX ${vix.price}`, 'ext_vix');
+      }
+    }
   } catch(_e) {}
   return { score: Math.max(-100, Math.min(100, s)), votes, items };
 }
@@ -28495,9 +28539,13 @@ function computeMarketRegime(data) {
     const dir = bull && adx >= 22 ? 'bull' : bear && adx >= 22 ? 'bear' : 'range';
     // BTC 15m ATR 常態約 0.2~0.5%；≥0.6% 屬事件級波動
     const vol = atrPct >= 0.006 ? 'hv' : 'lv';
+    // 場外風險溫度加一維（取得不到就不加，維持原本的二維鍵不影響既有樣本）
+    let ext = '';
+    try { const es = extRiskState(); if (es && es.state !== 'neutral') ext = es.state; } catch(_e) {}
     const label = ({ bull: '趨勢多', bear: '趨勢空', range: '盤整' })[dir]
-                + '/' + (vol === 'hv' ? '高波動' : '低波動');
-    return { at: Date.now(), key: dir + '_' + vol, dir, vol, label };
+                + '/' + (vol === 'hv' ? '高波動' : '低波動')
+                + (ext ? (ext === 'off' ? '/場外避險' : '/場外偏多') : '');
+    return { at: Date.now(), key: dir + '_' + vol + (ext ? '_' + ext : ''), dir, vol, ext, label };
   } catch(_e) { return null; }
 }
 function computeRsRank(data) {
@@ -29050,4 +29098,146 @@ async function renderStructChart(symbol) {
     }
   } catch(e) { console.warn('[struct-chart]', e); }
   finally { _structChartBusy = false; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   場外風險溫度（美股期指 / 美元指數 / VIX）
+   為什麼只接這三樣：BTC 與納斯達克的相關性長期 0.5~0.8、risk-off
+   事件時趨近 1；DXY 是與 crypto 負相關最強的單一外部變數；VIX 是
+   風險胃納的開關。歐股/亞股/個股/商品與分鐘~小時級的幣價幾乎無
+   預測力，接進來只會稀釋投票、多一個故障點——刻意不接。
+
+   接法（不當進場訊號，只當「場外重力」）：
+   ① 市場狀態多一維 risk-on/off → 既有的 regime×方向 閘門直接受用
+   ② 方向確信度小票（±4~6，ext_* 證據鍵）→ 剛上線的權重校準器會用
+      實際成交告訴我們它到底準不準，準就加重、不準自動降到 ×0.5
+   ③ 背離標籤（幣獨漲而期指在跌）→ 配對研究所學它的實測價值
+   資料源全部免費：預設走同源 /api/macro（Vercel 代理 Yahoo/Stooq），
+   使用者也可在設定頁改用自備金鑰的來源。任何失敗一律降級：
+   外部證據不投票、不封鎖，其餘功能完全不受影響。 */
+
+const EXT_CFG = {
+  ttlMin: 5,          // 前端快取（代理端另有 5 分鐘快取）
+  fastMovePct: 0.4,   // 期指 30 分鐘 |變化| ≥0.4% ＝ 場外急動
+  dayMovePct: 1.0,    // 當日 |變化| ≥1.0% ＝ 明確風險方向
+  dxyMovePct: 0.35,   // DXY 當日 ≥0.35% 已是大動作（外匯波動小得多）
+  vixHigh: 22,        // VIX ≥22 ＝ 風險趨避升溫
+  vixLow: 15,         // VIX ≤15 ＝ 風險胃納良好
+  divergePct: 1.5,    // 幣種 24h 漲跌與期指方向背離的判定門檻
+};
+let _extCache = null, _extAt = 0, _extBusy = false;
+
+/* 取得場外報價（含降級）。失敗回 null，呼叫端一律視為「沒有這項證據」。 */
+async function extFetchMacro() {
+  const now = Date.now();
+  if (_extCache && now - _extAt < EXT_CFG.ttlMin * 60000) return _extCache;
+  if (_extBusy) return _extCache;
+  _extBusy = true;
+  try {
+    const s = loadSettings();
+    if (s.extMacroEnabled === false) { _extCache = null; return null; }
+    let url = '/api/macro';
+    // 自備來源（選填）：只在使用者填了才帶上，本機不儲存於任何日誌
+    if (s.extMacroUrl) url = s.extMacroUrl;
+    else if (s.extMacroKey) url = `/api/macro?key=${encodeURIComponent(s.extMacroKey)}`;
+    const ctrl = new AbortController();
+    const tm = setTimeout(() => ctrl.abort(), 9000);
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(tm);
+    if (!r.ok) return _extCache;
+    const j = await r.json();
+    if (!j || !j.ok || !j.quotes) return _extCache;
+    _extCache = { at: now, quotes: j.quotes, src: j.src || {}, okN: j.okN || 0 };
+    _extAt = now;
+    return _extCache;
+  } catch(_e) { return _extCache; }
+  finally { _extBusy = false; }
+}
+
+/* 場外風險狀態：risk-on / risk-off / neutral ＋ 逐項理由 */
+function extRiskState() {
+  const c = _extCache;
+  if (!c || !c.quotes) return null;
+  const q = c.quotes;
+  const why = [];
+  let score = 0;   // 正 = risk-on（有利風險資產）、負 = risk-off
+  const idx = q.nq || q.spx;   // 納指期貨優先（與 crypto 相關性更高）
+  if (idx) {
+    const d = idx.chgPct, f = idx.chg30mPct;
+    if (isFinite(f) && Math.abs(f) >= EXT_CFG.fastMovePct) {
+      score += f > 0 ? 2 : -2;
+      why.push(`美股期指 30 分鐘 ${f > 0 ? '+' : ''}${f}%（場外急動）`);
+    }
+    if (isFinite(d) && Math.abs(d) >= EXT_CFG.dayMovePct) {
+      score += d > 0 ? 1 : -1;
+      why.push(`美股期指當日 ${d > 0 ? '+' : ''}${d}%`);
+    }
+  }
+  if (q.dxy && isFinite(q.dxy.chgPct) && Math.abs(q.dxy.chgPct) >= EXT_CFG.dxyMovePct) {
+    score += q.dxy.chgPct > 0 ? -1 : 1;   // 美元強 = 風險資產逆風
+    why.push(`美元指數 ${q.dxy.chgPct > 0 ? '+' : ''}${q.dxy.chgPct}%（美元${q.dxy.chgPct > 0 ? '走強' : '走弱'}）`);
+  }
+  if (q.vix && isFinite(q.vix.price)) {
+    if (q.vix.price >= EXT_CFG.vixHigh) { score -= 1; why.push(`VIX ${q.vix.price}（風險趨避）`); }
+    else if (q.vix.price <= EXT_CFG.vixLow) { score += 1; why.push(`VIX ${q.vix.price}（風險胃納良好）`); }
+  }
+  const state = score >= 2 ? 'on' : score <= -2 ? 'off' : 'neutral';
+  return { state, score, why, at: c.at,
+    label: state === 'on' ? '場外 risk-on' : state === 'off' ? '場外 risk-off' : '場外中性' };
+}
+
+/* 幣種與場外背離：幣獨漲而期指在跌（或鏡像）——沒有場外支撐的行情 */
+function extDivergence(coin) {
+  try {
+    const c = _extCache; if (!c || !c.quotes) return '';
+    const idx = c.quotes.nq || c.quotes.spx;
+    if (!idx || !isFinite(idx.chgPct)) return '';
+    const ch = parseFloat(coin.change24h);
+    if (!isFinite(ch) || Math.abs(ch) < EXT_CFG.divergePct) return '';
+    if (ch > 0 && idx.chgPct <= -EXT_CFG.dayMovePct) return 'up';    // 幣漲、期指跌
+    if (ch < 0 && idx.chgPct >= EXT_CFG.dayMovePct) return 'down';   // 幣跌、期指漲
+    return '';
+  } catch(_e) { return ''; }
+}
+
+/* 掃描後段呼叫：更新報價（非同步、失敗靜默） */
+function extMacroTick() {
+  extFetchMacro().catch(e => console.warn('[ext-macro]', e));
+}
+
+/* 設定頁面板：狀態、各項報價、資料源、失敗提示與外部申請連結 */
+function buildExtMacroPanel() {
+  const c = _extCache, st = extRiskState();
+  const fmtQ = (k, name, unit) => {
+    const q = c && c.quotes && c.quotes[k];
+    if (!q) return `<div style="color:var(--text3)">${name}：—</div>`;
+    const col = (q.chgPct || 0) > 0 ? 'var(--bull)' : (q.chgPct || 0) < 0 ? 'var(--bear)' : 'var(--text2)';
+    return `<div>${name}：<b>${q.price}${unit || ''}</b>　`
+      + `<span style="color:${col}">${q.chgPct != null ? (q.chgPct > 0 ? '+' : '') + q.chgPct + '%' : '—'}</span>`
+      + (q.chg30mPct != null ? `　<span style="color:var(--text3);font-size:0.72rem">30分 ${q.chg30mPct > 0 ? '+' : ''}${q.chg30mPct}%</span>` : '')
+      + `</div>`;
+  };
+  const stCol = st ? (st.state === 'on' ? 'var(--bull)' : st.state === 'off' ? 'var(--bear)' : 'var(--text2)') : 'var(--text3)';
+  return `<div style="font-size:0.8rem;line-height:1.9">
+    <div style="margin-bottom:4px">目前判定：<b style="color:${stCol}">${st ? st.label : '尚未取得（按下方按鈕測試）'}</b>
+      ${st && st.why.length ? `<span style="color:var(--text3);font-size:0.74rem">（${st.why.join('、')}）</span>` : ''}</div>
+    ${fmtQ('nq', '納指期貨 NQ')}
+    ${fmtQ('spx', '標普期貨 ES')}
+    ${fmtQ('dxy', '美元指數 DXY')}
+    ${fmtQ('vix', 'VIX 波動率')}
+    <div style="color:var(--text3);font-size:0.72rem;margin-top:4px">
+      ${c ? `資料源：${Object.entries(c.src || {}).map(([k, v]) => k + '=' + v).join('、') || '—'}　·　${new Date(c.at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} 更新`
+          : '尚無資料。免費來源無需金鑰；若你的部署無法連外，可改填自備來源網址。'}
+    </div>
+  </div>`;
+}
+async function extMacroTestNow() {
+  try {
+    _extCache = null; _extAt = 0;
+    showToast('正在取得場外行情…', 'info');
+    const r = await extFetchMacro();
+    const el = document.getElementById('ext-macro-panel');
+    if (el) el.innerHTML = buildExtMacroPanel();
+    showToast(r ? `已取得 ${r.okN} 項場外行情` : '取得失敗：稍後再試或改用自備來源', r ? 'success' : 'error');
+  } catch(e) { showToast('取得失敗：' + e.message, 'error'); }
 }

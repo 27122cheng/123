@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260814b" />
+  <link rel="stylesheet" href="css/styles.css?v=20260814c" />
 </head>
 <body>
 
@@ -802,6 +802,40 @@
           </div>
         </div>
 
+        <!-- 場外風險溫度（美股期指／DXY／VIX） -->
+        <div class="setting-row vertical" style="gap:10px;margin-top:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div class="setting-name">🌎 場外風險溫度（美股期指／美元／VIX）</div>
+              <div class="setting-desc">BTC 與納指的相關性長期 0.5~0.8、風險事件時趨近 1。啟用後：市場狀態多一維 risk-on/off、方向確信度加入場外小票、並標記「幣獨走而期指反向」的背離。<b>不當進場訊號用</b>，且證據權重會由你的實際成交自動校準。取不到資料一律降級，不影響任何功能</div>
+            </div>
+            <label class="toggle-wrap">
+              <input type="checkbox" id="s-ext-macro-toggle" onchange="try{saveAllSettings()}catch(e){}" />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+          <div id="ext-macro-panel" style="background:var(--surface2);border-radius:8px;padding:9px 11px"></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn-ghost" style="font-size:0.8rem" onclick="extMacroTestNow()">🔄 立即取得／測試</button>
+            <span style="color:var(--text3);font-size:0.75rem">預設走本站 /api/macro（免費來源 Yahoo Finance／Stooq，無需金鑰）</span>
+          </div>
+          <div style="border-top:1px solid var(--border);padding-top:8px">
+            <div style="font-size:0.78rem;color:var(--text2);margin-bottom:5px">自備資料來源（選填）：若本站代理被封鎖或你想用更即時的來源，可申請免費金鑰後填在下方</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:7px">
+              <a href="https://twelvedata.com/pricing" target="_blank" rel="noopener" class="btn-ghost" style="font-size:0.76rem;text-decoration:none">↗ Twelve Data（免費 800 次/日）</a>
+              <a href="https://finnhub.io/register" target="_blank" rel="noopener" class="btn-ghost" style="font-size:0.76rem;text-decoration:none">↗ Finnhub（免費 60 次/分）</a>
+              <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener" class="btn-ghost" style="font-size:0.76rem;text-decoration:none">↗ Alpha Vantage（免費 25 次/日）</a>
+              <a href="https://stooq.com/db/h/" target="_blank" rel="noopener" class="btn-ghost" style="font-size:0.76rem;text-decoration:none">↗ Stooq（免金鑰）</a>
+            </div>
+            <label style="font-size:0.76rem;color:var(--text3);display:block;margin-bottom:3px">API 金鑰（選填，僅存於本機瀏覽器）</label>
+            <input type="text" class="setting-input" id="s-ext-macro-key" placeholder="貼上金鑰（留空＝用免費預設來源）"
+              style="width:100%;margin-bottom:7px" onchange="try{saveAllSettings()}catch(e){}" />
+            <label style="font-size:0.76rem;color:var(--text3);display:block;margin-bottom:3px">自訂端點網址（選填，需回傳同格式 JSON）</label>
+            <input type="text" class="setting-input" id="s-ext-macro-url" placeholder="https://…（留空＝用本站 /api/macro）"
+              style="width:100%" onchange="try{saveAllSettings()}catch(e){}" />
+          </div>
+        </div>
+
         <!-- 基準權益（建議倉位用） -->
         <div class="setting-row" style="margin-top:6px">
           <div>
@@ -927,8 +961,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260814b"></script>
-  <script src="js/api.js?v=20260814b"></script>
-  <script src="js/app.js?v=20260814b"></script>
+  <script src="js/indicators.js?v=20260814c"></script>
+  <script src="js/api.js?v=20260814c"></script>
+  <script src="js/app.js?v=20260814c"></script>
 </body>
 </html>
