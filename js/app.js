@@ -12822,7 +12822,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260814c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260814d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -24301,6 +24301,7 @@ const SCALP_CFG = {
   sizeMaxMult:      1.25,  // 部位上限倍數
   sizeMinMult:      0.40,  // 部位下限倍數
   // 連續虧損降檔：連敗代表當下市場狀態與策略不合，先縮小再說
+  burstMax:         2,     // 每輪掃描最多開幾筆（同輪節流：一次脈衝不要押成好幾注）
   lossStreakCut:    3,     // 連續幾敗後啟動降檔
   lossStreakMult:   0.5,   // 降檔倍數（直到出現一筆獲利才恢復）
   // 提早保本：達 +beTriggerR 就把止損移到成本價
@@ -24752,6 +24753,32 @@ function scalpModeGate(mode) {
      · 風控分高（風險大）→ 減碼
      · 連續虧損中 → 直接砍半，直到出現一筆獲利才恢復
    回傳倍數與逐項理由，訊號上會一併說明為什麼是這個大小。 */
+/* ── 回撤恢復模式 ─────────────────────────────────────────────
+   舊制在回撤時只做一件事：把部位變小。但部位小不會讓爛訊號變好——
+   回撤期間真正該提高的是「進場門檻」，而不只是降注。
+   觸發：回撤達軟熔斷、當日虧損達軟熔斷、或連敗 ≥ lossStreakCut。
+   作用：① 只收方向證據明確站在自己這邊的單（確信度 ≥ +15）
+        ② 同時在市筆數砍到 3（相關性是快速單回撤的主因：8 筆同時
+           在市的山寨單本質上是同一筆對 BTC 的賭注）
+        ③ 風控分門檻 +8
+   一筆獲利或回撤回到門檻內即自動解除。 */
+function scalpRecoveryMode() {
+  try {
+    const cfg = SCALP_CFG;
+    const a = scalpAccount();
+    const closed = loadScalpLog().filter(t => t.status === 'closed')
+      .sort((x, y) => (y.exitTime || 0) - (x.exitTime || 0));
+    let streak = 0;
+    for (const t of closed) { if (isLossTrade(t)) streak++; else if (isWinTrade(t)) break; }
+    const why = [];
+    if (a.ddNow >= cfg.ddSoftPct) why.push(`回撤 ${a.ddNow}%`);
+    if (a.todayPnlPct <= -cfg.dailySoftPct) why.push(`當日 ${a.todayPnlPct}%`);
+    if (streak >= cfg.lossStreakCut) why.push(`連續 ${streak} 敗`);
+    if (!why.length) return { on: false };
+    return { on: true, why: why.join('、'), minConv: 15, maxActive: 3, confBump: 8 };
+  } catch(_e) { return { on: false }; }
+}
+
 function scalpRiskMult(mode, riskScore) {
   const cfg = SCALP_CFG;
   const why = [];
@@ -25309,7 +25336,17 @@ async function recordScalpSignals(data) {
       const _wgS = winupSessionBlocked('scalp');
       if (_wgS) { _scalpReject._blocked = _wgS; return; }
     } catch(_e) {}
-    let room = SCALP_CFG.maxActive - active.length;
+    // 回撤恢復模式：回撤/當日虧損/連敗任一觸發 → 提高門檻＋砍同時在市筆數
+    // （相關性是快速單回撤的主因：多筆同時在市的山寨單本質上是同一筆賭注）
+    const _recov = scalpRecoveryMode();
+    if (_recov.on) _scalpReject._recovery = `恢復模式（${_recov.why}）：確信度需 ≥+${_recov.minConv}、同時在市上限 ${_recov.maxActive}、風控分 +${_recov.confBump}`;
+    const _activeCap = _recov.on ? Math.min(SCALP_CFG.maxActive, _recov.maxActive) : SCALP_CFG.maxActive;
+    let room = _activeCap - active.length;
+    if (room <= 0) { _scalpReject._blocked = `持倉已達上限（${active.length}/${_activeCap}${_recov.on ? '，恢復模式' : ''}）`; return; }
+    // 同輪建倉節流：一次行情脈衝常同時觸發多個訊號，全開等於把一個判斷
+    // 押成好幾注——回撤就是這樣累積的。每輪最多開 burstMax 筆，訊號不會
+    // 消失（下一輪還在），只是分散進場。
+    room = Math.min(room, SCALP_CFG.burstMax ?? 2);
     let changed = false;
 
     // ── 初篩（用已抓好的幣安資料，零額外請求）──────────────────
@@ -25397,10 +25434,16 @@ async function recordScalpSignals(data) {
         }
       }
       // 方向確信度：順勢家族逆著證據淨值做單沒有道理（回歸家族本來就是做反轉，不適用）
+      // 門檻對照實際尺度（規則④）：順勢家族本來就要求 score 方向 + MACD 同向，
+      // 光 4H 同向(12) + MACD(5) 就有 +17，「≥0」不會全擋，只擋高週期強力唱反調的單。
       if (family === 'trend') {
         try {
           const _cvS = computeDirectionConviction(coin).score * (isLong ? 1 : -1);
-          if (_cvS <= -25) { _sr('方向確信度淨反向'); continue; }
+          const _need = _recov.on ? _recov.minConv : 0;
+          if (_cvS < _need) {
+            _sr(_recov.on ? `恢復模式確信度不足(${_cvS}<${_need})` : `方向確信度淨反向(${_cvS})`);
+            continue;
+          }
         } catch(_e) {}
       }
       const setup = buildScalpSetup(coin, isLong, family);
@@ -25427,7 +25470,10 @@ async function recordScalpSignals(data) {
       if (riskScore != null && riskScore >= SCALP_CFG.maxRiskScore) {
         _sr(`風險分過高(${riskScore}≥${SCALP_CFG.maxRiskScore})`); continue;
       }
-      if (conf != null && conf < SCALP_CFG.minConf) { _sr(`風控分過低(${conf}<${SCALP_CFG.minConf})`); continue; }
+      {
+        const _minConf = SCALP_CFG.minConf + (_recov.on ? _recov.confBump : 0);
+        if (conf != null && conf < _minConf) { _sr(`風控分過低(${conf}<${_minConf}${_recov.on ? '，恢復模式' : ''})`); continue; }
+      }
 
       // 品質加權部位：期望值高的模式加碼、風險大的減碼、連敗中砍半
       const _qm = scalpRiskMult(setup.mode, riskScore);
@@ -25550,6 +25596,11 @@ function updateScalpTrades(data) {
       //    也不追（missed）。延遲秒數與滑移 R 逐筆入帳。
       if (t.pendingFill) {
         const _sigT = t.signalTime || t.timestamp || 0;
+        // 逾時未成交（報價中斷/幣種下架）→ 作廢釋放名額，不佔著持倉上限
+        if (Date.now() - _sigT > 15 * 60000) {
+          t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
+          t.pendingFill = false; changed = true; continue;
+        }
         if (Date.now() - _sigT < 45000) continue;
         const _dirF = isLong ? 1 : -1;
         const _risk0 = Math.abs(t.entry - (t.baseSl ?? t.sl)) || 1e-9;
