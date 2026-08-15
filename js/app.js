@@ -12823,7 +12823,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260814e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260815a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -25586,7 +25586,11 @@ async function recordScalpSignals(data) {
       t.okxAdjusted = true;   // 資料層已對齊 OKX 價格空間，無需再換算
       log.unshift(t); changed = true; room--;
       _scalpRecordLedger(coin.symbol, dir);
-      sendScalpTelegram(t, 'open');
+      /* ⚠️ 進場訊號改在「成交後」才發（見 updateScalpTrades 的 pendingFill 段）。
+         實案：EGLD 空單訊號寫止損 $2.70536，但系統在 45 秒後以實際報價重錨，
+         止損實際變成 $2.712——使用者照訊息的價位在 2.708 止損出場，系統卻還
+         抱著單。訊息價位與系統追蹤的價位不一致，是最危險的一種不一致。
+         改為成交後才發，訊息上的每個數字都是系統真正在追蹤的數字。 */
     }
     if (changed) saveScalpLog(log);
   } catch(e) { console.warn('[scalp] 訊號產生錯誤', e); }
@@ -25658,9 +25662,10 @@ function updateScalpTrades(data) {
         t.fillDelaySec = Math.round((Date.now() - _sigT) / 1000);
         t.slipR = +_moveR.toFixed(3);
         if (_moveR > 0.5 || _moveR < -0.8) {
+          // 靜默作廢：進場訊號本來就還沒發出去，發一則「作廢」只會讓人困惑
           t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
           t.pendingFill = false; changed = true;
-          if (_notifyOk) sendScalpTelegram(t, 'missed');
+          console.info(`[scalp] ${t.symbol} 延遲後滑移 ${t.slipR}R，訊號作廢未發送`);
           continue;
         }
         const _slD = Math.abs(t.entry - t.sl), _t1D = Math.abs(t.tp1 - t.entry), _t2D = Math.abs(t.tp2 - t.entry);
@@ -25668,6 +25673,8 @@ function updateScalpTrades(data) {
         t.sl = cur - _dirF * _slD; t.baseSl = t.sl;
         t.tp1 = cur + _dirF * _t1D; t.tp2 = cur + _dirF * _t2D;
         t.entryTime = Date.now(); t.pendingFill = false; changed = true;
+        // 成交後才發進場訊號：訊息上的價位＝系統真正追蹤的價位
+        if (_notifyOk) sendScalpTelegram(t, 'open');
         continue;   // 成交這一輪不評出場，下一輪開始
       }
       const baseRisk = Math.abs(t.entry - (t.baseSl ?? t.sl)) || 1;
@@ -25832,7 +25839,10 @@ function sendScalpTelegram(t, kind, extra = {}) {
         t.feeR != null ? `💸 止損距離 ${t.slDistPct}%，來回手續費約 ${(t.feeR * 100).toFixed(0)}% 的 R`
           + (t.slWidened ? '（原始止損過近會被手續費吃掉，已推遠至可行距離；部位等比例縮小，風險金額不變）' : '') : '',
         `⏱️ 停滯 ${SCALP_CFG.timeStopMin} 分出場｜最長持有 ${SCALP_CFG.maxHoldMin} 分（獲利 ≥${SCALP_CFG.extendMinR}R 自動延長讓利潤跑）`,
-        `📡 價位以「訊號後首個報價」重錨（延遲/滑移逐筆入帳）；行情速度過快的幣已在源頭過濾，仍請避免追價`,
+        t.fillDelaySec != null
+          ? `📡 本訊號於偵測後 ${t.fillDelaySec} 秒以實際報價成交（滑移 ${t.slipR > 0 ? '+' : ''}${t.slipR}R），`
+            + `上面每個價位都是系統實際追蹤的價位——請直接照這組數字掛單，不要用更早的價格`
+          : '',
         t.riskRecs && t.riskRecs.length ? `💡 ${_e(t.riskRecs[0])}` : '',
         ``,
         `⏰ ${ts}`,
