@@ -467,6 +467,7 @@ function startRefreshCycle() {
     await _pt('實驗室機會更新', () => updateLabOpportunities(data));
     await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
     await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
+    await _pt('閘門影子更新',   () => shadowUpdate(data));
     await _pt('條件配對分析',   () => maybePairLabAnalyze());
     await _pt('配對策略建單',   () => recordPairStrategyTrades(data));
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
@@ -12822,7 +12823,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260814d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260814e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -13487,7 +13488,15 @@ async function recordSignalsFromScan(data) {
      「到底是誰擋的」以前完全看不到——每個 continue 都是靜默的。這裡逐一
      計數，掃描結束存起來，實驗室就能顯示「這輪 N 個候選，各被什麼擋掉」。 */
   const _rej = {};
-  const _no = (reason) => { _rej[reason] = (_rej[reason] || 0) + 1; return true; };
+  /* 影子追蹤：被擋下的候選留一筆紙上單追到結算，讓「這道門擋掉的是
+     賺錢單還是賠錢單」變成可驗證的事實。_shCtx 由迴圈在 setup 算好後
+     設定，_no 順手取用；取樣有冷卻與總量上限，儲存負擔很小。 */
+  let _shCtx = null;
+  const _no = (reason) => {
+    _rej[reason] = (_rej[reason] || 0) + 1;
+    if (_shCtx) { try { shadowRecordBlocked(_shCtx.coin, _shCtx.dir, _shCtx.setup, reason); } catch(_e) {} }
+    return true;
+  };
   let _cand = 0;
 
   // ── 預先計算宏觀方向（使用與大方向進度條完全一致的多因子評分）──
@@ -13572,6 +13581,7 @@ async function recordSignalsFromScan(data) {
   // ══════════════════════════════════════════════════════════════
   for (const coin of data) {
     _cand++;
+    _shCtx = null;   // 每個候選重置：setup 還沒算出來之前不記影子單
     if (coin.score === 50 && _no('評分中性(50)')) continue;
     const isLong    = coin.score > 50;
     const direction = isLong ? 'long' : 'short';
@@ -13598,6 +13608,8 @@ async function recordSignalsFromScan(data) {
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     let setup = computeSimpleSetup(coin, isLong);
+    // 影子追蹤的上下文：此後任何 _no() 都會順手記一筆被擋下的紙上單
+    _shCtx = { coin, dir: direction, setup };
     if (setup.hardBlocked && _no('進場結構硬性封鎖')) continue;
     // 結構階梯不完整＝四個價位沒辦法全部釘在結構上 → 不建單。
     // 沒有結構可釘時硬用固定 R 湊出價位，正是這次要改掉的事。
@@ -14172,8 +14184,11 @@ async function recordSignalsFromScan(data) {
         f: (_cv.items || []).filter(it => it.v * _dirMulCv > 0).map(it => it.k),
         a: (_cv.items || []).filter(it => it.v * _dirMulCv < 0).map(it => it.k),
       };
-      if (_convScan <= -25) { _no(`方向確信度 ${_convScan}（多空證據淨反向）`); continue; }
-      if (_convScan >= 40) _scanEntryTags.push('方向共識-強');
+      // 門檻隨去重後的新尺度同步下調（規則④）：去重前滿分約 ±100、
+      // 現在多週期殘票僅 ±16，主力是結構(30)＋微觀證據(34)＋場外(14)。
+      // 典型同向候選 ≈ +30~45，強共識 ≈ +55；淨反向門檻 -25 → -15。
+      if (_convScan <= -15) { _no(`方向確信度 ${_convScan}（多空證據淨反向）`); continue; }
+      if (_convScan >= 30) _scanEntryTags.push('方向共識-強');
       else if (_convScan <= 0) _scanEntryTags.push('方向共識-弱');
       _scanSqFactors.push(`🧭 方向確信度 ${_convScan >= 0 ? '+' : ''}${_convScan}（${_convVotes.slice(0, 5).join('、')}${_convVotes.length > 5 ? '…' : ''}）`);
     } catch(_e) {}
@@ -19523,6 +19538,7 @@ function renderLabPage() {
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
     ${buildPairLabHtml()}
+    ${buildGateShadowHtml()}
     ${provenHtml}
     ${scorecardHtml}
     ${auditHtml}
@@ -22694,36 +22710,79 @@ function computeSimpleSetup(coin, isLong) {
                   : (_ob && _ob.low  > 0 && _ob.low  < price * 0.998) ? _ob.low
                   : (_bbLo > 0 && _bbLo < price * 0.998 ? _bbLo : 0);
 
+  /* ── 結構池（進場擇優與止損止盈共用）─────────────────────────
+     帶標籤的結構位：Order Block 邊界、FVG、布林軌、EMA20/50/200、
+     4H 前高低、影線拒絕區（拒絕次數＝可量化的佐證強度）。
+     相鄰 0.35×ATR 內視為同一個「合流區」，佐證清單合併。 */
+  const _srcPool = [];
+  const _addLv = (v, label, w) => {
+    const n = parseFloat(v);
+    if (isFinite(n) && n > 0) _srcPool.push({ v: n, label, w: w || 1 });
+  };
+  _addLv(_ob && _ob.low,  'OB下緣'); _addLv(_ob && _ob.high, 'OB上緣');
+  _addLv(_fvg && _fvg.mid, 'FVG中點');
+  _addLv(_bbLo, 'BB下軌'); _addLv(_bbUp, 'BB上軌');
+  _addLv(ema20, 'EMA20'); _addLv(ema50, 'EMA50'); _addLv(ema200, 'EMA200');
+  _addLv(_h4Hi, '4H前高', 2); _addLv(_h4Lo, '4H前低', 2);
+  for (const z of (coin.wickSupports || []).slice(0, 4))
+    _addLv(z.level, `影線支撐×${z.wicks}`, Math.min(4, z.wicks || 1));
+  for (const z of (coin.wickResistances || []).slice(0, 4))
+    _addLv(z.level, `影線壓力×${z.wicks}`, Math.min(4, z.wicks || 1));
+
   // ═══════════════════════════════════════════════
-  // 1. 進場點：多層優先級（ICT OB → 型態 → EMA50 → BB中軌 → EMA20）
+  // 1. 進場點：候選「擇優」而非優先序（2026-08 改版）
+  //    舊制是 OB → 2B → 123 → EMA50 → BB中軌 → EMA20 先命中先贏，
+  //    同一根 K 上有兩個可用進場位時，靠的是寫死的順序而不是證據。
+  //    改為：每個候選各自評分＝該價位 0.35×ATR 內的結構佐證權重總和
+  //    ＋型態基礎分（型態本身也是證據）＋距現價的可達性微調，取最高分。
+  //    與止損止盈的新哲學一致：位置由佐證強度決定，不由排序決定。
   // ═══════════════════════════════════════════════
-  let entry, _entryTag = '';
-  if (_ob && _ob.priceInOB && _ob.high > 0 && _ob.low > 0) {
-    // ICT OB 內：進場在 OB 50% 位置（最優）
-    const _obMid = (_ob.high + _ob.low) / 2;
-    entry     = isLong ? Math.min(price, _obMid) : Math.max(price, _obMid);
-    _entryTag = 'ob';
-  } else if (_pat && (isLong ? _pat.bull2B : _pat.bear2B)) {
-    // 2B 型態：假突破後回歸，進在前高/前低附近（略優於純 EMA）
-    entry     = isLong ? Math.min(price, ema20 * 1.001) : Math.max(price, ema20 * 0.999);
-    _entryTag = '2b';
-  } else if (_pat && (isLong ? _pat.bull123 : _pat.bear123)) {
-    // 123 型態：突破確認後進場
-    entry     = isLong ? Math.max(price, ema20 * 0.999) : Math.min(price, ema20 * 1.001);
-    _entryTag = '123';
-  } else if (ema50 > 0 && (isLong ? price >= ema50 * 0.998 && price <= ema50 * 1.015 : price <= ema50 * 1.002 && price >= ema50 * 0.985)) {
-    // 接近 EMA50（±1.5%）→ S/R 精確進場
-    entry     = isLong ? Math.min(price, ema50 * 1.003) : Math.max(price, ema50 * 0.997);
-    _entryTag = 'ema50';
-  } else if (_bbMid > 0 && Math.abs(price - _bbMid) / price < 0.012) {
-    // 接近 BB 中軌（±1.2%）→ 均值回歸進場
-    entry     = isLong ? Math.min(price, _bbMid * 1.002) : Math.max(price, _bbMid * 0.998);
-    _entryTag = 'bbmid';
-  } else {
-    // 默認：EMA20 貼合進場（Kill Zone 高品質時更保守）
-    const _emaFactor = _kzHigh ? 1.001 : 1.002;
-    entry     = isLong ? Math.min(price, ema20 * _emaFactor) : Math.max(price, ema20 * (2 - _emaFactor));
-    _entryTag = 'ema20';
+  let entry, _entryTag = '', _entryEvidence = [];
+  {
+    const _cands = [];
+    const _push = (v, tag, base) => {
+      const n = parseFloat(v);
+      if (!isFinite(n) || n <= 0) return;
+      // 進場價不得離現價過遠（>3% 的回踩在 15m 級別多半等不到）
+      if (Math.abs(n - price) / price > 0.03) return;
+      const near = _srcPool.filter(s => Math.abs(s.v - n) < atr * 0.35);
+      const evScore = near.reduce((a, s) => a + s.w, 0);
+      // 可達性：離現價越近越容易成交，但太近（<0.1×ATR）等於市價追，不加分
+      const dist = Math.abs(n - price) / (atr || 1);
+      const reach = dist < 0.1 ? 0 : dist <= 1.2 ? 1 : -1;
+      _cands.push({ v: n, tag, score: evScore + base + reach, ev: near.map(s => s.label) });
+    };
+    if (_ob && _ob.priceInOB && _ob.high > 0 && _ob.low > 0) {
+      const _obMid = (_ob.high + _ob.low) / 2;
+      _push(isLong ? Math.min(price, _obMid) : Math.max(price, _obMid), 'ob', 3);
+    }
+    if (_pat && (isLong ? _pat.bull2B : _pat.bear2B))
+      _push(isLong ? Math.min(price, ema20 * 1.001) : Math.max(price, ema20 * 0.999), '2b', 2.5);
+    if (_pat && (isLong ? _pat.bull123 : _pat.bear123))
+      _push(isLong ? Math.max(price, ema20 * 0.999) : Math.min(price, ema20 * 1.001), '123', 2.5);
+    if (ema50 > 0 && (isLong ? price >= ema50 * 0.998 && price <= ema50 * 1.015 : price <= ema50 * 1.002 && price >= ema50 * 0.985))
+      _push(isLong ? Math.min(price, ema50 * 1.003) : Math.max(price, ema50 * 0.997), 'ema50', 1.5);
+    if (_bbMid > 0 && Math.abs(price - _bbMid) / price < 0.012)
+      _push(isLong ? Math.min(price, _bbMid * 1.002) : Math.max(price, _bbMid * 0.998), 'bbmid', 1);
+    {
+      const _emaFactor = _kzHigh ? 1.001 : 1.002;
+      _push(isLong ? Math.min(price, ema20 * _emaFactor) : Math.max(price, ema20 * (2 - _emaFactor)), 'ema20', 0.5);
+    }
+    // 學習閘門：實測長期虧錢的進場分支直接不列入候選（winup 的分支封鎖）
+    let _pool = _cands;
+    try {
+      const _ok = _cands.filter(c => !winupMainTagBlocked(c.tag));
+      if (_ok.length) _pool = _ok;   // 全被封時不至於無單可建，仍回退全集
+    } catch(_e) {}
+    _pool.sort((a, b) => b.score - a.score || Math.abs(a.v - price) - Math.abs(b.v - price));
+    const _best = _pool[0];
+    if (_best) { entry = _best.v; _entryTag = _best.tag; _entryEvidence = _best.ev; }
+    else {
+      // 全部候選都離現價過遠 → 退回 EMA20 貼合（維持舊行為，不讓它變成無單）
+      const _emaFactor = _kzHigh ? 1.001 : 1.002;
+      entry = isLong ? Math.min(price, ema20 * _emaFactor) : Math.max(price, ema20 * (2 - _emaFactor));
+      _entryTag = 'ema20';
+    }
   }
 
   /* ── 結構階梯（做多下方要有支撐、做空上方要有壓力）──────────────
@@ -22744,20 +22803,7 @@ function computeSimpleSetup(coin, isLong) {
      · 4H 前高/前低：波段結構的錨
      相鄰 0.35×ATR 內的結構視為同一道「合流區」，佐證清單合併——
      止損釘在佐證最多的區外側、止盈放在對向合流區前緣。 */
-  const _srcPool = [];
-  const _addLv = (v, label, w) => {
-    const n = parseFloat(v);
-    if (isFinite(n) && n > 0) _srcPool.push({ v: n, label, w: w || 1 });
-  };
-  _addLv(_ob && _ob.low,  'OB下緣'); _addLv(_ob && _ob.high, 'OB上緣');
-  _addLv(_fvg && _fvg.mid, 'FVG中點');
-  _addLv(_bbLo, 'BB下軌'); _addLv(_bbUp, 'BB上軌');
-  _addLv(ema20, 'EMA20'); _addLv(ema50, 'EMA50'); _addLv(ema200, 'EMA200');
-  _addLv(_h4Hi, '4H前高', 2); _addLv(_h4Lo, '4H前低', 2);
-  for (const z of (coin.wickSupports || []).slice(0, 4))
-    _addLv(z.level, `影線支撐×${z.wicks}`, Math.min(4, z.wicks || 1));
-  for (const z of (coin.wickResistances || []).slice(0, 4))
-    _addLv(z.level, `影線壓力×${z.wicks}`, Math.min(4, z.wicks || 1));
+  // 結構池已於進場選點前建好（見上方「結構池」段），此處直接沿用
   /* 合流區合併：回傳 [{price(錨), far(離進場最遠緣), near(最近緣), evidence[], score}] */
   const _zonesOf = (fromPrice, wantBelow) => {
     const sorted = _srcPool
@@ -23307,10 +23353,11 @@ function computeSimpleSetup(coin, isLong) {
     if (_mtfContraWk)  reasons.push(`⚠️ 週線逆向，止損已放寬，謹慎持倉`);
     if (_mtfContraDay && !_mtfContraWk) reasons.push(`⚠️ 日線逆向，需嚴格止損`);
   }
-  // 進場位佐證：進場價 0.35×ATR 內的所有結構（佐證越多越可信，逐一列出供驗證）
+  // 進場位佐證：擇優時算出的佐證清單（同一根 K 上有多個候選時，選的是佐證最強的那個）
   try {
-    const _nearEv = _srcPool.filter(s => Math.abs(s.v - entry) < atr * 0.35).map(s => s.label);
-    if (_nearEv.length) reasons.push(`📍 進場位佐證：${_nearEv.join('、')}`);
+    const _nearEv = (_entryEvidence && _entryEvidence.length) ? _entryEvidence
+      : _srcPool.filter(s => Math.abs(s.v - entry) < atr * 0.35).map(s => s.label);
+    if (_nearEv.length) reasons.push(`📍 進場位佐證（擇優）：${_nearEv.join('、')}`);
   } catch(_e) {}
   // R:R 不足警告（僅記錄，實際 blocked 在掃描層已過濾）
   if (rrBlocked) reasons.push(`⚠️ ${rrReason}`);
@@ -24775,7 +24822,10 @@ function scalpRecoveryMode() {
     if (a.todayPnlPct <= -cfg.dailySoftPct) why.push(`當日 ${a.todayPnlPct}%`);
     if (streak >= cfg.lossStreakCut) why.push(`連續 ${streak} 敗`);
     if (!why.length) return { on: false };
-    return { on: true, why: why.join('、'), minConv: 15, maxActive: 3, confBump: 8 };
+    // minConv 隨確信度去重後的新尺度調整（原 15 對應舊尺度）：
+    // 去重後順勢典型候選 ≈ +9~20（4H 殘票 4＋MACD 2＋EMA200 3＋結構 12），
+    // 設 8 代表「至少要有結構或多項微觀證據站在同一邊」，不會全擋。
+    return { on: true, why: why.join('、'), minConv: 8, maxActive: 3, confBump: 8 };
   } catch(_e) { return { on: false }; }
 }
 
@@ -28393,15 +28443,22 @@ function computeDirectionConviction(coin) {
     votes.push((vv > 0 ? '+' : '') + vv + ' ' + why + (mult !== 1 ? `(×${mult})` : ''));
     items.push({ k: key, v: vv });
   };
+  /* ⚠️ 去重（2026-08）：多週期訊號、MACD、EMA200 位置這幾項，SQ 28 因子
+     評分與風控分 conf 都已經各扣/加過一次——確信度再全額計一次，等於同一
+     個「4H 同向」被算三遍：真正同向的單被過度加權、稍有分歧的單被連環
+     扣殺。這正是當初 computeFullRisk 移除六項因子時修過的病。
+     因此這幾項在此僅保留「小額殘票」（避免完全失去趨勢骨架的參照），
+     確信度的主力改由其他層看不到的證據承擔：擺動結構、相對強弱、OI、
+     清算、費率、裸 K、場外風險溫度。 */
   const sig = x => String(x || '');
-  if (sig(coin.weeklySignal).indexOf('bull') >= 0) add(15, '週線多', 'wk'); else if (sig(coin.weeklySignal).indexOf('bear') >= 0) add(-15, '週線空', 'wk');
-  if (sig(coin.dailySignal).indexOf('bull') >= 0) add(15, '日線多', 'day'); else if (sig(coin.dailySignal).indexOf('bear') >= 0) add(-15, '日線空', 'day');
-  if (sig(coin.h4Signal).indexOf('bull') >= 0) add(12, '4H多', 'h4'); else if (sig(coin.h4Signal).indexOf('bear') >= 0) add(-12, '4H空', 'h4');
-  if (sig(coin.h1Signal).indexOf('bull') >= 0) add(6, '1H多', 'h1'); else if (sig(coin.h1Signal).indexOf('bear') >= 0) add(-6, '1H空', 'h1');
+  if (sig(coin.weeklySignal).indexOf('bull') >= 0) add(5, '週線多', 'wk'); else if (sig(coin.weeklySignal).indexOf('bear') >= 0) add(-5, '週線空', 'wk');
+  if (sig(coin.dailySignal).indexOf('bull') >= 0) add(5, '日線多', 'day'); else if (sig(coin.dailySignal).indexOf('bear') >= 0) add(-5, '日線空', 'day');
+  if (sig(coin.h4Signal).indexOf('bull') >= 0) add(4, '4H多', 'h4'); else if (sig(coin.h4Signal).indexOf('bear') >= 0) add(-4, '4H空', 'h4');
+  if (sig(coin.h1Signal).indexOf('bull') >= 0) add(2, '1H多', 'h1'); else if (sig(coin.h1Signal).indexOf('bear') >= 0) add(-2, '1H空', 'h1');
   const m = parseFloat(coin.macdHist) || 0;
-  if (m > 0) add(5, 'MACD正', 'macd'); else if (m < 0) add(-5, 'MACD負', 'macd');
+  if (m > 0) add(2, 'MACD正', 'macd'); else if (m < 0) add(-2, 'MACD負', 'macd');
   const p = parseFloat(coin.price) || 0, e200 = parseFloat(coin.ema200) || 0;
-  if (p > 0 && e200 > 0) add(p > e200 ? 8 : -8, p > e200 ? '站上EMA200' : 'EMA200之下', 'ema200');
+  if (p > 0 && e200 > 0) add(p > e200 ? 3 : -3, p > e200 ? '站上EMA200' : 'EMA200之下', 'ema200');
   try {
     const rs = _rsRank[coin.symbol];
     if (isFinite(rs)) { if (rs >= 70) add(10, `RS強${rs}`, 'rs'); else if (rs <= 30) add(-10, `RS弱${rs}`, 'rs'); }
@@ -29291,4 +29348,164 @@ async function extMacroTestNow() {
     if (el) el.innerHTML = buildExtMacroPanel();
     showToast(r ? `已取得 ${r.okN} 項場外行情` : '取得失敗：稍後再試或改用自備來源', r ? 'success' : 'error');
   } catch(e) { showToast('取得失敗：' + e.message, 'error'); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   閘門影子追蹤（被擋掉的單，後來走成什麼樣？）
+   問題：一般單有十幾道串聯閘門，每一道單獨看都合理，但從來沒有任何
+   機制回答「被它擋掉的單如果放行，會賺還是會賠」。萬一某道門擋掉的
+   多半是贏單，這件事永遠不會被發現——閘門只會越加越多。
+
+   做法（與實驗室機會同一套紙上追蹤，但以「攔截原因」為分組）：
+   · 掃描時每個被擋下的候選，記一筆影子單（進場/止損/止盈用當下 setup）
+   · 之後每輪掃描更新：觸及進場→開倉、觸及 SL/TP→結算、48 小時未觸發
+     →過期、7 天→以現價結算
+   · 每道閘門累積 ≥25 筆結算後給出判定：
+       期望值 ≥ +0.10R → 過度攔截（這道門在丟掉賺錢的單）
+       期望值 ≤ −0.05R → 攔截有效（擋掉的確實是賠錢單）
+       之間            → 中性（擋不擋差別不大）
+   · 只記錄樣本（每道門每 30 分鐘最多 1 筆、總量上限 400），儲存負擔小
+   · 純觀測：不自動放寬任何門檻——先讓證據長出來，要不要調由人決定 */
+
+const GATE_SHADOW_KEY = 'csp_gate_shadow';
+const GATE_SHADOW_MAX = 400;
+const GATE_SHADOW_CFG = {
+  perGateCooldownMin: 30,   // 同一道門的取樣間隔（避免同一輪灌爆同一個 key）
+  pendingExpireH: 48,       // 未觸發進場即過期
+  maxHoldDays: 7,           // 開倉後最長追蹤
+  minN: 25,                 // 出判定所需的結算樣本
+  overBlockExp: 0.10,       // 期望值 ≥ 此值 → 過度攔截
+  effectiveExp: -0.05,      // 期望值 ≤ 此值 → 攔截有效
+};
+
+function loadGateShadow() {
+  try { const a = JSON.parse(localStorage.getItem(GATE_SHADOW_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+function saveGateShadow(list, opts = {}) {
+  if (!opts.allowShrink && !_guardOverwrite(GATE_SHADOW_KEY, list.length, 'gate-shadow')) return false;
+  try { localStorage.setItem(GATE_SHADOW_KEY, JSON.stringify(list.slice(0, GATE_SHADOW_MAX))); }
+  catch(_e) { console.warn('[gate-shadow] 儲存失敗', _e); }
+  return true;
+}
+/* 攔截原因正規化：拿掉動態數字，同一道門的不同數值歸為同一個 key */
+function gateShadowKey(reason) {
+  return String(reason || '')
+    .replace(/[\d.]+%?/g, '')      // 數字與百分比
+    .replace(/[（(][^）)]*[）)]/g, '')  // 括號內的細節
+    .replace(/\s+/g, ' ').trim().slice(0, 24) || '未分類';
+}
+const _gateShadowAt = {};   // key → 上次取樣時間
+function shadowRecordBlocked(coin, direction, setup, reason) {
+  try {
+    if (!isSignalMaster()) return;
+    if (!coin || !setup || !(setup.entry > 0) || !(setup.sl > 0) || !(setup.tp1 > 0)) return;
+    const key = gateShadowKey(reason);
+    const now = Date.now();
+    if (now - (_gateShadowAt[key] || 0) < GATE_SHADOW_CFG.perGateCooldownMin * 60000) return;
+    _gateShadowAt[key] = now;
+    const list = loadGateShadow();
+    // 同幣同向已有追蹤中的影子 → 不重複
+    if (list.some(s => s.symbol === coin.symbol && s.dir === direction
+        && (s.status === 'pending' || s.status === 'open'))) return;
+    list.unshift({
+      id: `gs-${coin.symbol}-${now}`, gate: key, symbol: coin.symbol, dir: direction,
+      ts: now, entry: setup.entry, sl: setup.sl, tp1: setup.tp1,
+      status: 'pending', pnlR: null, exitTime: null,
+    });
+    if (list.length > GATE_SHADOW_MAX) list.splice(GATE_SHADOW_MAX);
+    saveGateShadow(list, { allowShrink: true });
+  } catch(_e) {}
+}
+/* 每輪掃描更新影子單（與實驗室機會同一套判定；SL 優先＝保守） */
+function shadowUpdate(data) {
+  try {
+    if (!isSignalMaster() || !Array.isArray(data) || !data.length) return;
+    const list = loadGateShadow();
+    if (!list.length) return;
+    const px = {};
+    for (const c of data) { const p = parseFloat(c && c.price) || 0; if (p > 0) px[c.symbol] = p; }
+    const now = Date.now();
+    let changed = false;
+    for (const s of list) {
+      if (s.status !== 'pending' && s.status !== 'open') continue;
+      const cur = px[s.symbol];
+      if (!cur) continue;
+      const isLong = s.dir === 'long';
+      const risk = Math.abs(s.entry - s.sl) || 1e-9;
+      if (s.status === 'pending') {
+        if (now - s.ts > GATE_SHADOW_CFG.pendingExpireH * 3600e3) { s.status = 'expired'; changed = true; continue; }
+        if (isLong ? cur >= s.tp1 : cur <= s.tp1) { s.status = 'missed'; changed = true; continue; }
+        if (isLong ? cur <= s.entry : cur >= s.entry) { s.status = 'open'; s.entryTime = now; changed = true; }
+        continue;
+      }
+      if (isLong ? cur <= s.sl : cur >= s.sl) {
+        s.status = 'closed'; s.pnlR = -1; s.exitTime = now; changed = true;
+      } else if (isLong ? cur >= s.tp1 : cur <= s.tp1) {
+        s.status = 'closed'; s.exitTime = now; changed = true;
+        s.pnlR = +(Math.abs(s.tp1 - s.entry) / risk).toFixed(2);
+      } else if (now - (s.entryTime || s.ts) > GATE_SHADOW_CFG.maxHoldDays * 86400e3) {
+        s.status = 'closed'; s.exitTime = now; changed = true;
+        s.pnlR = +(((cur - s.entry) * (isLong ? 1 : -1)) / risk).toFixed(2);
+      }
+    }
+    if (changed) saveGateShadow(list, { allowShrink: true });
+  } catch(e) { console.warn('[gate-shadow]', e); }
+}
+/* 每道閘門的攔截品質（快取 10 分鐘，供實驗室面板讀） */
+let _gateShadowStats = null, _gateShadowStatsAt = 0;
+function gateShadowStats() {
+  if (_gateShadowStats && Date.now() - _gateShadowStatsAt < 10 * 60000) return _gateShadowStats;
+  const by = {};
+  try {
+    for (const s of loadGateShadow()) {
+      const b = by[s.gate] || (by[s.gate] = { gate: s.gate, n: 0, w: 0, l: 0, r: 0, open: 0 });
+      if (s.status === 'pending' || s.status === 'open') { b.open++; continue; }
+      if (s.status !== 'closed' || !isFinite(parseFloat(s.pnlR))) continue;
+      const r = parseFloat(s.pnlR);
+      b.n++; b.r += r;
+      if (r > FLAT_R_EPS) b.w++; else if (r < -FLAT_R_EPS) b.l++;
+    }
+  } catch(_e) {}
+  const rows = Object.values(by).map(b => {
+    const exp = b.n ? b.r / b.n : 0;
+    const verdict = b.n < GATE_SHADOW_CFG.minN ? 'pending'
+      : exp >= GATE_SHADOW_CFG.overBlockExp ? 'over'
+      : exp <= GATE_SHADOW_CFG.effectiveExp ? 'good' : 'neutral';
+    return { gate: b.gate, n: b.n, open: b.open,
+      winRate: (b.w + b.l) ? +(b.w / (b.w + b.l) * 100).toFixed(0) : null,
+      expectancy: +exp.toFixed(3), verdict };
+  }).sort((a, b) => b.expectancy - a.expectancy);
+  _gateShadowStats = rows; _gateShadowStatsAt = Date.now();
+  return rows;
+}
+function buildGateShadowHtml() {
+  const rows = gateShadowStats();
+  const head = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px">
+    <div style="font-weight:700;font-size:0.85rem;margin-bottom:5px">🚧 閘門攔截品質（被擋掉的單後來走成什麼樣）</div>
+    <div style="font-size:0.74rem;color:var(--text2);line-height:1.7;margin-bottom:7px">
+      每道閘門擋下的候選都留一筆紙上影子單追蹤到止盈/止損。累積 ≥${GATE_SHADOW_CFG.minN} 筆才出判定：
+      期望值 ≥+${GATE_SHADOW_CFG.overBlockExp}R ＝<b style="color:#f59e0b">過度攔截</b>（這道門在丟掉賺錢的單）、
+      ≤${GATE_SHADOW_CFG.effectiveExp}R ＝<b style="color:#22c55e">攔截有效</b>。
+      純觀測，不自動放寬任何門檻——證據長出來之後由你決定要不要調。
+    </div>`;
+  if (!rows.length) {
+    return head + `<div style="font-size:0.78rem;color:var(--text3)">尚無影子樣本——每道門每 ${GATE_SHADOW_CFG.perGateCooldownMin} 分鐘取樣一筆，掃描累積中。</div></div>`;
+  }
+  const vLabel = { over: '⚠️ 過度攔截', good: '✅ 攔截有效', neutral: '➖ 差別不大', pending: '累積中' };
+  const vColor = { over: '#f59e0b', good: '#22c55e', neutral: 'var(--text3)', pending: 'var(--text3)' };
+  return head + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+      <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+        <th style="padding:4px 6px">攔截原因</th><th style="padding:4px 6px;text-align:right">已結算</th>
+        <th style="padding:4px 6px;text-align:right">追蹤中</th><th style="padding:4px 6px;text-align:right">勝率</th>
+        <th style="padding:4px 6px;text-align:right">期望值</th><th style="padding:4px 6px">判定</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td style="padding:4px 6px">${r.gate}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.n}${r.n < GATE_SHADOW_CFG.minN ? '/' + GATE_SHADOW_CFG.minN : ''}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.open}</td>
+        <td style="padding:4px 6px;text-align:right">${r.winRate == null ? '—' : r.winRate + '%'}</td>
+        <td style="padding:4px 6px;text-align:right;color:${r.expectancy > 0 ? 'var(--bull)' : r.expectancy < 0 ? 'var(--bear)' : 'var(--text2)'}">${r.expectancy > 0 ? '+' : ''}${r.expectancy}R</td>
+        <td style="padding:4px 6px;color:${vColor[r.verdict]}">${vLabel[r.verdict]}</td>
+      </tr>`).join('')}</tbody></table></div></div>`;
 }
