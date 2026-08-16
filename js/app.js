@@ -468,6 +468,9 @@ function startRefreshCycle() {
     await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
     await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
     await _pt('閘門影子更新',   () => shadowUpdate(data));
+    // 預測記分卡：拍快照＋到期結算（統一以本輪掃描資料為唯一參考價來源）
+    await _pt('預測快照',       () => forecastSnapshot(data));
+    await _pt('預測結算',       () => forecastSettle(data));
     /* ── 重分析輪替（2026-08-15，匯入備份後崩潰的根治）──────────────
        匯入備份＝樣本數一次跳到上千筆，而配對分析／扣分審查／確信度校準／
        沙盒治理都是「全量掃過所有樣本」的重運算。它們各自都有時間節流
@@ -7943,6 +7946,8 @@ function buildNewsWidget(items) {
   const _nBull = recent.filter(i => i.sentiment === 'bull').length;
   const _nBear = recent.filter(i => i.sentiment === 'bear').length;
   const _nOverall = _nBull > _nBear + 1 ? 'bull' : _nBear > _nBull + 1 ? 'bear' : 'neutral';
+  // 對外曝光新聞整合研判，讓預測記分卡能把它列入評分（以前只是畫面上的一句話）
+  try { _newsBiasNow = { bias: _nOverall, n: recent.length, at: Date.now() }; } catch(_e) {}
   const _nIcon    = _nOverall === 'bull' ? '▲' : _nOverall === 'bear' ? '▼' : '◆';
   const _nLabel   = sentimentLabel[_nOverall];
   const _nColor   = sentimentColor[_nOverall];
@@ -12871,7 +12876,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260815d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260815e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -19597,6 +19602,7 @@ function renderLabPage() {
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
     ${buildPairLabHtml()}
+    ${buildForecastHtml()}
     ${buildGateShadowHtml()}
     ${provenHtml}
     ${scorecardHtml}
@@ -28523,7 +28529,13 @@ function computeDirectionConviction(coin) {
   const W = _convWeights();
   const add = (v, why, key) => {
     const lw = W[key];
-    const mult = (lw && isFinite(lw.w)) ? Math.max(0.5, Math.min(1.5, lw.w)) : 1;
+    let mult = (lw && isFinite(lw.w)) ? Math.max(0.5, Math.min(1.5, lw.w)) : 1;
+    // 預測記分卡回饋：來自「有被記分的預測器」的證據，再乘上它的實測準確度
+    // 乘數（不準的自動變輕）。兩層校準的分工：convEv 學「這個證據跟賺賠的
+    // 關係」、記分卡學「這個預測器說對方向的機率」——後者更根本。
+    try {
+      if (key === 'ext_idx' || key === 'ext_dxy' || key === 'ext_vix') mult *= forecastWeight('ext');
+    } catch(_e) {}
     const vv = Math.round(v * mult);
     s += vv;
     votes.push((vv > 0 ? '+' : '') + vv + ' ' + why + (mult !== 1 ? `(×${mult})` : ''));
@@ -28698,6 +28710,15 @@ function maybeSendLearnReport() {
         const top = an.per[0];
         L.push(`🎯 沙盒：實盤 ${live.length ? live.join('、') : '無'}｜排名第一 ${top ? `${top.name}（${top.stats.n} 筆 ${top.stats.expectancy > 0 ? '+' : ''}${top.stats.expectancy}R/筆）` : '—'}`);
       }
+    } catch(_e) {}
+    // 預測準確度記分卡（判斷、預測、分析到底準不準——第一次有硬數字）
+    try {
+      const fr = forecastStats().filter(x => x.n >= 20);
+      if (fr.length) {
+        const best = fr[0], worst = fr[fr.length - 1];
+        L.push(`🎯 預測準確度：${best.label} ${best.rate}%（×${forecastWeight(best.k)}）`
+          + `｜最弱 ${worst.label} ${worst.rate}%（×${forecastWeight(worst.k)}）`);
+      } else L.push(`🎯 預測準確度：樣本累積中（每 30 分鐘記一次分，需 ≥20 筆結算）`);
     } catch(_e) {}
     // 確信度權重校準
     try {
@@ -29599,5 +29620,206 @@ function buildGateShadowHtml() {
         <td style="padding:4px 6px;text-align:right">${r.winRate == null ? '—' : r.winRate + '%'}</td>
         <td style="padding:4px 6px;text-align:right;color:${r.expectancy > 0 ? 'var(--bull)' : r.expectancy < 0 ? 'var(--bear)' : 'var(--text2)'}">${r.expectancy > 0 ? '+' : ''}${r.expectancy}R</td>
         <td style="padding:4px 6px;color:${vColor[r.verdict]}">${vLabel[r.verdict]}</td>
+      </tr>`).join('')}</tbody></table></div></div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   預測記分卡（Forecast Scorecard）
+   使用者回饋：「判斷、預測、分析不準確」。查下去發現結構性缺口——
+   系統對「交易」有完整學習迴路（勝率、期望值、閘門影子、權重校準），
+   對「預測」卻一次都沒有記過分：今日/本週 AI 預測、新聞整合研判、
+   市場狀態、場外風險、逐幣評分，全部都在影響決策，卻從來沒有被拿去
+   對照「後來實際發生了什麼」。沒有記分就沒有準確度可言，也就無從改善。
+
+   做法：
+   ① 每 30 分鐘為每個預測器拍一次快照：當下的方向判斷 ＋ 參考價
+   ② 到期（各自的時間視野）以實際漲跌結算：命中／落空／持平
+      － 市場級（BTC）以 ±0.3% 為有效變動門檻，逐幣以 ±1%
+      － 判中性者只在「實際確實持平」時計命中，避免不表態就永遠不錯
+   ③ 統計每個預測器的命中率與 Wilson 95% 下界，並算出「edge＝命中率−50」
+   ④ 回饋：命中率上界仍低於 50%（統計上不比擲硬幣好）→ 標記失準，
+      並提供 forecastWeight() 給決策層當乘數（0.4~1.3），
+      準的自動加重、不準的自動減輕
+   ⑤ 統一數據：所有預測器共用同一份參考價（掃描資料）與同一套結算
+      規則，不再各層各自定義「準不準」
+   純資料驅動，樣本不足時一律回傳中性乘數 1（不影響現況）。 */
+
+const FC_KEY = 'csp_forecast_log';
+const FC_MAX = 800;
+const FC_CFG = {
+  snapMin: 30,        // 快照間隔（分鐘）
+  mktMovePct: 0.3,    // 市場級（BTC）有效變動門檻 %
+  coinMovePct: 1.0,   // 逐幣有效變動門檻 %
+  minN: 20,           // 出判定所需的已結算樣本
+  coinsPerSnap: 3,    // 每次快照抽樣幾個幣（避免樣本被單一時點灌爆）
+};
+/* 預測器定義：key → { label, horizonH, scope }
+   horizonH＝這個預測宣稱涵蓋多久（結算視野），scope＝市場級或逐幣 */
+const FC_PREDICTORS = {
+  daily:   { label: '今日 AI 預測',  horizonH: 8,  scope: 'mkt' },
+  weekly:  { label: '本週 AI 預測',  horizonH: 48, scope: 'mkt' },
+  news:    { label: '新聞整合研判',  horizonH: 8,  scope: 'mkt' },
+  regime:  { label: '市場狀態',      horizonH: 4,  scope: 'mkt' },
+  ext:     { label: '場外風險溫度',  horizonH: 4,  scope: 'mkt' },
+  score:   { label: '逐幣技術評分',  horizonH: 4,  scope: 'coin' },
+  conv:    { label: '方向確信度',    horizonH: 4,  scope: 'coin' },
+};
+let _newsBiasNow = null;   // 由 buildNewsWidget 更新
+
+function loadForecastLog() {
+  try { const a = JSON.parse(localStorage.getItem(FC_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+function saveForecastLog(list) {
+  try {
+    const out = list.slice(0, FC_MAX), s = JSON.stringify(out);
+    localStorage.setItem(FC_KEY, s); _noteWritten(FC_KEY, s, out.length);
+  } catch(_e) {}
+}
+let _fcSnapAt = 0;
+/* 拍快照：把當下所有預測器的判斷與參考價寫下來（統一資料來源＝本輪掃描） */
+function forecastSnapshot(data) {
+  try {
+    if (!isSignalMaster() || !Array.isArray(data) || !data.length) return;
+    const now = Date.now();
+    if (now - _fcSnapAt < FC_CFG.snapMin * 60000) return;
+    _fcSnapAt = now;
+    const btc = data.find(d => d && d.symbol === 'BTC/USDT');
+    const btcPx = parseFloat(btc && btc.price) || 0;
+    if (!(btcPx > 0)) return;
+    const rows = [];
+    const push = (key, call, ref, symbol) => {
+      if (!call || !FC_PREDICTORS[key]) return;
+      rows.push({ id: `fc-${key}-${symbol || 'MKT'}-${now}`, k: key, call, ref, symbol: symbol || 'BTC/USDT',
+        at: now, due: now + FC_PREDICTORS[key].horizonH * 3600e3, res: null });
+    };
+    const norm = b => {
+      const s = String(b || '');
+      if (s.indexOf('bull') >= 0) return 'bull';
+      if (s.indexOf('bear') >= 0) return 'bear';
+      return 'neutral';
+    };
+    try { if (typeof todayBiasData !== 'undefined' && todayBiasData) push('daily', norm(todayBiasData.bias), btcPx); } catch(_e) {}
+    try { if (typeof weeklyBiasData !== 'undefined' && weeklyBiasData) push('weekly', norm(weeklyBiasData.bias), btcPx); } catch(_e) {}
+    try { if (_newsBiasNow && now - _newsBiasNow.at < 6 * 3600e3) push('news', norm(_newsBiasNow.bias), btcPx); } catch(_e) {}
+    try {
+      const rg = (typeof _regimeCache !== 'undefined' && _regimeCache) ? _regimeCache : null;
+      if (rg) push('regime', rg.dir === 'bull' ? 'bull' : rg.dir === 'bear' ? 'bear' : 'neutral', btcPx);
+    } catch(_e) {}
+    try {
+      const es = extRiskState();
+      if (es) push('ext', es.state === 'on' ? 'bull' : es.state === 'off' ? 'bear' : 'neutral', btcPx);
+    } catch(_e) {}
+    // 逐幣：抽最看多與最看空各幾檔（極端判斷最值得驗證）
+    try {
+      const sorted = data.filter(c => c && parseFloat(c.price) > 0 && isFinite(parseFloat(c.score)))
+        .sort((a, b) => (parseFloat(b.score) || 50) - (parseFloat(a.score) || 50));
+      const pick = [...sorted.slice(0, FC_CFG.coinsPerSnap), ...sorted.slice(-FC_CFG.coinsPerSnap)];
+      for (const c of pick) {
+        const sc = parseFloat(c.score) || 50;
+        const px = parseFloat(c.price) || 0;
+        if (!(px > 0)) continue;
+        push('score', sc >= 55 ? 'bull' : sc <= 45 ? 'bear' : 'neutral', px, c.symbol);
+        try {
+          const cv = computeDirectionConviction(c).score;
+          push('conv', cv >= 15 ? 'bull' : cv <= -15 ? 'bear' : 'neutral', px, c.symbol);
+        } catch(_e) {}
+      }
+    } catch(_e) {}
+    if (!rows.length) return;
+    const list = loadForecastLog();
+    list.unshift(...rows);
+    saveForecastLog(list);
+  } catch(e) { console.warn('[forecast]', e); }
+}
+/* 到期結算：以實際漲跌對照當時的判斷。中性只有在「實際確實持平」時才算命中
+   ——不表態就永遠不錯是最容易自我欺騙的記分方式。 */
+function forecastSettle(data) {
+  try {
+    if (!isSignalMaster() || !Array.isArray(data) || !data.length) return;
+    const list = loadForecastLog();
+    if (!list.length) return;
+    const px = {};
+    for (const c of data) { const p = parseFloat(c && c.price) || 0; if (p > 0) px[c.symbol] = p; }
+    const now = Date.now();
+    let changed = false;
+    for (const r of list) {
+      if (r.res || now < r.due) continue;
+      const cur = px[r.symbol];
+      if (!cur || !(r.ref > 0)) continue;
+      const chg = (cur - r.ref) / r.ref * 100;
+      const thr = FC_PREDICTORS[r.k] && FC_PREDICTORS[r.k].scope === 'coin' ? FC_CFG.coinMovePct : FC_CFG.mktMovePct;
+      const actual = chg >= thr ? 'bull' : chg <= -thr ? 'bear' : 'neutral';
+      r.chg = +chg.toFixed(2);
+      r.res = (r.call === actual) ? 'hit' : 'miss';
+      changed = true;
+    }
+    if (changed) saveForecastLog(list);
+  } catch(e) { console.warn('[forecast-settle]', e); }
+}
+/* 各預測器的準確度（10 分鐘快取） */
+let _fcStats = null, _fcStatsAt = 0;
+function forecastStats() {
+  if (_fcStats && Date.now() - _fcStatsAt < 10 * 60000) return _fcStats;
+  const by = {};
+  try {
+    for (const r of loadForecastLog()) {
+      if (!r.res) { (by[r.k] = by[r.k] || { k: r.k, n: 0, hit: 0, pend: 0 }).pend++; continue; }
+      const b = by[r.k] || (by[r.k] = { k: r.k, n: 0, hit: 0, pend: 0 });
+      b.n++; if (r.res === 'hit') b.hit++;
+    }
+  } catch(_e) {}
+  const rows = Object.values(by).map(b => {
+    const rate = b.n ? b.hit / b.n * 100 : 0;
+    const lb = b.n ? wilsonLB(b.hit, b.n) * 100 : 0;
+    const ub = b.n ? (1 - wilsonLB(b.n - b.hit, b.n)) * 100 : 100;
+    const verdict = b.n < FC_CFG.minN ? 'pending'
+      : lb >= 55 ? 'good' : ub < 50 ? 'bad' : 'neutral';
+    return { k: b.k, label: (FC_PREDICTORS[b.k] || {}).label || b.k, n: b.n, pend: b.pend,
+      rate: +rate.toFixed(1), lb: +lb.toFixed(1), ub: +ub.toFixed(1), verdict };
+  }).sort((a, b) => b.rate - a.rate);
+  _fcStats = rows; _fcStatsAt = Date.now();
+  return rows;
+}
+/* 決策層可用的準確度乘數：準的加重、不準的減輕，樣本不足回 1 */
+function forecastWeight(key) {
+  try {
+    const r = forecastStats().find(x => x.k === key);
+    if (!r || r.n < FC_CFG.minN) return 1;
+    if (r.lb >= 60) return 1.3;
+    if (r.lb >= 55) return 1.15;
+    if (r.ub < 45) return 0.4;
+    if (r.ub < 50) return 0.7;
+    return 1;
+  } catch(_e) { return 1; }
+}
+function buildForecastHtml() {
+  const rows = forecastStats();
+  const head = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px">
+    <div style="font-weight:700;font-size:0.85rem;margin-bottom:5px">🎯 預測準確度記分卡</div>
+    <div style="font-size:0.74rem;color:var(--text2);line-height:1.7;margin-bottom:7px">
+      每 ${FC_CFG.snapMin} 分鐘為每個預測器記下當時的判斷與參考價，到期（各自的時間視野）
+      以實際漲跌結算。市場級以 BTC ±${FC_CFG.mktMovePct}%、逐幣以 ±${FC_CFG.coinMovePct}% 為有效變動；
+      <b>判中性者只有在實際確實持平時才算命中</b>——不表態不能永遠不錯。
+      ≥${FC_CFG.minN} 筆才出判定；準確度會回饋成決策權重（準的加重、不準的減輕）。
+    </div>`;
+  if (!rows.length) return head + `<div style="font-size:0.78rem;color:var(--text3)">尚無樣本，掃描累積中。</div></div>`;
+  const vL = { good: '✅ 確有預測力', bad: '⚠️ 不如擲硬幣', neutral: '➖ 與硬幣無異', pending: '累積中' };
+  const vC = { good: 'var(--bull)', bad: 'var(--bear)', neutral: 'var(--text3)', pending: 'var(--text3)' };
+  return head + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+      <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+        <th style="padding:4px 6px">預測器</th><th style="padding:4px 6px;text-align:right">已結算</th>
+        <th style="padding:4px 6px;text-align:right">待結算</th><th style="padding:4px 6px;text-align:right">命中率</th>
+        <th style="padding:4px 6px;text-align:right">下界~上界</th><th style="padding:4px 6px">判定</th>
+        <th style="padding:4px 6px;text-align:right">權重</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td style="padding:4px 6px">${r.label}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.n}${r.n < FC_CFG.minN ? '/' + FC_CFG.minN : ''}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.pend}</td>
+        <td style="padding:4px 6px;text-align:right;font-weight:700;color:${r.rate >= 55 ? 'var(--bull)' : r.rate < 45 ? 'var(--bear)' : 'var(--text2)'}">${r.rate}%</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.lb}~${r.ub}%</td>
+        <td style="padding:4px 6px;color:${vC[r.verdict]}">${vL[r.verdict]}</td>
+        <td style="padding:4px 6px;text-align:right">×${forecastWeight(r.k)}</td>
       </tr>`).join('')}</tbody></table></div></div>`;
 }
