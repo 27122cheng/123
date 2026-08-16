@@ -468,7 +468,16 @@ function startRefreshCycle() {
     await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
     await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
     await _pt('閘門影子更新',   () => shadowUpdate(data));
-    await _pt('條件配對分析',   () => maybePairLabAnalyze());
+    /* ── 重分析輪替（2026-08-15，匯入備份後崩潰的根治）──────────────
+       匯入備份＝樣本數一次跳到上千筆，而配對分析／扣分審查／確信度校準／
+       沙盒治理都是「全量掃過所有樣本」的重運算。它們各自都有時間節流
+       （30 分鐘～6 小時），但節流到期時很可能落在同一輪掃描——那一輪
+       就是好幾秒的同步工作接連跑完，弱機器直接崩潰（使用者看到的
+       「倒數最後幾秒崩潰」）。
+       改為輪替：每輪掃描最多只跑其中一項，其餘等下一輪。節流時間不變，
+       只是把「同時到期」攤開；所有分析仍然每天跑很多次，結論不受影響。 */
+    _heavyTurn = (_heavyTurn + 1) % 4;
+    if (_heavyTurn === 0) await _pt('條件配對分析', () => maybePairLabAnalyze());
     await _pt('配對策略建單',   () => recordPairStrategyTrades(data));
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
     await _pt('快速單持倉更新', () => updateScalpTrades(data));
@@ -480,14 +489,14 @@ function startRefreshCycle() {
     await _pt('策略沙盒成交更新', () => sbxUpdateTrades(data));
     try { sbxScanSignals(data).catch(e => console.warn('[sbx] 訊號流程錯誤', e)); }
     catch(e) { console.warn('[sbx]', e); }
-    await _pt('策略沙盒治理', () => sbxGovernance());
+    if (_heavyTurn === 3) await _pt('策略沙盒治理', () => sbxGovernance());
     try {
       // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
       if (state.currentPage === 'tradelog'  && _tlTab  === 'auto') renderTradeLogPage();
     } catch(e) {}
-    await _pt('扣分條件審查', () => maybeAuditPenaltyFactors());
-    await _pt('確信度權重校準', () => maybeConvictionAudit());
+    if (_heavyTurn === 1) await _pt('扣分條件審查', () => maybeAuditPenaltyFactors());
+    if (_heavyTurn === 2) await _pt('確信度權重校準', () => maybeConvictionAudit());
     await _pt('學習日報', () => maybeSendLearnReport());
     try {
       const tot = Object.values(_postProf).reduce((a, b) => a + b, 0);
@@ -10187,10 +10196,30 @@ const SIGNAL_COOLDOWN   = 2 * 60 * 60 * 1000; // 同一幣種+方向 2 小時內
    資料損毀時 loadXxx() 回傳空陣列，防護會誤以為本來就沒資料而放行，
    於是照樣被覆寫（第一版就是這樣寫的，測試直接打臉）。
    必須看 localStorage 的原始字串：解析不出來但字串很長 = 損毀，絕不覆寫。 */
+/* 免解析捷徑（2026-08-15，匯入備份後崩潰的根治）：
+   這個防護每次存檔都要 JSON.parse 整份紀錄——平常幾百筆無感，匯入備份後
+   是好幾 MB，而一輪掃描會存檔很多次（持倉更新、SQ 監控、建單…），
+   等於每分鐘反覆解析數十 MB、配置上萬個物件。記憶體壓力就是使用者看到的
+   「倒數最後幾秒崩潰」。
+   解法：記住自己上次寫進去的字串長度與筆數；下次若讀到的字串長度完全相同，
+   代表內容就是我們自己寫的那份，直接用記住的筆數判斷，完全不解析。
+   長度只要有一點不同（別的分頁改過、資料損毀）就照舊走完整解析路徑。 */
+const _lastWrite = {};
+function _noteWritten(key, str, arrLen) {
+  try { _lastWrite[key] = { rawLen: str.length, arrLen }; } catch(_e) {}
+}
 function _guardOverwrite(key, newLen, tag) {
   let raw = null;
   try { raw = localStorage.getItem(key); } catch(_e) { return true; }
   if (raw == null) return true;                       // 本來就沒有，放行
+  const _lw = _lastWrite[key];
+  if (_lw && _lw.rawLen === raw.length) {
+    if (_lw.arrLen > 5 && newLen < _lw.arrLen * 0.5) {
+      console.error(`[${tag}] 拒絕寫入：新紀錄 ${newLen} 筆遠少於現有 ${_lw.arrLen} 筆，已保留原資料`);
+      return false;
+    }
+    return true;
+  }
   let arr = null;
   try { arr = JSON.parse(raw); } catch(_e) { arr = null; }
   if (!Array.isArray(arr)) {
@@ -10212,7 +10241,26 @@ function _guardOverwrite(key, newLen, tag) {
   return true;
 }
 
-function loadTradeLog() { try { return JSON.parse(localStorage.getItem(TRADE_LOG_KEY) || '[]'); } catch(e) { return []; } }
+/* ⚠️ 這個函式在一輪掃描裡會被呼叫數十次（掃描迴圈每個候選、SQ 監控、
+   各種閘門…）。匯入備份後紀錄有 1~2MB，每次呼叫都 JSON.parse 一遍，
+   等於一分鐘解析上百 MB、配置數十萬個物件——這就是「倒數最後幾秒崩潰」
+   的真正來源（前幾次修的都只是同一個病的其他症狀）。
+   改為以「原始字串」當快取鍵：字串沒變就直接回上次解析好的陣列，
+   完全不解析。寫入端（saveTradeLog 等）會改變字串，快取自然失效；
+   別的分頁改動也會讓字串不同而重新解析，不會拿到過期資料。
+   注意：回傳的是共用實例——本專案的用法一律是「load → 修改 → save」，
+   共用反而消除了「兩份副本互相覆蓋」的舊競態。 */
+let _tlogRaw = null, _tlogArr = null;
+function loadTradeLog() {
+  try {
+    const raw = localStorage.getItem(TRADE_LOG_KEY) || '[]';
+    if (raw === _tlogRaw && Array.isArray(_tlogArr)) return _tlogArr;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    _tlogRaw = raw; _tlogArr = arr;
+    return arr;
+  } catch(e) { return []; }
+}
 function saveTradeLog(log, opts = {}) {
   // 與 saveScalpLog 相同的防洗掉保護
   if (!opts.allowShrink && !_guardOverwrite(TRADE_LOG_KEY, log.length, 'trade')) return false;
@@ -10223,7 +10271,7 @@ function saveTradeLog(log, opts = {}) {
   try { archiveClosedTrades(log); } catch(_a) {}
   // 回傳值要明確：呼叫端（commitNewTrade）靠它決定要不要送出 Telegram 訊號。
   // 原本成功與失敗都回傳 undefined，等於呼叫端無從判斷，於是存檔失敗照樣發訊號。
-  try { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(log)); return true; }
+  try { const _s = JSON.stringify(log); localStorage.setItem(TRADE_LOG_KEY, _s); _noteWritten(TRADE_LOG_KEY, _s, log.length); return true; }
   catch(e) {
     // localStorage 空間不足：裁剪已完結交易的大型文字欄位與筆數後重試，避免整頁卡死
     try {
@@ -12823,7 +12871,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260815a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260815d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -13488,6 +13536,7 @@ async function recordSignalsFromScan(data) {
      「到底是誰擋的」以前完全看不到——每個 continue 都是靜默的。這裡逐一
      計數，掃描結束存起來，實驗室就能顯示「這輪 N 個候選，各被什麼擋掉」。 */
   const _rej = {};
+  _shadowWrites = 0;   // 本輪影子寫入計數歸零（每輪上限見 shadowRecordBlocked）
   /* 影子追蹤：被擋下的候選留一筆紙上單追到結算，讓「這道門擋掉的是
      賺錢單還是賠錢單」變成可驗證的事實。_shCtx 由迴圈在 setup 算好後
      設定，_no 順手取用；取樣有冷卻與總量上限，儲存負擔很小。 */
@@ -18511,11 +18560,21 @@ function buildWinRateBreakdown(closed) {
    完全獨立於正式交易記錄（不影響 AI 學習引擎與勝率統計）。
    ═══════════════════════════════════════════════════════════════ */
 const AI_LAB_KEY = 'csp_ai_lab';
-function loadAILab() { try { return JSON.parse(localStorage.getItem(AI_LAB_KEY) || '[]'); } catch(e) { return []; } }
+let _labRaw = null, _labArr = null;
+function loadAILab() {
+  try {
+    const raw = localStorage.getItem(AI_LAB_KEY) || '[]';
+    if (raw === _labRaw && Array.isArray(_labArr)) return _labArr;   // 同 loadTradeLog 的免解析快取
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    _labRaw = raw; _labArr = arr;
+    return arr;
+  } catch(e) { return []; }
+}
 function saveAILab(list) {
   // 同上：空間不足時下方會裁到 150 筆，必須先封存
   try { archiveClosedLab(list); } catch(_a) {}
-  try { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list)); }
+  try { const _s = JSON.stringify(list); localStorage.setItem(AI_LAB_KEY, _s); _noteWritten(AI_LAB_KEY, _s, list.length); }
   catch(e) {
     // 空間不足：砍半保留最新記錄後重試
     try { localStorage.setItem(AI_LAB_KEY, JSON.stringify(list.slice(0, 150))); }
@@ -18600,7 +18659,7 @@ const RISK_KEY_LABELS = {
    現在改為相對比較 + 可達到的樣本門檻（25 筆），且雙向調整。 */
 function auditPenaltyFactors() {
   // 證據池：正式已完結交易 + 實驗室已完結機會 + 快進快出已完結（樣本量最大的來源）
-  const realAll = learnSamples().filter(t => t.status === 'closed');
+  const realAll = _recentN(learnSamples().filter(t => t.status === 'closed'), 800);
   const labAll  = labSamples();
   // 用封存 ∪ 目前紀錄，讓扣分條件的學習不受 500 筆滾動視窗限制
   let scalpAll = [];
@@ -24647,9 +24706,16 @@ const _scalpKlineCache = {};
 let _scalpReject = {};
 function _sr(k) { _scalpReject[k] = (_scalpReject[k] || 0) + 1; return null; }
 
+let _slogRaw = null, _slogArr = null;
 function loadScalpLog() {
-  try { const a = JSON.parse(localStorage.getItem(SCALP_LOG_KEY) || '[]'); return Array.isArray(a) ? a : []; }
-  catch(_e) { return []; }
+  try {
+    const raw = localStorage.getItem(SCALP_LOG_KEY) || '[]';
+    if (raw === _slogRaw && Array.isArray(_slogArr)) return _slogArr;   // 同 loadTradeLog 的免解析快取
+    const a = JSON.parse(raw);
+    if (!Array.isArray(a)) return [];
+    _slogRaw = raw; _slogArr = a;
+    return a;
+  } catch(_e) { return []; }
 }
 function saveScalpLog(log, opts = {}) {
   // 防洗掉：loadScalpLog() 在讀取或解析失敗時回傳空陣列，接著只要有人建了
@@ -24670,7 +24736,8 @@ function saveScalpLog(log, opts = {}) {
       }
     } catch(_e) {}
   }
-  try { localStorage.setItem(SCALP_LOG_KEY, JSON.stringify(log.slice(0, SCALP_MAX))); }
+  try { const _out = log.slice(0, SCALP_MAX), _s = JSON.stringify(_out);
+        localStorage.setItem(SCALP_LOG_KEY, _s); _noteWritten(SCALP_LOG_KEY, _s, _out.length); }
   catch(_e) {
     console.warn('[scalp] 儲存失敗', _e);
     try { showToast('⚠️ 快進快出紀錄儲存失敗（瀏覽器儲存空間已滿），請到設定頁清理', 'error'); } catch(_t) {}
@@ -26742,7 +26809,8 @@ function saveSbxLog(log, opts = {}) {
   if (!opts.allowShrink && !_guardOverwrite(SBX_LOG_KEY, log.length, 'sbx')) return false;
   // 先封存再截斷（_archiveMerge 內建 _archSig 簽章快取，無新完結單時零成本）
   try { _archiveMerge(SBX_ARCHIVE_KEY, SBX_ARCHIVE_MAX, _slimBy(SBX_KEEP_FIELDS), log, 'sbx'); } catch(_e) {}
-  try { localStorage.setItem(SBX_LOG_KEY, JSON.stringify(log.slice(0, SBX_MAX))); }
+  try { const _out = log.slice(0, SBX_MAX), _s = JSON.stringify(_out);
+        localStorage.setItem(SBX_LOG_KEY, _s); _noteWritten(SBX_LOG_KEY, _s, _out.length); }
   catch(_e) { console.warn('[sbx] 儲存失敗', _e); }
   return true;
 }
@@ -26832,6 +26900,14 @@ async function sbxEnsureK1h(symbols) {
 }
 
 /* ── RSI 背離：掃描節點的記憶體滾動視窗（重新整理後重新累積）── */
+let _heavyTurn = 0;      // 重分析輪替計數（見掃描後段的說明）
+/* 重分析的樣本上限：市場結構會變，半年前的樣本對「現在該怎麼調」的參考
+   價值本來就低；而全量掃過上千筆正是匯入備份後崩潰的來源。取最近 N 筆
+   （依出場時間），統計結論幾乎不變，運算量卻有硬上限。 */
+function _recentN(arr, n) {
+  if (!Array.isArray(arr) || arr.length <= n) return arr || [];
+  return arr.slice().sort((a, b) => (b.exitTime || b.timestamp || 0) - (a.exitTime || a.timestamp || 0)).slice(0, n);
+}
 const _sbxHist = {};
 const _sbxGlitch = {};   // 疑似資料源跳動的暫存（見 sbxBuildFeatures 的防污染說明）
 function sbxDetectDivergence(sym, price, rsi) {
@@ -27536,14 +27612,14 @@ const PAIR_CFG = {
 function pairSamples() {
   const out = [];
   try {
-    for (const o of labSamples()) {
+    for (const o of _recentN(labSamples(), 800)) {
       if (!Array.isArray(o.tags) || o.tags.length < 2) continue;
       const r = parseFloat(o.pnlR) || 0;
       out.push({ tags: o.tags, win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r, src: 'lab' });
     }
   } catch(_e) {}
   try {
-    for (const t of learnSamples()) {
+    for (const t of _recentN(learnSamples(), 800)) {
       if (t.status !== 'closed' || !Array.isArray(t.entryTags) || t.entryTags.length < 2) continue;
       const r = parseFloat(t.pnlR) || 0;
       out.push({ tags: t.entryTags, win: isWinTrade(t), loss: isLossTrade(t), r, src: 'real' });
@@ -28121,7 +28197,7 @@ function winupStats() {
               quickSl: null, floorMult: 1, loserMfe: {} };
   try {
     // ── 一般單 ──
-    const main = learnSamples().filter(t => t.status === 'closed');
+    const main = _recentN(learnSamples().filter(t => t.status === 'closed'), 1000);
     // 進場條件持續學習①：一般單的進場邏輯分支（entryTag：ob/2b/123/ema50/bbmid/ema20）
     v.cond.main = _winupBuckets(main.map(t => ({ k: t.entryTag || '',
       win: isWinTrade(t), loss: isLossTrade(t), r: parseFloat(t.pnlR) || 0 })));
@@ -28150,7 +28226,7 @@ function winupStats() {
       for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
       for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
     } catch(_e) {}
-    const scalp = [...m.values()].filter(t => isFinite(parseFloat(t.pnlR)));
+    const scalp = _recentN([...m.values()].filter(t => isFinite(parseFloat(t.pnlR))), 1000);
     v.sess.scalp = _winupBuckets(scalp.map(t => {
       const r = parseFloat(t.pnlR) || 0;
       return { k: t.kzQuality || '', win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r };
@@ -28538,8 +28614,8 @@ function computeDirectionConviction(coin) {
    「證據支持的單」實際勝率顯著高於「沒有它的單」→ 加重；分不出差別 →
    減輕。平滑：一次往目標移一半，樣本剛過門檻不會大跳。 */
 function convictionAudit() {
-  const all = learnSamples().filter(t => t.status === 'closed' && t.convEv
-    && (isWinTrade(t) || isLossTrade(t)));
+  const all = _recentN(learnSamples().filter(t => t.status === 'closed' && t.convEv
+    && (isWinTrade(t) || isLossTrade(t))), 800);
   if (all.length < 20) return null;
   let W = {};
   try { W = JSON.parse(localStorage.getItem(CONV_W_KEY) || '{}') || {}; } catch(_e) {}
@@ -29394,7 +29470,8 @@ function loadGateShadow() {
 }
 function saveGateShadow(list, opts = {}) {
   if (!opts.allowShrink && !_guardOverwrite(GATE_SHADOW_KEY, list.length, 'gate-shadow')) return false;
-  try { localStorage.setItem(GATE_SHADOW_KEY, JSON.stringify(list.slice(0, GATE_SHADOW_MAX))); }
+  try { const _out = list.slice(0, GATE_SHADOW_MAX), _s = JSON.stringify(_out);
+        localStorage.setItem(GATE_SHADOW_KEY, _s); _noteWritten(GATE_SHADOW_KEY, _s, _out.length); }
   catch(_e) { console.warn('[gate-shadow] 儲存失敗', _e); }
   return true;
 }
@@ -29406,6 +29483,7 @@ function gateShadowKey(reason) {
     .replace(/\s+/g, ' ').trim().slice(0, 24) || '未分類';
 }
 const _gateShadowAt = {};   // key → 上次取樣時間
+let _shadowWrites = 0;      // 本輪掃描已寫入筆數（每輪由掃描迴圈重置）
 function shadowRecordBlocked(coin, direction, setup, reason) {
   try {
     if (!isSignalMaster()) return;
@@ -29414,6 +29492,10 @@ function shadowRecordBlocked(coin, direction, setup, reason) {
     const now = Date.now();
     if (now - (_gateShadowAt[key] || 0) < GATE_SHADOW_CFG.perGateCooldownMin * 60000) return;
     _gateShadowAt[key] = now;
+    // 一輪掃描最多寫入 3 筆：每筆都要 parse+stringify 整份清單，
+    // 67 個候選×十幾種攔截原因會把掃描收尾那一秒變成一整塊長任務
+    if (_shadowWrites >= 3) return;
+    _shadowWrites++;
     const list = loadGateShadow();
     // 同幣同向已有追蹤中的影子 → 不重複
     if (list.some(s => s.symbol === coin.symbol && s.dir === direction
