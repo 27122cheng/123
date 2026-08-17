@@ -175,6 +175,7 @@ async function init() {
   _bootMark('設定');
   if (!SAFE_MODE) registerSW();   // 後台通知 Service Worker
   _bootMark('SW');
+  restoreReconcile();  // 剛還原備份 → 對帳並回報差額（見函式說明）
   fullDataResetV2();   // 一次性：依使用者要求刪除全部歷史紀錄（設定/幣種/備份保留）
   riskCtlResetV1();    // 一次性：清除快取互撞期間累積的風控學習資料（見函式說明）
   _bootMark('重置檢查');
@@ -12876,7 +12877,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260815e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260816a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -17029,6 +17030,34 @@ function saveAIMemory(mem) {
    「設定與身分」——Telegram token、幣種清單、裝置/主機識別、
    完整備份（那是使用者自己的救生索，刪了就真的救不回來）。
    交易紀錄、封存、實驗室、快速單、沙盒、風控學習全部歸零重來。 */
+/* 還原對帳：備份裡有幾筆、現在讀得到幾筆，差額當場說清楚。
+   以前差額是靜默的（30 天歸檔、覆寫防護拒絕、瀏覽器空間不足都可能吃掉
+   筆數），使用者只能自己發現「對不上」卻查不出原因。 */
+function restoreReconcile() {
+  try {
+    const raw = localStorage.getItem('csp_restore_mark');
+    if (!raw) return;
+    const m = JSON.parse(raw);
+    if (!m || !isFinite(m.tradeN) || m.reported) return;
+    // ⚠️ 只標記「已回報」，不刪除——標記還要留給後面的 monthlyTradePrune
+    // 判斷「這次是還原後的首次載入，不要歸檔」。刪早了，剛還原的舊交易
+    // 就會在同一次載入被默默歸檔掉（測試抓到的順序錯誤）。
+    m.reported = true;
+    try { localStorage.setItem('csp_restore_mark', JSON.stringify(m)); } catch(_s) {}
+    const now = loadTradeLog().length;
+    const diff = m.tradeN - now;
+    if (diff === 0) {
+      showToast(`✅ 還原對帳一致：交易紀錄 ${now} 筆`, 'success');
+    } else {
+      const why = diff > 0
+        ? '（可能原因：瀏覽器儲存空間不足而截斷，或備份檔含重複 id）'
+        : '（現有紀錄多於備份：本機在還原前已有新交易）';
+      showToast(`⚠️ 還原對帳：備份 ${m.tradeN} 筆、目前 ${now} 筆，差 ${Math.abs(diff)} 筆${why}`, 'warning');
+      console.warn('[restore] 對帳差額', { backup: m.tradeN, now, diff });
+    }
+  } catch(_e) {}
+}
+
 function fullDataResetV2() {
   try {
     if (localStorage.getItem('csp_full_reset_v2')) return;
@@ -17174,6 +17203,15 @@ function archiveExpiredToMemory(trades) {
 }
 
 function monthlyTradePrune() {
+  // 剛還原備份的那一次載入不清理：否則使用者才剛還原 126 筆，
+  // 一重新載入就被默默歸檔掉 5 筆，帳面對不上又找不到原因。
+  try {
+    const m = JSON.parse(localStorage.getItem('csp_restore_mark') || 'null');
+    if (m && Date.now() - m.at < 10 * 60000) {
+      console.info('[prune] 剛還原備份，本次跳過 30 天歸檔');
+      return;
+    }
+  } catch(_e) {}
   const tlog = loadTradeLog();
   const ONE_MONTH = 30 * 24 * 60 * 60 * 1000;
   const now = Date.now();
@@ -21156,8 +21194,24 @@ function importFullBackup() {
         for (const [k, v] of Object.entries(backup.data)) {
           if (typeof v === 'string') localStorage.setItem(k, v);
         }
+        /* ── 還原後的三道保護（2026-08-16，使用者回報「交易數對不上」）──
+           ① 一次性清除的旗標必須存在：若備份來自尚未執行過清除的裝置，
+              還原後重新載入會觸發 fullDataResetV2／riskCtlResetV1，
+              把剛還原的紀錄全部刪掉——災難級的資料遺失。
+           ② 標記「剛還原」：下一次載入跳過 monthlyTradePrune（它會把
+              超過 30 天的已完結交易歸檔並從紀錄中刪除）。使用者看到的
+              「備份 126 筆、還原後 121 筆」正是它默默刪掉的，
+              不先說明就等於備份不完整。
+           ③ 記下還原時的筆數，載入後對帳並如實回報差額。 */
+        try {
+          localStorage.setItem('csp_full_reset_v2', localStorage.getItem('csp_full_reset_v2') || String(Date.now()));
+          localStorage.setItem('csp_riskctl_reset_v1', localStorage.getItem('csp_riskctl_reset_v1') || String(Date.now()));
+        } catch(_rf) {}
+        let _restoredN = 0;
+        try { _restoredN = (JSON.parse(backup.data[TRADE_LOG_KEY] || '[]') || []).length; } catch(_c) {}
+        try { localStorage.setItem('csp_restore_mark', JSON.stringify({ at: Date.now(), tradeN: _restoredN })); } catch(_m) {}
         try { invalidateLearnCache(); } catch(_i) {}
-        showToast(`備份已還原（${count} 個項目），頁面將重新載入`, 'success');
+        showToast(`備份已還原（${count} 個項目、交易紀錄 ${_restoredN} 筆），頁面將重新載入`, 'success');
         setTimeout(() => location.reload(), 1200);
       } catch(_pe) { showToast('備份還原失敗：' + _pe.message, 'error'); }
     };
