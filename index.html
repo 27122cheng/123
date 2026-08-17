@@ -387,6 +387,9 @@
         <div id="tv-chart-container" class="tv-chart"></div>
       </div>
 
+      <!-- 資料鮮度（這一頁的判讀各用了多新的資料）-->
+      <div id="feed-strip"></div>
+
       <!-- 結構圖（自繪：K 線 + 合流區 + 進場/止損/止盈） -->
       <div class="chart-card" style="margin-top:12px">
         <div class="chart-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -808,6 +811,18 @@
             <input type="number" id="s-idle-stop" class="setting-input" min="0" max="72" step="1"
               style="width:70px;text-align:center" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
             <span style="color:var(--text3);font-size:0.82rem">小時</span>
+          </div>
+        </div>
+
+        <!-- 資料源即時性 -->
+        <div class="setting-row vertical" style="gap:8px;margin-top:6px">
+          <div>
+            <div class="setting-name">📡 資料源即時性（每項數據是不是即時的）</div>
+            <div class="setting-desc">財經數據、新聞、籌碼、技術分析各自的最後成功取得時間與應更新頻率。綠＝即時、黃＝略舊仍可用、紅＝過期不該拿來做決策、灰＝尚未取得。不同來源的即時性上限本來就不同（K 線可到秒級、恐慌貪婪指數一天只出一次），欄位已分別標明</div>
+          </div>
+          <div id="feed-health-panel" style="background:var(--surface2);border-radius:8px;padding:9px 11px"></div>
+          <div>
+            <button class="btn-ghost" style="font-size:0.8rem" onclick="refreshFeedHealthPanel()">🔄 重新檢查</button>
           </div>
         </div>
 

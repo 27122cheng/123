@@ -117,6 +117,58 @@ function tfToBinanceInterval(tf) {
   return { '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' }[tf] || '15m';
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   資料鮮度登記處（每一項財經數據／新聞／籌碼／技術分析是不是即時的）
+   問題：全站十幾個資料源，各自有各自的快取效期、各自的失敗降級，
+   畫面上卻一律長得一樣——使用者（和我自己）沒辦法分辨眼前這個數字
+   是三秒前抓的還是半小時前的殘影，更看不出某個源已經連續失敗。
+   做法：每個源在成功／失敗時蓋一個時間戳，配上它「應該多新」的預期
+   （fresh＝正常刷新間隔、stale＝超過就不該再拿來做決策），UI 直接
+   把年齡與判定顯示出來。純被動記錄，不改變任何抓取邏輯。 */
+const FEED_SPEC = {
+  price:   { label: '幣價（OKX 永續即時價）',      fresh: 90e3,     stale: 5 * 60e3,   how: '每輪掃描一次請求取回全部幣種的最新成交價' },
+  kline:   { label: '技術分析 K 線（幣安）',        fresh: 90e3,     stale: 6 * 60e3,   how: '依週期分層快取：15m 45 秒、1H 4 分、4H 10 分、日線 30 分、週線 3 小時' },
+  deriv:   { label: '合約籌碼（費率／OI／多空比）', fresh: 7 * 60e3, stale: 25 * 60e3,  how: '幣安合約端點：開啟幣種詳情即時請求；掃描時對候選幣以 5 分鐘快取補抓' },
+  oi:      { label: '未平倉量趨勢（OI 四象限）',    fresh: 6 * 60e3, stale: 25 * 60e3,  how: '掃描時逐幣輪詢並保留 90 分鐘歷史，與價格變化交叉判讀' },
+  liqws:   { label: '清算流（WebSocket 實時）',     fresh: 3 * 60e3, stale: 15 * 60e3,  how: '幣安強平推送，長連線；靜默期長不一定是故障，也可能是真的沒有大額強平' },
+  liqmap:  { label: '爆倉地圖',                     fresh: 7 * 60e3, stale: 30 * 60e3,  how: '開啟幣種詳情時請求，掃描時 5 分鐘快取；無公開來源時以常見槓桿反推估算並標示「估算」' },
+  fp:      { label: '足跡訂單流／VWAP',             fresh: 7 * 60e3, stale: 20 * 60e3,  how: '由 1m／5m K 線的主動買賣量重建：開啟詳情即時算，掃描時對候選幣 5 分鐘快取' },
+  whale:   { label: '巨鯨大單',                     fresh: 7 * 60e3, stale: 30 * 60e3,  how: '現貨大額成交 + 合約主動買賣比：開啟詳情即時請求，掃描時 5 分鐘快取' },
+  global:  { label: '加密大盤（總市值／主導率）',    fresh: 10 * 60e3, stale: 60 * 60e3, how: 'CoinGecko 免費端點，本身即為分鐘級更新' },
+  fg:      { label: '恐慌貪婪指數',                 fresh: 60 * 60e3, stale: 6 * 3600e3, how: 'alternative.me，來源本身每日更新一次，不可能更即時' },
+  news:    { label: '新聞情緒',                     fresh: 25 * 60e3, stale: 90 * 60e3,  how: '25 分鐘快取；新聞本質是事件流，過度頻繁抓取沒有意義' },
+  ext:     { label: '場外行情（期指／DXY／VIX）',    fresh: 5 * 60e3, stale: 30 * 60e3,  how: '/api/macro 代理 Yahoo／Stooq，前後端各 5 分鐘快取' },
+  halving: { label: '減半資訊',                     fresh: 6 * 3600e3, stale: 24 * 3600e3, how: 'mempool.space 區塊高度，日級資訊' },
+};
+const _feedAt = {};   // key → { at, ok, note, fail }
+function feedStamp(key, ok, note) {
+  const r = _feedAt[key] || (_feedAt[key] = { at: 0, okAt: 0, ok: false, note: '', fail: 0 });
+  r.at = Date.now();
+  r.ok = !!ok;
+  if (ok) { r.okAt = r.at; r.fail = 0; } else { r.fail++; }
+  if (note != null) r.note = String(note).slice(0, 60);
+}
+/* 逐項鮮度判定：fresh＝即時、aging＝略舊仍可用、stale＝過期不該拿來決策、none＝從未取得 */
+function feedHealth() {
+  const now = Date.now();
+  return Object.keys(FEED_SPEC).map(k => {
+    const sp = FEED_SPEC[k], r = _feedAt[k];
+    if (!r || !r.okAt) return { key: k, ...sp, state: 'none', ageMs: null, fail: r ? r.fail : 0, note: r ? r.note : '' };
+    const age = now - r.okAt;
+    const state = age <= sp.fresh ? 'fresh' : age <= sp.stale ? 'aging' : 'stale';
+    return { key: k, ...sp, state, ageMs: age, fail: r.fail, note: r.note };
+  });
+}
+function feedAgeText(ms) {
+  if (ms == null) return '尚未取得';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + ' 秒前';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + ' 分鐘前';
+  const h = Math.round(m / 60);
+  return h < 48 ? h + ' 小時前' : Math.round(h / 24) + ' 天前';
+}
+
 /* ---------- OKX 顯示價格快取 ---------- */
 let _okxPrices = {};
 let _okxVol24  = {};   // { BTCUSDT: 24h 計價幣成交額 } 供幣種表同步時依流動性排序
@@ -139,6 +191,7 @@ async function refreshOkxPrices() {
     const arr = r.json?.data;
     if (!Array.isArray(arr) || !arr.length) {
       _okxPricesErr = 'OKX 行情回應為空或格式異常';
+      feedStamp('price', false, '回應為空或格式異常');
       console.warn('[OKX] 行情回應格式異常');
       return;
     }
@@ -156,8 +209,10 @@ async function refreshOkxPrices() {
     _okxPricesCount = Object.keys(_okxPrices).length;
     _okxPricesAt = Date.now();
     _okxPricesErr = '';
+    feedStamp('price', true, _okxPricesCount + ' 個幣種');
   } catch(e) {
     _okxPricesErr = String(e?.message || e);
+    feedStamp('price', false, e?.message);
     console.warn('[OKX] 價格取得失敗:', e?.message || e);
   }
 }
@@ -514,8 +569,10 @@ async function fetchKlinesSmart(symbol, interval, limit = 220, trackKey = null) 
       _klineCacheSet(_ck, out);
       _klineSrcCount[src]++;
       if (trackKey) _klineSrcBySymbol[trackKey] = src;
+      feedStamp('kline', true, src + ' ' + interval);
       return out;
     }
+    feedStamp('kline', false, symbol + ' ' + interval + ' 無資料');
     return rows;
   };
   // 已知 OKX 未上架 → 直接幣安（OKX 抓不到，不浪費請求）
@@ -852,8 +909,9 @@ async function fetchDerivativesData(symbol) {
     const top   = topR.status === 'fulfilled' && Array.isArray(topR.value) ? topR.value[0] : null;
     const taker = tkR.status === 'fulfilled' && Array.isArray(tkR.value)  ? tkR.value[0] : null;
 
-    if (fr === null && oi === null) return null; // 現貨幣種無合約數據
+    if (fr === null && oi === null) { feedStamp('deriv', false, symbol + ' 無合約數據'); return null; } // 現貨幣種無合約數據
 
+    feedStamp('deriv', true, symbol);
     return {
       fundingRate:      fr,
       openInterest:     oi ?? 0,
@@ -865,7 +923,7 @@ async function fetchDerivativesData(symbol) {
       topLSRatio:       top ? parseFloat(top.longShortRatio)   : null,
       takerBuySell:     taker ? parseFloat(taker.buySellRatio) : null,
     };
-  } catch { return null; }
+  } catch { feedStamp('deriv', false); return null; }
 }
 
 /* 獲取單幣多時間框架 K 線並分析 */
@@ -931,8 +989,10 @@ async function fetchFearGreed() {
     const res  = await fetch('https://api.alternative.me/fng/?limit=1', { signal: ctrl.signal });
     clearTimeout(t);
     if (!res.ok) throw new Error();
-    return (await res.json()).data[0];
-  } catch { return null; }
+    const _fgv = (await res.json()).data[0];
+    feedStamp('fg', !!_fgv);
+    return _fgv;
+  } catch { feedStamp('fg', false); return null; }
 }
 
 
@@ -943,8 +1003,9 @@ async function fetchGlobalMarket() {
     const t = setTimeout(() => ctrl.abort(), 6000);
     const res = await fetch('https://api.coingecko.com/api/v3/global', { signal: ctrl.signal });
     clearTimeout(t);
-    if (!res.ok) return null;
+    if (!res.ok) { feedStamp('global', false, 'HTTP ' + res.status); return null; }
     const { data } = await res.json();
+    feedStamp('global', true);
     return {
       btcDominance:   parseFloat((data.market_cap_percentage?.btc || 0).toFixed(1)),
       ethDominance:   parseFloat((data.market_cap_percentage?.eth || 0).toFixed(1)),
@@ -953,7 +1014,7 @@ async function fetchGlobalMarket() {
       totalVolume:    data.total_volume?.usd || null,
       activeCryptos:  data.active_cryptocurrencies || null,
     };
-  } catch { return null; }
+  } catch { feedStamp('global', false); return null; }
 }
 
 /* ── 比特幣區塊高度（mempool.space，用於計算減半倒數）──────── */
@@ -970,8 +1031,9 @@ async function fetchHalvingInfo() {
     const daysLeft     = Math.round(blocksLeft * 10 / 1440);
     const halvingCount = Math.floor(height / 210000) + 1;
     const reward       = 3.125 / Math.pow(2, halvingCount - 4); // 從第4次減半後計算
+    feedStamp('halving', true);
     return { height, nextHalving, blocksLeft, daysLeft, halvingCount };
-  } catch { return null; }
+  } catch { feedStamp('halving', false); return null; }
 }
 
 /* ── Telegram Bot 通知（直接從瀏覽器呼叫，不需後端）────────── */
@@ -1202,7 +1264,8 @@ async function fetchWhaleTrades(symbol) {
     _fetchFuturesWhaleData(sym),
   ]);
 
-  if (!spotResult && !futuresWhale) return null;
+  if (!spotResult && !futuresWhale) { feedStamp('whale', false, symbol); return null; }
+  feedStamp('whale', true, symbol);
 
   // If only futures data available (no spot whale trades), create minimal base
   const base = spotResult || {
@@ -1224,7 +1287,7 @@ async function fetchFootprintData(symbol) {
     fetchKlines(base, '5m', 60),   // 5小時 5m K棒 → 主邏輯（deltaDir、POC、VWAP、吸籌）
     fetchKlines(base, '1m', 120),  // 2小時 1m K棒 → 快進快出信號偵測專用
   ]);
-  if (!raw5m || raw5m.length < 10) return null;
+  if (!raw5m || raw5m.length < 10) { feedStamp('fp', false, symbol + ' K 線不足'); return null; }
   try {
     // ── 通用 K棒處理（供兩個時框共用）──
     const processRaw = raw => raw.map(bar => {
@@ -1306,6 +1369,7 @@ async function fetchFootprintData(symbol) {
     const scalpSignal = (candles1m && typeof detectScalpSignal === 'function')
       ? detectScalpSignal(candles1m, lastClose, vwap, poc) : null;
 
+    feedStamp('fp', true, symbol);
     return {
       candles:            candles5m.slice(-20),   // 5m K棒供足跡面板顯示
       cumulativeDelta:    cum,
@@ -1316,7 +1380,7 @@ async function fetchFootprintData(symbol) {
       absorption, lastClose,
       scalpSignal,        // 來自 1m 資料，主邏輯不受影響
     };
-  } catch { return null; }
+  } catch { feedStamp('fp', false); return null; }
 }
 
 /* ═══════════════════ 爆倉地圖 API ══════════════════════ */
@@ -1345,6 +1409,7 @@ async function fetchLiquidationMap(symbol) {
           });
         }
         if (longLiqs.length || shortLiqs.length) {
+          feedStamp('liqmap', true, 'coinglass');
           return { longLiqs, shortLiqs, rawData: json.data, source: 'coinglass' };
         }
       }
@@ -1353,6 +1418,7 @@ async function fetchLiquidationMap(symbol) {
 
   // Fallback: generate estimated liquidation levels from common leverage multiples
   // Returns source='estimated' with leverages array; app.js will compute prices using current price
+  feedStamp('liqmap', true, '估算（無公開來源）');
   return { longLiqs: null, shortLiqs: null, rawData: null, source: 'estimated', leverages: [3, 5, 10, 20, 50, 100] };
 }
 
@@ -1460,6 +1526,7 @@ async function fetchCryptoNews() {
       if (items.length < 3) continue;
       _cryptoNewsCache  = items;
       _cryptoNewsFetchAt = Date.now();
+      feedStamp('news', true, src.name);
       console.log(`[fetchCryptoNews] 取得 ${items.length} 則來自 ${src.name}`);
       return items;
     } catch(e) {
@@ -1487,6 +1554,7 @@ async function fetchCryptoNews() {
         if (items.length >= 3) {
           _cryptoNewsCache  = items;
           _cryptoNewsFetchAt = Date.now();
+          feedStamp('news', true, 'CoinGecko');
           return items;
         }
       }
@@ -1495,5 +1563,6 @@ async function fetchCryptoNews() {
     console.warn('[fetchCryptoNews] CoinGecko fallback 失敗:', e?.message);
   }
 
+  feedStamp('news', false, '所有來源皆失敗');
   return null;
 }

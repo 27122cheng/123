@@ -8579,6 +8579,85 @@ function macroFactorRead(id, ctx) {
   return { stance, basis, note, score };
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   資料鮮度面板（每一項資料是不是即時的，攤在畫面上）
+   顯示三件事，缺一不可：① 最後一次成功取得是多久前 ② 這個源「應該」
+   多久更新一次（不同源的即時性上限本來就不同：K 線可以秒級、恐慌貪婪
+   指數一天只出一次，用同一把尺量會誤導）③ 連續失敗次數與最後訊息。
+   判定：綠＝即時、黃＝略舊仍可用、紅＝過期不該拿來做決策、灰＝從未取得。*/
+const _FEED_STATE_UI = {
+  fresh: { c: 'var(--bull)',    t: '即時' },
+  aging: { c: '#f59e0b',        t: '略舊' },
+  stale: { c: 'var(--bear)',    t: '過期' },
+  none:  { c: 'var(--text3)',   t: '未取得' },
+};
+function buildFeedHealthPanel() {
+  let rows;
+  try { rows = feedHealth(); } catch(_e) { return '<div style="color:var(--text3);font-size:0.78rem">資料鮮度登記處尚未就緒</div>'; }
+  const order = { stale: 0, none: 1, aging: 2, fresh: 3 };
+  rows.sort((a, b) => order[a.state] - order[b.state]);
+  const bad = rows.filter(r => r.state === 'stale').length;
+  const none = rows.filter(r => r.state === 'none').length;
+  return `<div style="font-size:0.78rem">
+    <div style="margin-bottom:7px;line-height:1.7;color:var(--text2)">
+      ${bad ? `<b style="color:var(--bear)">${bad} 項已過期</b>——這些數字不該再拿來做決策；` : ''}
+      ${none ? `${none} 項尚未取得（開啟幣種詳情或等下一輪掃描後會補上）；` : ''}
+      其餘為即時。各源的「應更新頻率」本來就不同，欄位已分別標明。
+    </div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+      <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+        <th style="padding:4px 6px">資料源</th>
+        <th style="padding:4px 6px">最後成功</th>
+        <th style="padding:4px 6px">應更新頻率</th>
+        <th style="padding:4px 6px">狀態</th>
+      </tr></thead>
+      <tbody>${rows.map(r => {
+        const u = _FEED_STATE_UI[r.state];
+        return `<tr style="border-top:1px solid rgba(255,255,255,.05)">
+          <td style="padding:5px 6px">
+            <div style="color:var(--text1)">${r.label}</div>
+            <div style="color:var(--text3);font-size:0.68rem;line-height:1.5">${r.how}</div>
+          </td>
+          <td style="padding:5px 6px;white-space:nowrap;color:var(--text2)">${feedAgeText(r.ageMs)}</td>
+          <td style="padding:5px 6px;white-space:nowrap;color:var(--text3)">≤ ${feedAgeText(r.fresh).replace('前', '')}</td>
+          <td style="padding:5px 6px;white-space:nowrap">
+            <span style="color:${u.c};font-weight:600">● ${u.t}</span>
+            ${r.fail > 0 ? `<div style="color:var(--bear);font-size:0.68rem">連續失敗 ${r.fail} 次</div>` : ''}
+            ${r.note ? `<div style="color:var(--text3);font-size:0.66rem">${r.note}</div>` : ''}
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    <div style="color:var(--text3);font-size:0.7rem;margin-top:6px;line-height:1.6">
+      沒有列在這裡的東西就是沒有資料源：Fed 決策、ETF 每日淨流、CPI 數字、鏈上與代幣經濟資料本站都沒有直連，
+      介面上凡是用到這些的地方都標明為代理推導。清算 WebSocket 靜默不一定是故障——也可能是真的沒有大額強平。
+    </div>
+  </div>`;
+}
+function refreshFeedHealthPanel() {
+  const el = document.getElementById('feed-health-panel');
+  if (el) el.innerHTML = buildFeedHealthPanel();
+}
+/* 幣種詳情頁頂部的一行摘要：只列與這一頁判讀直接相關的源 */
+function buildFeedStrip() {
+  let rows;
+  try { rows = feedHealth(); } catch(_e) { return ''; }
+  const pick = ['price', 'kline', 'deriv', 'oi', 'liqws', 'fp', 'news', 'ext'];
+  const map = {}; rows.forEach(r => { map[r.key] = r; });
+  const short = { price: '幣價', kline: 'K線', deriv: '合約籌碼', oi: 'OI', liqws: '清算流', fp: '訂單流', news: '新聞', ext: '場外' };
+  const cells = pick.map(k => {
+    const r = map[k]; if (!r) return '';
+    const u = _FEED_STATE_UI[r.state];
+    return `<span title="${r.label}：${feedAgeText(r.ageMs)}（${r.how}）" style="white-space:nowrap">
+      <span style="color:${u.c}">●</span> ${short[k]} <span style="color:var(--text3)">${r.state === 'none' ? '—' : feedAgeText(r.ageMs)}</span></span>`;
+  }).filter(Boolean).join('<span style="color:var(--text3)">·</span>');
+  return `<div style="display:flex;gap:9px;flex-wrap:wrap;align-items:center;font-size:0.7rem;color:var(--text2);
+      background:var(--surface2);border-radius:7px;padding:6px 10px;margin-top:10px">
+    <span style="color:var(--text3)">📡 資料鮮度</span>${cells}
+    <span style="color:var(--text3);margin-left:auto">綠＝即時　黃＝略舊　紅＝過期</span>
+  </div>`;
+}
+
 /* ── 宏觀市場環境面板 ─────────────────────────────────────── */
 function buildMacroPanel(global, halving, fg) {
 
@@ -10215,6 +10294,7 @@ async function renderCoinDetail(symbol) {
   setSafe('liq-body',       () => buildLiquidationPanel(_liquidationCache[symbol], coin, mtfData));
   setSafe('ai-body',        () => generateAIAnalysis(coin, mtfData, fearGreed));
   setSafe('toptrader-body', () => buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fearGreed, halving));
+  try { const _fsEl = document.getElementById('feed-strip'); if (_fsEl) _fsEl.innerHTML = buildFeedStrip(); } catch(_e) {}
   setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
   setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
 
@@ -13253,6 +13333,7 @@ function btcVolGuardBlocks(symbol) {
 const _oiHist = {};  // symbol -> [{ts, oi, p}]
 function updateOIHistory(data) {
   const now = Date.now();
+  let _oiNew = 0;
   try {
     for (const c of (data || [])) {
       const oi = c?.derivData?.openInterest;
@@ -13262,7 +13343,10 @@ function updateOIHistory(data) {
       if (h.length && now - h[h.length - 1].ts < 55 * 1000) continue;  // 同一分鐘不重複記點
       h.push({ ts: now, oi, p });
       while (h.length && now - h[0].ts > 2 * 60 * 60 * 1000) h.shift();
+      _oiNew++;
     }
+    if (typeof feedStamp === 'function')
+      feedStamp('oi', _oiNew > 0, _oiNew > 0 ? _oiNew + ' 個幣種記點' : '本輪無合約 OI 快照');
   } catch(_e) {}
 }
 function getOITrend(symbol) {
@@ -24308,6 +24392,7 @@ function populateSettingsPage() {
   const extUrl = document.getElementById('s-ext-macro-url');
   if (extUrl) extUrl.value = s.extMacroUrl || '';
   try { const p = document.getElementById('ext-macro-panel'); if (p) p.innerHTML = buildExtMacroPanel(); } catch(_e) {}
+  try { refreshFeedHealthPanel(); } catch(_e) {}
   if (nBullThr) { nBullThr.value = s.notifBullScore || 65; document.getElementById('notif-bull-val').textContent = nBullThr.value; }
   if (nBearThr) { nBearThr.value = s.notifBearScore || 35; document.getElementById('notif-bear-val').textContent = nBearThr.value; }
   updateNotifBtn();
@@ -28649,11 +28734,12 @@ function liqWatchStart() {
         _liqBuf.push({ t: Date.now(), sym: String(o.s).slice(0, -4) + '/USDT',
                        side: o.S === 'SELL' ? 'long' : 'short', usd });
         if (_liqBuf.length > LIQ_CFG.bufMax) _liqBuf.splice(0, _liqBuf.length - LIQ_CFG.bufMax);
+        try { feedStamp('liqws', true, '緩衝 ' + _liqBuf.length + ' 筆'); } catch(_fe) {}
       } catch(_e) {}
     };
-    _liqWs.onclose = () => { _liqWs = null; setTimeout(liqWatchStart, LIQ_CFG.reconnectMs); };
-    _liqWs.onerror = () => { try { _liqWs.close(); } catch(_e) {} };
-  } catch(_e) { _liqWs = null; }
+    _liqWs.onclose = () => { _liqWs = null; try { feedStamp('liqws', false, '連線中斷，重連中'); } catch(_fe) {} setTimeout(liqWatchStart, LIQ_CFG.reconnectMs); };
+    _liqWs.onerror = () => { try { feedStamp('liqws', false, '連線錯誤'); } catch(_fe) {} try { _liqWs.close(); } catch(_e) {} };
+  } catch(_e) { _liqWs = null; try { feedStamp('liqws', false, '無法建立連線'); } catch(_fe) {} }
 }
 
 /* 指定幣種近 N 分鐘的清算統計；dom = 顯著單邊方向（'long'=多單被殺、'short'=空單被殺、''=無） */
@@ -29909,13 +29995,14 @@ async function extFetchMacro() {
     const tm = setTimeout(() => ctrl.abort(), 9000);
     const r = await fetch(url, { signal: ctrl.signal });
     clearTimeout(tm);
-    if (!r.ok) return _extCache;
+    if (!r.ok) { try { feedStamp('ext', false, 'HTTP ' + r.status); } catch(_fe) {} return _extCache; }
     const j = await r.json();
     if (!j || !j.ok || !j.quotes) return _extCache;
     _extCache = { at: now, quotes: j.quotes, src: j.src || {}, okN: j.okN || 0 };
     _extAt = now;
+    try { feedStamp('ext', true, (j.okN || 0) + ' 項報價'); } catch(_fe) {}
     return _extCache;
-  } catch(_e) { return _extCache; }
+  } catch(_e) { try { feedStamp('ext', false, _e && _e.message); } catch(_fe) {} return _extCache; }
   finally { _extBusy = false; }
 }
 
