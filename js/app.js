@@ -29160,6 +29160,16 @@ function _convWeights() {
   _convWTs = Date.now();
   return _convWCache;
 }
+/* 證據鍵 → 預測記分卡的預測器鍵：同一個引擎在記分卡量到的命中率，
+   直接變成它在確信度裡的權重乘數。沒有對應者（MACD、EMA200 這種
+   已在其他層計過分的殘票）維持 1 倍。 */
+const _CONV_FC_MAP = {
+  wk: 'mtf', day: 'mtf', h4: 'mtf', h1: 'mtf',
+  st_day: 'struct', st_h4: 'struct', st_15: 'struct',
+  rs: 'rs', oi: 'oi', liq: 'liqflow', fr: 'funding',
+  nk_engulf: 'nakedk', nk_pin: 'nakedk', nk_three: 'nakedk',
+  ext_idx: 'ext', ext_dxy: 'ext', ext_vix: 'ext',
+};
 function computeDirectionConviction(coin) {
   let s = 0; const votes = [], items = [];
   const W = _convWeights();
@@ -29168,10 +29178,16 @@ function computeDirectionConviction(coin) {
     let mult = (lw && isFinite(lw.w)) ? Math.max(0.5, Math.min(1.5, lw.w)) : 1;
     // 預測記分卡回饋：來自「有被記分的預測器」的證據，再乘上它的實測準確度
     // 乘數（不準的自動變輕）。兩層校準的分工：convEv 學「這個證據跟賺賠的
-    // 關係」、記分卡學「這個預測器說對方向的機率」——後者更根本。
+    // 關係」、記分卡學「這個預測器說對方向的機率」——後者更根本，而且
+    // 不需要任何成交紀錄就能累積，沒有交易的期間照樣在學。
+    // 2026-08：從只有場外三項擴充到每一個證據類別（見 _CONV_FC_MAP）。
     try {
-      if (key === 'ext_idx' || key === 'ext_dxy' || key === 'ext_vix') mult *= forecastWeight('ext');
+      const fk = _CONV_FC_MAP[key];
+      if (fk) mult *= forecastWeight(fk);
     } catch(_e) {}
+    // 兩層乘數相乘後仍夾在 0.5~1.5：任一項證據都不該被單一校準器打到幾乎
+    // 消失，也不該被放大到蓋過其他所有證據（規則④：確認不會全擋／獨大）
+    mult = Math.max(0.5, Math.min(1.5, mult));
     const vv = Math.round(v * mult);
     s += vv;
     votes.push((vv > 0 ? '+' : '') + vv + ' ' + why + (mult !== 1 ? `(×${mult})` : ''));
@@ -30282,7 +30298,7 @@ function buildGateShadowHtml() {
    純資料驅動，樣本不足時一律回傳中性乘數 1（不影響現況）。 */
 
 const FC_KEY = 'csp_forecast_log';
-const FC_MAX = 800;
+const FC_MAX = 1800;   // 預測器變多後窗口會變短，上限同步放大（每筆約 130 bytes）
 const FC_CFG = {
   snapMin: 30,        // 快照間隔（分鐘）
   mktMovePct: 0.3,    // 市場級（BTC）有效變動門檻 %
@@ -30300,6 +30316,19 @@ const FC_PREDICTORS = {
   ext:     { label: '場外風險溫度',  horizonH: 4,  scope: 'mkt' },
   score:   { label: '逐幣技術評分',  horizonH: 4,  scope: 'coin' },
   conv:    { label: '方向確信度',    horizonH: 4,  scope: 'coin' },
+  /* 2026-08 擴充：把「站內每一個分析引擎」都拆開來各自記分。
+     原本只記到整包的技術評分與確信度——某一項證據長期是反指標時，
+     整包分數只會微微變差，永遠查不出是誰在拖累。拆開之後每個引擎
+     都有自己的命中率，並直接回饋成該項證據在確信度裡的權重。
+     全部不需要任何成交紀錄就能累積，沒有交易的期間照樣在學。 */
+  mtf:     { label: '多週期訊號',    horizonH: 4,  scope: 'coin' },
+  struct:  { label: '擺動結構',      horizonH: 4,  scope: 'coin' },
+  rs:      { label: '相對強弱',      horizonH: 4,  scope: 'coin' },
+  oi:      { label: '未平倉四象限',  horizonH: 4,  scope: 'coin' },
+  liqflow: { label: '清算流',        horizonH: 4,  scope: 'coin' },
+  nakedk:  { label: '裸 K 型態',     horizonH: 4,  scope: 'coin' },
+  funding: { label: '資金費率（反向）', horizonH: 4, scope: 'coin' },
+  flow:    { label: '足跡訂單流',    horizonH: 4,  scope: 'coin' },
 };
 let _newsBiasNow = null;   // 由 buildNewsWidget 更新
 
@@ -30360,6 +30389,50 @@ function forecastSnapshot(data) {
         try {
           const cv = computeDirectionConviction(c).score;
           push('conv', cv >= 15 ? 'bull' : cv <= -15 ? 'bear' : 'neutral', px, c.symbol);
+        } catch(_e) {}
+        /* ── 逐引擎記分：每一項只在「它自己有話說」時才記，沒有表態就不記，
+           避免用一堆 neutral 把命中率灌成無意義的數字 ── */
+        try {
+          const _sg = x => String(x || '');
+          let _mb = 0, _ms = 0;
+          [c.weeklySignal, c.dailySignal, c.h4Signal, c.h1Signal, c.signal15m].forEach(s => {
+            if (_sg(s).indexOf('bull') >= 0) _mb++; else if (_sg(s).indexOf('bear') >= 0) _ms++;
+          });
+          if (_mb + _ms >= 2) push('mtf', _mb > _ms + 1 ? 'bull' : _ms > _mb + 1 ? 'bear' : 'neutral', px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _sv = st => !st ? 0 : st.chochDown ? -1 : st.chochUp ? 1 : st.dir === 'up' ? 1 : st.dir === 'down' ? -1 : 0;
+          const _ss = _sv(c.dayStruct) * 2 + _sv(c.h4Struct);
+          if (c.dayStruct || c.h4Struct) push('struct', _ss >= 2 ? 'bull' : _ss <= -2 ? 'bear' : 'neutral', px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _r = _rsRank[c.symbol];
+          if (isFinite(_r)) push('rs', _r >= 70 ? 'bull' : _r <= 30 ? 'bear' : 'neutral', px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _ot = getOITrend(c.symbol);
+          if (_ot && _ot.regime !== 'flat')
+            push('oi', _ot.regime === 'new_long' ? 'bull' : _ot.regime === 'new_short' ? 'bear' : 'neutral', px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _ls = liqStats(c.symbol);
+          if (_ls && _ls.dom) push('liqflow', _ls.dom === 'short' ? 'bull' : 'bear', px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _nk = c.nakedK;
+          if (_nk) {
+            const _nb = (_nk.bullEngulf ? 1 : 0) + (_nk.pinBull ? 1 : 0) + (_nk.threeUp ? 1 : 0);
+            const _ns = (_nk.bearEngulf ? 1 : 0) + (_nk.pinBear ? 1 : 0) + (_nk.threeDown ? 1 : 0);
+            if (_nb !== _ns) push('nakedk', _nb > _ns ? 'bull' : 'bear', px, c.symbol);
+          }
+        } catch(_e) {}
+        try {
+          const _fr = _sbxFunding ? _sbxFunding[c.symbol] : null;   // 擁擠＝反向訊號
+          if (isFinite(_fr) && Math.abs(_fr) >= 0.0004) push('funding', _fr > 0 ? 'bear' : 'bull', px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _fp = _footprintCache[c.symbol];
+          if (_fp && _fp.deltaDir && _fp.deltaDir !== 'neutral') push('flow', _fp.deltaDir, px, c.symbol);
         } catch(_e) {}
       }
     } catch(_e) {}
@@ -30440,6 +30513,10 @@ function buildForecastHtml() {
       以實際漲跌結算。市場級以 BTC ±${FC_CFG.mktMovePct}%、逐幣以 ±${FC_CFG.coinMovePct}% 為有效變動；
       <b>判中性者只有在實際確實持平時才算命中</b>——不表態不能永遠不錯。
       ≥${FC_CFG.minN} 筆才出判定；準確度會回饋成決策權重（準的加重、不準的減輕）。
+      <br><b>這張表不需要任何成交紀錄</b>——它記的是「判斷對不對」而不是「賺不賺」，
+      沒有交易的期間照樣在累積。站內每一個分析引擎（多週期、擺動結構、相對強弱、
+      未平倉四象限、清算流、裸 K、資金費率、足跡訂單流、場外溫度）都各自記分，
+      哪一個是反指標會直接被指名，並自動降低它在方向確信度裡的權重。
     </div>`;
   if (!rows.length) return head + `<div style="font-size:0.78rem;color:var(--text3)">尚無樣本，掃描累積中。</div></div>`;
   const vL = { good: '✅ 確有預測力', bad: '⚠️ 不如擲硬幣', neutral: '➖ 與硬幣無異', pending: '累積中' };
