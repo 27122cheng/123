@@ -9853,6 +9853,18 @@ function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving)
   try { conv = computeDirectionConviction(coin) || conv; } catch(_e) {}
   const cs   = conv.score;
   const dir  = cs >= 12 ? 'long' : cs <= -12 ? 'short' : 'wait';
+  /* 證據分歧度：與建單邏輯同一套算法（掃描層會用它縮倉位），
+     兩邊用同一個數字，面板說的話才等於系統實際會做的事 */
+  let ttSup = 0, ttOpp = 0, ttOppStruct = 0, ttSplit = null;
+  try {
+    const dm = dir === 'short' ? -1 : 1;
+    const SK = { st_day: 1, st_h4: 1, wk: 1, day: 1, h4: 1 };
+    for (const it of (conv.items || [])) {
+      const rel = it.v * dm;
+      if (rel > 0) ttSup += rel; else if (rel < 0) { ttOpp += -rel; if (SK[it.k]) ttOppStruct++; }
+    }
+    if (ttSup + ttOpp > 0) ttSplit = ttOpp / (ttSup + ttOpp);
+  } catch(_e) {}
   const isLong = dir === 'long';
   const dirTx = dir === 'long' ? '做多' : dir === 'short' ? '做空' : '觀望';
   const dirColor = dir === 'long' ? 'var(--bull)' : dir === 'short' ? 'var(--bear)' : 'var(--neutral)';
@@ -10026,7 +10038,10 @@ function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving)
       const risk = Math.abs(su.entry - su.sl) || 0;
       const eqS = parseFloat(loadSettings().mainEquity);
       const eq  = eqS > 0 ? eqS : 1000;
-      const rp  = Math.abs(cs) >= 40 ? 1.2 : Math.abs(cs) < 25 ? 0.6 : 1.0;
+      let rp  = Math.abs(cs) >= 40 ? 1.2 : Math.abs(cs) < 25 ? 0.6 : 1.0;
+      let rpWhy = '';
+      if (ttOppStruct >= 2 && rp > 0.5) { rp = 0.5; rpWhy = `結構級反向 ${ttOppStruct} 項，倉位砍到一半`; }
+      else if (ttSplit != null && ttSplit >= 0.35 && rp > 0.6) { rp = 0.6; rpWhy = `證據分歧 ${Math.round(ttSplit * 100)}%，兩邊拉扯先縮倉`; }
       const qty = risk > 0 ? +((eq * rp / 100) / risk).toPrecision(4) : null;
       const notional = qty ? +(qty * su.entry).toFixed(2) : null;
       const gap = price > 0 ? (su.entry - price) / price * 100 : 0;
@@ -10060,7 +10075,7 @@ function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving)
         ${_ttRow('止盈依據', `${su.tp1Reason}<br>${su.tp2Reason}${tpEv ? `<div style="margin-top:3px">${tpEv}</div>` : ''}`)}
         ${_ttRow('風險報酬', `目標一 ${su.rr1}R　目標二 ${su.rr2}R`, su.rr1 < 1.2 ? '報酬風險比偏低，這種結構寧可不做' : '')}
         ${qty ? _ttRow('倉位', `${qty} ${base}（名目 ${_ttFmtUsd(notional)}，風險 ${rp}% × 權益 ${_ttFmtUsd(eq)}）`,
-          `固定分數法：單筆最大虧損 ${_ttFmtUsd(eq * rp / 100)}${rp !== 1 ? `，已依確信度 ${cs} 調整` : ''}`) : ''}
+          `固定分數法：單筆最大虧損 ${_ttFmtUsd(eq * rp / 100)}${rpWhy ? `，${rpWhy}` : rp !== 1 ? `，已依確信度 ${cs} 調整` : ''}`) : ''}
         ${holdTx ? _ttRow('時間框架', holdTx, '超過兩倍時間仍未推進 = 這筆的假設沒有兌現，先平掉換場') : ''}
         <div style="margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.07)">
           <div style="color:#f87171;font-weight:600;margin-bottom:3px">失效條件（任一成立就離場，不討價還價）</div>
@@ -10124,11 +10139,16 @@ function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving)
       ${planHtml}
     </div>
     ${against.length ? `<div style="background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.22);border-radius:9px;padding:9px 12px">
-      <div style="font-weight:700;color:#f87171;font-size:0.8rem;margin-bottom:5px">🧨 六、反方觀點（我可能錯在哪）</div>
+      <div style="font-weight:700;color:#f87171;font-size:0.8rem;margin-bottom:5px">🧨 六、反方觀點（我可能錯在哪）
+        ${ttSplit != null ? `<span style="font-weight:400;color:var(--text3);font-size:0.72rem">　證據分歧 ${Math.round(ttSplit * 100)}%（支持 ${Math.round(ttSup)}／反對 ${Math.round(ttOpp)}${ttOppStruct ? `，結構級反向 ${ttOppStruct} 項` : ''}）</span>` : ''}</div>
       <ul style="margin:0 0 0 16px;padding:0;font-size:0.76rem;line-height:1.75;color:var(--text2)">
         ${against.slice(0, 6).map(a => `<li>${a}</li>`).join('')}
       </ul>
-      <div style="color:var(--text3);font-size:0.71rem;margin-top:5px">逆向證據越多，倉位越小；出現三項以上且都是結構級（日線／4H）時，這筆不該做。</div>
+      <div style="color:var(--text3);font-size:0.71rem;margin-top:5px">
+        這一段不只是說給你聽的：分歧度已經接進建單邏輯——分歧 ≥35% 倉位降到 0.6%、結構級反向 ≥2 項降到 0.5%，
+        並登記為配對研究所的一個條件持續量它的期望值。刻意不做硬性攔截：目前沒有實測證據說它會擋掉賺錢的單，
+        先讓資料長出來再決定要不要加嚴。
+      </div>
     </div>` : ''}
     <div style="color:var(--text3);font-size:0.7rem;margin-top:8px;line-height:1.6">
       本頁所有判斷均來自本站已抓取的即時資料（價格與指標來自交易所 K 線、籌碼來自合約端點、場外來自 /api/macro），
@@ -12765,6 +12785,12 @@ function condDimensions() {
       on: comboIs('chase', 'range'), off: comboNot('chase', 'range') },
     { key: 'combo_pullback_trend', label: '模式：趨勢中回踩（ADX≥25 且回踩）',
       on: comboIs('pullback', 'trend'), off: comboNot('pullback', 'trend') },
+    { key: 'conv_split_high', label: '證據分歧 ≥35%（支持與反對互相拉扯）',
+      on:  t => t.convSplit != null && t.convSplit >= 0.35,
+      off: t => t.convSplit != null && t.convSplit < 0.20 },
+    { key: 'conv_opp_struct', label: '結構級反向證據 ≥2 項',
+      on:  t => t.convOppStruct != null && t.convOppStruct >= 2,
+      off: t => t.convOppStruct != null && t.convOppStruct === 0 },
     { key: 'h4_against', label: '4H 逆勢進場',
       on:  t => t.entryH4Aligned === false,
       off: t => t.entryH4Aligned === true },
@@ -13424,7 +13450,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260817a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260817b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14776,6 +14802,7 @@ async function recordSignalsFromScan(data) {
     // 淨值 ≤ -25 ＝ 大多數證據指向反方向 → 不建單；數值與投票記錄在單上，
     // 研究所據此學「確信度 vs 實際勝率」，標籤進配對池。
     let _convScan = null, _convVotes = [], _convEvScan = null;
+    let _convSupW = 0, _convOppW = 0, _convSplit = null, _convOppStruct = 0;
     try {
       const _cv = computeDirectionConviction(coin);
       const _dirMulCv = isLong ? 1 : -1;
@@ -14786,12 +14813,35 @@ async function recordSignalsFromScan(data) {
         f: (_cv.items || []).filter(it => it.v * _dirMulCv > 0).map(it => it.k),
         a: (_cv.items || []).filter(it => it.v * _dirMulCv < 0).map(it => it.k),
       };
+      /* ── 證據分歧度：淨值藏住的那半邊 ────────────────────────────
+         確信度是「支持 − 反對」的淨值，+30 有兩種完全不同的長相：
+         (a) 支持 30、反對 0 ＝ 證據一面倒
+         (b) 支持 60、反對 30 ＝ 市場正在兩邊拉扯
+         (b) 的真實風險遠高於 (a)——結構級證據互相打架的時候，價格通常先
+         把兩邊的止損都掃一次。這件事一直被記錄（convEv）卻只用在事後校準，
+         從來沒有在建單當下被看過一眼；頂級交易員面板的「反方觀點」講的就是
+         它，現在讓建單也看得到。
+         刻意不當硬性攔截：目前沒有任何實測證據說它會擋到賺錢的單，先讓它
+         只縮倉位、並登記成配對研究所的一個條件去量期望值，資料說話再談加嚴。 */
+      for (const it of (_cv.items || [])) {
+        const rel = it.v * _dirMulCv;
+        if (rel > 0) _convSupW += rel; else if (rel < 0) _convOppW += -rel;
+      }
+      const _tot = _convSupW + _convOppW;
+      _convSplit = _tot > 0 ? +(_convOppW / _tot).toFixed(3) : null;
+      const _STRUCT_KEYS = { st_day: 1, st_h4: 1, wk: 1, day: 1, h4: 1 };
+      _convOppStruct = (_cv.items || []).filter(it => it.v * _dirMulCv < 0 && _STRUCT_KEYS[it.k]).length;
       // 門檻隨去重後的新尺度同步下調（規則④）：去重前滿分約 ±100、
       // 現在多週期殘票僅 ±16，主力是結構(30)＋微觀證據(34)＋場外(14)。
       // 典型同向候選 ≈ +30~45，強共識 ≈ +55；淨反向門檻 -25 → -15。
       if (_convScan <= -15) { _no(`方向確信度 ${_convScan}（多空證據淨反向）`); continue; }
       if (_convScan >= 30) _scanEntryTags.push('方向共識-強');
       else if (_convScan <= 0) _scanEntryTags.push('方向共識-弱');
+      if (_convSplit != null && _convSplit >= 0.35) _scanEntryTags.push('證據分歧-高');
+      if (_convOppStruct >= 2) _scanEntryTags.push('結構級反向≥2');
+      if (_convOppW > 0)
+        _scanSqFactors.push(`⚖️ 證據分歧 ${Math.round((_convSplit || 0) * 100)}%（支持 ${Math.round(_convSupW)}／反對 ${Math.round(_convOppW)}`
+          + `${_convOppStruct ? `，其中結構級反向 ${_convOppStruct} 項` : ''}）`);
       _scanSqFactors.push(`🧭 方向確信度 ${_convScan >= 0 ? '+' : ''}${_convScan}（${_convVotes.slice(0, 5).join('、')}${_convVotes.length > 5 ? '…' : ''}）`);
     } catch(_e) {}
 
@@ -14804,6 +14854,10 @@ async function recordSignalsFromScan(data) {
       let _rp = 1.0;
       if (_convScan != null && _convScan >= 40) { _rp = 1.2; _sizeWhy = '確信度強 ×1.2'; }
       else if (_convScan != null && _convScan < 10) { _rp = 0.6; _sizeWhy = '確信度偏弱 ×0.6'; }
+      // 證據分歧只會往下調，不會放大——兩邊拉扯時倉位小一號是唯一不用等
+      // 統計就能確定不會虧更多的動作（下限 0.5%，永遠不會縮到不下單）
+      if (_convOppStruct >= 2 && _rp > 0.5) { _rp = 0.5; _sizeWhy = `結構級反向 ${_convOppStruct} 項 ×0.5`; }
+      else if (_convSplit != null && _convSplit >= 0.35 && _rp > 0.6) { _rp = 0.6; _sizeWhy = `證據分歧 ${Math.round(_convSplit * 100)}% ×0.6`; }
       const _slDsz = Math.abs(setup.entry - setup.sl);
       if (_slDsz > 0) {
         _sizeQty = +((_sizeEquity * _rp / 100) / _slDsz).toPrecision(4);
@@ -14833,6 +14887,8 @@ async function recordSignalsFromScan(data) {
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
       conviction: _convScan,           // 方向確信度（多空證據融合淨值，供研究所學習）
       convEv: _convEvScan,             // 證據支持/反對清單（權重校準的原料）
+      convSplit: _convSplit,           // 證據分歧度＝反對權重/總權重（淨值藏住的那半邊）
+      convOppStruct: _convOppStruct,   // 結構級（週線/日線/4H/擺動結構）反向證據數
       sizeQty: _sizeQty, sizeNotional: _sizeNotional, sizeRiskPct: _sizeRiskPct,
       sizeWhy: _sizeWhy, sizeEquity: _sizeEquity,
       regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
@@ -20919,6 +20975,7 @@ const LEARN_KEEP_FIELDS = [
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
   'regime', 'rsPct', 'oiCtx', 'conviction',  // 市場狀態×方向勝率學習＋相對強弱＋OI 語境＋方向確信度
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
+  'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
