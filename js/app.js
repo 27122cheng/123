@@ -12877,7 +12877,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260816a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260816b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14398,6 +14398,17 @@ async function recordSignalsFromScan(data) {
                         ok !== false ? '已送出' : 'Telegram API 回傳失敗（見主控台）'))
           .catch(e => recordTgAttempt(coin.symbol, direction, false, '送出時例外：' + e.message));
         newTrade.telegramSent = true;
+        /* ⚠️ 必須立刻寫回儲存（2026-08-16 使用者實案：建單推播後數秒被監控
+           取消，卻沒收到取消通知）。原因：這個旗標只設在記憶體裡的物件上，
+           而 sendCancelTelegramNotification 有一道
+           `if (!trade.telegramSent) return;`（避免對「使用者從未看過的單」
+           發取消通知）。監控在下一輪從儲存重新讀出的單沒有這個旗標，
+           取消通知就被靜默跳過——使用者只看到建單、看不到取消。 */
+        try {
+          const _tl = loadTradeLog();
+          const _ix = _tl.findIndex(t => t.id === newTrade.id);
+          if (_ix >= 0) { _tl[_ix].telegramSent = true; saveTradeLog(_tl); }
+        } catch(_ps) {}
       }
     } catch(_scanTe) {
       console.warn('[recordSignalsFromScan tg]', _scanTe);
@@ -15733,7 +15744,19 @@ function sendSLChangeNotification(trade, oldSL, newSL, reason) {
 function sendCancelTelegramNotification(trade, reason) {
   const s = loadSettings();
   if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
-  if (!trade.telegramSent) return; // 建單通知尚未送出 → 跳過取消通知（用戶從未看過此單）
+  /* 建單通知尚未送出 → 原則上跳過取消通知（使用者從未看過此單）。
+     但有一個例外必須放行：台帳顯示這個幣種方向剛剛才推播過訊號——
+     旗標沒寫進儲存（歷史 bug）不代表使用者沒收到，寧可多發一則取消，
+     也不要讓人抱著一張已經被系統取消的單。 */
+  if (!trade.telegramSent) {
+    let _recentlyPushed = false;
+    try {
+      const _ledger = JSON.parse(localStorage.getItem('csp_tg_signal_ledger') || '{}');
+      const _e = _ledger[`${trade.symbol}|${trade.direction}`];
+      _recentlyPushed = !!(_e && Date.now() - (_e.at || _e) < 60 * 60 * 1000);
+    } catch(_lg) {}
+    if (!_recentlyPushed) return;
+  }
   if (_hasCancelTgSent(trade.symbol, trade.direction)) return;
   _markCancelTgSent(trade.symbol, trade.direction);
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
@@ -24467,7 +24490,7 @@ const SCALP_CFG = {
   sizeMaxMult:      1.25,  // 部位上限倍數
   sizeMinMult:      0.40,  // 部位下限倍數
   // 連續虧損降檔：連敗代表當下市場狀態與策略不合，先縮小再說
-  burstMax:         2,     // 每輪掃描最多開幾筆（同輪節流：一次脈衝不要押成好幾注）
+  burstMax:         3,     // 每輪掃描最多開幾筆（同輪節流：一次脈衝不要押成好幾注）
   lossStreakCut:    3,     // 連續幾敗後啟動降檔
   lossStreakMult:   0.5,   // 降檔倍數（直到出現一筆獲利才恢復）
   // 提早保本：達 +beTriggerR 就把止損移到成本價
@@ -24947,7 +24970,9 @@ function scalpRecoveryMode() {
     const why = [];
     if (a.ddNow >= cfg.ddSoftPct) why.push(`回撤 ${a.ddNow}%`);
     if (a.todayPnlPct <= -cfg.dailySoftPct) why.push(`當日 ${a.todayPnlPct}%`);
-    if (streak >= cfg.lossStreakCut) why.push(`連續 ${streak} 敗`);
+    // 連敗觸發需要有基準：全新啟動／剛清空資料時「連續 3 敗」極其常見，
+    // 那時就進恢復模式會把剛起步的系統直接鎖死（實案：快速單長期無交易）。
+    if (streak >= cfg.lossStreakCut && closed.length >= 15) why.push(`連續 ${streak} 敗`);
     if (!why.length) return { on: false };
     // minConv 隨確信度去重後的新尺度調整（原 15 對應舊尺度）：
     // 去重後順勢典型候選 ≈ +9~20（4H 殘票 4＋MACD 2＋EMA200 3＋結構 12），
@@ -25433,7 +25458,12 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   // 對照實際常數確認不會全擋：順勢預設 tp2R 1.8 − feeR ≤0.12 = 1.68 ✓、
   // 回歸 1.3 − 0.12 = 1.18 ✓（規則④）。
   {
-    const _netRRMin = isTrendFam ? 1.5 : 1.05;
+    /* 淨賺賠比下限（2026-08-16 回調）：原本順勢 1.5 是照「止損未被推遠」
+       的理想值訂的，但 maxFeeR 守門會把過近的止損推遠 → risk 變大、
+       _rr（tp2 距離 ÷ risk）跟著縮水，實際常落在 1.3~1.5 之間而被全擋，
+       這正是快速單長期無訊號的主因之一。改為順勢 1.3、回歸 1.0，
+       仍高於「扣費後不虧」的數學底線。 */
+    const _netRRMin = isTrendFam ? 1.3 : 1.0;
     if (_rr - _feeR < _netRRMin) return _sr(`扣費後賺賠比不足(淨${(_rr - _feeR).toFixed(2)}<${_netRRMin})`);
   }
   // ── 執行速度守門（實案：ONE 暴走段，訊號紙上 +1.55R、真人晚 30 秒
@@ -25616,7 +25646,10 @@ async function recordScalpSignals(data) {
       if (family === 'trend') {
         try {
           const _cvS = computeDirectionConviction(coin).score * (isLong ? 1 : -1);
-          const _need = _recov.on ? _recov.minConv : 0;
+          // 常態門檻回到 -5（原 0）：去重後多週期只剩小額殘票，順勢候選的
+          // 典型值 +9~25，但盤整時段常落在 -3~+5——要求嚴格 ≥0 會把整段
+          // 盤整時間排除，與「回歸家族補盤整」的設計互相矛盾。
+          const _need = _recov.on ? _recov.minConv : -5;
           if (_cvS < _need) {
             _sr(_recov.on ? `恢復模式確信度不足(${_cvS}<${_need})` : `方向確信度淨反向(${_cvS})`);
             continue;
