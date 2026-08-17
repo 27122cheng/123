@@ -8441,6 +8441,144 @@ function buildVPPanel(coin, mtfData, whale) {
   return `<div class="vp-panel">${narrative}${vpHtml}${whaleHtml}${volAIHtml}</div>`;
 }
 
+/* ── 宏觀因素的「當下多空看法」與其判斷依據 ────────────────────
+   原本這六張卡只是靜態教科書說明（DXY 上漲會壓制風險資產…），看完
+   還是不知道「那現在到底是什麼情況」。這裡替每一項算出當下的多空
+   判定，並把用到的每一項資料連同來源一起列出來。
+
+   誠實原則（重要）：本站只有 DXY／期指／VIX（/api/macro）、加密大盤
+   （CoinGecko）、恐慌貪婪（alternative.me）與新聞情緒四種真實來源。
+   Fed 決策、ETF 每日淨流、CPI 數字沒有直連資料源——這些項目一律標明
+   是「市場定價代理」或「新聞情緒代理」，並在卡片上寫清楚，絕不把推導
+   當成實際數據呈現。取不到就寫「資料不足」，不猜。
+
+   規則②：關鍵詞比對先做成一次性統計（indexOf，不跑 regex），
+   六張卡共用同一份統計結果。 */
+
+const _MACRO_NEWS_KW = {
+  fed: ['fed', 'fomc', 'rate cut', 'rate hike', 'powell', 'federal reserve', 'interest rate', 'dovish', 'hawkish', '聯準會', '降息', '升息'],
+  etf: ['etf', 'ibit', 'blackrock', 'fidelity', 'inflow', 'outflow', 'grayscale', '資金流', '機構'],
+  cpi: ['cpi', 'inflation', 'pce', 'ppi', 'jobs report', 'nonfarm', 'unemployment', '通膨'],
+  reg: ['sec', 'cftc', 'regulat', 'lawsuit', 'ban ', 'legislation', 'bill', 'crackdown', 'approval', 'approved', 'license', 'mica', '監管'],
+  geo: ['war', 'tariff', 'sanction', 'geopolit', 'conflict', 'election', 'military', 'strike', '地緣', '關稅', '制裁'],
+};
+function _macroNewsTally() {
+  const out = {};
+  for (const k in _MACRO_NEWS_KW) out[k] = { n: 0, b: 0, s: 0, latest: '' };
+  try {
+    const items = Array.isArray(_newsSentimentCache) ? _newsSentimentCache.slice(0, 40) : [];
+    for (const it of items) {
+      const t = ((it.originalTitle || '') + ' ' + (it.zhTitle || '')).toLowerCase();
+      for (const k in _MACRO_NEWS_KW) {
+        const ws = _MACRO_NEWS_KW[k];
+        let hit = false;
+        for (let i = 0; i < ws.length; i++) if (t.indexOf(ws[i]) >= 0) { hit = true; break; }
+        if (!hit) continue;
+        const o = out[k];
+        o.n++;
+        if (it.sentiment === 'bull') o.b++; else if (it.sentiment === 'bear') o.s++;
+        if (!o.latest) o.latest = it.zhTitle || it.originalTitle || '';
+      }
+    }
+  } catch(_e) {}
+  return out;
+}
+/* 新聞情緒 → 多空票（樣本 <2 則視為不足，避免單則新聞決定一項宏觀判斷） */
+function _macroNewsVote(t) {
+  if (!t || t.n < 2) return { v: 0, tx: t && t.n ? `相關新聞僅 ${t.n} 則，樣本不足` : '近期無相關新聞' };
+  if (t.b >= t.s * 2) return { v: 1,  tx: `相關新聞 ${t.n} 則，情緒偏多（多 ${t.b}／空 ${t.s}）` };
+  if (t.s >= t.b * 2) return { v: -1, tx: `相關新聞 ${t.n} 則，情緒偏空（多 ${t.b}／空 ${t.s}）` };
+  return { v: 0, tx: `相關新聞 ${t.n} 則，多空分歧（多 ${t.b}／空 ${t.s}）` };
+}
+
+/* 回傳 { stance:'bull'|'bear'|'neutral'|'na', basis:[{t, src}], note } */
+function macroFactorRead(id, ctx) {
+  const q = ctx.q || {}, tally = ctx.tally, g = ctx.global, fg = ctx.fg;
+  const idx = q.nq || q.spx;
+  const basis = [];
+  let score = 0, note = '';
+
+  if (id === 'fed') {
+    note = '本站無 FOMC／FedWatch 直連資料源；以「市場對政策路徑的即時定價」代理——美元走弱＋股指走強＝市場在定價寬鬆。';
+    if (q.dxy && isFinite(q.dxy.chgPct)) {
+      const d = q.dxy.chgPct;
+      if (Math.abs(d) >= EXT_CFG.dxyMovePct) { score += d < 0 ? 1 : -1; basis.push({ t: `美元指數當日 ${d > 0 ? '+' : ''}${d}%——${d > 0 ? '美元走強，市場定價偏緊縮' : '美元走弱，市場定價偏寬鬆'}`, src: '/api/macro（Yahoo/Stooq）' }); }
+      else basis.push({ t: `美元指數當日 ${d > 0 ? '+' : ''}${d}%，波動在常態內，政策預期無明顯變化`, src: '/api/macro' });
+    }
+    if (idx && isFinite(idx.chgPct)) {
+      const v = idx.chgPct;
+      if (Math.abs(v) >= EXT_CFG.dayMovePct) { score += v > 0 ? 1 : -1; basis.push({ t: `美股期指當日 ${v > 0 ? '+' : ''}${v}%——風險資產${v > 0 ? '受寬鬆預期推升' : '受緊縮預期壓制'}`, src: '/api/macro' }); }
+    }
+    const nv = _macroNewsVote(tally.fed);
+    score += nv.v; basis.push({ t: nv.tx + (tally.fed.latest ? `　最新：${tally.fed.latest}` : ''), src: '新聞情緒引擎' });
+  }
+
+  else if (id === 'dxy') {
+    note = '本項為直接量測（非代理）：美元指數即時報價。';
+    if (q.dxy && isFinite(q.dxy.price)) {
+      const d = q.dxy.chgPct;
+      basis.push({ t: `DXY ${q.dxy.price}，當日 ${d > 0 ? '+' : ''}${d}%`, src: '/api/macro（Yahoo/Stooq）' });
+      if (isFinite(d) && Math.abs(d) >= EXT_CFG.dxyMovePct) score += d > 0 ? -2 : 2;
+      basis.push({ t: `外匯波動遠小於股／幣，${EXT_CFG.dxyMovePct}% 已屬大動作；${Math.abs(d) >= EXT_CFG.dxyMovePct ? '目前已達此標準，對加密構成明確' + (d > 0 ? '逆風' : '順風') : '目前未達此標準，對加密方向不構成推力'}`, src: '判定門檻 EXT_CFG.dxyMovePct' });
+      if (q.dxy.chg30mPct != null) basis.push({ t: `30 分鐘變化 ${q.dxy.chg30mPct > 0 ? '+' : ''}${q.dxy.chg30mPct}%`, src: '/api/macro' });
+    } else return { stance: 'na', basis: [{ t: '未取得美元指數報價', src: '設定頁「場外風險溫度」可啟用／測試連線' }], note };
+  }
+
+  else if (id === 'etf') {
+    note = '本站無 ETF 每日淨流直連資料源（Farside 無公開 API）；以「BTC 相對山寨的資金偏向 + ETF 相關新聞情緒」代理，僅供方向參考，不等同實際淨流數字。';
+    if (g && g.btcDominance != null) {
+      const dom = g.btcDominance;
+      if (dom >= 55) { score += 1; basis.push({ t: `BTC 主導率 ${dom}%——資金集中在 BTC，符合機構資金（ETF 只買 BTC）為主導買盤的型態`, src: 'CoinGecko 全球數據' }); }
+      else if (dom <= 45) { score -= 0; basis.push({ t: `BTC 主導率 ${dom}%——資金外溢至山寨，機構單一買盤的解釋力下降`, src: 'CoinGecko 全球數據' }); }
+      else basis.push({ t: `BTC 主導率 ${dom}%，處中性區`, src: 'CoinGecko 全球數據' });
+    }
+    if (g && g.marketCapChange != null) {
+      const mc = g.marketCapChange;
+      if (Math.abs(mc) >= 2) { score += mc > 0 ? 1 : -1; basis.push({ t: `加密總市值 24h ${mc > 0 ? '+' : ''}${mc}%——整體${mc > 0 ? '淨流入' : '淨流出'}壓力`, src: 'CoinGecko 全球數據' }); }
+    }
+    const nv = _macroNewsVote(tally.etf);
+    score += nv.v; basis.push({ t: nv.tx + (tally.etf.latest ? `　最新：${tally.etf.latest}` : ''), src: '新聞情緒引擎' });
+  }
+
+  else if (id === 'cpi') {
+    note = '本站無 BLS／CPI 數據直連資料源；以「通膨相關新聞情緒 + 美元與股指的即時反應」代理。CPI 公布日的實際數字請以官方為準。';
+    const nv = _macroNewsVote(tally.cpi);
+    score += nv.v * 2; basis.push({ t: nv.tx + (tally.cpi.latest ? `　最新：${tally.cpi.latest}` : ''), src: '新聞情緒引擎' });
+    if (idx && isFinite(idx.chg30mPct) && Math.abs(idx.chg30mPct) >= EXT_CFG.fastMovePct) {
+      score += idx.chg30mPct > 0 ? 1 : -1;
+      basis.push({ t: `美股期指 30 分鐘 ${idx.chg30mPct > 0 ? '+' : ''}${idx.chg30mPct}%——場外正在急動，若適逢數據公布時段，這就是市場對數字的即時投票`, src: '/api/macro' });
+    }
+    if (q.dxy && isFinite(q.dxy.chgPct)) basis.push({ t: `同期美元指數 ${q.dxy.chgPct > 0 ? '+' : ''}${q.dxy.chgPct}%（通膨超預期通常推升美元）`, src: '/api/macro' });
+  }
+
+  else if (id === 'reg') {
+    note = '本項完全由新聞情緒代理（監管事件無結構化資料源）；判定只反映近期報導的多空傾向，不是法規本身的評估。';
+    const nv = _macroNewsVote(tally.reg);
+    score += nv.v * 2; basis.push({ t: nv.tx + (tally.reg.latest ? `　最新：${tally.reg.latest}` : ''), src: '新聞情緒引擎（SEC／CFTC／立法關鍵詞）' });
+    basis.push({ t: '監管訊息對價格的影響通常是「事件式跳空」而非趨勢，交易上的用法是控制曝險與避開公布時點，不是拿來決定方向', src: '操作原則' });
+  }
+
+  else if (id === 'geo') {
+    note = 'VIX 為直接量測；地緣事件本身以新聞情緒代理。';
+    if (q.vix && isFinite(q.vix.price)) {
+      const v = q.vix.price;
+      basis.push({ t: `VIX ${v}${q.vix.chgPct != null ? `（當日 ${q.vix.chgPct > 0 ? '+' : ''}${q.vix.chgPct}%）` : ''}——${v >= EXT_CFG.vixHigh ? '風險趨避升溫，加密與股市同步下殺的機率上升' : v <= EXT_CFG.vixLow ? '風險胃納良好，資金願意承擔波動' : '波動預期處中性區'}`, src: '/api/macro（Yahoo/Stooq）' });
+      if (v >= EXT_CFG.vixHigh) score -= 2; else if (v <= EXT_CFG.vixLow) score += 1;
+    }
+    const nv = _macroNewsVote(tally.geo);
+    score += nv.v; basis.push({ t: nv.tx + (tally.geo.latest ? `　最新：${tally.geo.latest}` : ''), src: '新聞情緒引擎（戰爭／關稅／制裁關鍵詞）' });
+    if (fg && fg.value != null) {
+      const f = parseInt(fg.value);
+      basis.push({ t: `恐慌貪婪指數 ${f}（${f <= 25 ? '極度恐慌' : f <= 45 ? '恐慌' : f >= 75 ? '極度貪婪' : f >= 55 ? '貪婪' : '中性'}）——避險情緒的幣圈內部溫度計`, src: 'alternative.me' });
+      if (f <= 25) score -= 1; else if (f >= 75) score += 0;
+    }
+  }
+
+  if (!basis.length) return { stance: 'na', basis: [{ t: '目前沒有任何可用資料', src: '—' }], note };
+  const stance = score >= 2 ? 'bull' : score <= -2 ? 'bear' : 'neutral';
+  return { stance, basis, note, score };
+}
+
 /* ── 宏觀市場環境面板 ─────────────────────────────────────── */
 function buildMacroPanel(global, halving, fg) {
 
@@ -8497,48 +8635,51 @@ function buildMacroPanel(global, halving, fg) {
   /* ── 宏觀影響因素說明卡 ── */
   const factors = [
     {
-      icon: '🏛️', title: '聯準會（Fed）利率政策',
+      id: 'fed', icon: '🏛️', title: '聯準會（Fed）利率政策',
       color: '#7c83fd',
       desc: '降息→流動性寬鬆，加密幣利多；升息→資金緊縮，加密幣承壓。密切關注 FOMC 會議紀錄與 CME FedWatch 利率期貨。',
       link: 'https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html',
       linkTx: 'CME FedWatch →',
     },
     {
-      icon: '💵', title: '美元指數（DXY）',
+      id: 'dxy', icon: '💵', title: '美元指數（DXY）',
       color: '#64b5f6',
       desc: 'DXY 上漲→美元強勢，壓制比特幣等風險資產；DXY 下跌→美元弱勢，通常利多加密市場。與 BTC 呈高度負相關。',
       link: 'https://www.tradingview.com/chart/?symbol=TVC:DXY',
       linkTx: 'DXY 走勢圖 →',
     },
     {
-      icon: '📈', title: '比特幣現貨 ETF 資金流',
+      id: 'etf', icon: '📈', title: '比特幣現貨 ETF 資金流',
       color: '#ffd740',
       desc: '2024年1月通過後，貝萊德（iShares）等機構每日 ETF 淨流入/流出量成為市場領先指標，反映華爾街機構態度。',
       link: 'https://farside.co.uk/bitcoin-etf-flow-all-data/',
       linkTx: 'ETF 資金流數據 →',
     },
     {
-      icon: '🏦', title: '美國通膨數據（CPI）',
+      id: 'cpi', icon: '🏦', title: '美國通膨數據（CPI）',
       color: '#ff6d00',
       desc: 'CPI 高於預期→市場預期升息，加密幣重挫；CPI 低於預期→降息預期升溫，加密幣走強。每月第二週公布。',
       link: 'https://www.bls.gov/cpi/',
       linkTx: 'CPI 報告 →',
     },
     {
-      icon: '⚖️', title: '監管政策動向',
+      id: 'reg', icon: '⚖️', title: '監管政策動向',
       color: '#ef5350',
       desc: 'SEC、CFTC 對交易所與穩定幣的態度、各國政府的禁令或合法化政策，直接影響資金進場門檻與市場信心。',
       link: 'https://www.sec.gov/spotlight/cybersecurity',
       linkTx: 'SEC 最新動態 →',
     },
     {
-      icon: '🌍', title: '地緣政治風險',
+      id: 'geo', icon: '🌍', title: '地緣政治風險',
       color: '#aaa',
       desc: '地緣衝突初期加密幣可能隨風險資產下跌，但若被視為「數位黃金」，可能在後期轉為避險買盤。觀察 VIX 恐慌指數。',
       link: 'https://www.tradingview.com/chart/?symbol=CBOE:VIX',
       linkTx: 'VIX 恐慌指數 →',
     },
   ];
+
+  /* 六張卡共用的判讀情境：關鍵詞統計只跑一次（規則②） */
+  const _mfCtx = { q: (_extCache && _extCache.quotes) || {}, tally: _macroNewsTally(), global, fg };
 
   /* ── 宏觀總結訊號 ── */
   let macroSignal = '', macroColor = 'var(--neutral)';
@@ -8568,17 +8709,34 @@ function buildMacroPanel(global, halving, fg) {
     📡 宏觀訊號：${macroSignal}
   </div>` : ''}
   <div class="macro-factors-title">影響加密市場的六大宏觀因素</div>
+  <div style="font-size:0.72rem;color:var(--text3);line-height:1.7;margin:-4px 0 8px">
+    每一項下方都附上<b>當下的多空判定</b>與<b>用到的每一筆資料及其來源</b>。本站只有四種真實外部來源
+    （場外報價 /api/macro、加密大盤 CoinGecko、恐慌貪婪 alternative.me、新聞情緒引擎）——
+    Fed 決策、ETF 每日淨流、CPI 數字沒有直連資料源，該幾項一律標明為「代理推導」而非實際數據。
+  </div>
   <div class="macro-factors-grid">
-    ${factors.map(f => `
+    ${factors.map(f => {
+      let r = null;
+      try { r = macroFactorRead(f.id, _mfCtx); } catch(_e) {}
+      const sc = { bull: 'var(--bull)', bear: 'var(--bear)', neutral: 'var(--neutral)', na: 'var(--text3)' }[r ? r.stance : 'na'];
+      const sl = { bull: '📈 目前偏多', bear: '📉 目前偏空', neutral: '➖ 目前中性', na: '－ 資料不足' }[r ? r.stance : 'na'];
+      return `
       <div class="macro-factor-card" style="border-top:2px solid ${f.color}20;border-left:1px solid ${f.color}15">
         <div class="macro-factor-hdr">
           <span class="macro-factor-icon" style="color:${f.color}">${f.icon}</span>
           <span class="macro-factor-title" style="color:${f.color}">${f.title}</span>
         </div>
         <div class="macro-factor-desc">${f.desc}</div>
+        ${r ? `<div style="margin-top:7px;padding-top:7px;border-top:1px dashed rgba(255,255,255,.10)">
+          <div style="font-weight:700;color:${sc};font-size:0.78rem;margin-bottom:4px">${sl}</div>
+          <ul style="margin:0 0 0 15px;padding:0;font-size:0.73rem;line-height:1.7;color:var(--text2)">
+            ${r.basis.map(b => `<li>${b.t}<span style="color:var(--text3);font-size:0.68rem">　〔${b.src}〕</span></li>`).join('')}
+          </ul>
+          ${r.note ? `<div style="color:var(--text3);font-size:0.68rem;margin-top:4px;line-height:1.6">※ ${r.note}</div>` : ''}
+        </div>` : ''}
         <a href="${f.link}" target="_blank" rel="noopener" class="macro-factor-link">${f.linkTx}</a>
       </div>
-    `).join('')}
+    `; }).join('')}
   </div>`;
 }
 
@@ -9294,70 +9452,12 @@ function generateAIAnalysis(coin, mtfData, fearGreed) {
   }
 
   // ── 頂級交易員視角 ──
-  let pTopTrader = '';
-  try {
-    const _ttFP   = _footprintCache[coin.symbol];
-    const _ttLiq  = _liquidationCache[coin.symbol];
-    const _ttSetup = cached || {};
-    const _ttPrice = parseFloat(coin.price) || 0;
-    const _ttDir   = tradeDir || (bullTFs.length > bearTFs.length ? 'long' : bearTFs.length > bullTFs.length ? 'short' : null);
-    if (_ttDir && _ttDir !== 'wait') {
-      const _isLong = _ttDir === 'long';
-      const _ttParts = [];
-      // MTF 觀點
-      const _ttMtfAlign = _isLong ? bullTFs.length : bearTFs.length;
-      if (_ttMtfAlign >= 3) _ttParts.push(`多週期（${(_isLong ? bullTFs : bearTFs).join('、')}）同向確認，Smart Money 方向明確`);
-      else if (_ttMtfAlign >= 2) _ttParts.push(`${_ttMtfAlign}個週期確認，趨勢方向成立但需進一步確認`);
-      // 足跡訂單流
-      if (_ttFP) {
-        const _ttFPLabel = _ttFP.deltaDir === 'bull' ? '主動買盤主導' : _ttFP.deltaDir === 'bear' ? '主動賣盤主導' : '訂單流中性';
-        _ttParts.push(`足跡訂單流 ${_ttFPLabel}${_ttFP.absorption ? '，主力吸籌跡象' : ''}`);
-      }
-      // ICT 結構
-      if (_ttSetup.orderBlock) _ttParts.push(`ICT Order Block 在進場區附近（$${fmtPrice(_ttSetup.orderBlock.high || _ttSetup.orderBlock.low)}），結構支撐有效`);
-      if (_ttSetup.fvg && !_ttSetup.fvg.filled) _ttParts.push(`FVG 缺口尚未回補，趨勢延續動能強`);
-      // 爆倉牆
-      if (_ttLiq) {
-        const _ttRange = _ttPrice * 0.15;
-        const _sqWall = _isLong
-          ? (_ttLiq.shortLiqs || []).find(l => l.price > _ttPrice && l.price <= _ttPrice + _ttRange)
-          : (_ttLiq.longLiqs  || []).find(l => l.price < _ttPrice && l.price >= _ttPrice - _ttRange);
-        if (_sqWall) _ttParts.push(`${_isLong ? '空單爆倉牆' : '多單爆倉牆'}（$${fmtPrice(_sqWall.price)}）在進場方向前方，擠壓行情有利`);
-      }
-      // 巨鯨 + CVD
-      const _ttWhale = coin.whaleData;
-      if (_ttWhale) {
-        const _ttWLabel = _ttWhale.bias === 'bull' ? '巨鯨大幅淨買入' : _ttWhale.bias === 'bear' ? '巨鯨大幅淨賣出' : '巨鯨動向中性';
-        _ttParts.push(_ttWLabel);
-      }
-      // 資金費率定位（機構視角：反向擁擠 = 順勢燃料）
-      const _ttFr = coin.derivData?.fundingRate;
-      if (_ttFr != null && !isNaN(_ttFr) && Math.abs(_ttFr) >= 0.0005) {
-        const _ttFrCrowdLong = _ttFr > 0;
-        _ttParts.push((_isLong ? !_ttFrCrowdLong : _ttFrCrowdLong)
-          ? `資金費率 ${(_ttFr*100).toFixed(3)}% 反向擁擠，對手方倉位為進場方向提供擠壓燃料`
-          : `資金費率 ${(_ttFr*100).toFixed(3)}% 同向擁擠，槓桿結構不利，留意反向擠壓`);
-      }
-      // VWAP 執行位（機構掛單基準）
-      const _ttVw = _ttFP?.vwap;
-      if (_ttVw > 0 && _ttPrice > 0) {
-        const _ttVwDev = (_ttPrice - _ttVw) / _ttVw;
-        if ((_isLong && _ttVwDev >= 0 && _ttVwDev <= 0.02) || (!_isLong && _ttVwDev <= 0 && _ttVwDev >= -0.02))
-          _ttParts.push(`價格位於 VWAP ${_isLong ? '上' : '下'}方 ${(Math.abs(_ttVwDev)*100).toFixed(2)}%，機構執行基準確認${_isLong ? '買' : '賣'}方掌控`);
-        else if ((_isLong && _ttVwDev > 0.025) || (!_isLong && _ttVwDev < -0.025))
-          _ttParts.push(`價格偏離 VWAP ${(Math.abs(_ttVwDev)*100).toFixed(2)}%，機構視角屬追價區，多等回踩 VWAP $${fmtPrice(_ttVw)} 再執行`);
-      }
-      if (_ttParts.length >= 2) {
-        pTopTrader = `<div style="background:rgba(251,191,36,.05);border:1px solid rgba(251,191,36,.2);border-radius:8px;padding:10px 13px;margin-top:6px">
-          <div style="font-weight:700;color:#fbbf24;margin-bottom:5px">👑 頂級交易員視角</div>
-          <div style="font-size:0.84rem;line-height:1.8;color:var(--text2)">
-            從機構視角分析 <strong>${coin.symbol}</strong>：${_ttParts.join('；')}。
-            ${_ttSetup.conf >= 80 ? `<br>風控分 <strong style="color:#22c55e">${_ttSetup.conf} 分</strong>，具備高確信度進場條件。` : _ttSetup.conf >= 60 ? `<br>風控分 <strong style="color:#f59e0b">${_ttSetup.conf} 分</strong>，達入場門檻，控倉保守進場。` : ''}
-          </div>
-        </div>`;
-      }
-    }
-  } catch(_tte) {}
+  // 2026-08：已升級為結構圖下方的獨立區塊「👑 頂級交易員操作計畫」
+  // （buildTopTraderPlan）：基本面／技術面／籌碼面／場外重力四層攤牌，
+  // 加上可執行的進場、加倉、止損、止盈、倉位、失效條件與反方觀點。
+  // 舊的濃縮版留在這裡只會讓同一頁講兩次、且兩邊方向取法不同（舊版看
+  // tradeDir、新版看確信度引擎）會互相矛盾，故整段移除。
+  const pTopTrader = '';
 
   // ── 風控扣分整合段落（ADX + 宏觀 + AI趨勢 + AI風控規則）──
   let p5 = '';
@@ -9600,6 +9700,368 @@ function buildICTSMRPanel(symbol, coin, mtfData) {
   } catch(_e) { return ''; }
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   頂級交易員操作計畫（置於結構圖下方）
+   原本的「👑 頂級交易員視角」只是 AI 敘述裡的一個小段落，把幾條證據
+   用頓號串起來就結束——看得到觀點、看不到「所以要怎麼做」。這裡改成
+   一份完整的作戰計畫：先把基本面／技術面／籌碼面／場外重力四張桌子上
+   的牌全部攤開（每一項都標明資料來源與時間，取不到就寫「無資料」，
+   不假裝有），再落到可執行的進場、加倉、止損、止盈、倉位、時間框架，
+   最後強制寫出「我哪裡可能是錯的」與失效條件。
+
+   刻意的設計：
+   · 方向以 computeDirectionConviction 為準（它是全站唯一彙整全部證據
+     並經過實測校準的方向裁決），不另立一套會跟系統打架的判斷
+   · 價位一律走 computeSimpleSetup（硬規則③），不自行湊 R 值
+   · 純讀已算好的快取，不發任何新請求；整份 HTML 以 symbol 快取 60 秒 */
+
+const _ttPlanCache = {};   // symbol → { at, html }
+
+function _ttFmtUsd(v) {
+  const n = Math.abs(v);
+  if (!isFinite(n) || n <= 0) return '—';
+  if (n >= 1e8) return '$' + (v / 1e8).toFixed(2) + '億';
+  if (n >= 1e4) return '$' + (v / 1e4).toFixed(1) + '萬';
+  return '$' + Math.round(v).toLocaleString();
+}
+function _ttRow(label, value, note) {
+  return `<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:4px">
+    <span style="color:var(--text3);min-width:78px;flex-shrink:0">${label}</span>
+    <div style="flex:1;color:var(--text2)">${value}${note ? `<span style="color:var(--text3);font-size:0.72rem">　${note}</span>` : ''}</div>
+  </div>`;
+}
+function _ttSection(title, color, rows) {
+  if (!rows.length) return '';
+  return `<div style="background:rgba(16,24,39,.55);border:1px solid ${color}33;border-radius:9px;padding:9px 12px;margin-bottom:9px">
+    <div style="font-weight:700;color:${color};font-size:0.8rem;margin-bottom:6px">${title}</div>
+    <div style="font-size:0.77rem;line-height:1.75">${rows.join('')}</div>
+  </div>`;
+}
+
+/* 結構文字化：把 computeSwingStructure 的旗標翻成人看得懂的一句話 */
+function _ttStructText(st, name) {
+  if (!st) return '';
+  if (st.dir === 'range' && !st.chochUp && !st.chochDown)
+    return `${name} 結構未成形（樞紐 ${st.pivots || 0} 個），無方向骨架`;
+  const parts = [];
+  if (st.chochDown)     parts.push('CHoCH 轉空（上升性格首次被破，第一警訊）');
+  else if (st.chochUp)  parts.push('CHoCH 轉多（下降性格首次被破，第一警訊）');
+  else if (st.dir === 'up')   parts.push('HH/HL 上升結構');
+  else if (st.dir === 'down') parts.push('LH/LL 下降結構');
+  else parts.push('區間結構');
+  if (st.bosUp)   parts.push('已 BOS 破前高');
+  if (st.bosDown) parts.push('已 BOS 破前低');
+  if (isFinite(st.r2)) parts.push(`趨勢品質 R²${st.r2}${st.r2 >= 0.6 ? '（順滑）' : st.r2 >= 0.3 ? '（一般）' : '（雜亂，均值回歸為主）'}`);
+  const lv = [];
+  if (st.lastHigh > 0) lv.push(`前高 $${fmtPrice(st.lastHigh)}`);
+  if (st.lastLow  > 0) lv.push(`前低 $${fmtPrice(st.lastLow)}`);
+  return `${name} ${parts.join('、')}${lv.length ? `　<span style="color:var(--text3);font-size:0.72rem">${lv.join('／')}</span>` : ''}`;
+}
+
+function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving) {
+  if (!coin) return '';
+  const sym = coin.symbol;
+  const cached = _ttPlanCache[sym];
+  if (cached && Date.now() - cached.at < 60000) return cached.html;
+
+  const base   = sym.replace('/USDT', '');
+  const price  = parseFloat(coin.price) || 0;
+  const atr    = parseFloat(coin.atr) || 0;
+  const atrPct = price > 0 && atr > 0 ? atr / price * 100 : 0;
+
+  /* ── 方向裁決：以全站唯一的確信度引擎為準 ── */
+  let conv = { score: 0, votes: [], items: [] };
+  try { conv = computeDirectionConviction(coin) || conv; } catch(_e) {}
+  const cs   = conv.score;
+  const dir  = cs >= 12 ? 'long' : cs <= -12 ? 'short' : 'wait';
+  const isLong = dir === 'long';
+  const dirTx = dir === 'long' ? '做多' : dir === 'short' ? '做空' : '觀望';
+  const dirColor = dir === 'long' ? 'var(--bull)' : dir === 'short' ? 'var(--bear)' : 'var(--neutral)';
+  const stance = Math.abs(cs) >= 40 ? '證據高度一致，可依計畫進場'
+    : Math.abs(cs) >= 25 ? '證據偏向明確，回踩結構位再進'
+    : Math.abs(cs) >= 12 ? '方向成立但單薄，只做小倉試單'
+    : '多空證據互相抵銷，這種盤沒有優勢，不進場才是正確操作';
+
+  /* ── 一、基本面與市場定位 ── */
+  const fRows = [];
+  try {
+    const volTx = coin.volume > 0 ? `${_ttFmtUsd(coin.volume)}（${coin.volumeStrength || '—'}）` : '無資料';
+    fRows.push(_ttRow('流動性', volTx,
+      coin.volume >= 1e8 ? '深度足夠，滑點與插針風險低'
+      : coin.volume >= 2e7 ? '中等深度，大單需分批'
+      : '成交量偏薄，容易被單筆大單掃穿止損'));
+    const rs = _rsRank[sym];
+    if (isFinite(rs)) fRows.push(_ttRow('相對強弱', `對 BTC 超額報酬排名 <b>${rs}</b>/100`,
+      rs >= 70 ? '資金相對流入，同向做多勝算高' : rs <= 30 ? '資金相對流出，反彈易被賣壓吃掉' : '與大盤同步，無獨立行情'));
+    if (globalMkt) {
+      const dom = globalMkt.btcDominance, mc = globalMkt.marketCapChange;
+      fRows.push(_ttRow('大盤環境',
+        `總市值 24h ${mc > 0 ? '+' : ''}${mc ?? '—'}%　BTC 主導率 ${dom ?? '—'}%`,
+        base === 'BTC' ? '' : dom > 55 ? '主導率高，山寨資金被抽走，逆勢做多山寨風險大'
+        : dom < 45 ? '主導率低，山寨資金充沛，個別幣種行情容易走出來' : '主導率中性'));
+    }
+    if (fg && fg.value != null) {
+      const v = parseInt(fg.value);
+      fRows.push(_ttRow('市場情緒', `恐慌貪婪 <b>${v}</b>`,
+        v >= 75 ? '極度貪婪：追多是接盤，反手要有結構佐證'
+        : v <= 25 ? '極度恐慌：恐慌底常見，但接刀要等結構確認' : '情緒中性，情緒面不構成優勢或阻礙'));
+    }
+    if (halving && halving.daysLeft != null)
+      fRows.push(_ttRow('週期位置', `距下次減半 ${halving.daysLeft} 天`, '長週期供給面背景，對日內方向無直接指引'));
+    // 新聞事件面：只取與本幣或整體市場相關的近期新聞情緒
+    try {
+      const news = Array.isArray(_newsSentimentCache) ? _newsSentimentCache : [];
+      const rel = news.filter(n => {
+        const t = ((n.originalTitle || '') + (n.zhTitle || '')).toLowerCase();
+        return t.includes(base.toLowerCase()) || (n.zhTitle || '').includes('加密市場');
+      }).slice(0, 6);
+      if (rel.length) {
+        const nb = rel.filter(n => n.sentiment === 'bull').length;
+        const ns = rel.filter(n => n.sentiment === 'bear').length;
+        const tone = nb > ns ? '<span style="color:var(--bull)">偏多</span>' : ns > nb ? '<span style="color:var(--bear)">偏空</span>' : '中性';
+        fRows.push(_ttRow('事件面', `近期相關新聞 ${rel.length} 則，情緒 ${tone}（多 ${nb} / 空 ${ns}）`,
+          rel[0] ? `最新：${rel[0].zhTitle}` : ''));
+      } else {
+        fRows.push(_ttRow('事件面', '近期無直接相關新聞', '無事件催化，行情由技術面與籌碼面主導'));
+      }
+    } catch(_e) {}
+    fRows.push(_ttRow('資料邊界', '本站無鏈上／代幣經濟／營收資料源',
+      '「基本面」在此僅指流動性、資金定位與事件面；不足以支撐長線估值判斷'));
+  } catch(_e) {}
+
+  /* ── 二、技術面 ── */
+  const tRows = [];
+  try {
+    const tfMap = [['週線', coin.weeklySignal], ['日線', coin.dailySignal], ['4H', coin.h4Signal], ['1H', coin.h1Signal], ['15m', coin.signal15m]];
+    const bull = tfMap.filter(x => String(x[1] || '').includes('bull')).map(x => x[0]);
+    const bear = tfMap.filter(x => String(x[1] || '').includes('bear')).map(x => x[0]);
+    tRows.push(_ttRow('多週期', `看多 ${bull.length ? bull.join('、') : '無'}　｜　看空 ${bear.length ? bear.join('、') : '無'}`,
+      (bull.length >= 4 || bear.length >= 4) ? '四個以上週期同向，趨勢單環境'
+      : (bull.length && bear.length) ? '大小週期分歧，只做小週期回歸、不做趨勢延伸' : ''));
+    [['日線', coin.dayStruct], ['4H', coin.h4Struct], ['15m', coin.struct15]].forEach(([n, st]) => {
+      const t = _ttStructText(st, n);
+      if (t) tRows.push(_ttRow('擺動結構', t));
+    });
+    const e20 = parseFloat(coin.ema20) || 0, e50 = parseFloat(coin.ema50) || 0, e200 = parseFloat(coin.ema200) || 0;
+    const emaTx = [e20 > 0 ? `EMA20 $${fmtPrice(e20)}` : '', e50 > 0 ? `EMA50 $${fmtPrice(e50)}` : '', e200 > 0 ? `EMA200 $${fmtPrice(e200)}` : ''].filter(Boolean).join('　');
+    tRows.push(_ttRow('均線位置', emaTx || '無資料',
+      (price > 0 && e200 > 0) ? (price > e200 ? '站上長期均線，回檔視為買點' : '長期均線之下，反彈視為賣點') : ''));
+    tRows.push(_ttRow('動能', `RSI ${coin.rsi}　ADX ${coin.adx}　ATR ${atrPct ? atrPct.toFixed(2) + '%' : '—'}`,
+      coin.adx >= 25 ? '趨勢確立，順勢策略有效' : coin.adx >= 18 ? '趨勢初現，等突破確認' : '無趨勢，區間高拋低吸，突破多為假突破'));
+    const nk = coin.nakedK;
+    if (nk && Array.isArray(nk.tags) && nk.tags.length)
+      tRows.push(_ttRow('裸 K 型態', nk.tags.join('、'), '最後一根可能仍在形成，僅作證據不作單一理由'));
+    else if (nk) tRows.push(_ttRow('裸 K 型態', '近期無明確型態'));
+    // 4H 圖形與 ICT（若詳情頁已算過）
+    const _st = _tradeSetupCache[sym];
+    if (_st) {
+      const icts = [];
+      if (_st.orderBlock) icts.push(`1H OB $${fmtPrice(_st.orderBlock.low)}–$${fmtPrice(_st.orderBlock.high)}${_st.orderBlock.priceInOB ? '（價格在區內）' : ''}`);
+      if (_st.fvg && !_st.fvg.filled) icts.push(`1H FVG 未回補 $${fmtPrice(_st.fvg.low)}–$${fmtPrice(_st.fvg.high)}`);
+      if (_st.premiumDiscount) icts.push(`${_st.premiumDiscount.zoneLabel}（${_st.premiumDiscount.pctInRange.toFixed(0)}% 位置）`);
+      if (icts.length) tRows.push(_ttRow('機構結構', icts.join('；')));
+      const cp = _st.chartPat;
+      if (cp && cp.patterns && cp.patterns.length)
+        tRows.push(_ttRow('技術形態', cp.patterns.slice(0, 3).map(p => `${p.emoji || ''}${p.name}（${p.status === 'forming' ? '形成中' : '已確認'}）`).join('、')));
+    }
+  } catch(_e) {}
+
+  /* ── 三、籌碼面 ── */
+  const cRows = [];
+  try {
+    if (deriv) {
+      const fr = deriv.fundingRate;
+      if (fr != null && isFinite(fr)) cRows.push(_ttRow('資金費率', `${(fr * 100).toFixed(4)}%`,
+        fr >= 0.0005 ? '多頭擁擠，反向擠壓燃料在上方為空方所有' : fr <= -0.0005 ? '空頭擁擠，軋空燃料充足' : '費率中性，槓桿結構無偏斜'));
+      if (deriv.topLongRatio != null) cRows.push(_ttRow('大戶持倉', `頂級帳戶多頭 ${(deriv.topLongRatio * 100).toFixed(1)}%`,
+        deriv.topLongRatio > 0.6 ? '大戶明顯偏多' : deriv.topLongRatio < 0.4 ? '大戶明顯偏空' : '大戶分歧'));
+      if (deriv.takerBuySell != null) cRows.push(_ttRow('主動成交', `Taker 買賣比 ${deriv.takerBuySell.toFixed(2)}`,
+        deriv.takerBuySell > 1.1 ? '主動買盤佔優' : deriv.takerBuySell < 0.9 ? '主動賣盤佔優' : '買賣均衡'));
+    }
+    const oit = getOITrend(sym);
+    if (oit) cRows.push(_ttRow('未平倉量', `${OI_REGIME_LABEL[oit.regime]}　OI ${oit.oiChg > 0 ? '+' : ''}${oit.oiChg}%／價 ${oit.pChg > 0 ? '+' : ''}${oit.pChg}%`,
+      (oit.regime === 'short_cover' || oit.regime === 'long_liq') ? '這段行情是平倉推動而非新錢，延續性差' : ''));
+    else cRows.push(_ttRow('未平倉量', '樣本不足（需 10 分鐘以上歷史）'));
+    const ls = liqStats(sym);
+    if (ls && ls.n) cRows.push(_ttRow('清算', `30 分鐘 多單 ${_ttFmtUsd(ls.longUsd)}／空單 ${_ttFmtUsd(ls.shortUsd)}`,
+      ls.dom === 'short' ? '軋空進行中，軋完即斷，追高危險' : ls.dom === 'long' ? '多殺多進行中，殺完常見 V 轉' : ''));
+    const lq = _liquidationCache[sym];
+    if (lq && price > 0) {
+      const rg = price * 0.2;
+      const nl = (lq.longLiqs || []).filter(l => Math.abs(l.price - price) <= rg).sort((a, b) => b.strength - a.strength)[0];
+      const nsx = (lq.shortLiqs || []).filter(l => Math.abs(l.price - price) <= rg).sort((a, b) => b.strength - a.strength)[0];
+      const wl = [];
+      if (nl)  wl.push(`下方多單爆倉牆 $${fmtPrice(nl.price)}`);
+      if (nsx) wl.push(`上方空單爆倉牆 $${fmtPrice(nsx.price)}`);
+      if (wl.length) cRows.push(_ttRow('爆倉地圖', wl.join('；'),
+        lq.source === 'estimated' ? '估算值（依常見槓桿反推），非交易所實際持倉' : '價格傾向被爆倉密集區吸引'));
+    }
+    const fp = _footprintCache[sym];
+    if (fp) {
+      const d = fp.deltaDir === 'bull' ? '主動買盤主導' : fp.deltaDir === 'bear' ? '主動賣盤主導' : '訂單流均衡';
+      cRows.push(_ttRow('訂單流', `${d}${fp.absorption ? '，出現吸籌' : ''}${fp.deltaDiv ? '，Delta 背離' : ''}`,
+        fp.vwap > 0 ? `VWAP $${fmtPrice(fp.vwap)}（機構執行基準）` : ''));
+    }
+    if (whale) {
+      const wp = analyzeWhalePattern(whale);
+      if (wp && wp.pattern && wp.pattern !== 'neutral') cRows.push(_ttRow('巨鯨', `${wp.label}（強度 ${wp.strength}%）`));
+    }
+    if (!cRows.length) cRows.push(_ttRow('籌碼面', '本幣種無合約／清算資料源', '缺這一層時方向判斷只剩技術面，倉位應減半'));
+  } catch(_e) {}
+
+  /* ── 四、場外重力 ── */
+  const xRows = [];
+  try {
+    const es = extRiskState();
+    if (es) {
+      xRows.push(_ttRow('風險溫度', `<b style="color:${es.state === 'on' ? 'var(--bull)' : es.state === 'off' ? 'var(--bear)' : 'var(--text2)'}">${es.label}</b>`,
+        es.why.length ? es.why.join('、') : '各項均在常態區間'));
+      const dv = extDivergence(coin);
+      if (dv) xRows.push(_ttRow('背離', dv === 'up' ? '幣價獨漲、美股期指下跌' : '幣價獨跌、美股期指上漲',
+        '缺乏場外支撐的行情，續航力通常較短'));
+    } else {
+      xRows.push(_ttRow('風險溫度', '未取得場外報價', '可在設定頁「場外風險溫度」啟用；未取得時此層不投票、不封鎖'));
+    }
+    const rg = (typeof _regimeCache !== 'undefined' && _regimeCache) ? _regimeCache : null;
+    if (rg) xRows.push(_ttRow('市場狀態', rg.label,
+      rg.dir === 'range' ? '盤整期：突破策略勝率下降，區間策略優先' : '趨勢期：順勢策略優先，逆勢單需極強理由'));
+  } catch(_e) {}
+
+  /* ── 五、操作計畫（價位一律走 computeSimpleSetup）── */
+  let planHtml = '';
+  try {
+    if (dir === 'wait') {
+      const need = [];
+      if (Math.abs(cs) < 12) need.push(`方向確信度目前 ${cs >= 0 ? '+' : ''}${cs}，需 ±12 以上才成立`);
+      if (coin.adx < 18) need.push(`ADX ${coin.adx} 無趨勢，等 ADX 站上 20 再看突破`);
+      const _ds = coin.dayStruct, _hs = coin.h4Struct;
+      if (_ds && _hs && _ds.dir !== _hs.dir && _ds.dir !== 'range' && _hs.dir !== 'range')
+        need.push('日線與 4H 結構相反，等其中一邊 BOS 表態');
+      need.push('等待價格回到下方合流支撐或上方合流壓力，帶量拒絕（長影線／吞噬）後再進場');
+      planHtml = `<div style="font-size:0.77rem;line-height:1.8;color:var(--text2)">
+        <div style="margin-bottom:5px">目前<b style="color:var(--neutral)">不建立倉位</b>。要我改變主意，需要看到：</div>
+        <ul style="margin:0 0 0 16px;padding:0">${need.map(n => `<li>${n}</li>`).join('')}</ul>
+      </div>`;
+    } else {
+      const su = computeSimpleSetup(coin, isLong);
+      const risk = Math.abs(su.entry - su.sl) || 0;
+      const eqS = parseFloat(loadSettings().mainEquity);
+      const eq  = eqS > 0 ? eqS : 1000;
+      const rp  = Math.abs(cs) >= 40 ? 1.2 : Math.abs(cs) < 25 ? 0.6 : 1.0;
+      const qty = risk > 0 ? +((eq * rp / 100) / risk).toPrecision(4) : null;
+      const notional = qty ? +(qty * su.entry).toFixed(2) : null;
+      const gap = price > 0 ? (su.entry - price) / price * 100 : 0;
+      const trigger = Math.abs(gap) < 0.15
+        ? '現價即在進場區，可直接執行'
+        : (isLong === (gap < 0))
+          ? `等待回踩 $${fmtPrice(su.entry)}（距現價 ${Math.abs(gap).toFixed(2)}%），觸及後需見到 ${isLong ? '下影拒絕或量縮止跌' : '上影拒絕或量縮止漲'} 再執行`
+          : `進場位在現價${gap > 0 ? '上' : '下'}方 ${Math.abs(gap).toFixed(2)}%，屬追價區——等回踩或放棄這筆，不追`;
+      const tpEv = (su.tpZones || []).slice(0, 3).map((z, i) =>
+        `<div>目標${i + 1} $${fmtPrice(z.p)}${z.ev && z.ev.length ? `<span style="color:var(--text3);font-size:0.72rem">（${z.ev.slice(0, 3).join('、')}）</span>` : ''}</div>`).join('');
+      const holdTx = risk > 0 && atr > 0
+        ? `以 ATR 推估：到目標一約需 ${Math.max(1, Math.round(Math.abs(su.tp1 - su.entry) / atr))} 根 1H K 棒的行進距離`
+        : '';
+      const invalid = [];
+      invalid.push(`收盤${isLong ? '跌破' : '突破'} $${fmtPrice(su.sl)}（${su.slReason.split('，')[0]}）→ 立即離場，不等反彈`);
+      if (isLong && coin.h4Struct) invalid.push('4H 出現 CHoCH 轉空（跌破最後一個 HL）→ 多頭結構失效，減倉或出場');
+      if (!isLong && coin.h4Struct) invalid.push('4H 出現 CHoCH 轉多（突破最後一個 LH）→ 空頭結構失效，減倉或出場');
+      invalid.push(`OI 轉為${isLong ? '空頭回補' : '多頭平倉'}型態（行情由平倉推動）→ 續航力消失，提前收割`);
+      invalid.push('場外轉 risk-off（期指急跌／VIX 跳升）→ 高相關資產同步下殺，優先降低曝險');
+      planHtml = `<div style="font-size:0.78rem;line-height:1.85">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:7px;margin-bottom:8px">
+          ${[['進場', su.entry, dirColor], ['止損', su.sl, 'var(--bear)'], ['目標一', su.tp1, 'var(--bull)'], ['目標二', su.tp2, 'var(--bull)']].map(([l, v, c]) =>
+            `<div style="background:rgba(255,255,255,.03);border-radius:7px;padding:6px 8px">
+              <div style="color:var(--text3);font-size:0.7rem">${l}</div>
+              <div style="font-weight:700;color:${c}">$${fmtPrice(v)}</div>
+            </div>`).join('')}
+        </div>
+        ${_ttRow('執行條件', trigger)}
+        ${su.addLevel ? _ttRow('加倉', `突破 $${fmtPrice(su.addLevel)} 後回踩不破可加倉${su.addSl ? `，加倉後整體止損上移至 $${fmtPrice(su.addSl)}` : ''}`) : ''}
+        ${_ttRow('止損依據', su.slReason)}
+        ${_ttRow('止盈依據', `${su.tp1Reason}<br>${su.tp2Reason}${tpEv ? `<div style="margin-top:3px">${tpEv}</div>` : ''}`)}
+        ${_ttRow('風險報酬', `目標一 ${su.rr1}R　目標二 ${su.rr2}R`, su.rr1 < 1.2 ? '報酬風險比偏低，這種結構寧可不做' : '')}
+        ${qty ? _ttRow('倉位', `${qty} ${base}（名目 ${_ttFmtUsd(notional)}，風險 ${rp}% × 權益 ${_ttFmtUsd(eq)}）`,
+          `固定分數法：單筆最大虧損 ${_ttFmtUsd(eq * rp / 100)}${rp !== 1 ? `，已依確信度 ${cs} 調整` : ''}`) : ''}
+        ${holdTx ? _ttRow('時間框架', holdTx, '超過兩倍時間仍未推進 = 這筆的假設沒有兌現，先平掉換場') : ''}
+        <div style="margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.07)">
+          <div style="color:#f87171;font-weight:600;margin-bottom:3px">失效條件（任一成立就離場，不討價還價）</div>
+          <ul style="margin:0 0 0 16px;padding:0;color:var(--text2)">${invalid.map(i => `<li>${i}</li>`).join('')}</ul>
+        </div>
+      </div>`;
+    }
+  } catch(e) {
+    planHtml = `<div style="color:var(--bear);font-size:0.77rem">操作計畫計算失敗：${String(e.message || e).slice(0, 80)}</div>`;
+  }
+
+  /* ── 六、反方觀點（強制寫出「我哪裡可能錯」）── */
+  const against = [];
+  try {
+    const wantNeg = dir === 'long';
+    for (const v of conv.votes) {
+      const m = v.match(/^([+-]\d+)/);
+      if (!m) continue;
+      const n = parseInt(m[1]);
+      if (dir === 'wait') { if (Math.abs(n) >= 4) against.push(v); }
+      else if (wantNeg ? n < 0 : n > 0) against.push(v);
+    }
+    const su2 = _tradeSetupCache[sym];
+    if (su2 && Array.isArray(su2.learnWarn)) su2.learnWarn.slice(0, 3).forEach(w => against.push(w));
+  } catch(_e) {}
+
+  /* ── 記分卡：這套判斷最近準不準（沒有交易也會累積）── */
+  let scoreTx = '';
+  try {
+    const fs = forecastStats();
+    if (fs && fs.length) {
+      const top = fs.filter(r => r.n >= 20).slice(0, 3)
+        .map(r => `${r.label} ${r.rate}%（${r.n} 筆）`).join('、');
+      if (top) scoreTx = `近期預測命中率：${top}`;
+    }
+  } catch(_e) {}
+
+  const html = `<div style="font-size:0.8rem">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:linear-gradient(90deg,rgba(251,191,36,.10),transparent);
+        border-left:3px solid #fbbf24;border-radius:0 8px 8px 0;padding:8px 12px;margin-bottom:10px">
+      <span style="font-weight:800;color:${dirColor};font-size:1rem">${dirTx}</span>
+      <span style="color:var(--text3);font-size:0.76rem">方向確信度</span>
+      <b style="color:${dirColor}">${cs >= 0 ? '+' : ''}${cs}</b>
+      <span style="color:var(--text2);font-size:0.77rem">${stance}</span>
+    </div>
+    <div style="font-size:0.77rem;color:var(--text2);line-height:1.8;margin-bottom:9px">
+      我對 <b>${base}</b> 的看法：${conv.votes.length
+        ? `目前站在檯面上的證據是「${conv.votes.slice(0, 6).join('、')}${conv.votes.length > 6 ? '…' : ''}」，`
+        : '目前沒有任何一項證據強到能形成方向，'}
+      ${dir === 'wait'
+        ? '多空互相抵銷。這種盤最貴的成本不是虧損而是手續費與注意力，計畫是空手等待結構表態。'
+        : `因此我${dirTx}。但真正決定這筆賺賠的不是方向而是位置——${isLong ? '在支撐上方買，不在半空中追' : '在壓力下方空，不在坑底砸'}，並且事先寫好在哪裡承認錯誤。`}
+      ${scoreTx ? `<span style="color:var(--text3)">（${scoreTx}）</span>` : ''}
+    </div>
+    ${_ttSection('📊 一、基本面與市場定位', '#60a5fa', fRows)}
+    ${_ttSection('📐 二、技術面', '#a78bfa', tRows)}
+    ${_ttSection('🧮 三、籌碼面', '#f59e0b', cRows)}
+    ${_ttSection('🌍 四、場外重力與市場狀態', '#34d399', xRows)}
+    <div style="background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.25);border-radius:9px;padding:10px 12px;margin-bottom:9px">
+      <div style="font-weight:700;color:#fbbf24;font-size:0.82rem;margin-bottom:6px">🎯 五、操作計畫</div>
+      ${planHtml}
+    </div>
+    ${against.length ? `<div style="background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.22);border-radius:9px;padding:9px 12px">
+      <div style="font-weight:700;color:#f87171;font-size:0.8rem;margin-bottom:5px">🧨 六、反方觀點（我可能錯在哪）</div>
+      <ul style="margin:0 0 0 16px;padding:0;font-size:0.76rem;line-height:1.75;color:var(--text2)">
+        ${against.slice(0, 6).map(a => `<li>${a}</li>`).join('')}
+      </ul>
+      <div style="color:var(--text3);font-size:0.71rem;margin-top:5px">逆向證據越多，倉位越小；出現三項以上且都是結構級（日線／4H）時，這筆不該做。</div>
+    </div>` : ''}
+    <div style="color:var(--text3);font-size:0.7rem;margin-top:8px;line-height:1.6">
+      本頁所有判斷均來自本站已抓取的即時資料（價格與指標來自交易所 K 線、籌碼來自合約端點、場外來自 /api/macro），
+      沒有任何一項是憑空生成的推測；取不到的資料一律標示「無資料」而不以猜測填補。
+      這是分析與計畫，不是投資建議，執行與風險由你自己承擔。
+    </div>
+  </div>`;
+
+  _ttPlanCache[sym] = { at: Date.now(), html };
+  return html;
+}
+
 /* ── 幣種詳情（async）────────────────────────────────────── */
 async function renderCoinDetail(symbol) {
   const coin = state.data.find(d => d.symbol === symbol);
@@ -9675,7 +10137,7 @@ async function renderCoinDetail(symbol) {
 
   // 重置所有異步區塊
   const setL = id => { const e = document.getElementById(id); if (e) e.innerHTML = '<div class="adv-loading">載入中...</div>'; };
-  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('fp-body'); setL('liq-body'); setL('ai-body'); setL('vp-body'); setL('situation-body');
+  setL('macro-body'); setL('deriv-body'); setL('setup-body'); setL('mtf-body'); setL('of-body'); setL('fp-body'); setL('liq-body'); setL('ai-body'); setL('vp-body'); setL('situation-body'); setL('toptrader-body');
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
@@ -9752,6 +10214,7 @@ async function renderCoinDetail(symbol) {
   setSafe('fp-body',        () => buildFootprintPanel(_footprintCache[symbol], coin));
   setSafe('liq-body',       () => buildLiquidationPanel(_liquidationCache[symbol], coin, mtfData));
   setSafe('ai-body',        () => generateAIAnalysis(coin, mtfData, fearGreed));
+  setSafe('toptrader-body', () => buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fearGreed, halving));
   setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
   setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
 
@@ -12877,7 +13340,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260816b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260817a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
