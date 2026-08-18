@@ -13510,7 +13510,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260817c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260818a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -13830,6 +13830,23 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
    監控取消門檻＝建單門檻−2 的遲滯帶，之後真的被取消必然代表市場數據
    實際惡化 ≥3 分，屬正當取消，不再需要 30 分鐘時間寬限。
    ctx = { wBias, tBias, btcChg24 }（呼叫端提供宏觀上下文）。 */
+/* 把掃描補抓到的合約／巨鯨資料重新掛回這一輪的幣物件。
+   coin 物件每輪重建，但這些資料是 5 分鐘快取制的補抓結果——不掛回來，
+   任何以它們計分的因子都會在下一輪憑空歸零（見 _scanFetchCache 的註解）。
+   回傳這一輪有幾個因子因為連快取都沒有而無法計分，供監控判斷可比性。 */
+function attachScanExtras(coin) {
+  let missing = 0;
+  try {
+    const c = _scanFetchCache[coin.symbol];
+    const fresh = c && Date.now() - c.ts < 20 * 60 * 1000;
+    if (!coin.derivData && fresh && c.deriv) coin.derivData = c.deriv;
+    if (!coin.whaleData && fresh && c.whale) coin.whaleData = c.whale;
+    if (!coin.derivData) missing += 2;   // 訂單流 Taker、資金費率兩個因子無法計分
+    if (!_footprintCache[coin.symbol]) missing += 1;
+  } catch(_e) {}
+  return missing;
+}
+
 function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
   _ctx = _ctx || { wBias: 'neutral', tBias: 'neutral', btcChg24: NaN };
     let _sqRC = 0;  // recheck score
@@ -14409,8 +14426,21 @@ async function recordSignalsFromScan(data) {
           const _sfAtr = calcATR14FromKlines(_sfR1h);
           if (_sfAtr > 0) Object.assign(_tradeSetupCache[coin.symbol], { atrReal: _sfAtr, atrRealTs: Date.now() });
         }
-        _scanFetchCache[coin.symbol] = { ts: _sfNow };
+        /* ⚠️ 2026-08-18 實案根因（建單後下一輪即被取消）：
+           這裡原本只存 { ts }——「抓過了」這件事被快取，抓回來的資料卻沒有。
+           coin 物件每輪掃描都是全新的（fetchAllFromBinance 重建），於是 5 分鐘
+           快取期內的後續每一輪，coin.derivData／whaleData 都是 undefined：
+           SQ 監控的「訂單流 Taker ±1」與「資金費率 ±1」兩個因子從 ±1 變成 0，
+           分數必然比建單那一輪低 1~2 分——不是訊號變差，是資料不見了。
+           加上今日預測翻面（±1 → 擺動 2 分）就能吃掉監控的 −2 分遲滯，
+           使用者看到的就是「建單推播完，下一輪立刻取消」。
+           改成連同資料一起存，快取期內重新掛回本輪的幣物件。 */
+        _scanFetchCache[coin.symbol] = { ts: _sfNow, deriv: _sfDeriv || null, whale: _sfWhale || null };
       } catch(_fe) { /* API 失敗時繼續評分，缺項因子不得分 */ }
+    } else {
+      // 快取仍在效期內：把上次抓到的資料重新掛回這一輪的幣物件
+      if (_sfCached.deriv && !coin.derivData) coin.derivData = _sfCached.deriv;
+      if (_sfCached.whale && !coin.whaleData) coin.whaleData = _sfCached.whale;
     }
 
     // ── 真實 ATR 剛入快取且與估算值差異 >15% → 用真實波動率重建 setup 並覆核 R/R ──
@@ -14945,6 +14975,8 @@ async function recordSignalsFromScan(data) {
       entryTags: _scanEntryTags,       // 建單時的分析標籤（條件配對研究所的實倉樣本）
       pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
+      entryTBias: tBias, entryWBias: wBias,   // 建單當下的今日／本週大盤預測：
+      // 監控重評時用來分辨「這檔幣變差了」還是「大盤預測翻面了」——後者不該取消單
       conviction: _convScan,           // 方向確信度（多空證據融合淨值，供研究所學習）
       convEv: _convEvScan,             // 證據支持/反對清單（權重校準的原料）
       convSplit: _convSplit,           // 證據分歧度＝反對權重/總權重（淨值藏住的那半邊）
@@ -15099,13 +15131,27 @@ async function recordSignalsFromScan(data) {
     if (!_sqCoin) continue;
     const _sqIsLong = trade.direction === 'long';
 
+    // 補掛掃描補抓資料——不補的話，缺的因子會讓分數無條件比建單那一輪低
+    const _rcMissing = attachScanExtras(_sqCoin);
     const { sq: _sqRC, grade: _rcGrade, gradeLabel: _rcGradeLabel, learn: _rcLearn } =
       computeSqMonitorScore(trade, _sqCoin, _sqIsLong, { wBias, tBias, btcChg24: _btcChg24 });
+    /* 可比性補償：這一輪的分數若因為「資料缺失」或「大盤預測翻面」而下降，
+       那不是這檔幣的訊號變差——不該用它來取消單。兩者都只放寬門檻、
+       不改分數，並在取消理由裡誠實標明放寬了多少、為什麼。 */
+    let _rcSlack = 0; const _rcSlackWhy = [];
+    if (_rcMissing > 0) { _rcSlack += _rcMissing; _rcSlackWhy.push(`${_rcMissing} 個因子本輪無資料可計分`); }
+    try {
+      const _flip = (a, b) => a && b && ((String(a).includes('bull') && String(b).includes('bear'))
+                                      || (String(a).includes('bear') && String(b).includes('bull')));
+      if (_flip(trade.entryTBias, tBias)) { _rcSlack += 2; _rcSlackWhy.push('今日大盤預測相對建單時已翻面'); }
+      if (_flip(trade.entryWBias, wBias)) { _rcSlack += 2; _rcSlackWhy.push('本週大盤預測相對建單時已翻面'); }
+    } catch(_e) {}
+    _rcSlack = Math.min(5, _rcSlack);   // 上限 5 分，不讓補償變成永不取消
 
     // 長線單門檻 S（17分）；短線單門檻 = 建單時存的 sqGate（預設 10/A 級）− 2 分緩衝
     // 緩衝目的：臨界分數的正常波動不應反覆觸發建立→取消
     // 長線單 SQ 降至短線門檻以上但 < S → 降級為短線單繼續持有；低於短線門檻才取消
-    const _rcSqGate = Math.max(6, (trade.sqGate ?? 12) - 2);
+    const _rcSqGate = Math.max(4, (trade.sqGate ?? 12) - 2 - _rcSlack);
     const _rcSqPass = trade.canScaleIn ? _sqRC >= 19 : _sqRC >= _rcSqGate;
     if (!_rcSqPass) {
       if (trade.canScaleIn && _sqRC >= _rcSqGate) {
@@ -15118,7 +15164,8 @@ async function recordSignalsFromScan(data) {
         try { sendCancelTelegramNotification(trade, _downgradeReason); } catch(_n) {}
         try { if (typeof showToast === 'function') showToast(`⚠️ ${trade.symbol} SQ 降至 ${_rcGrade} 級，長線單降格為短線單`, 'warning'); } catch(_t) {}
       } else {
-        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（19分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`;
+        const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（19分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`
+          + (_rcSlackWhy.length ? `（門檻已放寬 ${_rcSlack} 分：${_rcSlackWhy.join('、')}——扣掉這些仍不達標才取消）` : '');
         addCancelCooldown(trade, _sqCancelReason);
         _sqCancelIds.add(trade.id);
         changed = true;
@@ -21034,6 +21081,7 @@ const LEARN_KEEP_FIELDS = [
   'kz', 'entryTime',                         // 時段勝率學習＋秒損統計（成交→止損耗時）
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
   'regime', 'rsPct', 'oiCtx', 'conviction',  // 市場狀態×方向勝率學習＋相對強弱＋OI 語境＋方向確信度
+  'entryTBias', 'entryWBias',                // 建單當下的大盤預測（監控可比性補償用）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
 ];
@@ -23078,6 +23126,9 @@ async function checkAndSendAlerts(data) {
           longTermBias: null, canScaleIn: _isLongTermEntry,
           scaleIns: [], peakPrice: null,
           sqGrade: notifSetup.sqGrade || null, sqScore: notifSetup.sqScore ?? null,
+          // 建單當下的大盤預測（與掃描路徑同一組欄位）：監控用它分辨
+          // 分數下降是這檔幣變差、還是大盤預測翻面
+          entryTBias: _aCtx.tBias, entryWBias: _aCtx.wBias,
           sqGradeLabel: notifSetup.sqGradeLabel || null,
           rr1: notifSetup.rr1, rr2: notifSetup.rr2,  // SQ 監控 computeFullRisk 需要頂層 rr1
           riskKeys: notifSetup.riskKeys || [],  // 建單時成立的風險條件（供扣分條件有效性審查）
