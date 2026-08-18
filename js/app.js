@@ -1038,30 +1038,41 @@ function renderTableBody(tbodyId, rows) {
 }
 
 /* ── 市场排名表（巨鯨+籌碼聚集前20）─────────────────────────── */
-function whaleVPScore(row) {
-  const dirStrength = Math.abs((parseFloat(row.score) || 50) - 50);
-  const trendPower  = parseFloat(row.adx) || 20;
+/* ⚠️ 命名更正（2026-08）：這個分數叫 whaleVPScore、欄位標「巨鯨+籌碼集中度」，
+   但它的成分只有｜評分−50｜×ADX×流動性——沒有任何巨鯨或籌碼分佈資料在裡面。
+   使用者看到「巨鯨集中度」高卻與其他面板的多空看法對不上，一部分原因就是
+   這個欄位根本不是它宣稱的東西。全幣種的巨鯨/VP 資料本站只在掃描候選幣與
+   詳情頁才有（不可能對兩百檔每輪都抓），所以正確的修法是照實說它是什麼：
+   「方向強度 × 趨勢強度 × 流動性」的動能排序，不分多空。 */
+function momentumRankScore(row) {
+  const dirStrength = Math.abs((parseFloat(row.score) || 50) - 50);   // 離中性有多遠（不分方向）
+  const trendPower  = parseFloat(row.adx) || 20;                       // 趨勢強度
   const volNorm     = Math.min(1, Math.log10((parseFloat(row.volume) || 1) + 1) / 10);
   return dirStrength * trendPower * (0.5 + volNorm * 0.5);
 }
+/* 舊名保留供其他呼叫點相容 */
+function whaleVPScore(row) { return momentumRankScore(row); }
 
 function renderRankingTable() {
   const tbody = document.getElementById('ranking-tbody');
   if (!tbody) return;
+  try { const _tfn = document.getElementById('rank-tf-note'); if (_tfn) _tfn.textContent = state.timeframe; } catch(_e) {}
 
   let rows = [...state.data];
   if (state.activeFilter !== 'all') rows = rows.filter(d => d.trend === state.activeFilter);
   if (state.dashSearch) rows = rows.filter(d => d.symbol.replace('/USDT','').includes(state.dashSearch));
 
   rows = rows
-    .map(r => ({ ...r, _wv: whaleVPScore(r) }))
+    .map(r => ({ ...r, _wv: momentumRankScore(r) }))
     .sort((a, b) => b._wv - a._wv)
     .slice(0, 20);
 
   tbody.innerHTML = rows.map((row, i) => {
     const wvPct   = Math.min(100, (row._wv / 1250) * 100);
     const wvColor = row.score >= 60 ? 'var(--bull)' : row.score <= 40 ? 'var(--bear)' : 'var(--neutral)';
-    const wvLabel = row.score >= 60 ? '看多集中' : row.score <= 40 ? '看空集中' : '中性';
+    // 排名＝強度（不分多空），方向另外標——排第一很可能是強烈看空的幣，
+    // 這是最容易被誤讀成「與其他面板看法不同」的地方
+    const wvLabel = row.score >= 60 ? '強度·偏多' : row.score <= 40 ? '強度·偏空' : '強度·中性';
     return `
     <tr onclick="navigateTo('coin','${row.symbol}')">
       <td class="rank-cell">${i + 1}</td>
@@ -1087,7 +1098,7 @@ function renderRankingTable() {
             </div>
             <span style="font-size:0.7rem;color:${wvColor};font-weight:600;min-width:44px">${wvLabel}</span>
           </div>
-          <div style="font-size:0.7rem;color:var(--text3)">ADX ${row.adx} · 評分 ${row.score}</div>
+          <div style="font-size:0.7rem;color:var(--text3)">ADX ${row.adx} · ${state.timeframe} 評分 ${row.score}</div>
         </div>
       </td>
       <td style="color:${rsiColor(row.rsi)}">${row.rsi}</td>
@@ -9837,6 +9848,54 @@ function _ttStructText(st, name) {
   return `${name} ${parts.join('、')}${lv.length ? `　<span style="color:var(--text3);font-size:0.72rem">${lv.join('／')}</span>` : ''}`;
 }
 
+/* ── 視角對照：為什麼各處看法不一樣 ─────────────────────────────
+   使用者最常問的一件事：市場排名說強勢看漲、頂級交易員說做空，到底哪個對？
+   答案通常是「兩個都對，它們在回答不同時間框架的問題」——但畫面上從來沒有
+   人把這件事講出來，於是看起來像系統自己前後矛盾。
+   這一條把同一檔幣在各個層級的表態並排列出，並明確區分兩種情況：
+     · 分層背離（短線與大方向相反）＝正常，且通常代表回檔或反彈，不是錯誤
+     · 同層矛盾（同一個時間框架出現相反判定）＝真的有問題，標紅
+   排名評分用的是導覽列選的主時框，這裡一併標明是哪一個。 */
+function buildViewpointRow(coin, cs) {
+  try {
+    const sg = x => String(x || '');
+    const rd = s => sg(s).indexOf('bull') >= 0 ? 1 : sg(s).indexOf('bear') >= 0 ? -1 : 0;
+    const tf = (typeof state !== 'undefined' && state.timeframe) ? state.timeframe : '15m';
+    const sc = parseFloat(coin.score);
+    const rank = isFinite(sc) ? (sc >= 58 ? 1 : sc <= 42 ? -1 : 0) : null;
+    const shortD = rd(coin.signal15m) || rd(coin.h1Signal);
+    const midD   = rd(coin.h4Signal);
+    const bigD   = rd(coin.dailySignal) || rd(coin.weeklySignal);
+    const convD  = cs >= 12 ? 1 : cs <= -12 ? -1 : 0;
+    const tx = v => v == null ? '—' : v > 0 ? '<b style="color:var(--bull)">偏多</b>' : v < 0 ? '<b style="color:var(--bear)">偏空</b>' : '<b style="color:var(--text2)">中性</b>';
+    const cells = [
+      [`排名評分（${tf}）`, rank, isFinite(sc) ? `${sc} 分` : ''],
+      ['短線 15m/1H', shortD, ''],
+      ['中線 4H', midD, ''],
+      ['大方向 日/週', bigD, ''],
+      ['方向確信度（綜合）', convD, `${cs >= 0 ? '+' : ''}${cs}`],
+    ];
+    // 同層矛盾：排名評分（主時框）與同一時框的訊號相反才算真矛盾
+    let clash = '';
+    const tfSig = tf === '15m' ? rd(coin.signal15m) : tf === '1h' ? rd(coin.h1Signal) : tf === '4h' ? rd(coin.h4Signal) : null;
+    if (rank != null && tfSig != null && rank !== 0 && tfSig !== 0 && rank !== tfSig)
+      clash = `⚠️ 同一個時間框架（${tf}）出現相反判定：評分說${rank > 0 ? '多' : '空'}、訊號說${tfSig > 0 ? '多' : '空'}——這一種才是真的該懷疑的不一致。`;
+    const split = (shortD && bigD && shortD !== bigD);
+    return `<div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:9px;padding:9px 12px;margin-bottom:9px">
+      <div style="font-weight:700;font-size:0.79rem;margin-bottom:6px">🧭 視角對照（為什麼各頁看法會不一樣）</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:0.75rem;margin-bottom:5px">
+        ${cells.map(([l, v, extra]) => `<span style="white-space:nowrap"><span style="color:var(--text3)">${l}</span> ${tx(v)}${extra ? `<span style="color:var(--text3);font-size:0.7rem"> ${extra}</span>` : ''}</span>`).join('<span style="color:var(--text3)">·</span>')}
+      </div>
+      <div style="font-size:0.72rem;color:var(--text3);line-height:1.65">
+        ${clash ? `<span style="color:var(--bear)">${clash}</span>`
+          : split ? '短線與大方向相反 —— <b style="color:var(--text2)">這是正常的</b>，通常代表現在走的是回檔或反彈。順大方向做的人會等它結束，做短線的人吃的就是這一段；兩者不衝突，但不能混用同一組止損。'
+          : '各層級方向一致，沒有分歧。'}
+        　市場排名以「方向強度 × 趨勢 × 流動性」排序且取主時框，本頁判定以日線與 4H 結構為主——兩者不同不代表誰錯。
+      </div>
+    </div>`;
+  } catch(_e) { return ''; }
+}
+
 function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving) {
   if (!coin) return '';
   const sym = coin.symbol;
@@ -10130,6 +10189,7 @@ function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving)
         : `因此我${dirTx}。但真正決定這筆賺賠的不是方向而是位置——${isLong ? '在支撐上方買，不在半空中追' : '在壓力下方空，不在坑底砸'}，並且事先寫好在哪裡承認錯誤。`}
       ${scoreTx ? `<span style="color:var(--text3)">（${scoreTx}）</span>` : ''}
     </div>
+    ${buildViewpointRow(coin, cs)}
     ${_ttSection('📊 一、基本面與市場定位', '#60a5fa', fRows)}
     ${_ttSection('📐 二、技術面', '#a78bfa', tRows)}
     ${_ttSection('🧮 三、籌碼面', '#f59e0b', cRows)}
@@ -13450,7 +13510,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260817b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260817c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次

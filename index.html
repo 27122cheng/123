@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260817b" />
+  <link rel="stylesheet" href="css/styles.css?v=20260817c" />
 </head>
 <body>
 
@@ -235,7 +235,13 @@
         </div>
       </div>
 
-      <!-- 巨鯨+籌碼集中度排名 -->
+      <!-- 動能強度排名（方向強度 × 趨勢強度 × 流動性，不分多空）-->
+      <div style="font-size:0.74rem;color:var(--text3);line-height:1.7;margin-bottom:8px">
+        <b style="color:var(--text2)">這張表在回答什麼</b>：依「方向強度 × 趨勢強度(ADX) × 流動性」排序，<b>不分多空</b>——
+        排第一很可能是一檔強烈看空的幣。趨勢與評分取自你在導覽列選的主時框（目前
+        <b id="rank-tf-note" style="color:var(--blue)">15m</b>），所以它與幣種詳情的「頂級交易員」判定<b>本來就會不一樣</b>：
+        後者以日線與 4H 結構為主。兩者不同不代表誰錯，是在回答不同時間框架的問題。
+      </div>
       <div class="tbl-card full-tbl">
         <div class="tbl-scroll">
           <table class="data-tbl ranking-tbl" id="ranking-tbl">
@@ -243,8 +249,8 @@
               <th># 排名</th>
               <th>币种</th>
               <th>价格</th>
-              <th>趋势</th>
-              <th>巨鯨+籌碼集中度</th>
+              <th>趋势（主時框）</th>
+              <th>動能強度（不分多空）</th>
               <th>动量 RSI</th>
               <th>成交量</th>
             </tr></thead>
@@ -985,8 +991,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260817b"></script>
-  <script src="js/api.js?v=20260817b"></script>
-  <script src="js/app.js?v=20260817b"></script>
+  <script src="js/indicators.js?v=20260817c"></script>
+  <script src="js/api.js?v=20260817c"></script>
+  <script src="js/app.js?v=20260817c"></script>
 </body>
 </html>
