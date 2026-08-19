@@ -13510,7 +13510,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260818b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260818c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14975,6 +14975,7 @@ async function recordSignalsFromScan(data) {
       entryTags: _scanEntryTags,       // 建單時的分析標籤（條件配對研究所的實倉樣本）
       pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
+      probeTag: null,                  // 探路單標記（見下方 winupClaimProbe 認領）
       entryTBias: tBias, entryWBias: wBias,   // 建單當下的今日／本週大盤預測：
       // 監控重評時用來分辨「這檔幣變差了」還是「大盤預測翻面了」——後者不該取消單
       conviction: _convScan,           // 方向確信度（多空證據融合淨值，供研究所學習）
@@ -15057,6 +15058,8 @@ async function recordSignalsFromScan(data) {
       console.log(`[cond-block] ${coin.symbol} ${direction}：${_condBlock}，不建單`);
       _no('條件封鎖：' + _condBlock.split('（')[0]); continue;
     }
+    // 探路單認領：這筆若是被封鎖的桶放行的取樣單，標記起來供實驗室單獨統計
+    try { newTrade.probeTag = winupClaimProbe(winupTagsOf('main', newTrade)); } catch(_e) {}
     // 建單唯一入口（原子：重新載入→去重→存檔），杜絕多路徑並行建出重複訊號
     _profMark('條件封鎖');
     if (!commitNewTrade(newTrade)) {
@@ -20951,6 +20954,7 @@ const QLAB_KEEP_FIELDS = [
   'outcome', 'pnlR', 'entry', 'exitPrice', 'atrAtEntry', 'levelGapAtr', 'slDistAtr',
   'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid', 'fillDelaySec', 'slipR', 'regime',
   'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed', 'extended', 'maxHoldExit',
+  'probeTag',   // 探路單標記：被封鎖的桶放行的取樣單，封存剝掉＝封鎖決策再也無法驗證
 ];
 function _qlabSlim(t) {
   const o = {};
@@ -21082,6 +21086,7 @@ const LEARN_KEEP_FIELDS = [
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
   'regime', 'rsPct', 'oiCtx', 'conviction',  // 市場狀態×方向勝率學習＋相對強弱＋OI 語境＋方向確信度
   'entryTBias', 'entryWBias',                // 建單當下的大盤預測（監控可比性補償用）
+  'probeTag',                                // 探路單標記（封鎖決策的驗證樣本，封存剝掉＝驗證斷糧）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
 ];
@@ -21567,7 +21572,7 @@ function buildQuantLabHtml() {
   </div>`;
 
   if (trades.length < QLAB_MIN) {
-    return head + modeBar + buildWinupHtml() + applyCard + archCard + caveat + `
+    return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + applyCard + archCard + caveat + `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
           text-align:center;color:var(--text3);font-size:0.86rem">
         可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
@@ -21746,7 +21751,7 @@ function buildQuantLabHtml() {
       避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
   </div>`;
 
-  return head + modeBar + buildWinupHtml() + applyCard + archCard + caveat + bestCard + wfCard
+  return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + applyCard + archCard + caveat + bestCard + wfCard
     + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
         '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
     + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
@@ -26457,9 +26462,13 @@ async function recordScalpSignals(data) {
         riskKeys,                 // 建單時成立的風險條件 → 讓快進快出也回饋扣分條件的學習
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
         regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
+        // 探路單標記：這筆是被封鎖的桶放行的取樣單，實驗室會單獨統計它的成效
+        probeTag: null,
         note: `快進快出（${SCALP_MODE_LABEL[setup.mode] || setup.mode}）`,
       };
       t.okxAdjusted = true;   // 資料層已對齊 OKX 價格空間，無需再換算
+      // 探路單認領：這筆若是某個被封鎖的桶放行的取樣單，標記起來供實驗室單獨統計
+      try { t.probeTag = winupClaimProbe(winupTagsOf('scalp', t)); } catch(_e) {}
       log.unshift(t); changed = true; room--;
       _scalpRecordLedger(coin.symbol, dir);
       /* ⚠️ 進場訊號改在「成交後」才發（見 updateScalpTrades 的 pendingFill 段）。
@@ -28979,14 +28988,46 @@ const WINUP_CFG = {
 let _winupCache = null;
 /* 探路放行時間（記憶體即可：重新整理後允許立刻探一次，不影響正確性） */
 const _winupProbeAt = {};
+/* 已放行但還沒有被任何一筆單認領的探路（tag → 放行時間）。
+   放行只代表「這道閘門讓它過」，後面還有別的閘門，未必真的會建單——
+   所以標記要等到真的建單時才由 winupClaimProbe() 認領。 */
+const _winupProbeOpen = {};
 /* 被封鎖的桶要不要放行一筆探路單。回傳 true = 這次放行。 */
 function winupProbeAllow(tag) {
   try {
     const now = Date.now();
     if (now - (_winupProbeAt[tag] || 0) < WINUP_CFG.probeHours * 3600e3) return false;
     _winupProbeAt[tag] = now;
+    _winupProbeOpen[tag] = now;
     return true;
   } catch(_e) { return false; }
+}
+/* 建單時呼叫：這筆單是不是某個被封鎖的桶放行的探路單？
+   是的話回傳該 tag（並取消登記，一次放行只認領一筆）。
+   實驗室用它回答「被封鎖的桶現在到底還虧不虧」——那是封鎖決策唯一的驗證方式。 */
+function winupClaimProbe(tags) {
+  try {
+    const now = Date.now();
+    for (const t of (tags || [])) {
+      if (!t) continue;
+      const at = _winupProbeOpen[t];
+      if (at && now - at < 30 * 60000) { delete _winupProbeOpen[t]; return t; }
+    }
+  } catch(_e) {}
+  return null;
+}
+/* 由交易紀錄反推它屬於哪幾個桶（與封鎖查詢用同一組鍵，才對得上） */
+function winupTagsOf(kind, t) {
+  const out = [];
+  try {
+    const kz = kind === 'main' ? (t.kz || '') : (t.kzQuality || '');
+    if (kz) out.push(`sess:${kind}:${kz}`);
+    if (t.symbol) out.push(`sym:${kind}:${t.symbol}`);
+    if (t.regime && t.direction) out.push(`regime:${kind}:${t.regime}|${t.direction}`);
+    if (kind === 'scalp') out.push(`cond:scalp:${_winupCondKey(parseFloat(t.adx) || 0, parseFloat(t.volRatio) || 0, t.mtfAlign || 0)}`);
+    else if (t.entryTag) out.push(`cond:main:${t.entryTag}`);
+  } catch(_e) {}
+  return out;
 }
 /* 樣本時效過濾：沒有時間戳的舊資料一律保留（不因缺欄位被誤刪） */
 function _winupRecentDays(rows, getTs) {
@@ -29237,6 +29278,78 @@ function mainSlFloorMult() {
 }
 
 /* 量化實驗室的狀態卡（讀 10 分鐘快取，同扣分審查面板的快取模式） */
+/* ── 探路單成效：封鎖決策唯一的驗證方式 ────────────────────────
+   被封鎖的桶每 6 小時放行一筆探路單。這些單累積起來的期望值，直接回答
+   「當初封它封對了嗎、現在還該不該封」：
+     · 期望值明顯為負 → 封鎖有效，那個桶確實還在虧
+     · 期望值轉正     → 當初的封鎖已經過期（行情換了），該解除
+   與閘門影子追蹤（gateShadowStats）同一個哲學，差別在那個追的是「沒建成的
+   紙上單」，這個追的是「真的建出去的實單」——後者沒有任何假設誤差。 */
+function winupProbeStats() {
+  const by = {};
+  const add = (kind, t) => {
+    const tag = t && t.probeTag;
+    if (!tag) return;
+    const r = parseFloat(t.pnlR);
+    if (!isFinite(r)) return;
+    const b = by[tag] || (by[tag] = { tag, kind, n: 0, w: 0, l: 0, r: 0 });
+    b.n++; b.r += r;
+    if (r > FLAT_R_EPS) b.w++; else if (r < -FLAT_R_EPS) b.l++;
+  };
+  try {
+    for (const t of learnSamples()) if (t && t.status === 'closed') add('main', t);
+  } catch(_e) {}
+  try {
+    const m = new Map();
+    for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
+    for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
+    for (const t of m.values()) add('scalp', t);
+  } catch(_e) {}
+  return Object.values(by).map(b => {
+    const exp = b.n ? b.r / b.n : 0;
+    return { ...b, exp: +exp.toFixed(3),
+      wr: (b.w + b.l) ? Math.round(b.w / (b.w + b.l) * 100) : null,
+      verdict: b.n < 5 ? 'pending' : exp >= 0.10 ? 'over' : exp <= -0.05 ? 'good' : 'neutral' };
+  }).sort((a, b) => b.exp - a.exp);
+}
+function buildWinupProbeHtml() {
+  const rows = winupProbeStats();
+  const blocks = [...winupActiveBlocks('scalp'), ...winupActiveBlocks('main')];
+  const head = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.78rem">
+    <div style="font-weight:700;margin-bottom:5px">🧭 封鎖與探路單（閘門會不會把自己鎖死）</div>
+    <div style="font-size:0.74rem;color:var(--text2);line-height:1.7;margin-bottom:7px">
+      被封鎖的桶每 ${WINUP_CFG.probeHours} 小時放行一筆<b>探路單</b>——沒有它，被封的桶拿不到新樣本，
+      統計上永遠翻不了身，閘門只會越積越多直到一筆都出不去。探路單的期望值就是封鎖決策的驗收：
+      仍為負＝<b style="color:#22c55e">封得對</b>、轉正＝<b style="color:#f59e0b">該解除了</b>。
+      封鎖判定只採計最近 ${WINUP_CFG.maxAgeDays} 天成交，每個家族同時最多封 ${WINUP_CFG.maxBlocks} 項。
+    </div>`;
+  const blockList = blocks.length
+    ? `<div style="margin-bottom:8px;font-size:0.75rem;line-height:1.7">
+        <b>目前生效中（${blocks.length} 項）</b>
+        ${blocks.map(b => `<div style="color:var(--text2)">· ${b.key}
+          <span style="color:var(--text3)">${b.nextProbeH > 0 ? `${b.nextProbeH}h 後探路` : '下一個候選即放行'}</span></div>`).join('')}
+      </div>`
+    : `<div style="margin-bottom:8px;font-size:0.75rem;color:#22c55e">目前沒有任何統計封鎖生效。</div>`;
+  if (!rows.length) {
+    return head + blockList + `<div style="font-size:0.76rem;color:var(--text3)">尚無探路單完結樣本——被封鎖的桶要有候選出現才會放行。</div></div>`;
+  }
+  const vL = { over: '⚠️ 封鎖已過期（該解除）', good: '✅ 封得對', neutral: '➖ 差別不大', pending: '累積中' };
+  const vC = { over: '#f59e0b', good: '#22c55e', neutral: 'var(--text3)', pending: 'var(--text3)' };
+  return head + blockList + `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+      <thead><tr style="color:var(--text3);text-align:left;font-size:0.7rem">
+        <th style="padding:4px 6px">被封鎖的桶</th><th style="padding:4px 6px;text-align:right">探路筆數</th>
+        <th style="padding:4px 6px;text-align:right">勝率</th><th style="padding:4px 6px;text-align:right">期望值</th>
+        <th style="padding:4px 6px">驗收</th></tr></thead>
+      <tbody>${rows.map(r => `<tr style="border-top:1px solid rgba(255,255,255,.05)">
+        <td style="padding:4px 6px">${r.tag}</td>
+        <td style="padding:4px 6px;text-align:right;color:var(--text3)">${r.n}${r.n < 5 ? '/5' : ''}</td>
+        <td style="padding:4px 6px;text-align:right">${r.wr == null ? '—' : r.wr + '%'}</td>
+        <td style="padding:4px 6px;text-align:right;color:${r.exp > 0 ? 'var(--bull)' : r.exp < 0 ? 'var(--bear)' : 'var(--text2)'}">${r.exp > 0 ? '+' : ''}${r.exp}R</td>
+        <td style="padding:4px 6px;color:${vC[r.verdict]}">${vL[r.verdict]}</td>
+      </tr>`).join('')}</tbody></table></div></div>`;
+}
+
 function buildWinupHtml() {
   let v = null;
   try { v = winupStats(); } catch(_e) { return ''; }
