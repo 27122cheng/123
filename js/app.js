@@ -469,6 +469,7 @@ function startRefreshCycle() {
     await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
     await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
     await _pt('閘門影子更新',   () => shadowUpdate(data));
+    await _pt('再進場影子更新', () => reentryUpdate(data));
     // 預測記分卡：拍快照＋到期結算（統一以本輪掃描資料為唯一參考價來源）
     await _pt('預測快照',       () => forecastSnapshot(data));
     await _pt('預測結算',       () => forecastSettle(data));
@@ -13532,7 +13533,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260819a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260819b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14797,6 +14798,9 @@ async function recordSignalsFromScan(data) {
     // 防競態：async fetch 期間 checkAndSendAlerts 可能已建立同幣種掛單，重新讀取確認
     const _freshTlog = loadTradeLog();
     if (_freshTlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
+    // 跨系統曝險：快速單已持有同幣反向 → 不建（自我對沖）；同向 → 倉位減半
+    const _xEm = crossExposure(coin.symbol, direction, 'main');
+    if (_xEm && _xEm.state === 'opposite' && _no('與快速單反向對沖')) continue;
 
     // 同方向集中度控管（活躍上限 / 爆量節流 / 連續止損熔斷）
     const _dirGuardMsg = sameDirGuard(_freshTlog, direction, _scanSqScore);
@@ -14970,6 +14974,7 @@ async function recordSignalsFromScan(data) {
       // 統計就能確定不會虧更多的動作（下限 0.5%，永遠不會縮到不下單）
       if (_convOppStruct >= 2 && _rp > 0.5) { _rp = 0.5; _sizeWhy = `結構級反向 ${_convOppStruct} 項 ×0.5`; }
       else if (_convSplit != null && _convSplit >= 0.35 && _rp > 0.6) { _rp = 0.6; _sizeWhy = `證據分歧 ${Math.round(_convSplit * 100)}% ×0.6`; }
+      if (_xEm && _xEm.state === 'same') { _rp = +(_rp * 0.5).toFixed(2); _sizeWhy = (_sizeWhy ? _sizeWhy + '；' : '') + '快速單同向持倉 ×0.5'; }
       const _slDsz = Math.abs(setup.entry - setup.sl);
       if (_slDsz > 0) {
         _sizeQty = +((_sizeEquity * _rp / 100) / _slDsz).toPrecision(4);
@@ -14998,6 +15003,9 @@ async function recordSignalsFromScan(data) {
       pairHit: _scanPairHit,           // 命中的驗證配對（null = 無）
       kz: (() => { try { return computeKillZone().code || ''; } catch(_e) { return ''; } })(),  // 時段勝率學習用
       probeTag: null,                  // 探路單標記（見下方 winupClaimProbe 認領）
+      // 建單當下的資金費率快照：一般單常跨多個 8 小時結算，做多在正費率環境
+      // 掛三天成本可吃掉 0.1~0.3R——不記就永遠算不出這筆帳
+      entryFr: (() => { try { const f = coin.derivData?.fundingRate; return isFinite(f) ? f : null; } catch(_e) { return null; } })(),
       entryTBias: tBias, entryWBias: wBias,   // 建單當下的今日／本週大盤預測：
       // 監控重評時用來分辨「這檔幣變差了」還是「大盤預測翻面了」——後者不該取消單
       conviction: _convScan,           // 方向確信度（多空證據融合淨值，供研究所學習）
@@ -15995,12 +16003,28 @@ function updateOpenTrades(data) {
         trade.slTp1        = tp1;  // 觀察目標（原始止盈一）
         // 秒損標記：進場後 ≤30 分鐘就止損＝一進場就被掃（供 AI 秒損條件分析）
         trade.immediateStop = !!(trade.entryTime && (Date.now() - trade.entryTime) <= 30 * 60 * 1000);
+        // 掃損後再進場的紙上追蹤：結構還在才記（見 reentryRecordFromSl）
+        if (outcome === 'sl') { try { reentryRecordFromSl(trade, trade.exitPrice); } catch(_e) {} }
       }
       // pnlR 統一計算並計入手續費+滑點（taker 進出各約 0.05% 名目價值），
       // 讓報表貼近實盤：止損約 -1.05R、保本約 -0.05R，勝率門檻不再被零成本假設美化
       // 分批出場加權損益（觸及 TP1 者 60% 落袋 + 40% 尾倉），兩處出場路徑共用同一函式
       trade.pnlR = computeTradePnlR(trade, trade.exitPrice, baseRisk, isLong);
       recordPnlMismatch(trade, 'main');
+      /* 資金費率成本估算（僅記錄，不改 pnlR——改了會重新分類贏輸、與已發的
+         Telegram 訊息脫鉤）。以進場費率 × 跨過的 8 小時結算次數近似：費率
+         期間會變，這是估算不是實帳，欄位名與顯示都標明「估算」。
+         方向：做多付正費率、做空收正費率。 */
+      try {
+        const _frE = parseFloat(trade.entryFr);
+        if (isFinite(_frE) && trade.entryTime && baseRisk > 0 && entry > 0) {
+          const _periods = Math.floor((Date.now() - trade.entryTime) / (8 * 3600e3));
+          if (_periods > 0) {
+            const _fundPct = _frE * _periods * (isLong ? 1 : -1);   // 正 = 成本
+            trade.fundingR = +((_fundPct * entry) / baseRisk).toFixed(3);
+          }
+        }
+      } catch(_e) {}
       // 還沒被掃到的影子（比實單更寬）以實單出場點結算——平倉後價格怎麼走
       // 沒有記錄，只能這樣。這讓量測對「放寬回吐」偏保守，是刻意的選擇。
       exitShadowFinalize(trade, ((trade.exitPrice - entry) * (isLong ? 1 : -1)) / baseRisk);
@@ -21109,6 +21133,7 @@ const LEARN_KEEP_FIELDS = [
   'regime', 'rsPct', 'oiCtx', 'conviction',  // 市場狀態×方向勝率學習＋相對強弱＋OI 語境＋方向確信度
   'entryTBias', 'entryWBias',                // 建單當下的大盤預測（監控可比性補償用）
   'probeTag',                                // 探路單標記（封鎖決策的驗證樣本，封存剝掉＝驗證斷糧）
+  'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
 ];
@@ -21594,7 +21619,7 @@ function buildQuantLabHtml() {
   </div>`;
 
   if (trades.length < QLAB_MIN) {
-    return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + applyCard + archCard + caveat + `
+    return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
           text-align:center;color:var(--text3);font-size:0.86rem">
         可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
@@ -21773,7 +21798,7 @@ function buildQuantLabHtml() {
       避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
   </div>`;
 
-  return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + applyCard + archCard + caveat + bestCard + wfCard
+  return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + bestCard + wfCard
     + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
         '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
     + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
@@ -26375,6 +26400,9 @@ async function recordScalpSignals(data) {
       if (winupSymbolBlocked('scalp', coin.symbol)) { _sr('幣種負期望封鎖'); continue; }
       // 市場狀態×方向：此天氣下這個方向實測顯著虧 → 暫停
       if (winupRegimeBlocked('scalp', dir)) { _sr('市場狀態負期望封鎖'); continue; }
+      // 跨系統曝險：一般單已持有同幣反向 → 跳過；同向 → 建倉時倉位減半
+      const _xE = crossExposure(coin.symbol, dir, 'scalp');
+      if (_xE && _xE.state === 'opposite') { _sr('與一般單反向對沖'); continue; }
       // 未平倉量納入建單分析：已確認的強烈反向新錢 → 不做（快速單同一標準）
       {
         const _oiS = _oiWatchCache[coin.symbol];
@@ -26430,7 +26458,8 @@ async function recordScalpSignals(data) {
 
       // 品質加權部位：期望值高的模式加碼、風險大的減碼、連敗中砍半
       const _qm = scalpRiskMult(setup.mode, riskScore);
-      const _riskAmt = _acct.riskAmt * _qm.mult;
+      let _riskAmt = _acct.riskAmt * _qm.mult;
+      if (_xE && _xE.state === 'same') _riskAmt *= 0.5;   // 跨系統同向：同一個判斷不押兩注
 
       // 相關性控管：同方向持倉本質上是同一筆賭注，大盤一動會一起中止損。
       // 改以「同向風險金額佔權益 %」為上限，比單純限制筆數真正控得住回撤。
@@ -29129,6 +29158,14 @@ function winupStats() {
       v.quickSl = { n: slT.length, quick, lb: +(lb * 100).toFixed(1) };
       v.floorMult = lb >= 0.40 ? 1.5 : lb >= 0.30 ? 1.25 : 1;
     }
+    // 資金費率拖累彙總（估算）：長持倉的期望值被高估了多少
+    try {
+      const _fT = main.filter(t => isFinite(parseFloat(t.fundingR)));
+      if (_fT.length) {
+        const _fSum = _fT.reduce((s, t) => s + parseFloat(t.fundingR), 0);
+        v.fundingDrag = { n: _fT.length, sumR: +_fSum.toFixed(2), avgR: +(_fSum / _fT.length).toFixed(3) };
+      }
+    } catch(_e) {}
     // 輸單曾浮盈 ≥0.8R 的比例（出場端 vs 進場端的診斷）
     const mLoss = main.filter(t => isLossTrade(t) && isFinite(parseFloat(t.mfeR)));
     if (mLoss.length >= 8) {
@@ -29216,6 +29253,116 @@ function _winupBlockOrProbe(msg, tag) {
   }
   return msg;
 }
+/* ═══════════════════════════════════════════════════════════════
+   掃損後再進場——紙上追蹤（不動真單）
+   被插針掃損後結構其實沒壞的情況，目前系統不會回頭。但「該不該再進場」
+   不能拍腦袋決定——我們被疊閘門疊到零訊號教訓過。做法與閘門影子同一套：
+   一般單止損出場時，若 4H 結構仍與原方向一致，記一筆「假如立刻再進」的
+   紙上單（進場＝掃損價、止損＝再往外 0.75×ATR、目標＝原 TP1），之後每輪
+   掃描結算。累積 ≥20 筆後：期望值 ≥+0.15R ＝ 再進場值得做（到時再談自動
+   化）、≤0 ＝ 不值得，就此打住。純觀測，零風險。 */
+const REENTRY_KEY = 'csp_reentry_shadow';
+const REENTRY_MAX = 200;
+const REENTRY_CFG = { maxHoldDays: 4, minN: 20, goodExp: 0.15 };
+function loadReentryShadow() {
+  try { const a = JSON.parse(localStorage.getItem(REENTRY_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch(_e) { return []; }
+}
+function saveReentryShadow(list) {
+  try { localStorage.setItem(REENTRY_KEY, JSON.stringify(list.slice(0, REENTRY_MAX))); } catch(_e) {}
+}
+/* 一般單止損結算時呼叫：結構還在才記（結構破了的止損是「對的止損」，不追蹤） */
+function reentryRecordFromSl(trade, exitPrice) {
+  try {
+    if (!isSignalMaster()) return;
+    const c = (typeof state !== 'undefined' && state.data) ? state.data.find(d => d.symbol === trade.symbol) : null;
+    if (!c) return;
+    const isLong = trade.direction === 'long';
+    const st = c.h4Struct;
+    if (!st || (isLong ? st.dir !== 'up' : st.dir !== 'down')) return;   // 結構已翻 → 不記
+    const atr = parseFloat(c.atr) || 0;
+    const px = parseFloat(exitPrice) || 0;
+    if (!(atr > 0) || !(px > 0) || !(trade.tp1 > 0)) return;
+    const list = loadReentryShadow();
+    if (list.some(s => s.srcId === trade.id)) return;
+    const sl = isLong ? px - atr * 0.75 : px + atr * 0.75;
+    list.unshift({ id: `re-${trade.symbol}-${Date.now()}`, srcId: trade.id, symbol: trade.symbol,
+      dir: trade.direction, ts: Date.now(), entry: px, sl: +sl.toFixed(8), tp: trade.tp1,
+      status: 'open', pnlR: null });
+    saveReentryShadow(list);
+  } catch(_e) {}
+}
+/* 每輪掃描結算（SL 優先＝保守；逾 4 天以現價出） */
+function reentryUpdate(data) {
+  try {
+    if (!isSignalMaster() || !Array.isArray(data) || !data.length) return;
+    const list = loadReentryShadow();
+    if (!list.some(s => s.status === 'open')) return;
+    const px = {};
+    for (const c of data) { const p = parseFloat(c && c.price) || 0; if (p > 0) px[c.symbol] = p; }
+    const now = Date.now();
+    let changed = false;
+    for (const s of list) {
+      if (s.status !== 'open') continue;
+      const cur = px[s.symbol];
+      if (!cur) continue;
+      const isLong = s.dir === 'long';
+      const risk = Math.abs(s.entry - s.sl) || 1e-9;
+      if (isLong ? cur <= s.sl : cur >= s.sl) { s.status = 'closed'; s.pnlR = -1; changed = true; }
+      else if (isLong ? cur >= s.tp : cur <= s.tp) {
+        s.status = 'closed'; s.pnlR = +(Math.abs(s.tp - s.entry) / risk).toFixed(2); changed = true;
+      } else if (now - s.ts > REENTRY_CFG.maxHoldDays * 86400e3) {
+        s.status = 'closed'; s.pnlR = +(((cur - s.entry) * (isLong ? 1 : -1)) / risk).toFixed(2); changed = true;
+      }
+    }
+    if (changed) saveReentryShadow(list);
+  } catch(_e) {}
+}
+function buildReentryHtml() {
+  const list = loadReentryShadow();
+  const closed = list.filter(s => s.status === 'closed' && isFinite(parseFloat(s.pnlR)));
+  const open = list.filter(s => s.status === 'open').length;
+  const n = closed.length;
+  const sum = closed.reduce((a, s) => a + parseFloat(s.pnlR), 0);
+  const exp = n ? sum / n : 0;
+  const w = closed.filter(s => parseFloat(s.pnlR) > FLAT_R_EPS).length;
+  const verdict = n < REENTRY_CFG.minN ? `累積中（${n}/${REENTRY_CFG.minN} 筆）`
+    : exp >= REENTRY_CFG.goodExp ? '<b style="color:#22c55e">✅ 再進場值得做（可考慮自動化）</b>'
+    : exp <= 0 ? '<b style="color:var(--text3)">➖ 不值得——掃損後追回去沒有優勢</b>'
+    : '<b style="color:#f59e0b">邊際為正但不顯著，續看</b>';
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.78rem">
+    <div style="font-weight:700;margin-bottom:5px">🔁 掃損後再進場（紙上追蹤，不動真單）</div>
+    <div style="font-size:0.74rem;color:var(--text2);line-height:1.7;margin-bottom:6px">
+      一般單被止損、但 4H 結構仍與原方向一致時，記一筆「假如立刻再進」的影子單
+      （進場＝掃損價、止損＝再外推 0.75×ATR、目標＝原止盈一）。累積 ≥${REENTRY_CFG.minN} 筆才下結論：
+      期望值 ≥+${REENTRY_CFG.goodExp}R 才值得把它變成真功能——先讓證據長出來，不拍腦袋加閘門的反向操作也一樣不拍腦袋。
+    </div>
+    <div>已結算 <b>${n}</b> 筆（追蹤中 ${open}）${n ? `　勝率 ${Math.round(w / n * 100)}%　期望值 <b style="color:${exp > 0 ? 'var(--bull)' : 'var(--bear)'}">${exp > 0 ? '+' : ''}${exp.toFixed(2)}R</b>` : ''}</div>
+    <div style="margin-top:4px">${verdict}</div>
+  </div>`;
+}
+
+/* ── 跨系統同幣曝險檢查 ─────────────────────────────────────────
+   一般單與快速單各自建倉、互相看不見對方：同幣同向＝同一個判斷押兩注
+   （相關性回撤的跨系統版）；同幣反向＝自我對沖，淨曝險歸零卻付兩份
+   手續費，插針時兩邊還可能都被掃。
+   規則（沿用「縮倉不擋單」的原則）：
+     同向 → 放行但倉位減半；反向 → 後到的那筆跳過（唯一的硬擋，觸發
+     條件是同幣重疊，極少見，不會有全擋風險） */
+function crossExposure(symbol, dir, from) {
+  try {
+    const others = from === 'scalp'
+      ? loadTradeLog().filter(t => t.symbol === symbol && (t.status === 'open' || t.status === 'pending'))
+      : loadScalpLog().filter(t => t.symbol === symbol && t.status === 'open');
+    if (!others.length) return null;
+    const sysName = from === 'scalp' ? '一般單' : '快速單';
+    if (others.some(t => t.direction !== dir))
+      return { state: 'opposite', note: `${sysName}已持有 ${symbol} 反向部位——再開等於自我對沖，付兩份手續費、淨曝險歸零` };
+    return { state: 'same', note: `${sysName}已持有 ${symbol} 同向部位——同一個判斷不押兩注，倉位減半` };
+  } catch(_e) { return null; }
+}
+
 /* 目前生效中的統計封鎖一覽（供診斷面板顯示）。
    把「四個閘門的交集」攤開來看——交易變少的時候，這裡就是答案。 */
 function winupActiveBlocks(kind) {
@@ -29419,6 +29566,9 @@ function buildWinupHtml() {
         return `確信度權重校準：已學 ${rows.length} 項　最可信 ${fmt2(rows[0])}　最不可信 ${fmt2(rows[rows.length - 1])}`;
       } catch(_e) { return ''; }
     })()}</div>
+    ${v.fundingDrag ? `<div style="color:var(--text2)">資金費率拖累（估算）：${v.fundingDrag.n} 筆長持倉合計
+      <b style="color:${v.fundingDrag.sumR > 0 ? 'var(--bear)' : 'var(--bull)'}">${v.fundingDrag.sumR > 0 ? '-' : '+'}${Math.abs(v.fundingDrag.sumR)}R</b>
+      （平均每筆 ${v.fundingDrag.avgR}R；pnlR 未含此成本，長持倉實際期望值要再扣這塊）</div>` : ''}
     <div style="color:var(--text2)">出場端診斷（輸單曾浮盈 ≥0.8R 比例）：
       快速單 ${v.loserMfe.scalp ? `<b>${v.loserMfe.scalp.pct}%</b>（${v.loserMfe.scalp.had}/${v.loserMfe.scalp.n}）` : '樣本不足'}
       一般單 ${v.loserMfe.main ? `<b>${v.loserMfe.main.pct}%</b>（${v.loserMfe.main.had}/${v.loserMfe.main.n}）` : '樣本不足'}
