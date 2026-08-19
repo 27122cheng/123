@@ -13510,7 +13510,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260818a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260818b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -27306,6 +27306,7 @@ function buildScalpPositionsHtml() {
             ? `<br><span style="color:#f59e0b">⚠️ 本輪有 ${_scalpReject._mtfDegraded} 個候選因 15m/1H 資料缺失而略過多週期檢查（已放行，非擋下）。
                若這個數字經常偏高，代表 1H K 線抓取不穩，而不是行情不支持。</span>` : ''}
         </div>
+        ${(() => { try { return buildWinupBlockPanel('scalp'); } catch(_e) { return ''; } })()}
         ${r.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px">${r.map(([k, v]) =>
             `<span style="font-size:0.76rem;padding:3px 9px;border-radius:20px;
               background:rgba(245,158,11,.12);color:#f59e0b">${k} <b>${v}</b></span>`).join('')}</div>`
@@ -28953,13 +28954,52 @@ function liqNote(symbol) {
    ④ 輸單曾浮盈統計：輸單中途曾 ≥+0.8R 的比例——高就代表問題在
       出場端不在進場端（顯示供出場實驗室對照，不自動動參數）。 */
 
+/* ⚠️ 2026-08-18：勝率強化閘門本來是單向棘輪，這是「交易越來越少」的結構性成因。
+   原本的問題（四個閘門各自獨立、彼此相乘）：
+     時段桶 × 幣種 × 市場狀態×方向 × 進場條件桶
+   任何一桶累積到 30 筆負期望就被封鎖，而封鎖之後那一桶再也不會有新樣本——
+   舊的輸單會一直留在「最近 1000 筆」的窗口裡（交易量本來就少，永遠推不出去），
+   於是封鎖等同永久，而且只增不減。跑久了四個閘門的交集會收斂到接近零訊號。
+   三道解法（都不是放水，是讓統計能繼續呼吸）：
+     ① 時效：只用最近 maxAgeDays 天的樣本做封鎖判定——半年前的行情不該
+        封死今天的單，市場狀態早就換過好幾輪
+     ② 探路單：被封鎖的桶每 probeHours 小時放行一筆，讓它能繼續累積樣本，
+        真的變好就會自己解除；沒有這個，被封的桶在數學上不可能翻身
+     ③ 同時封鎖數上限：每個家族最多封 maxBlocks 個（留期望值最差的），
+        閘門不會無限疊加到一筆都出不去 */
 const WINUP_CFG = {
   ttlMin: 10,
   sessMinN: 30, sessGapPP: 8,
   symWin: 20, symMinN: 10, symBadExp: -0.25,
   quickSlMin: 45, quickSlMinN: 10,
+  maxAgeDays: 45,     // 封鎖判定只看最近 45 天的成交
+  probeHours: 6,      // 每個被封鎖的桶每 6 小時放行一筆探路單
+  maxBlocks: 3,       // 每個家族（時段／狀態／條件桶）同時封鎖上限
 };
 let _winupCache = null;
+/* 探路放行時間（記憶體即可：重新整理後允許立刻探一次，不影響正確性） */
+const _winupProbeAt = {};
+/* 被封鎖的桶要不要放行一筆探路單。回傳 true = 這次放行。 */
+function winupProbeAllow(tag) {
+  try {
+    const now = Date.now();
+    if (now - (_winupProbeAt[tag] || 0) < WINUP_CFG.probeHours * 3600e3) return false;
+    _winupProbeAt[tag] = now;
+    return true;
+  } catch(_e) { return false; }
+}
+/* 樣本時效過濾：沒有時間戳的舊資料一律保留（不因缺欄位被誤刪） */
+function _winupRecentDays(rows, getTs) {
+  const cut = Date.now() - WINUP_CFG.maxAgeDays * 86400e3;
+  return rows.filter(t => { const ts = getTs(t); return !isFinite(ts) || ts <= 0 || ts >= cut; });
+}
+/* 每個家族只留最差的 maxBlocks 個封鎖，其餘解除（附帶說明） */
+function _winupCapBlocks(blockMap, bucketMap) {
+  const keys = Object.keys(blockMap);
+  if (keys.length <= WINUP_CFG.maxBlocks) return;
+  keys.sort((a, b) => (bucketMap[a]?.exp ?? 0) - (bucketMap[b]?.exp ?? 0));
+  for (const k of keys.slice(WINUP_CFG.maxBlocks)) delete blockMap[k];
+}
 function invalidateWinup() { _winupCache = null; }
 
 function _winupBuckets(rows) {
@@ -29007,7 +29047,9 @@ function winupStats() {
               quickSl: null, floorMult: 1, loserMfe: {} };
   try {
     // ── 一般單 ──
-    const main = _recentN(learnSamples().filter(t => t.status === 'closed'), 1000);
+    const main = _recentN(_winupRecentDays(
+      learnSamples().filter(t => t.status === 'closed'),
+      t => parseFloat(t.exitTime) || parseFloat(t.timestamp) || 0), 1000);
     // 進場條件持續學習①：一般單的進場邏輯分支（entryTag：ob/2b/123/ema50/bbmid/ema20）
     v.cond.main = _winupBuckets(main.map(t => ({ k: t.entryTag || '',
       win: isWinTrade(t), loss: isLossTrade(t), r: parseFloat(t.pnlR) || 0 })));
@@ -29036,7 +29078,9 @@ function winupStats() {
       for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
       for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
     } catch(_e) {}
-    const scalp = _recentN([...m.values()].filter(t => isFinite(parseFloat(t.pnlR))), 1000);
+    const scalp = _recentN(_winupRecentDays(
+      [...m.values()].filter(t => isFinite(parseFloat(t.pnlR))),
+      t => parseFloat(t.exitTime) || parseFloat(t.entryTime) || parseFloat(t.ts) || 0), 1000);
     v.sess.scalp = _winupBuckets(scalp.map(t => {
       const r = parseFloat(t.pnlR) || 0;
       return { k: t.kzQuality || '', win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r };
@@ -29088,21 +29132,79 @@ function winupStats() {
             + `（整體 ${C.overallWr}%）→ 此條件組合暫停新單`;
         }
       }
+      // 同時封鎖數上限：只留期望值最差的幾個，閘門不會疊加到一筆都出不去
+      if (S) _winupCapBlocks(v.sessBlocked[kind], S.buckets);
+      if (R) _winupCapBlocks(v.regimeBlocked[kind], R.buckets);
+      if (C) _winupCapBlocks(v.condBlocked[kind], C.buckets);
     }
   } catch(_e) {}
   _winupCache = { ts: Date.now(), v };
   return v;
 }
 
+/* 所有封鎖查詢的共同出口：被封鎖時每 probeHours 小時放行一筆探路單。
+   沒有這一層，被封的桶永遠拿不到第 31 筆樣本，統計上不可能翻身——
+   這正是「交易越來越少」的機制本身。 */
+function _winupBlockOrProbe(msg, tag) {
+  if (!msg) return '';
+  if (winupProbeAllow(tag)) {
+    try { console.log('[winup-probe] 放行探路單：' + tag); } catch(_e) {}
+    return '';
+  }
+  return msg;
+}
+/* 目前生效中的統計封鎖一覽（供診斷面板顯示）。
+   把「四個閘門的交集」攤開來看——交易變少的時候，這裡就是答案。 */
+function winupActiveBlocks(kind) {
+  const out = [];
+  try {
+    const w = winupStats();
+    const push = (fam, map) => {
+      for (const [k, msg] of Object.entries(map || {})) {
+        const tag = `${fam}:${kind}:${k}`;
+        const last = _winupProbeAt[tag] || 0;
+        const nextH = last ? Math.max(0, WINUP_CFG.probeHours - (Date.now() - last) / 3600e3) : 0;
+        out.push({ fam, key: k, msg, nextProbeH: +nextH.toFixed(1) });
+      }
+    };
+    push('sess', w.sessBlocked[kind]);
+    push('regime', w.regimeBlocked[kind]);
+    push('cond', w.condBlocked[kind]);
+    push('sym', w.symBad[kind]);
+  } catch(_e) {}
+  return out;
+}
+function buildWinupBlockPanel(kind) {
+  const rows = winupActiveBlocks(kind);
+  const famLabel = { sess: '時段', regime: '市場狀態', cond: '進場條件', sym: '幣種' };
+  if (!rows.length) {
+    return `<div style="margin-top:10px;font-size:0.78rem;color:#22c55e">✅ 目前沒有任何統計封鎖生效——訊號少是行情因素，不是被閘門擋住。</div>`;
+  }
+  return `<div style="margin-top:10px;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.22);
+      border-radius:9px;padding:9px 12px">
+    <div style="font-weight:700;font-size:0.8rem;color:#f87171;margin-bottom:5px">
+      🚧 目前生效中的統計封鎖（${rows.length} 項）——這是訊號變少最常見的原因</div>
+    <div style="font-size:0.74rem;line-height:1.7;color:var(--text2)">
+      ${rows.map(r => `<div>· <b>${famLabel[r.fam] || r.fam}</b>「${r.key}」
+        <span style="color:var(--text3)">${r.nextProbeH > 0 ? `${r.nextProbeH} 小時後放行一筆探路單` : '下一個候選會被放行為探路單'}</span></div>`).join('')}
+    </div>
+    <div style="font-size:0.71rem;color:var(--text3);margin-top:6px;line-height:1.6">
+      每個被封鎖的桶每 ${WINUP_CFG.probeHours} 小時放行一筆探路單，讓它能繼續累積樣本、真的變好就自動解除；
+      封鎖判定只採計最近 ${WINUP_CFG.maxAgeDays} 天的成交，每個家族最多同時封 ${WINUP_CFG.maxBlocks} 項。
+      沒有這三道機制時，被封的桶拿不到新樣本 → 永遠翻不了身 → 閘門只會越積越多。
+    </div>
+  </div>`;
+}
+
 function winupSessionBlocked(kind) {
   try {
     const kz = computeKillZone();
     const key = kind === 'main' ? (kz.code || '') : (kz.quality || '');
-    return winupStats().sessBlocked[kind][key] || '';
+    return _winupBlockOrProbe(winupStats().sessBlocked[kind][key] || '', `sess:${kind}:${key}`);
   } catch(_e) { return ''; }
 }
 function winupSymbolBlocked(kind, symbol) {
-  try { return winupStats().symBad[kind][symbol] || ''; } catch(_e) { return ''; }
+  try { return _winupBlockOrProbe(winupStats().symBad[kind][symbol] || '', `sym:${kind}:${symbol}`); } catch(_e) { return ''; }
 }
 /* 進場條件持續學習的分桶鍵（快速單）：ADX 檔位｜量能｜多週期同向數 */
 function _winupCondKey(adx, volRatio, mtfAlign) {
@@ -29111,16 +29213,23 @@ function _winupCondKey(adx, volRatio, mtfAlign) {
   return `${a}|${vv}|MTF${mtfAlign >= 2 ? '2+' : mtfAlign >= 1 ? '1' : '0'}`;
 }
 function winupScalpCondBlocked(adx, volRatio, mtfAlign) {
-  try { return winupStats().condBlocked.scalp[_winupCondKey(adx, volRatio, mtfAlign)] || ''; } catch(_e) { return ''; }
+  try {
+    const k = _winupCondKey(adx, volRatio, mtfAlign);
+    return _winupBlockOrProbe(winupStats().condBlocked.scalp[k] || '', `cond:scalp:${k}`);
+  } catch(_e) { return ''; }
 }
 function winupMainTagBlocked(entryTag) {
-  try { return entryTag ? (winupStats().condBlocked.main[entryTag] || '') : ''; } catch(_e) { return ''; }
+  try {
+    if (!entryTag) return '';
+    return _winupBlockOrProbe(winupStats().condBlocked.main[entryTag] || '', `cond:main:${entryTag}`);
+  } catch(_e) { return ''; }
 }
 function winupRegimeBlocked(kind, dir) {
   try {
     const rk = currentRegimeKey();
     if (!rk) return '';
-    return winupStats().regimeBlocked[kind][rk + '|' + dir] || '';
+    const k = rk + '|' + dir;
+    return _winupBlockOrProbe(winupStats().regimeBlocked[kind][k] || '', `regime:${kind}:${k}`);
   } catch(_e) { return ''; }
 }
 function mainSlFloorMult() {
