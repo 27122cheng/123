@@ -10300,19 +10300,40 @@ async function renderCoinDetail(symbol) {
   const badge = document.getElementById('mtf-badge');
   if (badge) badge.textContent = '';
 
-  // 並行獲取：多週期 + 恐慌貪婪 + 衍生品 + 宏觀市場 + 減半資訊 + 巨鯨偵測 + 足跡圖 + 爆倉地圖
-  const [mtfData, fearGreed, deriv, globalMkt, halving, whale, fpData, liqData] = await Promise.all([
-    fetchMTFKlines(symbol),
-    fetchFearGreed(),
-    fetchDerivativesData(symbol),
-    fetchGlobalMarket(),
-    fetchHalvingInfo(),
-    fetchWhaleTrades(symbol),
-    fetchFootprintData(symbol),
-    fetchLiquidationMap(symbol),
-    refreshOkxPrices(),
-  ]);
+  /* ── 第一段：先渲染「只靠掃描快取就能算」的區塊 ────────────────
+     原本整頁等 Promise.all 的 8 個抓取全部完成才渲染任何面板——最壞情況
+     （幣安 4 個備援主機各 10 秒逾時）要等 40 秒以上；其中任何一項卡住，
+     使用者看到的就是整頁「載入中」。但頂級交易員計畫、資料鮮度、盤面
+     摘要的原料是掃描快取，本來就不需要等任何網路請求（規則①的精神：
+     分析不放渲染路徑——同理，快取能給的畫面不等網路）。 */
+  const setSafe1 = (id, buildFn) => {
+    try { const e = document.getElementById(id); if (e) { const h = buildFn(); if (h) e.innerHTML = h; } } catch(_e) {}
+  };
+  setSafe1('toptrader-body', () => buildTopTraderPlan(coin, {}, coin.derivData || null, _macroCache, coin.whaleData || null, _macroCache?.fg || null, null));
+  setSafe1('situation-body', () => buildSituationSummary(coin, {}, coin.derivData || null, _macroCache?.fg || null, _macroCache, coin.whaleData || null));
+  try { const _fsEl0 = document.getElementById('feed-strip'); if (_fsEl0) _fsEl0.innerHTML = buildFeedStrip(); } catch(_e) {}
 
+  /* ── 第二段：抓完整資料，逐項各自設 12 秒上限──任何一項卡住只犧牲
+     它自己，不再拖垮整頁。逾時項回 null，各面板本來就會降級顯示。 */
+  const _tmo = (pr, ms) => Promise.race([
+    Promise.resolve(pr).catch(() => null),
+    new Promise(r => setTimeout(() => r(null), ms)),
+  ]);
+  const [mtfData, fearGreed, deriv, globalMkt, halving, whale, fpData, liqData] = await Promise.all([
+    _tmo(fetchMTFKlines(symbol), 15000),
+    _tmo(fetchFearGreed(), 8000),
+    _tmo(fetchDerivativesData(symbol), 10000),
+    _tmo(fetchGlobalMarket(), 8000),
+    _tmo(fetchHalvingInfo(), 8000),
+    _tmo(fetchWhaleTrades(symbol), 10000),
+    _tmo(fetchFootprintData(symbol), 12000),
+    _tmo(fetchLiquidationMap(symbol), 10000),
+    _tmo(refreshOkxPrices(), 8000),
+  ]);
+  // 使用者已切到別的幣 → 不要用舊幣的資料覆蓋新頁面
+  if (document.getElementById('coin-name')?.textContent !== symbol) return;
+
+  const _mtf = mtfData || {};
   // 足跡圖緩存（供 AI 分析函數讀取）
   if (fpData) _footprintCache[symbol] = fpData;
 
@@ -10362,21 +10383,22 @@ async function renderCoinDetail(symbol) {
 
   setSafe('macro-body',     () => buildMacroPanel(globalMkt, halving, fearGreed));
   setSafe('deriv-body',     () => buildDerivativesPanel(deriv));
-  setSafe('setup-body',     () => buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed));
-  setSafe('mtf-body',       () => buildMTFTable(mtfData));
+  setSafe('setup-body',     () => buildTradeSetup(coin, _mtf, deriv, globalMkt, whale, fearGreed));
+  setSafe('mtf-body',       () => buildMTFTable(_mtf));
 
   // ICT panel removed — analysis now lives inside generateAIAnalysis (ai-body)
   const _ictSection = document.getElementById('ict-section');
   if (_ictSection) _ictSection.style.display = 'none';
 
-  setSafe('of-body',        () => buildOrderFlowPanel(coin, mtfData['15m']?.orderFlow || null));
+  setSafe('of-body',        () => buildOrderFlowPanel(coin, _mtf['15m']?.orderFlow || null));
   setSafe('fp-body',        () => buildFootprintPanel(_footprintCache[symbol], coin));
-  setSafe('liq-body',       () => buildLiquidationPanel(_liquidationCache[symbol], coin, mtfData));
-  setSafe('ai-body',        () => generateAIAnalysis(coin, mtfData, fearGreed));
-  setSafe('toptrader-body', () => buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fearGreed, halving));
+  setSafe('liq-body',       () => buildLiquidationPanel(_liquidationCache[symbol], coin, _mtf));
+  setSafe('ai-body',        () => generateAIAnalysis(coin, _mtf, fearGreed));
+  try { delete _ttPlanCache[symbol]; } catch(_e) {}   // 覆蓋第一段的快取版
+  setSafe('toptrader-body', () => buildTopTraderPlan(coin, _mtf, deriv, globalMkt, whale, fearGreed, halving));
   try { const _fsEl = document.getElementById('feed-strip'); if (_fsEl) _fsEl.innerHTML = buildFeedStrip(); } catch(_e) {}
-  setSafe('vp-body',        () => buildVPPanel(coin, mtfData, whale));
-  setSafe('situation-body', () => buildSituationSummary(coin, mtfData, deriv, fearGreed, globalMkt, whale));
+  setSafe('vp-body',        () => buildVPPanel(coin, _mtf, whale));
+  setSafe('situation-body', () => buildSituationSummary(coin, _mtf, deriv, fearGreed, globalMkt, whale));
 
   // 15因子 AI 風險評估（宏觀資料就緒後渲染，確保準確度）
   const _frEl = document.getElementById('full-risk-body');
@@ -13510,7 +13532,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260818c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260819a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
