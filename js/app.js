@@ -239,10 +239,15 @@ async function init() {
   _bootMark('done');
 }
 
+/* 宏觀快取持久化：CoinGecko 免費端點限速兇，429 的空窗期一般單會整輪停擺。
+   存最後一份成功的快照（2 小時內視為可用），重新整理或限速窗內不從零開始。 */
+function _persistMacro() {
+  try { localStorage.setItem('csp_macro_snapshot', JSON.stringify({ at: Date.now(), v: _macroCache })); } catch(_e) {}
+}
 async function _prefetchMacroCache() {
   try {
     const [fg, gm] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-    if (fg || gm) _macroCache = { ...(gm || {}), fg };
+    if (fg || gm) { _macroCache = { ...(gm || {}), fg }; _persistMacro(); }
   } catch (e) {}
 }
 
@@ -439,7 +444,7 @@ function startRefreshCycle() {
     if (!_macroCache) {
       try {
         const [_rfg, _rgm] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-        if (_rfg || _rgm) _macroCache = { ...(_rgm || {}), fg: _rfg };
+        if (_rfg || _rgm) { _macroCache = { ...(_rgm || {}), fg: _rfg }; _persistMacro(); }
       } catch(_re) {}
     }
     const _pScan = withCreateLock("scanSignals", () => recordSignalsFromScan(data));
@@ -570,7 +575,7 @@ async function manualRefresh() {
   if (!_macroCache) {
     try {
       const [_rfg2, _rgm2] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-      if (_rfg2 || _rgm2) _macroCache = { ...(_rgm2 || {}), fg: _rfg2 };
+      if (_rfg2 || _rgm2) { _macroCache = { ...(_rgm2 || {}), fg: _rfg2 }; _persistMacro(); }
     } catch(_re2) {}
   }
   const _mScan = withCreateLock("scanSignals", () => recordSignalsFromScan(data));
@@ -10362,7 +10367,7 @@ async function renderCoinDetail(symbol) {
   }
 
   // 緩存宏觀數據供後台使用（宏觀詳情僅在9AM簡報和幣種分析頁顯示）
-  if (globalMkt || fearGreed) _macroCache = { ...(globalMkt || {}), fg: fearGreed };
+  if (globalMkt || fearGreed) { _macroCache = { ...(globalMkt || {}), fg: fearGreed }; _persistMacro(); }
 
   // 各區塊獨立渲染：每個區塊用自己的 try-catch，確保一個出錯不影響其他
   const setSafe = (id, buildFn) => {
@@ -12730,7 +12735,14 @@ function accountBreakeven() {
   if (_beCache && now - _beCacheTs < 60000) return _beCache;
   let out = null;
   try {
-    const closed = learnSamples().filter(t => t.status === 'closed');
+    /* ⚠️ 2026-08-19 死鎖修復：這裡原本用「終身」全部完結單。舊制的問題：
+       歷史連續止損 → 期望值/止損率永遠為負 → learnDrag 扣到 35~55 →
+       風控分過不了 65 → 再也建不出任何新單 → 統計永遠不更新 → 永久死鎖。
+       門檻統計的職責是「現在的條件好不好」，不是「歷史總帳」——
+       改用與 winup 同一把尺（近 45 天），舊行情的虧損不再凍結今天。 */
+    const _beCut = Date.now() - (typeof WINUP_CFG !== 'undefined' ? WINUP_CFG.maxAgeDays : 45) * 86400e3;
+    const closed = learnSamples().filter(t => t.status === 'closed'
+      && (!isFinite(parseFloat(t.exitTime)) || parseFloat(t.exitTime) >= _beCut));
     const w = closed.filter(isWinTrade), l = closed.filter(isLossTrade);
     if (w.length >= 5 && l.length >= 5) {
       const aw = w.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / w.length;
@@ -13533,7 +13545,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260819b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260819c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14226,6 +14238,23 @@ async function recordSignalsFromScan(data) {
     return true;
   };
   let _cand = 0;
+  /* ── 饑荒探路（一般單版的探路單）───────────────────────────────
+     死鎖鏈：歷史連續止損 → learnDrag 扣 35~55 → 風控分過不了 65 →
+     建不出新單 → 學習統計永遠停在舊行情 → drag 永不消退。與 winup 閘門
+     的單向棘輪同一個病，解法也同一帖：48 小時建不出任何一般單時，每
+     24 小時放行一筆「結構完整但風控分被歷史拖累」的探路單——結構、
+     R/R、硬封鎖全部照常要求，只放寬統計性門檻（風控分 65→55、SQ 14→12），
+     成交結果標記 probeTag 由實驗室驗收。這不是放水：一筆/24h、有標記、
+     有驗收，而且它是唯一能讓凍結的統計重新開始更新的路。 */
+  let _starveProbe = false;
+  try {
+    const _lastBuild = tlog.reduce((m, t) => Math.max(m, t.timestamp || 0), 0);
+    const _lastProbe = parseFloat(localStorage.getItem('csp_starve_probe_at')) || 0;
+    _starveProbe = (Date.now() - _lastBuild > 48 * 3600e3)
+                && (Date.now() - _lastProbe > 24 * 3600e3)
+                && tlog.length > 0;   // 全新安裝（無歷史）沒有 drag，不需要探路
+    if (_starveProbe) _rej['ℹ️ 饑荒探路已武裝（48h 無建單，本輪允許 1 筆風控分≥55/SQ≥12 的探路單）'] = 0;
+  } catch(_e) {}
 
   // ── 預先計算宏觀方向（使用與大方向進度條完全一致的多因子評分）──
   let macroNetDir = 'neutral';  // 預設：無快取時全放行
@@ -14315,11 +14344,21 @@ async function recordSignalsFromScan(data) {
     const direction = isLong ? 'long' : 'short';
 
     // 宏觀資料未就緒 → 不建新單：null 時所有宏觀封鎖都會放行，
-    // 等快取補上後 updateOpenTrades 的宏觀反向取消會立刻打掉這些單（建了就取消）
-    if (!_macroCache) break;
+    // 等快取補上後 updateOpenTrades 的宏觀反向取消會立刻打掉這些單（建了就取消）。
+    // ⚠️ 這是「快速單有交易、一般單掛零」最隱蔽的一種原因：快速單不需要宏觀
+    // 快取，CoinGecko 被限速時只有一般單靜默停擺。三道補救：
+    //   ① 先試 2 小時內的持久化快照（重新整理／限速窗內不再從零開始）
+    //   ② 仍然沒有 → 大聲寫進漏斗，訊號主機狀態頁看得到，不再無聲 break
+    if (!_macroCache) {
+      try {
+        const _ms = JSON.parse(localStorage.getItem('csp_macro_snapshot') || 'null');
+        if (_ms && _ms.at && Date.now() - _ms.at < 2 * 3600e3 && _ms.v) _macroCache = _ms.v;
+      } catch(_e) {}
+    }
+    if (!_macroCache) { _rej['宏觀資料未就緒（CoinGecko/恐貪未回應，本輪一般單全停——快速單不受影響）'] = data.length - _cand + 1; break; }
 
     // 強烈宏觀硬封鎖（與 buildTradeSetup macroBlockedForRecord 完全一致）
-    if (isLong  && blockLong)  continue;
+    if (isLong  && blockLong && _no('宏觀禁多')) continue;
     if (!isLong && blockShort && _no('宏觀禁空')) continue;
 
     // 已有活躍倉位或在冷卻期 → 跳過
@@ -14342,9 +14381,13 @@ async function recordSignalsFromScan(data) {
     // 結構階梯不完整＝四個價位沒辦法全部釘在結構上 → 不建單。
     // 沒有結構可釘時硬用固定 R 湊出價位，正是這次要改掉的事。
     if (setup.ladderOk === false && _no('結構不足（四個價位無法全部釘在結構上）')) continue;
-    if (setup.rrBlocked)   continue;  // R/R < 1.3 → 硬性封鎖
+    if (setup.rrBlocked && _no(setup.rrReason || 'R/R 低於門檻')) continue;
     // 風控分最低門檻（100 分制，與幣種詳情頁一致；未達每日配額時自適應放寬）
-    if ((setup.conf || 0) < _scanGates.minConf && _no(`風控分 < ${_scanGates.minConf}（扣風險分前）`)) continue;
+    let _starveThis = false;
+    if ((setup.conf || 0) < _scanGates.minConf) {
+      if (_starveProbe && (setup.conf || 0) >= 55) { _starveThis = true; }
+      else { _no(`風控分 < ${_scanGates.minConf}（扣風險分前）`); continue; }
+    }
     // 週預測信心≥70 且強衝突（週強多+日強空 或 週強空+日強多）→ 硬封鎖；信心<70 僅作參考
     const wkStrong = wBias.includes('strong'), dyStrong = tBias.includes('strong');
     if (wBiasConf >= 70 && wkStrong && dyStrong && ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull')) && _no('週線+日線強勢逆向')) continue;
@@ -14379,7 +14422,12 @@ async function recordSignalsFromScan(data) {
     } catch(_e) {}
     // 風險評估扣分（比例制）：扣後風控分低於門檻 → 跳過
     const _scanRiskPen = calcRiskPenalty(_scanRisk.score);
-    if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < _scanGates.minConf && _no(`風控分 < ${_scanGates.minConf}（扣風險分後）`)) continue;
+    if (Math.max(0, (setup.conf || 0) - _scanRiskPen) < _scanGates.minConf) {
+      if (_starveThis && Math.max(0, (setup.conf || 0) - _scanRiskPen) >= 55) { /* 饑荒探路：55 分即放行 */ }
+      else if (!_starveThis && _starveProbe && Math.max(0, (setup.conf || 0) - _scanRiskPen) >= 55
+               && (setup.conf || 0) >= _scanGates.minConf) { _starveThis = true; }
+      else { _no(`風控分 < ${_scanGates.minConf}（扣風險分後）`); continue; }
+    }
 
     // ── 長線升級判斷：週線+日線+4H+15m 四週期同向 → 長線單；日線+4H+1H+15m → 短線單 ──
     let canScaleIn = setup.isLongTerm === true;
@@ -14390,7 +14438,7 @@ async function recordSignalsFromScan(data) {
     // 長線單：週預測信心≥70 時週向須對齊（信心<70 僅作參考）
     if (canScaleIn && wBiasConf >= 70) {
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
-      if (!_wkAligned) continue;
+      if (!_wkAligned && _no('長線單與高信心週預測不同向')) continue;
     }
 
 
@@ -14779,32 +14827,34 @@ async function recordSignalsFromScan(data) {
     const _scanSqLabel = { SSS:'神級訊號', SS:'完美訊號', S:'頂級訊號', A:'優質訊號', B:'良好訊號', C:'一般訊號', D:'訊號偏弱' }[_scanSqGrade];
     // 長線單 S 以上；短線單以自適應 SQ 門檻判斷（預設 9/A 級，未達每日配額時放寬）
     // 若長線單 SQ 未達 S 級但達短線門檻，降格為短線單繼續建單
+    const _sqFloor = _starveThis ? Math.min(12, _scanGates.minSq) : _scanGates.minSq;
     if (canScaleIn && !['SSS','SS','S'].includes(_scanSqGrade)) {
-      if (_scanSqScore < _scanGates.minSq) continue; // 短線也不達標 → 跳過
+      if (_scanSqScore < _sqFloor && _no(`SQ ${_scanSqScore} < ${_sqFloor}`)) continue;
       canScaleIn = false; // 降格為短線單
       _scanSqFactors.push(`⚠️ 長線單訊號品質 ${_scanSqGrade}（${_scanSqScore}分）未達 S 級（19分），已降格為短線單`);
-    } else if (!canScaleIn && _scanSqScore < _scanGates.minSq) {
-      continue; // 短線單也不達標
+    } else if (!canScaleIn && _scanSqScore < _sqFloor) {
+      _no(`SQ ${_scanSqScore} < ${_sqFloor}`); continue;
     }
+    if (_starveThis) _scanSqFactors.push('🧪 饑荒探路單：風控分被歷史止損記憶拖累（55~64），結構與 R/R 照常達標——放行讓凍結的統計重新更新，成效由實驗室驗收');
     if (_scanGates.relaxed) _scanSqFactors.push(`ℹ️ ${_scanGates.label}`);
 
     // 短線單趨勢預檢：若趨勢已反向，建單後 updateOpenTrades 的 trendReversed 會立即取消，
     // 預先攔截，避免同秒建立後馬上取消（與 updateOpenTrades trendReversed 判斷完全一致）
     if (!canScaleIn) {
       const _preTrendReversed = isLong ? coin.trend?.includes('看跌') : coin.trend?.includes('看漲');
-      if (_preTrendReversed) continue;
+      if (_preTrendReversed && _no('趨勢標籤已反向（補抓期間變盤）')) continue;
     }
 
     // 防競態：async fetch 期間 checkAndSendAlerts 可能已建立同幣種掛單，重新讀取確認
     const _freshTlog = loadTradeLog();
-    if (_freshTlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
+    if (_freshTlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending')) && _no('該幣已有活躍單（防競態複查）')) continue;
     // 跨系統曝險：快速單已持有同幣反向 → 不建（自我對沖）；同向 → 倉位減半
     const _xEm = crossExposure(coin.symbol, direction, 'main');
     if (_xEm && _xEm.state === 'opposite' && _no('與快速單反向對沖')) continue;
 
     // 同方向集中度控管（活躍上限 / 爆量節流 / 連續止損熔斷）
     const _dirGuardMsg = sameDirGuard(_freshTlog, direction, _scanSqScore);
-    if (_dirGuardMsg) { console.log('[dir-guard]', coin.symbol, _dirGuardMsg); continue; }
+    if (_dirGuardMsg) { console.log('[dir-guard]', coin.symbol, _dirGuardMsg); _no('同方向集中度控管'); continue; }
 
     // 全局連續止損熔斷：只剩重大連虧的硬停；漸進壓制交給自適應 learnDrag
     if (lossStreakGuard().blocked && _no('全局連續止損熔斷')) continue;
@@ -14860,7 +14910,8 @@ async function recordSignalsFromScan(data) {
     try {
       const _auditTrade = { direction, entry: setup.entry, sl: setup.sl, tp1: setup.tp1, canScaleIn };
       _profMark('SQ評分'); const _audit = computeSqMonitorScore(_auditTrade, coin, isLong, { wBias, tBias, btcChg24: _btcChg24 });
-      const _auditSqGate = canScaleIn ? 21 : _scanGates.minSq;
+      // 饑荒探路：終審門檻與掃描 SQ 門檻同步吃地板（12），否則探路單在這裡必死
+      const _auditSqGate = canScaleIn ? 21 : (_starveThis ? Math.min(12, _scanGates.minSq) : _scanGates.minSq);
       if (_audit.sq < _auditSqGate) {
         console.log(`[pre-audit] ${coin.symbol} 監控口徑評分 ${_audit.sq} < ${_auditSqGate}，不建單（杜絕建了又取消）`);
         _no(`終審 SQ < ${_auditSqGate}`); continue;
@@ -15090,6 +15141,12 @@ async function recordSignalsFromScan(data) {
     }
     // 探路單認領：這筆若是被封鎖的桶放行的取樣單，標記起來供實驗室單獨統計
     try { newTrade.probeTag = winupClaimProbe(winupTagsOf('main', newTrade)); } catch(_e) {}
+    if (_starveThis) {
+      newTrade.probeTag = newTrade.probeTag || 'starve:main';
+      try { localStorage.setItem('csp_starve_probe_at', String(Date.now())); } catch(_e) {}
+      _starveProbe = false;   // 一輪最多一筆
+      _scanEntryTags.push('饑荒探路');
+    }
     // 建單唯一入口（原子：重新載入→去重→存檔），杜絕多路徑並行建出重複訊號
     _profMark('條件封鎖');
     if (!commitNewTrade(newTrade)) {
@@ -23270,6 +23327,9 @@ function accountLossSeverity() {
       if (lab.length >= 15) { n = lab.length; losses = lab.filter(o => (o.pnlR || 0) <= 0).length; }
       else if (profN >= 8) { n = profN; losses = prof.losses || 0; }  // 樣本較少也給（Wilson 會自動保守）
     }
+    // 注意：getLearnProfile 是聚合統計（無逐筆時間戳），做不了時間窗——
+    // 歷史止損的影響靠「饑荒探路單」破除（見 recordSignalsFromScan），
+    // 探路單成交後這裡的分母就會開始更新，drag 隨新樣本自然消退。
     const v = n >= 8 ? wilsonLB(losses, n) : NaN;   // 止損率下界 0~1（含樣本數效應）
     accountLossSeverity._c = { ts: Date.now(), v };
     return v;
@@ -23860,11 +23920,37 @@ function computeSimpleSetup(coin, isLong) {
     }
     return null;
   };
-  // 合流區目標的距離上限隨風險距離伸縮：固定 2.5% 在止損 2% 的單上等於
-  // 只肯找 1.2R 內的結構——結構明明在 1.5R 處也會被迫退回固定 R 湊數。
-  // 放寬到 max(2.5%, 1.6R)、絕對上限 4%（TP1 仍是「要容易到」的近程目標）。
-  const _tp1ZoneCap = Math.min(entry * 0.04, Math.max(_tp1Cap, risk * 1.6));
-  const _tp1Zone = _tpZonePick(risk * 0.8, _tp1ZoneCap, null);
+  /* 合流區目標的距離上限隨風險距離伸縮。
+     ⚠️ 2026-08-19 死鎖修復：原式 min(4%, max(2.5%, 1.6R)) 的絕對上限 4% 是
+     一個數學倒置——止損被學習機制加寬到 3.5% 時，4% 內的任何目標最多只有
+     1.14R，R/R 1.3 門檻「永遠」過不了：歷史越差 → 止損越寬 → R/R 天花板
+     越低 → 越建不出單 → 統計越不更新。一般單長期掛零的直接兇手之一
+     （另見 accountBreakeven 的近期窗口與饑荒探路）。
+     改為 R 為主、絕對上限只防荒謬：min(max(2.5%, 1.6R), 6%)——
+     常態止損（≤2.5%）下與舊值完全相同，只有止損被加寬時上限才跟著放大，
+     讓 ≥1.3R 的結構目標至少「找得到」；止損寬到 6%/1.3 ≈ 4.6% 以上的單
+     本來就不該做，維持擋下。 */
+  const _tp1ZoneCap = Math.min(Math.max(_tp1Cap, risk * 1.6), entry * 0.06);
+  let _tp1Zone = _tpZonePick(risk * 0.8, _tp1ZoneCap, null);
+  // 最近的合流區只有 <1.3R 時，往外找下一個 ≥1.3R 的區（僅換目標、不動止損）：
+  // 選近是為了「容易到」，但近到過不了 R/R 門檻的目標等於沒有目標
+  if (_tp1Zone && Math.abs(_tp1Zone.tgt - entry) < risk * 1.3) {
+    const _tp1Far = _tpZonePick(risk * 1.3, _tp1ZoneCap, null);
+    if (_tp1Far) _tp1Zone = _tp1Far;
+  }
+  /* ⚠️ 2026-08-19 條件倒置修復（一般單長期掛零的直接兇手）：
+     近程上限內沒有合流區、但更遠處「有」真結構時，舊邏輯會放棄結構、
+     退到 R:R 保底——而保底寫死 1.0R，必然過不了 1.3 的 R/R 門檻。
+     組合起來就是一個倒置：結構目標更遠（其實 R/R 更好）→ 反而必死。
+     實測解剖：進場 99.4、止損 97.5、合流區 103.5（2.06R，佐證齊全）——
+     被 1.6R 上限拒收 → 保底 1.0R → rrBlocked。
+     修正：收下最近的真實結構（上限 3R／8%，防荒謬），R/R 門檻照常把關。
+     TP1「要容易到」的原則不變——是相對「現有結構」的最近者，
+     不是相對一個根本不存在的近程目標。 */
+  if (!_tp1Zone) {
+    const _tp1Any = _tpZonePick(risk * 0.8, entry * 0.08, null);
+    if (_tp1Any && Math.abs(_tp1Any.tgt - entry) <= risk * 3) _tp1Zone = _tp1Any;
+  }
 
   // 優先順序：對向合流區（佐證最多）→ FVG缺口 → EMA50 → BB對向軌 → 近期前高/低（≤2.5%）→ R:R 保底
   if (_tp1Zone) {
