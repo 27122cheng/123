@@ -13545,7 +13545,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260819c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260819d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -23693,6 +23693,35 @@ function computeSimpleSetup(coin, isLong) {
   _addLv(_bbLo, 'BB下軌'); _addLv(_bbUp, 'BB上軌');
   _addLv(ema20, 'EMA20'); _addLv(ema50, 'EMA50'); _addLv(ema200, 'EMA200');
   _addLv(_h4Hi, '4H前高', 2); _addLv(_h4Lo, '4H前低', 2);
+  /* ── 籌碼面支撐壓力（2026-08-19）────────────────────────────────
+     使用者原則：「止損止盈位置看有沒有阻力或支撐，能佐證的分析越多越好」。
+     合流區池原本只有技術面（OB/FVG/BB/EMA/前高低/影線），但籌碼面裡
+     「有價位座標」的支撐壓力一直沒進池：
+       · 成交量 POC／VWAP——真實成交堆出來的價位，市場的成本重心
+       · 爆倉牆（僅實際來源）——強平單密集的價位，價格常被吸過去再反應
+     只收有價位的：新聞/情緒/基本面沒有價格座標，不可能變成支撐壓力，
+     它們影響的是建單評分與方向確信度，不是止損釘位（拿粗糙情緒代理去
+     動一個釘在結構上的止損，是用低品質訊號覆蓋高品質訊號）。
+     估算式爆倉圖（source='estimated'）刻意排除——那是由現價反推的
+     偽價位，會跟著價格跑，進池只會污染合流判定。 */
+  try {
+    /* 貼身排除（實測解剖）：POC/VWAP 常貼著現價（它們本來就是「現在的成本
+       重心」），直接進池會跟 EMA 黏成一個「進場點自己坐在裡面」的支撐區，
+       止損被釘到 0.4×ATR 的雜訊距離——你正站著的地板不是你能靠的支撐。
+       距現價 0.6×ATR 內的籌碼價位一律不進池。 */
+    const _chipMin = atr * 0.6;
+    const _addChip = (v, label, w) => { const n = parseFloat(v);
+      if (isFinite(n) && n > 0 && Math.abs(n - price) >= _chipMin) _addLv(n, label, w); };
+    const _fpPool = _footprintCache[coin.symbol];
+    if (_fpPool) { _addChip(_fpPool.poc, '成交量POC', 2); _addChip(_fpPool.vwap, 'VWAP'); }
+    const _lqPool = _liquidationCache[coin.symbol];
+    if (_lqPool && _lqPool.source && _lqPool.source !== 'estimated') {
+      for (const l of (_lqPool.longLiqs || []).slice(0, 3))
+        if (l.price > 0 && Math.abs(l.price - price) / price <= 0.08) _addChip(l.price, '多單爆倉牆', 2);
+      for (const l of (_lqPool.shortLiqs || []).slice(0, 3))
+        if (l.price > 0 && Math.abs(l.price - price) / price <= 0.08) _addChip(l.price, '空單爆倉牆', 2);
+    }
+  } catch(_e) {}
   for (const z of (coin.wickSupports || []).slice(0, 4))
     _addLv(z.level, `影線支撐×${z.wicks}`, Math.min(4, z.wicks || 1));
   for (const z of (coin.wickResistances || []).slice(0, 4))
