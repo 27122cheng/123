@@ -138,6 +138,7 @@ const FEED_SPEC = {
   fg:      { label: '恐慌貪婪指數',                 fresh: 60 * 60e3, stale: 6 * 3600e3, how: 'alternative.me，來源本身每日更新一次，不可能更即時' },
   news:    { label: '新聞情緒',                     fresh: 25 * 60e3, stale: 90 * 60e3,  how: '25 分鐘快取；新聞本質是事件流，過度頻繁抓取沒有意義' },
   ext:     { label: '場外行情（期指／DXY／VIX）',    fresh: 5 * 60e3, stale: 30 * 60e3,  how: '/api/macro 代理 Yahoo／Stooq，前後端各 5 分鐘快取' },
+  funding: { label: '全市場資金費率',               fresh: 16 * 60e3, stale: 45 * 60e3,  how: '幣安 premiumIndex 一個請求拿全市場，15 分鐘快取；方向確信度／快速單門檻／記分卡共用' },
   halving: { label: '減半資訊',                     fresh: 6 * 3600e3, stale: 24 * 3600e3, how: 'mempool.space 區塊高度，日級資訊' },
 };
 const _feedAt = {};   // key → { at, ok, note, fail }

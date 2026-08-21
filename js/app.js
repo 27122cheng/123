@@ -468,6 +468,7 @@ function startRefreshCycle() {
     };
     // AI 機會實驗室 + 驗證策略晉升 + 扣分條件審查（主掃描循環）
     try { extMacroTick(); } catch(e) {}   // 場外風險溫度（背景、5 分鐘快取、失敗降級）
+    try { sbxEnsureFunding(); } catch(e) {}   // 全市場費率（不分主機身分：確信度/面板/記分卡都在讀）
     await _pt('市場狀態更新',   () => updateMarketContext(data));
     await _pt('實驗室機會記錄', () => recordLabOpportunities(data));
     await _pt('實驗室機會更新', () => updateLabOpportunities(data));
@@ -13545,7 +13546,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260819e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -25667,6 +25668,7 @@ function scalpSlMult(mode) {
 
 /* 快進快出專用 5m K 線快取：只對「通過初篩」的幣抓，數量少不佔限速 */
 const _scalpKlineCache = {};
+const _scalpKlineTs = {};   // symbol → 寫入時間：抓取失敗時不得靜默用舊 K 線判定突破
 /* 各道條件的擋下次數（每輪重置）——沒有訊號時用來看是卡在哪一關，
    而不是憑猜測調參數。顯示於「自動持倉」頁。 */
 let _scalpReject = {};
@@ -25998,6 +26000,9 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   //    互為互補：主系統怕回踩變破位，本系統怕假突破，失敗情境不重疊。
   const raw = _scalpKlineCache[coin.symbol];
   if (!raw || raw.length < SCALP_CFG.breakLookback + 2) return _sr('5m資料不足');
+  // 時效：本輪抓取失敗會留下上一輪（甚至更舊）的 K 線——用 10 分鐘前的
+  // K 線判定「突破」等於對著舊行情下單，寧可跳過這一輪
+  if (Date.now() - (_scalpKlineTs[coin.symbol] || 0) > 10 * 60000) return _sr('5m資料過期(抓取失敗)');
   const bars = raw.slice(-(SCALP_CFG.breakLookback + 1));
   const prev = bars.slice(0, -1);                       // 不含當根，避免自我比較
   const last = bars[bars.length - 1];
@@ -26408,7 +26413,7 @@ async function recordScalpSignals(data) {
           const k = await (typeof fetchKlinesExec === 'function'
             ? fetchKlinesExec(t.symbol.replace('/', ''), SCALP_CFG.tf, 24)
             : fetchKlines(t.symbol.replace('/', ''), SCALP_CFG.tf, 24));
-          if (k && k.length) _scalpKlineCache[t.symbol] = k;
+          if (k && k.length) { _scalpKlineCache[t.symbol] = k; _scalpKlineTs[t.symbol] = Date.now(); }
         } catch(_e) {}
       }));
     }
@@ -26495,7 +26500,7 @@ async function recordScalpSignals(data) {
         const k = await (typeof fetchKlinesExec === 'function'
           ? fetchKlinesExec(sym, SCALP_CFG.tf, _need)
           : fetchKlines(sym, SCALP_CFG.tf, _need));
-        if (k && k.length) _scalpKlineCache[symbol] = k;
+        if (k && k.length) { _scalpKlineCache[symbol] = k; _scalpKlineTs[symbol] = Date.now(); }
       } catch(_e) {}
     }));
 
@@ -27920,6 +27925,13 @@ function sbxEffectiveParams(ss) {
 
 /* ── 外部資料：資金費率（單一批量請求全市場）＋ 1h K 線（VWAP/開盤區間）── */
 let _sbxFunding = null, _sbxFundingTs = 0;
+/* ⚠️ 2026-08-19 即時性稽核：這個「全市場費率」原本只在 sbxScanSignals 裡
+   更新，而那個函式開頭就是 if (!isSignalMaster()) return——結果非訊號主機
+   的裝置永遠拿不到費率。但讀它的不只沙盒：方向確信度的費率票、快速單
+   順勢家族的確信度門檻、記分卡的 funding 引擎、頂級交易員面板的籌碼面
+   全都在讀 _sbxFunding。手機開著看分析（非主機）時，這些全部靜默少一票。
+   修法：主掃描迴圈不分主機身分都呼叫（唯讀市場資料、一個請求拿全市場，
+   15 分鐘 TTL，成本可忽略），並蓋鮮度章讓面板看得到。 */
 async function sbxEnsureFunding() {
   const now = Date.now();
   if (_sbxFunding && now - _sbxFundingTs < SBX_CFG.fundingTtlMin * 60000) return;
@@ -27939,7 +27951,8 @@ async function sbxEnsureFunding() {
       if (isFinite(fr)) map[s.slice(0, -4) + '/USDT'] = fr;
     }
     _sbxFunding = map; _sbxFundingTs = now;
-  } catch(_e) {}
+    try { feedStamp('funding', true, Object.keys(map).length + ' 個幣種'); } catch(_fe) {}
+  } catch(_e) { try { feedStamp('funding', false, _e && _e.message); } catch(_fe) {} }
 }
 const _sbxK1h = {};
 async function sbxEnsureK1h(symbols) {
