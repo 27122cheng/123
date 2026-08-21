@@ -13545,7 +13545,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260819d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260819e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -21676,7 +21676,7 @@ function buildQuantLabHtml() {
   </div>`;
 
   if (trades.length < QLAB_MIN) {
-    return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + `
+    return head + modeBar + buildScalpPnlAnatomyHtml() + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
           text-align:center;color:var(--text3);font-size:0.86rem">
         可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
@@ -21855,7 +21855,7 @@ function buildQuantLabHtml() {
       避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
   </div>`;
 
-  return head + modeBar + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + bestCard + wfCard
+  return head + modeBar + buildScalpPnlAnatomyHtml() + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + bestCard + wfCard
     + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
         '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
     + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
@@ -27117,6 +27117,90 @@ function _scalpAccountPanel() {
    四種模式的獲利來源不同，混在一起看總勝率會互相掩蓋。分開統計後即可
    用數據關掉表現差的模式（設定 SCALP_CFG.enableXxx = false），
    而不是靠猜測調參數。 */
+/* ── 快速單損益解剖（為什麼打平/虧——讓既有資料自己說話，不用等新樣本）──
+   「有點虧損和獲利平衡」有四種完全不同的病因，處方也完全不同：
+     ① 毛利為正但被手續費吃光 → 問題在成本結構（止損距離太窄、進場方式），
+        不是方向判斷——再怎麼優化訊號都沒用
+     ② 某一兩個模式在虧、其他在賺 → 關掉虧的模式就好，總體立刻轉正
+     ③ 輸單普遍曾有浮盈 → 出場端問題（該啟動 qlab 出場參數重放）
+     ④ 全面小虧 → 才是真的沒有優勢，需要等樣本/等市場狀態改變
+   這裡把 45 天內的完結單拆給你看是哪一種。全部用既有欄位，零新增追蹤。 */
+function buildScalpPnlAnatomyHtml() {
+  try {
+    const cut = Date.now() - 45 * 86400e3;
+    const m = new Map();
+    for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
+    for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
+    const rows = [...m.values()].filter(t => isFinite(parseFloat(t.pnlR))
+      && (!isFinite(parseFloat(t.exitTime)) || parseFloat(t.exitTime) >= cut));
+    if (rows.length < 10) return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:11px 13px;margin-bottom:12px;font-size:0.78rem">
+      <div style="font-weight:700;margin-bottom:4px">🔬 快速單損益解剖</div>
+      <div style="color:var(--text3)">近 45 天完結單 ${rows.length}/10 筆，樣本不足暫不解剖。</div></div>`;
+    let net = 0, fee = 0, w = 0, l = 0;
+    const byMode = {};
+    for (const t of rows) {
+      const r = parseFloat(t.pnlR), f = isFinite(parseFloat(t.feeR)) ? parseFloat(t.feeR) : 0.1;
+      net += r; fee += f;
+      if (r > FLAT_R_EPS) w++; else if (r < -FLAT_R_EPS) l++;
+      const k = t.mode || '其他';
+      const b = byMode[k] || (byMode[k] = { n: 0, r: 0, w: 0 });
+      b.n++; b.r += r; if (r > FLAT_R_EPS) b.w++;
+    }
+    const gross = net + fee;   // pnlR 已含費用（computeTradePnlR），毛利 = 淨 + 費
+    const modeRows = Object.entries(byMode).map(([k, b]) => ({ k,
+      label: SCALP_MODE_LABEL[k] || k, n: b.n, exp: b.r / b.n,
+      wr: b.n ? Math.round(b.w / b.n * 100) : 0 })).sort((a, b2) => a.exp - b2.exp);
+    const badModes = modeRows.filter(x => x.n >= 20 && x.exp <= -0.08);
+    const goodSum = modeRows.filter(x => x.exp > 0).reduce((a, x) => a + x.exp * x.n, 0);
+    // 出場端診斷：輸單曾浮盈比例（欄位早就在記）
+    const sLoss = rows.filter(t => (parseFloat(t.pnlR) || 0) < -FLAT_R_EPS
+      && isFinite(parseFloat(t.mfeAtr)) && isFinite(parseFloat(t.slDistAtr)) && parseFloat(t.slDistAtr) > 0);
+    const hadProfit = sLoss.filter(t => parseFloat(t.mfeAtr) / parseFloat(t.slDistAtr) >= 0.8).length;
+    const exitPct = sLoss.length >= 8 ? Math.round(hadProfit / sLoss.length * 100) : null;
+    // 診斷結論（按病因優先級）
+    let verdict = '';
+    if (gross > 0.5 && Math.abs(net) <= fee * 0.35 && fee >= gross * 0.6) {
+      verdict = `<b style="color:#f59e0b">① 毛利被手續費吃掉</b>：毛利 +${gross.toFixed(1)}R、手續費 −${fee.toFixed(1)}R。
+        問題在成本結構不在方向——優先方向：加大止損距離門檻（feeR 上限已在 ${SCALP_CFG.maxFeeR}）、
+        實際下單改掛限價（訊號給的進場價本來就可以掛 maker，單邊費率立刻減半）。`;
+    } else if (badModes.length && goodSum > Math.abs(badModes.reduce((a, x) => a + x.exp * x.n, 0)) * 0.5) {
+      verdict = `<b style="color:#f59e0b">② 少數模式在拖累</b>：${badModes.map(x => `${x.label}（${x.n} 筆、${x.exp.toFixed(2)}R）`).join('、')}
+        顯著為負，其餘模式合計 +${goodSum.toFixed(1)}R。可在設定頁關閉拖累模式，總體立刻改善——
+        條件桶閘門也會自動處理，但手動關更快。`;
+    } else if (exitPct != null && exitPct >= 40) {
+      verdict = `<b style="color:#f59e0b">③ 出場端問題</b>：${exitPct}% 的輸單曾有 ≥0.8R 浮盈——單子會走但沒收住。
+        這正是 qlab 出場參數重放要解的問題，去「參數重放」按一次分析，它會用這批樣本直接算出該不該收緊。`;
+    } else {
+      verdict = `<b style="color:var(--text2)">④ 全面小幅無優勢</b>：沒有單一兇手——毛利 ${gross > 0 ? '+' : ''}${gross.toFixed(1)}R、
+        費用 −${fee.toFixed(1)}R、各模式無顯著分化。這種情況才是真的要靠樣本與市場狀態改變，
+        短期別動參數（動了也只是在雜訊裡調參）。`;
+    }
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:11px 13px;margin-bottom:12px;font-size:0.78rem">
+      <div style="font-weight:700;margin-bottom:5px">🔬 快速單損益解剖（近 45 天 ${rows.length} 筆，pnlR 已含手續費＋滑點）</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:6px;font-size:0.8rem">
+        <span>毛利 <b style="color:${gross > 0 ? 'var(--bull)' : 'var(--bear)'}">${gross > 0 ? '+' : ''}${gross.toFixed(1)}R</b></span>
+        <span>手續費 <b style="color:var(--bear)">−${fee.toFixed(1)}R</b></span>
+        <span>淨損益 <b style="color:${net > 0 ? 'var(--bull)' : 'var(--bear)'}">${net > 0 ? '+' : ''}${net.toFixed(1)}R</b></span>
+        <span>勝率 <b>${(w + l) ? Math.round(w / (w + l) * 100) : 0}%</b>（${w}勝${l}敗）</span>
+        ${exitPct != null ? `<span>輸單曾浮盈≥0.8R <b>${exitPct}%</b></span>` : ''}
+      </div>
+      <div style="font-size:0.75rem;line-height:1.7;color:var(--text2);margin-bottom:7px">${verdict}</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.73rem">
+        <thead><tr style="color:var(--text3);text-align:left;font-size:0.69rem">
+          <th style="padding:3px 6px">模式</th><th style="padding:3px 6px;text-align:right">筆數</th>
+          <th style="padding:3px 6px;text-align:right">勝率</th><th style="padding:3px 6px;text-align:right">期望值</th></tr></thead>
+        <tbody>${modeRows.map(x => `<tr style="border-top:1px solid rgba(255,255,255,.05)">
+          <td style="padding:3px 6px">${x.label}${x.n >= 20 && x.exp <= -0.08 ? ' <span style="color:#f59e0b">⚠️</span>' : ''}</td>
+          <td style="padding:3px 6px;text-align:right;color:var(--text3)">${x.n}</td>
+          <td style="padding:3px 6px;text-align:right">${x.wr}%</td>
+          <td style="padding:3px 6px;text-align:right;color:${x.exp > 0 ? 'var(--bull)' : x.exp < 0 ? 'var(--bear)' : 'var(--text2)'}">${x.exp > 0 ? '+' : ''}${x.exp.toFixed(2)}R</td>
+        </tr>`).join('')}</tbody></table></div>
+    </div>`;
+  } catch(e) { return ''; }
+}
+
 const SCALP_MODE_LABEL = {
   retest:   'C 突破回踩確認',
   trap:     'D 假突破反轉',
