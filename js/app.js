@@ -13546,7 +13546,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -13628,6 +13628,33 @@ function recordMissedSignal(trade, kind, note) {
   } catch(_e) {}
 }
 
+/* ⚠️ 2026-08-21 實案（NEAR）：訊號推播後被取消，但「取消的掛單是整筆從
+   交易紀錄刪除」——取消通知又剛好發送失敗（無重試、且防重旗標在發送前
+   就先蓋章），使用者看到的就是：收到進場訊號、沒有取消通知、紀錄裡
+   完全找不到這筆。三個修法：
+     ① 取消單改為「標記」保留在紀錄裡（status='cancelled'＋原因＋時間），
+        交易記錄頁看得到；統計與學習全部照舊排除（它們只認 closed）
+     ② 取消通知的防重旗標改為「送達成功後」才蓋；失敗自動重試（每輪
+        掃描最多補發 3 次、24 小時內有效），結果寫進通知台帳
+     ③ 保留量控制：已取消單最多留 40 筆／14 天，超過自動清（進冷卻表
+        的摘要仍在，重複建單防護不受影響） */
+function markTradeCancelled(trade, reason) {
+  trade.status = 'cancelled';
+  trade.cancelReason = String(reason || '').slice(0, 240);
+  trade.cancelTime = Date.now();
+  trade.cancelNotifySent = false;
+  trade.cancelNotifyTries = 0;
+}
+function pruneCancelledTrades(tlog) {
+  try {
+    const cut = Date.now() - 14 * 86400e3;
+    const cancelled = tlog.filter(t => t.status === 'cancelled')
+      .sort((a, b) => (b.cancelTime || 0) - (a.cancelTime || 0));
+    const drop = new Set();
+    cancelled.forEach((t, i) => { if (i >= 40 || (t.cancelTime || 0) < cut) drop.add(t.id); });
+    if (drop.size) tlog.splice(0, tlog.length, ...tlog.filter(t => !drop.has(t.id)));
+  } catch(_e) {}
+}
 function addCancelCooldown(trade, reason) {
   const cutoff = Date.now() - SIGNAL_COOLDOWN;
   const all = loadCancelCooldowns().filter(c => (c.cancelTime || 0) > cutoff);
@@ -15257,6 +15284,7 @@ async function recordSignalsFromScan(data) {
       } else {
         const _sqCancelReason = `訊號品質降至 ${_rcGrade} 級（${_rcGradeLabel}訊號，評分 ${_sqRC}分），低於${trade.canScaleIn ? 'S 級（19分）' : `建單門檻（${_rcSqGate}分）`}要求，自動取消掛單`
           + (_rcSlackWhy.length ? `（門檻已放寬 ${_rcSlack} 分：${_rcSlackWhy.join('、')}——扣掉這些仍不達標才取消）` : '');
+        trade.sqCancelReason = _sqCancelReason;
         addCancelCooldown(trade, _sqCancelReason);
         _sqCancelIds.add(trade.id);
         changed = true;
@@ -15295,6 +15323,7 @@ async function recordSignalsFromScan(data) {
         if (_rcConf < _rcConfGate) {
           const _riskDesc = _rcRiskPen > 0 ? `，風險評估扣分 -${_rcRiskPen}（${trade.riskLevel || ''} ${trade.riskScore || 0}/100）` : '';
           const _confCancel = `風控分降至 ${_rcConf} 分（止損風控 -${_rcLearnPen}${_riskDesc}），低於 ${_rcConfGate} 分門檻，自動取消掛單`;
+          trade.sqCancelReason = _confCancel;
           addCancelCooldown(trade, _confCancel);
           _sqCancelIds.add(trade.id);
           changed = true;
@@ -15320,9 +15349,12 @@ async function recordSignalsFromScan(data) {
     }
   }
   if (_sqCancelIds.size > 0) {
-    const _before = tlog.length;
-    tlog.splice(0, tlog.length, ...tlog.filter(t => !_sqCancelIds.has(t.id)));
-    console.log(`[SQ-monitor] 取消 ${_before - tlog.length} 筆訊號品質不足掛單（18因子完整評估）`);
+    // 改為標記保留（見 markTradeCancelled 的實案註解）：刪除會讓「取消通知
+    // 失敗」變成無從查證的黑洞——訊號在、通知沒來、紀錄消失
+    for (const t of tlog) if (_sqCancelIds.has(t.id) && t.status !== 'cancelled')
+      markTradeCancelled(t, t.sqCancelReason || `訊號品質降至 ${t.sqGrade || '?'} 級（監控取消）`);
+    console.log(`[SQ-monitor] 取消 ${_sqCancelIds.size} 筆訊號品質不足掛單（標記保留於紀錄）`);
+    pruneCancelledTrades(tlog);
   }
 
   if (changed) {
@@ -15744,7 +15776,17 @@ function updateOpenTrades(data) {
   const tlog = loadTradeLog();
   let changed = false;
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
-  const toDeleteIds = new Set();      // 取消後立即從 tlog 刪除的 trade id
+  const toDeleteIds = new Set();      // 僅剩無效垃圾單（direction='wait'）仍直接刪除
+  // ── 取消通知重試：送出失敗的取消單每輪補發，最多 3 次、24 小時內 ──
+  try {
+    for (const t of tlog) {
+      if (t.status !== 'cancelled' || t.cancelNotifySent) continue;
+      if (!t.telegramSent) { t.cancelNotifySent = true; changed = true; continue; }   // 沒發過進場訊號→不需取消通知
+      if ((t.cancelNotifyTries || 0) >= 3 || Date.now() - (t.cancelTime || 0) > 24 * 3600e3) continue;
+      t.cancelNotifyTries = (t.cancelNotifyTries || 0) + 1; changed = true;
+      try { sendCancelTelegramNotification(t, t.cancelReason || '掛單已取消'); } catch(_e) {}
+    }
+  } catch(_e) {}
   const tp1Hits = []; // trades that just reached TP1 this cycle
 
   // ── 清除殘留的 direction='wait' 無效掛單（直接刪除，不留冷卻記錄）──
@@ -15818,7 +15860,7 @@ function updateOpenTrades(data) {
           const _amReason = `同一輪價格區間同時掃過進場點 $${fmtPrice(entry)} 與止損 $${fmtPrice(_fillSl)}`
             + `（區間 $${fmtPrice(trade.loSince)}–$${fmtPrice(trade.hiSince)}），單根 K 內往返、無法判定成交順序，掛單作廢（未成交、無虧損）`;
           addCancelCooldown(trade, _amReason);
-          toDeleteIds.add(trade.id);
+          markTradeCancelled(trade, _amReason);
           changed = true;
           cancelledSymbols.add(trade.symbol);
           sendCancelTelegramNotification(trade, _amReason);
@@ -15859,7 +15901,7 @@ function updateOpenTrades(data) {
         const cancelReason = (reasons.join('；') || `市場條件轉弱（評分 ${nowScore}，趨勢 ${coin.trend}）`) + '（連續 2 輪確認）';
         recordMissedSignal(trade, 'decay', cancelReason);   // 正確迴避，不是被逆選擇丟掉的贏單
         addCancelCooldown(trade, cancelReason);
-        toDeleteIds.add(trade.id);
+        markTradeCancelled(trade, cancelReason);
         changed = true;
         cancelledSymbols.add(trade.symbol);
         sendCancelTelegramNotification(trade, cancelReason);
@@ -15873,7 +15915,7 @@ function updateOpenTrades(data) {
       if (sl && ((isLong && cur < sl) || (!isLong && cur > sl))) {
         const _slReason = `掛單未成交即失效：進場前價格已${isLong ? '跌破' : '漲破'}止損失效位 $${fmtPrice(sl)}（現價 $${fmtPrice(cur)}），掛單作廢（未成交、無虧損）`;
         addCancelCooldown(trade, _slReason);
-        toDeleteIds.add(trade.id);
+        markTradeCancelled(trade, _slReason);
         changed = true;
         cancelledSymbols.add(trade.symbol);
         sendCancelTelegramNotification(trade, _slReason);
@@ -15893,7 +15935,8 @@ function updateOpenTrades(data) {
         // 這是被逆選擇丟掉的贏單：方向對、幅度也到了，只是掛太低沒吃到
         recordMissedSignal(trade, 'flyaway', `飛越${hitLevel}`);
         addCancelCooldown(trade, cancelReason);
-        toDeleteIds.add(trade.id);
+        markTradeCancelled(trade, cancelReason);
+        trade.cancelNotifySent = true;   // 飛越走 sendMissedEntryNotification，不需取消通知重試
         changed = true;
         cancelledSymbols.add(trade.symbol);
         // 瀏覽器通知
@@ -16317,6 +16360,7 @@ function updateOpenTrades(data) {
 
   if (toDeleteIds.size > 0) {
     tlog.splice(0, tlog.length, ...tlog.filter(t => !toDeleteIds.has(t.id)));
+    pruneCancelledTrades(tlog);
     changed = true;
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
@@ -16574,8 +16618,14 @@ function sendCancelTelegramNotification(trade, reason) {
     } catch(_lg) {}
     if (!_recentlyPushed) return;
   }
-  if (_hasCancelTgSent(trade.symbol, trade.direction)) return;
-  _markCancelTgSent(trade.symbol, trade.direction);
+  if (_hasCancelTgSent(trade.symbol, trade.direction)) {
+    // 之前已成功送過同幣同向的取消——補旗標讓重試迴圈停下
+    if (trade) { trade.cancelNotifySent = true; try { _cxMarkNotified(trade.id); } catch(_e) {} }
+    return;
+  }
+  /* ⚠️ 防重章改為「送達成功後」才蓋（見 markTradeCancelled 的實案註解）：
+     原本發送前就蓋章，Telegram API 一失敗，之後所有重試都被自己的
+     防重章擋掉——取消通知永遠不會到。 */
   const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
   const esc = str => (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const sym     = trade.symbol.replace('/USDT', '');
@@ -16692,7 +16742,27 @@ function sendCancelTelegramNotification(trade, reason) {
     `⏰ ${ts}\n` +
     `${tags}\n\n` +
     `🔗 <a href="${siteUrl}">查看 ${sym} 詳細分析 →</a>`;
-  sendTelegramMessage(s.tgToken, s.tgChatId, msg);
+  const _cxTradeId = trade && trade.id;
+  sendTelegramMessage(s.tgToken, s.tgChatId, msg)
+    .then(ok => {
+      const _ok = ok !== false;
+      try { recordTgAttempt(trade.symbol, trade.direction, _ok, _ok ? '取消通知已送出' : '取消通知送出失敗（將自動重試）'); } catch(_e) {}
+      if (_ok) {
+        _markCancelTgSent(trade.symbol, trade.direction);
+        if (trade) trade.cancelNotifySent = true;
+        try { _cxMarkNotified(_cxTradeId); } catch(_e) {}
+      }
+    })
+    .catch(e => { try { recordTgAttempt(trade.symbol, trade.direction, false, '取消通知例外：' + e.message); } catch(_e) {} });
+}
+
+/* 取消通知送達後把旗標寫回儲存（非同步回呼落在 saveTradeLog 之後，
+   不寫回的話重試迴圈看到的永遠是 false，會重複發送） */
+function _cxMarkNotified(id) {
+  if (!id) return;
+  const tl = loadTradeLog();
+  const ix = tl.findIndex(t => t.id === id);
+  if (ix >= 0 && !tl[ix].cancelNotifySent) { tl[ix].cancelNotifySent = true; saveTradeLog(tl); }
 }
 
 function sendMissedEntryNotification(trade, hitLevel, hitPrice) {
@@ -20925,6 +20995,49 @@ function renderTradeLogPage() {
     <button class="btn-ghost" onclick="exportFullBackup()" style="font-size:0.8rem">💾 完整備份</button>
     <button class="btn-ghost" onclick="importFullBackup()" style="font-size:0.8rem">📂 還原備份</button>
   </div>`;
+
+  // 已取消掛單：進場訊號發過但未成交就取消的單，過去會被直接刪除——
+  // 使用者在 Telegram 看到訊號、之後卻在紀錄裡完全找不到（NEAR 實案）。
+  // 現在保留 14 天，並明列取消原因與「取消通知」到底發出去了沒。
+  // 只做顯示：不進勝率、不進學習樣本、不進兩平統計（那些只吃 closed）。
+  let cancelledHtml = '';
+  try {
+    const cx = trades.filter(t => t.status === 'cancelled')
+      .sort((a, b) => (b.cancelTime || 0) - (a.cancelTime || 0)).slice(0, 20);
+    if (cx.length) {
+      const _fmtT = ts => ts ? new Date(ts).toLocaleString('zh-TW', { hour12: false,
+        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+      cancelledHtml = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+          padding:11px 13px;margin:12px 0;font-size:0.82rem;line-height:1.7">
+        <div style="font-weight:700;margin-bottom:4px">🚫 已取消掛單（近 14 天，最多 40 筆）</div>
+        <div style="font-size:0.74rem;color:var(--text3);margin-bottom:6px">
+          進場訊號發出後、價格未觸及進場區就因條件失效而撤銷的掛單。
+          這些單<b>沒有成交</b>，不計入勝率與任何統計；列在這裡是為了讓每一則已發出的
+          Telegram 訊號都查得到下落——訊號、取消、取消通知三者對得上帳。</div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.75rem">
+          <thead><tr style="color:var(--text3);font-size:0.7rem;text-align:left">
+            <th style="padding:3px 6px">取消時間</th><th style="padding:3px 6px">幣種</th>
+            <th style="padding:3px 6px">方向</th><th style="padding:3px 6px">取消原因</th>
+            <th style="padding:3px 6px">取消通知</th></tr></thead>
+          <tbody>${cx.map(t => {
+            const dirTxt = t.direction === 'long' ? '📈 做多' : '📉 做空';
+            const notify = !t.telegramSent
+              ? '<span style="color:var(--text3)">進場訊號未發，無需通知</span>'
+              : t.cancelNotifySent
+                ? '<span style="color:#22c55e">✅ 已通知</span>'
+                : (t.cancelNotifyTries || 0) >= 3 || Date.now() - (t.cancelTime || 0) > 24 * 3600e3
+                  ? '<span style="color:#ef4444">❌ 通知失敗（已重試 ' + (t.cancelNotifyTries || 0) + ' 次）</span>'
+                  : '<span style="color:#f59e0b">⏳ 重試中 ' + (t.cancelNotifyTries || 0) + '/3</span>';
+            return `<tr style="text-align:left;border-top:1px solid var(--border)">
+              <td style="padding:4px 6px;color:var(--text3);white-space:nowrap">${_fmtT(t.cancelTime)}</td>
+              <td style="padding:4px 6px;font-weight:600">${t.symbol || '—'}</td>
+              <td style="padding:4px 6px">${dirTxt}</td>
+              <td style="padding:4px 6px;color:var(--text2)">${(t.cancelReason || '—')}</td>
+              <td style="padding:4px 6px;white-space:nowrap">${notify}</td>
+            </tr>`; }).join('')}</tbody></table></div>
+      </div>`;
+    }
+  } catch(_e) {}
   container.innerHTML =
     _subTabBar(_tlTab, [['main', '交易記錄'], ['auto', '⚡ 自動紀錄']], 'setTlTab') + `
     <div class="page-header">
@@ -20948,6 +21061,7 @@ function renderTradeLogPage() {
     ${exitHtml}
     ${filterHtml}
     ${tableHtml}
+    ${cancelledHtml}
     ${backupHtml}
     ${buildWinRateBreakdown(closed)}
     ${learnHtml}
