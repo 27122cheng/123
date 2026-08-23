@@ -13563,7 +13563,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -20883,7 +20883,9 @@ function renderTradeLogPage() {
   if (_beStats) {
     const g = _beStats.gap;
     let slt = null;
-    try { slt = slTightnessStats(); } catch(_e) {}
+    // 原本呼叫的 slTightnessStats() 根本不存在（ReferenceError 被 catch 吃掉），
+    // 止損鬆緊的實測證據在這個面板從來沒顯示過——正名為實際存在的函式
+    try { slt = computeSLTightnessStats(); } catch(_e) {}
     const rrNeed = g < 0 ? (_beStats.avgLoss * (100 - _beStats.cur) / _beStats.cur / _beStats.avgLoss) : null;
     const needRR = g < 0 ? +((100 - _beStats.cur) / _beStats.cur).toFixed(2) : null;
     beHtml = `<div style="background:var(--card);border:1px solid ${g >= 0 ? 'var(--border)' : '#f59e0b'};
@@ -23943,6 +23945,29 @@ function computeSimpleSetup(coin, isLong) {
     }
   }
 
+  /* ── 掛單深度封頂（2026-08-23 勝率調查）────────────────────────
+     掛在現價不利側的限價單有逆選擇：要價格先走弱才成交，直接往獲利方向
+     噴出去的那些吃不到——留下先走弱的樣本、飛掉直接走強的樣本，這是勝率
+     被壓在隨機漫步基準之下的結構性原因（掛單深度面板的隨機基準診斷）。
+     這道封頂之前只寫在 buildTradeSetup——那個函式只給詳情頁算顯示用建議，
+     掃描建單走的是本函式，等於整套保護對實際訊號從未生效。
+     上限預設 0.35×ATR；entryFillProfile 有足量實測（每桶 ≥20 訊號、含飛越
+     錯失樣本）時改用「每訊號期望值最好的深度桶」上緣（R 單位，此處以
+     R≈ATR 近似換算，夾在 0.15~0.8 之間——近似誤差遠小於不封頂的逆選擇）。 */
+  {
+    let _pullCapAtr = 0.35;
+    try {
+      const _fpCap = entryFillProfile();
+      if (_fpCap.ready && _fpCap.suggest != null && isFinite(_fpCap.suggest))
+        _pullCapAtr = Math.max(0.15, Math.min(0.8, _fpCap.suggest));
+    } catch(_e) {}
+    const _pullDepth = (isLong ? price - entry : entry - price) / (atr || 1);
+    if (_pullDepth > _pullCapAtr) {
+      entry = isLong ? price - atr * _pullCapAtr : price + atr * _pullCapAtr;
+      _entryEvidence.push(`掛單深度封頂 ${_pullCapAtr}×ATR（掛太深只吃得到先走弱的單）`);
+    }
+  }
+
   /* ── 結構階梯（做多下方要有支撐、做空上方要有壓力）──────────────
      這段之前寫在 buildTradeSetup，但那個函式只給幣種詳情頁算顯示用的建議，
      掃描建單根本不呼叫它——所以整套結構錨定對實際訊號完全沒作用。這次搬到
@@ -23993,8 +24018,15 @@ function computeSimpleSetup(coin, isLong) {
   //    優先級：結構階梯 → OB 邊界 → EMA 結構 → BB 帶 → ATR（縮小至 1.5×）
   // ═══════════════════════════════════════════════
   let sl, _slTag = '', _slStructure = '';
+  /* 自適應止損加寬（2026-08-23 勝率調查）：getAdaptiveSlWiden 綜合兩個實測
+     證據——止損單 24h 內反轉觸及原止盈的比例（止損設在獵殺區）與贏單 MAE
+     p85（正常獲利路徑會逆走到離止損多近）——需要加寬時回傳 1.1~1.35。
+     這個學習迴路之前只乘在 buildTradeSetup 的噪音底線上，本函式（實際建單）
+     從未呼叫過它，「一直止損」的診斷結論等於從來沒有作用到交易。 */
+  let _slWiden = 1.0;
+  try { _slWiden = getAdaptiveSlWiden(); } catch(_e) {}
   // Kill Zone 高品質時段本就可收緊，MTF 雙確認時再乘以 _mtfSlFactor
-  const _atrBuf = (_kzHigh ? 0.3 : 0.5) * _mtfSlFactor;
+  const _atrBuf = (_kzHigh ? 0.3 : 0.5) * _mtfSlFactor * _slWiden;
   /* 結構階梯優先：在風控上限（3%）內，由外而內挑第一個放得進預算的結構，
      止損釘在它外側，而它外側還有次一道結構。挑不到才走原本的分支。
      由外而內是刻意的——越外側的結構越不容易被雜訊掃到，但要放得進風險預算。 */
@@ -24054,13 +24086,13 @@ function computeSimpleSetup(coin, isLong) {
     _slTag  = 'ema20';
     _slStructure = `EMA20 $${ema20.toPrecision(5).replace(/\.?0+$/, '')} 外`;
   } else {
-    sl = isLong ? entry - atr * 1.5 * _mtfSlFactor : entry + atr * 1.5 * _mtfSlFactor;
+    sl = isLong ? entry - atr * 1.5 * _mtfSlFactor * _slWiden : entry + atr * 1.5 * _mtfSlFactor * _slWiden;
     _slTag  = 'atr';
-    _slStructure = `ATR × ${(1.5 * _mtfSlFactor).toFixed(1)}`;
+    _slStructure = `ATR × ${(1.5 * _mtfSlFactor * _slWiden).toFixed(1)}`;
   }
 
-  // ── 止損最小安全距離：至少 0.5% 且不超過 3%（防止止損過緊/過寬）──
-  const _minSl = price * 0.005;
+  // ── 止損最小安全距離：至少 0.5%（自適應加寬時同步撐開）且不超過 3% ──
+  const _minSl = price * 0.005 * _slWiden;
   const _maxSl = price * 0.03;
   let   _slDist = Math.abs(entry - sl);
   if (_slDist < _minSl) { sl = isLong ? entry - _minSl : entry + _minSl; _slDist = _minSl; }
@@ -26964,7 +26996,14 @@ function updateScalpTrades(data) {
       //     且平手不計入勝率分母，帳面勝率會因此變好看，判讀時須一併看淨 R。
       if (!outcome && SCALP_CFG.beStop && !t.tp1Hit && !t.beArmed) {
         const r = ((cur - t.entry) * (isLong ? 1 : -1)) / baseRisk;
-        if (r >= SCALP_CFG.beTriggerR) {
+        /* 觸發判定不能只看掃描瞬間快照：兩次掃描之間衝到 +0.7R 又跌回來，
+           快照看不到、保本永遠不掛——MAE/MFE 那段早就為此改用 5m 棒內高低價
+           還原，這裡沿用同一來源（t.mfeAtr 剛在上方用棒內價更新過）。
+           真實掛單的保本停損在浮盈達標當下就會掛上，事後用棒內 MFE 補判
+           是對真實行為的正確還原，不是作弊。 */
+        const _mfeR = (t.atrAtEntry > 0 && isFinite(parseFloat(t.mfeAtr)))
+          ? parseFloat(t.mfeAtr) * t.atrAtEntry / baseRisk : 0;
+        if (Math.max(r, _mfeR) >= SCALP_CFG.beTriggerR) {
           const be = t.entry;
           if (isLong ? be > t.sl : be < t.sl) {
             t.sl = be; t.beArmed = true; changed = true;
