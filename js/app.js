@@ -7237,21 +7237,38 @@ function computeTodayAIBias(fg, globalMkt) {
   // 分數在 0 附近時任何微小市場變動就翻面，SQ 因子③跟著 ±1 來回擺（同分鐘建單→取消的主因之一）
   let bias = score >= 2 ? 'bull' : score <= -2 ? 'bear'
            : score >= 0.75 ? 'slight_bull' : score <= -0.75 ? 'slight_bear' : 'neutral';
-  // 方向黏滯：30 分鐘內多空「翻面」需 |score| ≥ 1.5 才生效（中性↔偏向不受限），
-  // 臨界分數的正常抖動不再造成建單與監控看到相反的今日預測
+  /* 方向黏滯 v2（2026-08-23 使用者實案：今日預測一整天來回變）：
+     舊版鎖存在 window 記憶體——重新整理就歸零；且只擋「30 分鐘內的多空完全翻面」，
+     中性↔小幅偏多↔偏多之間每輪掃描都能自由跳動，分數在 0.75 或 2 的門檻附近
+     抖一下，預測就跟著變一次，Telegram 訊息裡的今日預測看起來像在擲硬幣。
+     v2：鎖存寫進 localStorage（同一天有效、跨重新整理），並加遲滯帶——
+     方向要「改變」必須把分數推過門檻外再加 0.4 的緩衝；只在門檻附近徘徊
+     一律維持原判。真趨勢推得動緩衝，雜訊推不動。 */
   try {
     const _tbNow = Date.now();
-    if (typeof window !== 'undefined') {
-      const _tbLock = window._todayBiasLock;
-      if (_tbLock && _tbNow - _tbLock.ts < 30 * 60 * 1000) {
-        const _tbFlip = (bias.includes('bull') && _tbLock.bias.includes('bear'))
-                     || (bias.includes('bear') && _tbLock.bias.includes('bull'));
-        if (_tbFlip && Math.abs(score) < 1.5) bias = _tbLock.bias;
-        else window._todayBiasLock = { bias, ts: _tbNow };
-      } else {
-        window._todayBiasLock = { bias, ts: _tbNow };
-      }
+    const _tbDay = new Date().toISOString().slice(0, 10);
+    let _tbLock = null;
+    try {
+      const _raw = JSON.parse(localStorage.getItem('csp_today_bias_lock') || 'null');
+      if (_raw && _raw.day === _tbDay) _tbLock = _raw;
+    } catch(_r) {}
+    if (_tbLock && _tbLock.bias && _tbLock.bias !== bias) {
+      // 依鎖存方向計算「離開該方向」所需的分數（門檻 ± 0.4 緩衝）
+      const _tbH = 0.4;
+      const _tbStay = (
+        _tbLock.bias === 'bull'        ? score >  2 - _tbH :
+        _tbLock.bias === 'slight_bull' ? score >  0.75 - _tbH && score <  2 + _tbH :
+        _tbLock.bias === 'neutral'     ? score > -0.75 - _tbH && score <  0.75 + _tbH :
+        _tbLock.bias === 'slight_bear' ? score < -0.75 + _tbH && score > -2 - _tbH :
+        _tbLock.bias === 'bear'        ? score < -2 + _tbH : false);
+      // 多空「完全翻面」另需 |score| ≥ 1.5（沿用舊規則）：偏多直接跳偏空
+      // 是最傷使用者信任的變臉，證據不夠強一律維持原判
+      const _tbFullFlip = (_tbLock.bias.includes('bull') && bias.includes('bear'))
+                       || (_tbLock.bias.includes('bear') && bias.includes('bull'));
+      if (_tbStay || (_tbFullFlip && Math.abs(score) < 1.5)) bias = _tbLock.bias;
     }
+    localStorage.setItem('csp_today_bias_lock', JSON.stringify({ bias, day: _tbDay, ts: _tbNow }));
+    if (typeof window !== 'undefined') window._todayBiasLock = { bias, ts: _tbNow };  // 相容既有讀取點
   } catch(_e) {}
   const biasLabel = { bull:'▲ 偏多', bear:'▼ 偏空', slight_bull:'▲ 小幅偏多', slight_bear:'▼ 小幅偏空', neutral:'◆ 中性觀望' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text3)';
@@ -13546,7 +13563,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15240,7 +15257,7 @@ async function recordSignalsFromScan(data) {
     if (!_existingTradeIds.has(trade.id)) continue;
     // pendingNotify = true 代表從幣種詳情頁建單、Telegram 尚未發送，同樣跳過
     if (trade.pendingNotify) continue;
-    // 驗證策略單（實驗室 ≥100 筆、勝率 ≥90% 晉升）：免 SQ/風控分覆核，讓策略自然跑完
+    // 驗證策略單（實驗室 ≥50 筆、Wilson 勝率下界 ≥75% 晉升）：免 SQ/風控分覆核，讓策略自然跑完
     if (trade.provenStrategy) continue;
     // 30 分鐘寬限期已移除（2026-07-16）：建單前終審已改用與本監控完全相同的
     // computeSqMonitorScore 評分，同一份數據不可能建單通過又被監控取消；
@@ -19885,9 +19902,13 @@ function sqEvidenceBadge(text) {
 
 function getProvenLabTags() {
   const { stats } = labTagStats();
-  // 晉升/豁免標準：與加分標準同一組門檻（樣本 ≥50 且勝率 ≥75%）
+  /* 晉升標準改用 Wilson 95% 勝率「下界」≥ 門檻（樣本 ≥50）。
+     原本用原始勝率：50 筆 38 勝（76%）的下界其實只有 62%——很可能只是運氣，
+     卻被晉升成「免風控分、監控不覆核」的白名單，掃描池幾十個幣同時命中
+     就變成驗證策略單連發。晉升給的是最高等級的豁免，證據也要用最嚴的算法；
+     標籤「加分」（labWrToBonus，最多 +5）仍用原始勝率，不受此收緊影響。 */
   return Object.entries(stats)
-    .filter(([, s]) => s.n >= LAB_MIN_SAMPLES && (s.w / s.n * 100) >= LAB_MIN_WR)
+    .filter(([, s]) => s.n >= LAB_MIN_SAMPLES && wilsonLB(s.w, s.n) * 100 >= LAB_MIN_WR)
     .map(([t]) => t);
 }
 
@@ -19901,7 +19922,18 @@ function recordProvenStrategyTrades(data) {
   const tlog = loadTradeLog();
   const btcChg = parseFloat(data.find(d => d.symbol === 'BTC/USDT')?.change24h);
   let changed = false;
+  /* 建單量上限（2026-08-23 使用者實案：驗證策略單連發轟炸）：
+     白名單一旦晉升到常見標籤，掃描池裡幾十個幣同輪命中，每輪掃描都可能
+     建出一批新單、每筆各發一則 Telegram。免風控分不等於免節流——
+     每輪最多 2 筆、24 小時最多 6 筆，超出的下一輪再看（機會還在就還會建）。 */
+  let _pvThisScan = 0;
+  const _pvDayCount = tlog.filter(t => Array.isArray(t.provenStrategy) && t.provenStrategy.length
+    && Date.now() - (t.timestamp || 0) < 24 * 3600e3).length;
   for (const coin of data) {
+    if (_pvThisScan >= 2 || _pvDayCount + _pvThisScan >= 6) {
+      console.log('[proven] 驗證策略建單達量上限（每輪 2／24h 6），其餘候選留待下輪');
+      break;
+    }
     if (!coin || coin.score === 50) continue;
     const isLong = coin.score > 50;
     const dir = isLong ? 'long' : 'short';
@@ -19928,7 +19960,7 @@ function recordProvenStrategyTrades(data) {
       symbol: coin.symbol, direction: dir, timestamp: Date.now(),
       entryPrice: parseFloat(coin.price) || 0,
       entry: setup.entry, sl: setup.sl, tp1: setup.tp1, tp2: setup.tp2,
-      entryReason: `⭐ 驗證策略（${hits.join('、')}）：實驗室 >50 筆樣本、勝率 >75%，免風控分建單`,
+      entryReason: `⭐ 驗證策略（${hits.join('、')}）：實驗室 ≥50 筆樣本、勝率下界 ≥75%，免風控分建單`,
       slReason: setup.slReason, tp1Reason: setup.tp1Reason, tp2Reason: setup.tp2Reason,
       rsi: parseFloat(coin.rsi) || 50, adx: parseFloat(coin.adx) || 20,
       score: coin.score, trend: coin.trend,
@@ -19950,15 +19982,28 @@ function recordProvenStrategyTrades(data) {
     if (!commitNewTrade(nt)) { console.log(`[dedup] ${coin.symbol} 驗證策略單重複，略過`); continue; }
     tlog.splice(0, tlog.length, ...loadTradeLog());
     changed = true;
+    _pvThisScan++;
     try { if (typeof showToast === 'function') showToast(`⭐ 驗證策略：${coin.symbol} ${isLong ? '▲做多' : '▼做空'}（${hits.join('、')}），免風控分建單`, 'success'); } catch(_t) {}
     try {
       const s = loadSettings();
-      if (s.notifTelegram && s.tgToken && s.tgChatId) {
-        sendTelegramMessage(s.tgToken, s.tgChatId,
+      /* 與掃描建單同一套推播紀律：tgSignalOnce 去重窗（同幣同向短時間內不重發）
+         ＋通知台帳記錄成敗。過去這條路徑兩者皆無——單被取消後重建就再發一次，
+         使用者收到的就是同一個幣的連環驗證策略訊息。 */
+      if (s.notifTelegram && s.tgToken && s.tgChatId
+          && (tgSignalOnce(coin.symbol, dir)
+              || (recordTgAttempt(coin.symbol, dir, false, '去重窗內已發送過（驗證策略）'), false))) {
+        Promise.resolve(sendTelegramMessage(s.tgToken, s.tgChatId,
           buildTelegramText(coin, dir, Object.assign({}, nt, setup, { conf: nt.conf }), _macroCache,
             typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '',
-            { headerOverride: '⭐ <b>加密掃描 Pro — 驗證策略信號</b>' }));
+            { headerOverride: '⭐ <b>加密掃描 Pro — 驗證策略信號</b>' })))
+          .then(ok => recordTgAttempt(coin.symbol, dir, ok !== false,
+                        ok !== false ? '已送出（驗證策略）' : 'Telegram API 回傳失敗（見主控台）'))
+          .catch(e => recordTgAttempt(coin.symbol, dir, false, '送出時例外：' + e.message));
         nt.telegramSent = true;
+        // tlog 是 commitNewTrade 後重新載入的複本，nt 不在其中——旗標要寫在
+        // 複本裡的那一筆上，否則取消通知會因 telegramSent 缺失被靜默跳過（NEAR 實案同款）
+        const _pvIx = tlog.findIndex(t => t.id === nt.id);
+        if (_pvIx >= 0) tlog[_pvIx].telegramSent = true;
         saveTradeLog(tlog);
       }
     } catch(_te) {}
@@ -20431,15 +20476,15 @@ function renderLabPage() {
     </div>`;
   }).join('');
 
-  // ── 驗證策略白名單面板（≥100 筆且勝率 ≥90% → 已晉升正式系統）──
+  // ── 驗證策略白名單面板（≥50 筆且 Wilson 勝率下界 ≥75% → 已晉升正式系統）──
   const provenTags = getProvenLabTags();
   const provenHtml = `
     <div style="background:${provenTags.length ? 'rgba(251,191,36,.06)' : 'var(--card)'};border:1px solid ${provenTags.length ? 'rgba(251,191,36,.3)' : 'var(--border)'};border-radius:10px;padding:12px 14px;margin-bottom:12px">
-      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（>50 筆樣本且勝率 >75% 自動晉升正式系統，免風控分建單）</div>
+      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥50 筆樣本且 Wilson 勝率下界 ≥75% 自動晉升正式系統，免風控分建單；每輪最多建 2 筆、24h 最多 6 筆）</div>
       ${provenTags.length
         ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${provenTags.map(t => `<span style="font-size:0.74rem;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.4);padding:3px 10px;border-radius:14px;font-weight:700">⭐ ${t}</span>`).join('')}</div>
            <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">命中白名單標籤的訊號會直接建立正式掛單（標記 ⭐ 驗證策略），不經風控分/SQ 門檻，監控中亦不覆核取消</div>`
-        : `<div style="font-size:0.74rem;color:var(--text3)">尚無達標策略 — 任一分析方式累積 100 筆完結樣本且勝率 ≥80% 後自動晉升</div>`}
+        : `<div style="font-size:0.74rem;color:var(--text3)">尚無達標策略 — 任一分析方式累積 ≥50 筆完結樣本且 Wilson 勝率下界 ≥75%（約需原始勝率 85%+）後自動晉升</div>`}
     </div>`;
 
   // ── 分析維度實測成績單（每個因子目前拿幾分、憑什麼拿）──
@@ -28995,12 +29040,21 @@ function recordPairStrategyTrades(data) {
     try { showToast(`🧩 驗證配對：${coin.symbol} ${isLong ? '▲做多' : '▼做空'}（${hit[0]}＋${hit[1]}）`, 'success'); } catch(_t) {}
     try {
       const s = loadSettings();
-      if (s.notifTelegram && s.tgToken && s.tgChatId) {
-        sendTelegramMessage(s.tgToken, s.tgChatId,
+      // 與掃描/驗證策略同一套推播紀律：tgSignalOnce 去重＋台帳記錄（防連發）
+      if (s.notifTelegram && s.tgToken && s.tgChatId
+          && (tgSignalOnce(coin.symbol, dir)
+              || (recordTgAttempt(coin.symbol, dir, false, '去重窗內已發送過（驗證配對）'), false))) {
+        Promise.resolve(sendTelegramMessage(s.tgToken, s.tgChatId,
           buildTelegramText(coin, dir, Object.assign({}, nt, setup, { conf: nt.conf }), _macroCache,
             typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '',
-            { headerOverride: '🧩 <b>加密掃描 Pro — 驗證配對信號</b>' }));
+            { headerOverride: '🧩 <b>加密掃描 Pro — 驗證配對信號</b>' })))
+          .then(ok => recordTgAttempt(coin.symbol, dir, ok !== false,
+                        ok !== false ? '已送出（驗證配對）' : 'Telegram API 回傳失敗（見主控台）'))
+          .catch(e => recordTgAttempt(coin.symbol, dir, false, '送出時例外：' + e.message));
         nt.telegramSent = true;
+        // 旗標要寫進重新載入的複本（nt 不在 tlog 裡），否則取消通知被靜默跳過
+        const _prIx = tlog.findIndex(t => t.id === nt.id);
+        if (_prIx >= 0) tlog[_prIx].telegramSent = true;
         saveTradeLog(tlog);
       }
     } catch(_te) {}

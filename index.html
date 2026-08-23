@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260820b" />
+  <link rel="stylesheet" href="css/styles.css?v=20260820c" />
 </head>
 <body>
 
@@ -789,7 +789,7 @@
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <label class="toggle-wrap" style="flex-shrink:0">
-              <input type="checkbox" id="s-scalp-tg-toggle" />
+              <input type="checkbox" id="s-scalp-tg-toggle" onchange="try{saveAllSettings()}catch(e){}" />
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
             </label>
             <span style="font-size:0.82rem;color:var(--text3)">啟用推送</span>
@@ -887,7 +887,10 @@
               <div class="setting-desc">信號出現時主動推送到手機（免費、即時）</div>
             </div>
             <label class="toggle-wrap">
-              <input type="checkbox" id="s-tg-toggle" />
+              <!-- 必須 onchange 自動儲存：此開關過去沒掛（其他開關都有），
+                   使用者關掉後若沒再按最下方「保存設置」，重新整理就恢復開啟，
+                   造成「明明關了推播卻一直收到訊號」 -->
+              <input type="checkbox" id="s-tg-toggle" onchange="try{saveAllSettings()}catch(e){}" />
               <span class="toggle-track"><span class="toggle-thumb"></span></span>
             </label>
           </div>
@@ -991,8 +994,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260820b"></script>
-  <script src="js/api.js?v=20260820b"></script>
-  <script src="js/app.js?v=20260820b"></script>
+  <script src="js/indicators.js?v=20260820c"></script>
+  <script src="js/api.js?v=20260820c"></script>
+  <script src="js/app.js?v=20260820c"></script>
 </body>
 </html>
