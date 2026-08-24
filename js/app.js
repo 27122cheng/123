@@ -479,6 +479,7 @@ function startRefreshCycle() {
     // 預測記分卡：拍快照＋到期結算（統一以本輪掃描資料為唯一參考價來源）
     await _pt('預測快照',       () => forecastSnapshot(data));
     await _pt('預測結算',       () => forecastSettle(data));
+    await _pt('預測成績單',     () => biasTrackUpdate());   // 今日/本週方向預測記帳＋結算
     /* ── 重分析輪替（2026-08-15，匯入備份後崩潰的根治）──────────────
        匯入備份＝樣本數一次跳到上千筆，而配對分析／扣分審查／確信度校準／
        沙盒治理都是「全量掃過所有樣本」的重運算。它們各自都有時間節流
@@ -586,6 +587,7 @@ async function manualRefresh() {
   try { updateLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab update 錯誤:', e); }
   try { updateSLTightnessWatch(data); } catch(e) {}
   try { recordProvenStrategyTrades(data); } catch(e) {}
+  try { biasTrackUpdate(); } catch(e) {}
   try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
   try { checkPostDataReversal(data); } catch(e) { console.error('[manualRefresh] checkPostDataReversal 錯誤:', e); }
   try {
@@ -6589,6 +6591,107 @@ function _getThisWeekSunday8am() {
   return sun.getTime();
 }
 
+/* ══ AI 預測成績單（2026-08-24）═══════════════════════════════════
+   本週/今日預測一直以來只發不驗：方向發出去、隔天沒人回頭對答案，
+   權重學習（_adjustBiasWeights）只看「上一筆」且過程不可見。這裡補上
+   完整的預測台帳：每天首輪掃描把當日鎖定方向連同 BTC 參考價記下，
+   之後的掃描對「已過期未結算」的預測用當下 BTC 價結算命中與否，
+   命中率（含 Wilson 區間）直接顯示在預測卡片上。
+   結算規則（全部明示，不藏）：
+     · 日預測：BTC 自預測起漲 >+0.3% 算多、跌 <−0.3% 算空，其間為盤整；
+       偏多/偏空命中＝方向對；中性命中＝|漲跌| ≤0.8%
+     · 週預測：門檻放大為 ±1%（中性 ±2%）
+     · 若隔了多天才開站，結算窗會被拉長——days 欄位如實記錄，不假裝是隔日
+   回饋（保守）：近期已結算 ≥10 筆且命中率 Wilson 上界 <45%（統計上確定
+   比擲硬幣差）→ 今日預測的信心分上限壓到 52 並明寫原因。方向照樣顯示，
+   只是不再帶著高信心。 */
+const BIAS_TRACK_KEY = 'csp_bias_track';
+function loadBiasTrack() {
+  try {
+    const a = JSON.parse(localStorage.getItem(BIAS_TRACK_KEY) || '{"d":[],"w":[]}');
+    return { d: Array.isArray(a.d) ? a.d : [], w: Array.isArray(a.w) ? a.w : [] };
+  } catch(_e) { return { d: [], w: [] }; }
+}
+function saveBiasTrack(t) {
+  try { localStorage.setItem(BIAS_TRACK_KEY, JSON.stringify({ d: t.d.slice(-120), w: t.w.slice(-60) })); } catch(_e) {}
+}
+function biasTrackUpdate() {
+  const btc = (typeof state !== 'undefined' && state.data || []).find(d => d.symbol === 'BTC/USDT');
+  const btcP = parseFloat(btc && btc.price);
+  if (!(btcP > 0)) return;
+  const t = loadBiasTrack();
+  const day = new Date().toISOString().slice(0, 10);
+  let changed = false;
+  // ── 記帳：當日鎖定方向（黏滯鎖存就是唯一事實來源，跟顯示/建單同一份）──
+  try {
+    const lock = JSON.parse(localStorage.getItem('csp_today_bias_lock') || 'null');
+    if (lock && lock.day && lock.bias) {
+      const cur = t.d.find(e => e.day === lock.day);
+      if (!cur) { t.d.push({ day: lock.day, bias: lock.bias, btc0: btcP, at: Date.now(), hit: null }); changed = true; }
+      else if (cur.hit == null && cur.bias !== lock.bias) { cur.bias = lock.bias; changed = true; } // 強證據翻面後以最終方向為準
+    }
+  } catch(_e) {}
+  // ── 結算：所有「日期已過、尚未結算」的日預測 ──
+  for (const e of t.d) {
+    if (e.hit != null || !e.day || e.day >= day || !(e.btc0 > 0)) continue;
+    const chg = (btcP - e.btc0) / e.btc0 * 100;
+    e.chg = +chg.toFixed(2);
+    e.days = Math.max(1, Math.round((Date.now() - (e.at || 0)) / 86400e3));
+    e.dir = chg > 0.3 ? 'bull' : chg < -0.3 ? 'bear' : 'flat';
+    e.hit = e.bias === 'neutral' ? Math.abs(chg) <= 0.8
+          : e.bias.includes('bull') ? chg > 0.3
+          : e.bias.includes('bear') ? chg < -0.3 : null;
+    changed = true;
+  }
+  // ── 週預測：記帳＋跨週結算（±1%、中性 ±2%）──
+  try {
+    const ws = _getThisWeekSunday8am();
+    const wl = JSON.parse(localStorage.getItem(_WEEKLY_BIAS_CACHE_KEY) || 'null');
+    if (wl && wl.result && wl.result.bias && wl.timestamp >= ws) {
+      if (!t.w.find(e => e.week === ws)) { t.w.push({ week: ws, bias: wl.result.bias, btc0: btcP, at: Date.now(), hit: null }); changed = true; }
+    }
+    for (const e of t.w) {
+      if (e.hit != null || !(e.week < ws) || !(e.btc0 > 0)) continue;
+      const chg = (btcP - e.btc0) / e.btc0 * 100;
+      e.chg = +chg.toFixed(2);
+      e.dir = chg > 1 ? 'bull' : chg < -1 ? 'bear' : 'flat';
+      e.hit = e.bias === 'neutral' ? Math.abs(chg) <= 2
+            : e.bias.includes('bull') ? chg > 1
+            : e.bias.includes('bear') ? chg < -1 : null;
+      changed = true;
+    }
+  } catch(_e) {}
+  if (changed) saveBiasTrack(t);
+}
+function biasTrackStats(kind) {
+  const t = loadBiasTrack();
+  const arr = (kind === 'w' ? t.w : t.d).filter(e => e.hit === true || e.hit === false).slice(kind === 'w' ? -12 : -30);
+  const grp = k => {
+    const g = arr.filter(e => k === 'neutral' ? e.bias === 'neutral' : (e.bias || '').includes(k));
+    return { n: g.length, hit: g.filter(e => e.hit).length };
+  };
+  const n = arr.length, hit = arr.filter(e => e.hit).length;
+  const dirArr = arr.filter(e => e.bias !== 'neutral');
+  const dirN = dirArr.length, dirHit = dirArr.filter(e => e.hit).length;
+  return { n, hit, rate: n ? +(hit / n * 100).toFixed(0) : null,
+    dirN, dirHit, dirRate: dirN ? +(dirHit / dirN * 100).toFixed(0) : null,
+    dirUb: dirN ? +((1 - wilsonLB(dirN - dirHit, dirN)) * 100).toFixed(0) : null,
+    bull: grp('bull'), bear: grp('bear'), neutral: grp('neutral') };
+}
+/* 預測卡片內的成績單一行字（kind: 'd'=今日 / 'w'=本週） */
+function buildBiasTrackLine(kind) {
+  try {
+    const s = biasTrackStats(kind);
+    if (!s.n) return `<div style="font-size:0.68rem;color:var(--text3);margin-top:6px">📈 預測成績單：尚無已結算的${kind === 'w' ? '週' : '日'}預測（每${kind === 'w' ? '週' : '天'}自動記帳、隔${kind === 'w' ? '週' : '天'}以 BTC 實際走勢結算）</div>`;
+    const bad = s.dirN >= 8 && s.dirUb != null && s.dirUb < 45;
+    return `<div style="font-size:0.7rem;color:${bad ? '#f59e0b' : 'var(--text3)'};margin-top:6px" title="日預測：BTC >+0.3% 算多／<−0.3% 算空；中性命中＝|漲跌|≤0.8%。週預測門檻 ±1%（中性 ±2%）。命中率上界為 Wilson 95%。">
+      📈 預測成績單（近 ${s.n} 筆已結算）：命中 ${s.hit}/${s.n}（${s.rate}%）
+      ・偏多 ${s.bull.hit}/${s.bull.n}・偏空 ${s.bear.hit}/${s.bear.n}・中性 ${s.neutral.hit}/${s.neutral.n}
+      ${bad ? `<b>⚠️ 方向預測命中率上界 ${s.dirUb}% ——統計上劣於擲硬幣，信心分已自動壓低</b>` : ''}
+    </div>`;
+  } catch(_e) { return ''; }
+}
+
 function computeWeeklyAIBias(fg, globalMkt) {
   const fgValNow  = fg ? parseInt(fg.value) : null;
   const mktChgNow = globalMkt?.marketCapChange || 0;
@@ -6965,6 +7068,7 @@ function buildWeeklyAIOutlook(fg, globalMkt) {
     <div style="font-size:0.72rem;color:#f59e0b;background:rgba(245,158,11,.07);border-radius:7px;padding:6px 10px;margin-top:8px">
       ⚠️ ${riskNote}
     </div>
+    ${buildBiasTrackLine('w')}
   </div>`;
 }
 
@@ -7273,7 +7377,17 @@ function computeTodayAIBias(fg, globalMkt) {
   const biasLabel = { bull:'▲ 偏多', bear:'▼ 偏空', slight_bull:'▲ 小幅偏多', slight_bear:'▼ 小幅偏空', neutral:'◆ 中性觀望' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text3)';
   // 提升日預測區分度：強信號提升 +6，加上高影響事件扣分
-  const conf = Math.max(30, Math.min(88, 45 + absScore * 10 + (bias !== 'neutral' && bias.includes !== 'slight' ? 6 : 0) + (fgVal != null ? 4 : 0) - relevantHighEvs.length * 5));
+  let conf = Math.max(30, Math.min(88, 45 + absScore * 10 + (bias !== 'neutral' && bias.includes !== 'slight' ? 6 : 0) + (fgVal != null ? 4 : 0) - relevantHighEvs.length * 5));
+  /* 成績單回饋（保守）：近期已結算的方向預測 ≥8 筆且命中率 Wilson 上界 <45%
+     ——統計上確定比擲硬幣差——信心分上限壓到 52 並明寫原因。方向照給，
+     但不再帶著沒有實績支撐的高信心。命中率回升會自動解除。 */
+  try {
+    const _bt = biasTrackStats('d');
+    if (_bt.dirN >= 8 && _bt.dirUb != null && _bt.dirUb < 45 && conf > 52) {
+      conf = 52;
+      reasons.push(`⚠️ 近 ${_bt.dirN} 筆方向預測僅命中 ${_bt.dirHit} 筆（上界 ${_bt.dirUb}%），信心分上限保護生效`);
+    }
+  } catch(_e) {}
   const confColor = conf >= 65 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
   const riskNote = relevantHighEvs.length > 0
     ? `今日 ${relevantHighEvs.length} 項高影響數據（${relevantHighEvs.map(ev => { const m = (ev.eventTime.getTime()-nowMs)/60000; return ev.name + (m < 0 ? '已公布' : m < 60 ? `${Math.round(m)}分後` : `${(m/60).toFixed(1)}h後`); }).join('、')}），建議等公布後確認方向再操作`
@@ -7329,6 +7443,7 @@ function buildTodayAIBiasHtml(fg, globalMkt) {
     </div>
     <div style="margin-bottom:10px">${reasonsHtml}</div>
     <div style="font-size:0.72rem;color:#f59e0b;background:rgba(245,158,11,.07);border-radius:7px;padding:6px 10px">⚠️ ${riskNote}</div>
+    ${buildBiasTrackLine('d')}
   </div>`;
 }
 
@@ -13563,7 +13678,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -20617,6 +20732,82 @@ function renderLabPage() {
 /* ── 交易記錄頁面渲染 ─────────────────────────────────────────── */
 let _tlFilter = 'all';
 
+/* ══ 綜合行動建議卡（教練卡，2026-08-24）══════════════════════════
+   站上的診斷散在十幾個面板（止損鬆緊、掛單深度、條件邊際、損益解剖、
+   費率拖累、預測成績單…），要自己逐頁拼湊才知道「現在該做什麼」。
+   這張卡把所有已達樣本門檻的診斷結論彙整成一份優先級清單，並明確
+   標示哪些系統已自動處理、哪些需要手動決定。全部讀自現有快取
+   （60 秒級），不做新的重運算；樣本不足的診斷一律不顯示、不硬湊。 */
+function buildCoachCard() {
+  try {
+    const items = [];   // { pri: 數字越小越優先, icon, text, auto: 系統已自動處理? }
+    const be = accountBreakeven();
+    // ① 兩平缺口（總覽，永遠第一）
+    if (be && be.n >= 10) {
+      const gap = +(be.cur - be.need).toFixed(1);
+      items.push({ pri: 0, icon: gap >= 0 ? '✅' : '🎯', auto: null,
+        text: gap >= 0
+          ? `目前勝率 ${be.cur}% 已超出兩平門檻 ${be.need}%（+${gap}pp）——系統是賺的，別因勝率數字低於 50% 而動參數`
+          : `勝率 ${be.cur}%、兩平需 ${be.need}%，缺口 ${Math.abs(gap)}pp——下列各項就是往這個缺口使力的具體位置` });
+    }
+    // ② 止損鬆緊
+    try {
+      const st = computeSLTightnessStats();
+      if (st.n >= 10) {
+        const widen = getAdaptiveSlWiden();
+        items.push(st.pct >= 40
+          ? { pri: 1, icon: '📏', auto: true, text: `${st.tooTight}/${st.n} 筆止損（${st.pct.toFixed(0)}%）在 24h 內反轉觸及原止盈——止損確實偏緊，自適應加寬已生效（×${widen.toFixed(2)}）` }
+          : { pri: 4, icon: '📏', auto: null, text: `止損單僅 ${st.pct.toFixed(0)}% 屬「太緊被掃」，多數是真實走弱——放寬止損幫助有限，方向在進場條件（見下方條件邊際表）` });
+      }
+    } catch(_e) {}
+    // ③ 掛單深度
+    try {
+      const fp = entryFillProfile();
+      if (fp.ready && fp.suggest != null)
+        items.push({ pri: 2, icon: '⚓', auto: true, text: `掛單深度實測：期望值最好的是「深度 ≤${fp.suggest}」桶——建單已自動把掛單深度封頂在該值（飛越錯失樣本 ${fp.flyaway} 筆已計入）` });
+    } catch(_e) {}
+    // ④ 快速單：拖累模式
+    try {
+      const bad = scalpModeStats().filter(m => m.enabled && m.n >= 20 && m.expectancy <= -0.08)
+        .map(m => `${m.label}（${m.n} 筆、${m.expectancy.toFixed(2)}R/筆）`);
+      if (bad.length)
+        items.push({ pri: 1, icon: '⚡', auto: false, text: `快速單拖累模式：${bad.join('、')} 顯著為負——條件桶閘門會逐步封鎖，但在設定頁手動關閉立即生效` });
+    } catch(_e) {}
+    // ⑤ 條件封鎖 + 費率拖累 + 輸單浮盈
+    try {
+      const cp = condEdgeProfile();
+      const blocked = (cp.rows || []).filter(r => r.verdict === 'block');
+      if (blocked.length)
+        items.push({ pri: 3, icon: '🚫', auto: true, text: `進場條件邊際已封鎖 ${blocked.length} 個實測負期望條件（${blocked.map(r => r.label).slice(0, 3).join('、')}${blocked.length > 3 ? '…' : ''}）——每次重算、轉好自動解封` });
+    } catch(_e) {}
+    try {
+      const v = winupStats();
+      if (v && v.fundingDrag && Math.abs(v.fundingDrag.sumR) >= 1)
+        items.push({ pri: 4, icon: '💸', auto: null, text: `資金費率累計拖累 ${v.fundingDrag.sumR}R（${v.fundingDrag.n} 筆估算）——長持倉的實際期望值比帳面低這麼多，評估策略時要一併看` });
+      if (v && v.loserMfe && v.loserMfe.main && v.loserMfe.main.n >= 8 && v.loserMfe.main.pct >= 40)
+        items.push({ pri: 2, icon: '🎣', auto: null, text: `一般單 ${v.loserMfe.main.pct}% 的輸單曾有 ≥0.8R 浮盈——單子會走但沒收住，去出場實驗室按一次重放，用實際成交算該不該收緊停利` });
+    } catch(_e) {}
+    // ⑥ 預測成績單保護
+    try {
+      const bt = biasTrackStats('d');
+      if (bt.dirN >= 8 && bt.dirUb != null && bt.dirUb < 45)
+        items.push({ pri: 2, icon: '🔮', auto: true, text: `今日方向預測近 ${bt.dirN} 筆僅命中 ${bt.dirHit} 筆（上界 ${bt.dirUb}%）——信心上限保護已生效，預測權重學習持續修正中` });
+    } catch(_e) {}
+    if (!items.length)
+      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:0.8rem">
+        <div style="font-weight:700;margin-bottom:4px">🧭 綜合行動建議</div>
+        <div style="color:var(--text3)">各項診斷的樣本仍在累積中（門檻：兩平 10 筆、止損鬆緊 10 筆、深度分桶每桶 20 訊號…）——樣本不足時不硬給建議。</div></div>`;
+    items.sort((a, b) => a.pri - b.pri);
+    return `<div style="background:rgba(99,102,241,.05);border:1px solid rgba(99,102,241,.25);border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:0.8rem;line-height:1.75">
+      <div style="font-weight:700;margin-bottom:5px">🧭 綜合行動建議（彙整全站已達樣本門檻的診斷，按優先級排序）</div>
+      ${items.slice(0, 6).map(i => `<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+        ${i.icon} ${i.text}${i.auto === true ? ' <span style="color:#22c55e;font-size:0.68rem">已自動處理</span>'
+          : i.auto === false ? ' <span style="color:#f59e0b;font-size:0.68rem">建議手動</span>' : ''}</div>`).join('')}
+      <div style="font-size:0.68rem;color:var(--text3);margin-top:5px">每項結論都來自對應面板的實測統計（60 秒快取彙整）；點進各面板可看完整推導與樣本。</div>
+    </div>`;
+  } catch(_e) { return ''; }
+}
+
 function renderTradeLogPage() {
   // 子分頁：交易記錄 / 自動紀錄（自動交易獨立資料）
   {
@@ -21095,6 +21286,7 @@ function renderTradeLogPage() {
       </div>
     </div>
     ${statsHtml}
+    ${buildCoachCard()}
     ${_tlDayPager(closed)}
     ${mismatchHtml}
     ${beHtml}
