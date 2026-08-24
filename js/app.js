@@ -6,6 +6,7 @@
 const _tradeSetupCache  = {};
 const _footprintCache   = {};  // 足跡圖數據緩存（幣種詳情頁抓取後寫入）
 const _liquidationCache = {};  // 爆倉地圖數據緩存（幣種詳情頁抓取後寫入）
+const _orderBookCache   = {};  // 訂單簿深度失衡緩存（幣種詳情頁／掃描候選幣抓取後寫入）
 const _scanFetchCache   = {};  // 掃描器補充抓取快取（5 分鐘 TTL，避免每 15s 重複請求）
 let   _macroCache       = null;
 let   _positionsScanTimer = null;
@@ -6544,9 +6545,14 @@ function _adjustBiasWeights(weights, predBias, actualMktChg, factorVotes, prefix
   const wrong   = (predBull && actualBear) || (predBear && actualBull);
   const correct = (predBull && actualBull) || (predBear && actualBear);
   const newWeights = { ...weights };
-  const allKeys = [`${prefix}_fg`, `${prefix}_mktChg`, `${prefix}_btcDom`, `${prefix}_techScan`];
-  // Gentle decay toward 1.0 for all weights each evaluation cycle
-  allKeys.forEach(k => {
+  /* Gentle decay toward 1.0 for every factor that actually voted this round.
+     ⚠️ 2026-08-24 修復：原本只硬寫 4 個鍵（fg/mktChg/btcDom/techScan）decay，
+     但 daily/weekly 各有 12 個因子在投票——其餘 8 個只會被下面的獎懲分支
+     推向極端（0.5 或 1.5）卻永遠沒有拉回中性的機制，一次誤判就可能把某個
+     因子焊死在下限。改為對本輪「有投票」的因子（factorVotes 的鍵集合）
+     一視同仁 decay，與下面兩個分支覆蓋的集合完全一致。 */
+  Object.keys(factorVotes).forEach(factor => {
+    const k = `${prefix}_${factor}`;
     const w = _getBiasWeight(newWeights, k);
     newWeights[k] = w + (1.0 - w) * 0.08;
   });
@@ -6692,6 +6698,51 @@ function buildBiasTrackLine(kind) {
   } catch(_e) { return ''; }
 }
 
+/* ── 預測因子權重面板（2026-08-24）──────────────────────────────
+   日／週預測各有 12 個因子在背景依「猜對/猜錯」自我調整權重（0.5~1.5，
+   猜對輕推 +0.03、猜錯依票數重扣、每輪對所有投票過的因子 decay 回 1.0）。
+   這個過程過去完全不可見——使用者看得到「今天猜錯了」卻看不到「哪個
+   因子被扣分、扣了多少」。這裡把目前學到的權重攤開來看，用 <details>
+   收合避免塞爆卡片；純讀取現有 60 秒內快取的 _loadBiasLearning，不重算。 */
+const _BIAS_FACTOR_LABELS = {
+  daily: [
+    ['fg', '恐慌貪婪指數'], ['mktChg', '加密市值變化'], ['btcDom', 'BTC 主導率'],
+    ['techScan', '技術面多空分佈'], ['daySignal', '日線訊號分佈'], ['rsiD', 'RSI 極端讀數'],
+    ['chipsD', 'Taker 買賣比'], ['momentum', '動能分佈'], ['macdDistD', 'MACD 動能分佈'],
+    ['adxDistD', 'ADX 趨勢確立率'], ['fpDelta', '足跡圖 Delta'], ['microstructure', '微結構質量'],
+  ],
+  weekly: [
+    ['fg', '恐慌貪婪指數'], ['mktChg', '加密市值變化'], ['btcDom', 'BTC 主導率'],
+    ['techScan', '技術面多空分佈'], ['wkSignal', '週線訊號分佈'], ['rsiW', 'RSI 極端讀數'],
+    ['chipsW', 'Taker 買賣比'], ['whaleW', '巨鯨動向'], ['macdDistW', 'MACD 動能分佈'],
+    ['adxDistW', 'ADX 趨勢確立率'], ['fpW', '足跡圖 Delta'], ['msqW', '微結構質量'],
+  ],
+};
+function buildBiasWeightTable(prefix) {
+  try {
+    const weights = _loadBiasLearning().weights || {};
+    const defs = _BIAS_FACTOR_LABELS[prefix];
+    const rows = defs.map(([k, label]) => ({ label, w: _getBiasWeight(weights, `${prefix}_${k}`) }))
+      .sort((a, b) => b.w - a.w);
+    const barClr = w => w >= 1.15 ? '#22c55e' : w <= 0.85 ? '#ef4444' : 'var(--text3)';
+    return `<details style="margin-top:6px">
+      <summary style="font-size:0.68rem;color:var(--text3);cursor:pointer">⚙️ 因子權重（點開查看目前學到的信任度）</summary>
+      <div style="margin-top:5px;font-size:0.7rem;color:var(--text3);line-height:1.6">
+        每次${prefix === 'weekly' ? '週' : '日'}結算後：猜對的因子權重 +0.03、猜錯的依票數扣（最重 −0.20），
+        範圍 0.5~1.5、每輪向 1.0 緩慢回歸——不是一次誤判就焊死，也不是猜對一次就再也扣不動。
+      </div>
+      <div style="margin-top:4px">${rows.map(r => `
+        <div style="display:flex;align-items:center;gap:6px;padding:2px 0">
+          <span style="width:110px;font-size:0.72rem;color:var(--text2)">${r.label}</span>
+          <div style="flex:1;height:5px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;max-width:120px">
+            <div style="width:${Math.round((r.w - 0.5) / 1.0 * 100)}%;height:100%;background:${barClr(r.w)}"></div>
+          </div>
+          <span style="width:36px;text-align:right;font-size:0.72rem;font-weight:600;color:${barClr(r.w)}">${r.w.toFixed(2)}</span>
+        </div>`).join('')}</div>
+    </details>`;
+  } catch(_e) { return ''; }
+}
+
 function computeWeeklyAIBias(fg, globalMkt) {
   const fgValNow  = fg ? parseInt(fg.value) : null;
   const mktChgNow = globalMkt?.marketCapChange || 0;
@@ -6778,7 +6829,12 @@ function computeWeeklyAIBias(fg, globalMkt) {
     else                     { factorVotes.wkSignal =  0; factors.push(`週線多空均衡（多頭 ${wkBullPct}% / 空頭 ${wkBearPct}%）`); }
   }
   // ⑥ 市場RSI狀態（超買/超賣分佈）
-  const wRsiW = _getBiasWeight(weights, 'weekly_rsi');
+  // ⚠️ 2026-08-24 修復：讀取鍵與 factorVotes 寫回鍵對不上（rsi≠rsiW、
+  // chips≠chipsW、whale≠whaleW、macdDist≠macdDistW、adxDist≠adxDistW、
+  // fpDelta≠fpW、microstructure≠msqW），這 7 個週預測因子的權重從未被
+  // 實際調整過，永遠停在預設 1.0——對照組是 fg/mktChg/btcDom/techScan/
+  // wkSignal 5 個讀寫鍵本來就一致，會正常學習
+  const wRsiW = _getBiasWeight(weights, 'weekly_rsiW');
   if (coins.length) {
     const rsiOBW = coins.filter(c => (parseFloat(c.rsi)||50) > 70).length;
     const rsiOSW = coins.filter(c => (parseFloat(c.rsi)||50) < 30).length;
@@ -6789,7 +6845,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
     else                    { factorVotes.rsiW =  0; }
   }
   // ⑦ 籌碼資金流向（Taker 買賣比聚合均值）
-  const wChipsW = _getBiasWeight(weights, 'weekly_chips');
+  const wChipsW = _getBiasWeight(weights, 'weekly_chipsW');
   const _wDrvCoins = coins.filter(c => c.derivData?.takerBuySell != null);
   if (_wDrvCoins.length >= 3) {
     const avgTkrW = _wDrvCoins.reduce((s, c) => s + c.derivData.takerBuySell, 0) / _wDrvCoins.length;
@@ -6800,7 +6856,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
     else                     { factorVotes.chipsW =  0; }
   }
   // ⑧ 巨鯨動向（多空持倉分佈）
-  const wWhaleW = _getBiasWeight(weights, 'weekly_whale');
+  const wWhaleW = _getBiasWeight(weights, 'weekly_whaleW');
   const _wWhlCoins = coins.filter(c => c.whaleData?.bias);
   if (_wWhlCoins.length >= 3) {
     const whlBull = _wWhlCoins.filter(c => c.whaleData.bias === 'bull').length;
@@ -6813,7 +6869,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
   }
 
   // ⑨ MACD 動能多空分佈（正值 = 上行動能，負值 = 下行動能）
-  const wMacdW = _getBiasWeight(weights, 'weekly_macdDist');
+  const wMacdW = _getBiasWeight(weights, 'weekly_macdDistW');
   if (coins.length) {
     const _wMacdBull = coins.filter(c => (parseFloat(c.macdHist)||0) > 0).length;
     const _wMacdBullPct = Math.round(_wMacdBull / coins.length * 100);
@@ -6826,7 +6882,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
     } else { factorVotes.macdDistW = 0; }
   }
   // ⑩ ADX 趨勢確立率（≥25 = 趨勢市場，低 = 震盪）— 提升權重
-  const wAdxDistW = _getBiasWeight(weights, 'weekly_adxDist');
+  const wAdxDistW = _getBiasWeight(weights, 'weekly_adxDistW');
   if (coins.length) {
     const _wAdxTrend = coins.filter(c => (parseFloat(c.adx)||0) >= 25).length;
     const _wAdxPct   = Math.round(_wAdxTrend / coins.length * 100);
@@ -6844,7 +6900,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
   // ⑪ 足跡圖 Delta 聚合 + 背離檢查（市場微觀結構，未公開訊息指標）
   const _wFpEntries = Object.values(_footprintCache).filter(fp => fp && fp.deltaDir !== 'neutral');
   if (_wFpEntries.length >= 1) {
-    const wFpW = _getBiasWeight(weights, 'weekly_fpDelta');
+    const wFpW = _getBiasWeight(weights, 'weekly_fpW');
     const fpBN = _wFpEntries.filter(fp => fp.deltaDir === 'bull').length;
     const fpSN = _wFpEntries.filter(fp => fp.deltaDir === 'bear').length;
     const fpT  = _wFpEntries.length;
@@ -6884,7 +6940,7 @@ function computeWeeklyAIBias(fg, globalMkt) {
   // ⑫ 週度市場微結構質量（Tick 品質聚合 + VWAP 偏離）
   const _wMsqEntries = Object.values(_footprintCache).filter(fp => fp && fp.microstructureQuality != null);
   if (_wMsqEntries.length >= 1) {
-    const wMsqW = _getBiasWeight(weights, 'weekly_microstructure');
+    const wMsqW = _getBiasWeight(weights, 'weekly_msqW');
     const avgMsqW = _wMsqEntries.reduce((s, fp) => s + fp.microstructureQuality, 0) / _wMsqEntries.length;
     const highNoiseW = _wMsqEntries.filter(fp => fp.bidAskBounceScore > 65).length / _wMsqEntries.length;
     if (avgMsqW >= 70 && highNoiseW < 0.2) {
@@ -7069,6 +7125,7 @@ function buildWeeklyAIOutlook(fg, globalMkt) {
       ⚠️ ${riskNote}
     </div>
     ${buildBiasTrackLine('w')}
+    ${buildBiasWeightTable('weekly')}
   </div>`;
 }
 
@@ -7146,7 +7203,10 @@ function computeTodayAIBias(fg, globalMkt) {
     else                     { factorVotes.daySignal =  0; reasons.push(`日線多空均衡（多頭 ${dyBullPct}% / 空頭 ${dyBearPct}%）`); }
   }
   // ⑥ 今日RSI極端讀數
-  const wRsiD = _getBiasWeight(weights, 'daily_rsi');
+  // ⚠️ 2026-08-24 修復：讀取鍵原本是 'daily_rsi'，但 _adjustBiasWeights 依
+  // factorVotes.rsiD 寫回的鍵是 'daily_rsiD'——讀寫對不上，這個因子的權重
+  // 從未被實際調整過，永遠停在預設 1.0（下面 chips/macdDist/adxDist 同款）
+  const wRsiD = _getBiasWeight(weights, 'daily_rsiD');
   if (coins.length) {
     const rsiOBD = coins.filter(c => (parseFloat(c.rsi)||50) > 70).length;
     const rsiOSD = coins.filter(c => (parseFloat(c.rsi)||50) < 30).length;
@@ -7157,7 +7217,7 @@ function computeTodayAIBias(fg, globalMkt) {
     else                    { factorVotes.rsiD =  0; }
   }
   // ⑦ 籌碼流向（Taker 買賣比聚合）
-  const wChipsD = _getBiasWeight(weights, 'daily_chips');
+  const wChipsD = _getBiasWeight(weights, 'daily_chipsD');
   const _dDrvCoins = coins.filter(c => c.derivData?.takerBuySell != null);
   if (_dDrvCoins.length >= 3) {
     const avgTkrD = _dDrvCoins.reduce((s, c) => s + c.derivData.takerBuySell, 0) / _dDrvCoins.length;
@@ -7178,7 +7238,7 @@ function computeTodayAIBias(fg, globalMkt) {
   }
 
   // ⑨ MACD 動能分佈（今日動能多空格局）
-  const wMacdD = _getBiasWeight(weights, 'daily_macdDist');
+  const wMacdD = _getBiasWeight(weights, 'daily_macdDistD');
   if (coins.length) {
     const _dMacdBull = coins.filter(c => (parseFloat(c.macdHist)||0) > 0).length;
     const _dMacdBullPct = Math.round(_dMacdBull / coins.length * 100);
@@ -7191,7 +7251,7 @@ function computeTodayAIBias(fg, globalMkt) {
     } else { factorVotes.macdDistD = 0; }
   }
   // ⑩ ADX 趨勢確立率（高 = 方向確定性強）
-  const wAdxDistD = _getBiasWeight(weights, 'daily_adxDist');
+  const wAdxDistD = _getBiasWeight(weights, 'daily_adxDistD');
   if (coins.length) {
     const _dAdxTrend = coins.filter(c => (parseFloat(c.adx)||0) >= 25).length;
     const _dAdxPct   = Math.round(_dAdxTrend / coins.length * 100);
@@ -7444,6 +7504,7 @@ function buildTodayAIBiasHtml(fg, globalMkt) {
     <div style="margin-bottom:10px">${reasonsHtml}</div>
     <div style="font-size:0.72rem;color:#f59e0b;background:rgba(245,158,11,.07);border-radius:7px;padding:6px 10px">⚠️ ${riskNote}</div>
     ${buildBiasTrackLine('d')}
+    ${buildBiasWeightTable('daily')}
   </div>`;
 }
 
@@ -8792,9 +8853,9 @@ function refreshFeedHealthPanel() {
 function buildFeedStrip() {
   let rows;
   try { rows = feedHealth(); } catch(_e) { return ''; }
-  const pick = ['price', 'kline', 'deriv', 'oi', 'liqws', 'fp', 'news', 'ext'];
+  const pick = ['price', 'kline', 'deriv', 'oi', 'liqws', 'fp', 'orderbook', 'news', 'ext'];
   const map = {}; rows.forEach(r => { map[r.key] = r; });
-  const short = { price: '幣價', kline: 'K線', deriv: '合約籌碼', oi: 'OI', liqws: '清算流', fp: '訂單流', news: '新聞', ext: '場外' };
+  const short = { price: '幣價', kline: 'K線', deriv: '合約籌碼', oi: 'OI', liqws: '清算流', fp: '訂單流', orderbook: '訂單簿', news: '新聞', ext: '場外' };
   const cells = pick.map(k => {
     const r = map[k]; if (!r) return '';
     const u = _FEED_STATE_UI[r.state];
@@ -9403,7 +9464,7 @@ function buildLiquidationPanel(liqData, coin, mtfData) {
   </div>`;
 }
 
-function buildOrderFlowPanel(coin, of15m) {
+function buildOrderFlowPanel(coin, of15m, ob) {
   if (!of15m) return '<div class="adv-loading">訂單流數據不可用</div>';
 
   // CVD 標籤：結合整體趨勢與近期 Delta，避免方向矛盾
@@ -9466,6 +9527,21 @@ function buildOrderFlowPanel(coin, of15m) {
       </div>
       <div class="of-stat" style="color:${pClr}">${pressureTx}</div>
     </div>
+    ${ob ? (() => {
+      const obPct = Math.round((ob.imbalance + 1) / 2 * 100);   // -1~1 → 0~100%
+      const obColor = ob.imbalance >= 0.15 ? 'var(--bull)' : ob.imbalance <= -0.15 ? 'var(--bear)' : 'var(--neutral)';
+      const obTx = ob.imbalance >= 0.15 ? '買方掛單較厚' : ob.imbalance <= -0.15 ? '賣方掛單較厚' : '雙邊掛單相當';
+      const wallTx = w => w ? `$${parseFloat(w.price).toPrecision(6).replace(/\.?0+$/, '')}（${w.size.toFixed(1)} 張）` : '無';
+      return `<div class="of-block">
+      <div class="of-label">訂單簿深度失衡（前 20 檔掛單）
+        <span style="font-size:0.7rem;color:var(--text3);font-weight:400;margin-left:4px">（即時掛單意圖，非成交紀錄；牆會撤單，不當結構釘點）</span>
+      </div>
+      <div class="of-bar-wrap"><div class="of-bar-buy" style="width:${obPct}%"></div></div>
+      <div class="of-pcts"><span class="text-bull">買方掛單 ${Math.round((ob.bidVol / (ob.bidVol + ob.askVol)) * 100)}%</span><span class="text-bear">賣方掛單 ${Math.round((ob.askVol / (ob.bidVol + ob.askVol)) * 100)}%</span></div>
+      <div class="of-stat" style="color:${obColor}">失衡 ${ob.imbalance >= 0 ? '+' : ''}${(ob.imbalance * 100).toFixed(1)}% ${obTx}</div>
+      <div class="of-sub">買牆：${wallTx(ob.bidWall)}　賣牆：${wallTx(ob.askWall)}</div>
+    </div>`;
+    })() : ''}
   </div>`;
 }
 
@@ -10458,7 +10534,7 @@ async function renderCoinDetail(symbol) {
     Promise.resolve(pr).catch(() => null),
     new Promise(r => setTimeout(() => r(null), ms)),
   ]);
-  const [mtfData, fearGreed, deriv, globalMkt, halving, whale, fpData, liqData] = await Promise.all([
+  const [mtfData, fearGreed, deriv, globalMkt, halving, whale, fpData, liqData, obData] = await Promise.all([
     _tmo(fetchMTFKlines(symbol), 15000),
     _tmo(fetchFearGreed(), 8000),
     _tmo(fetchDerivativesData(symbol), 10000),
@@ -10468,6 +10544,7 @@ async function renderCoinDetail(symbol) {
     _tmo(fetchFootprintData(symbol), 12000),
     _tmo(fetchLiquidationMap(symbol), 10000),
     _tmo(refreshOkxPrices(), 8000),
+    _tmo(fetchOrderBookImbalance(symbol), 8000),
   ]);
   // 使用者已切到別的幣 → 不要用舊幣的資料覆蓋新頁面
   if (document.getElementById('coin-name')?.textContent !== symbol) return;
@@ -10475,6 +10552,7 @@ async function renderCoinDetail(symbol) {
   const _mtf = mtfData || {};
   // 足跡圖緩存（供 AI 分析函數讀取）
   if (fpData) _footprintCache[symbol] = fpData;
+  if (obData) _orderBookCache[symbol] = obData;
 
   // 爆倉地圖緩存（供 AI 分析函數讀取）
   if (liqData) {
@@ -10529,7 +10607,7 @@ async function renderCoinDetail(symbol) {
   const _ictSection = document.getElementById('ict-section');
   if (_ictSection) _ictSection.style.display = 'none';
 
-  setSafe('of-body',        () => buildOrderFlowPanel(coin, _mtf['15m']?.orderFlow || null));
+  setSafe('of-body',        () => buildOrderFlowPanel(coin, _mtf['15m']?.orderFlow || null, _orderBookCache[symbol] || null));
   setSafe('fp-body',        () => buildFootprintPanel(_footprintCache[symbol], coin));
   setSafe('liq-body',       () => buildLiquidationPanel(_liquidationCache[symbol], coin, _mtf));
   setSafe('ai-body',        () => generateAIAnalysis(coin, _mtf, fearGreed));
@@ -11960,6 +12038,81 @@ function tagPerformance(field, labelMap) {
       + (!good.length && !bad.length ? '目前沒有任何分支達到統計顯著（樣本或差距還不夠）' : '');
   } catch(_e) { out.why = '分析失敗：' + _e.message; }
   return out;
+}
+
+/* ── 模式 × 市場狀態矩陣（2026-08-24）──────────────────────────
+   單一維度（哪個模式好、哪個邏輯分支好）已經在做，但「這個模式在趨勢
+   市場好、還是在盤整市場好」是另一件事——同一個模式混著兩種市場狀態
+   算勝率，會把「只在趨勢裡有效」的模式跟「哪種市場都普通」的模式
+   算成同一個數字。currentRegimeKey() 早就逐筆記在 t.regime 裡
+   （main 與 scalp 皆有），只是沒人拿來交叉分析。
+   市場狀態粗分三格（bull/range/bear，忽略高低波動細分）以維持每格
+   樣本量；細分維度可從市場狀態面板另外查。 */
+const REGIME_DIRS = [['bull', '趨勢多'], ['range', '盤整'], ['bear', '趨勢空']];
+const REGIME_CELL_MIN = 15;   // 二維交叉會稀釋樣本，門檻略低於單維度的 20，但仍要求統計意義
+function _regimeMatrixOf(trades, keyField, labelMap) {
+  const cells = {};   // key -> { bull:{n,w,l,r}, range:{...}, bear:{...} }
+  for (const t of trades) {
+    const k = t[keyField];
+    const dir = t.regime ? String(t.regime).split('_')[0] : '';
+    if (!k || !['bull', 'range', 'bear'].includes(dir)) continue;
+    cells[k] = cells[k] || { bull: { n: 0, w: 0, l: 0, r: 0 }, range: { n: 0, w: 0, l: 0, r: 0 }, bear: { n: 0, w: 0, l: 0, r: 0 } };
+    const c = cells[k][dir];
+    c.n++;
+    if (isWinTrade(t)) c.w++; else if (isLossTrade(t)) c.l++;
+    c.r += parseFloat(t.pnlR) || 0;
+  }
+  const rows = Object.entries(cells).map(([k, byDir]) => ({
+    key: k, label: (labelMap && labelMap[k]) || k,
+    total: byDir.bull.n + byDir.range.n + byDir.bear.n,
+    cells: Object.fromEntries(REGIME_DIRS.map(([d]) => {
+      const c = byDir[d];
+      const wl = c.w + c.l;
+      return [d, { n: c.n, wr: wl ? Math.round(c.w / wl * 100) : null, exp: c.n ? +(c.r / c.n).toFixed(2) : null }];
+    })),
+  })).filter(r => r.total > 0).sort((a, b) => b.total - a.total);
+  return rows;
+}
+function buildRegimeMatrixHtml() {
+  try {
+    const mainRows = _regimeMatrixOf(
+      learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR))),
+      'entryTag', TAG_LABELS.entry);
+    const scalpMap = new Map();
+    try { for (const t of loadQlabArchive()) if (t && t.id) scalpMap.set(t.id, t); } catch(_e) {}
+    try { for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') scalpMap.set(t.id, t); } catch(_e) {}
+    const scalpRows = _regimeMatrixOf([...scalpMap.values()].filter(t => isFinite(parseFloat(t.pnlR))),
+      'mode', SCALP_MODE_LABEL);
+    if (!mainRows.length && !scalpRows.length) return '';
+    const table = (title, rows) => rows.length ? `
+      <div style="font-weight:600;font-size:0.78rem;margin-top:8px">${title}</div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem">
+        <thead><tr style="color:var(--text3);font-size:0.68rem;text-align:right">
+          <th style="padding:3px 5px;text-align:left">分支</th>
+          ${REGIME_DIRS.map(([, l]) => `<th style="padding:3px 5px">${l}</th>`).join('')}
+        </tr></thead>
+        <tbody>${rows.map(r => `<tr style="text-align:right">
+          <td style="padding:3px 5px;text-align:left">${r.label}</td>
+          ${REGIME_DIRS.map(([d]) => {
+            const c = r.cells[d];
+            if (!c.n) return `<td style="padding:3px 5px;color:var(--text3)">—</td>`;
+            if (c.n < REGIME_CELL_MIN) return `<td style="padding:3px 5px;color:var(--text3)">${c.n}/${REGIME_CELL_MIN}</td>`;
+            const good = c.exp > 0;
+            return `<td style="padding:3px 5px;color:${good ? '#22c55e' : '#ef4444'}">${c.wr}%<span style="color:var(--text3);font-size:0.66rem"> (${c.n})</span><br>${good ? '+' : ''}${c.exp}R</td>`;
+          }).join('')}
+        </tr>`).join('')}</tbody></table></div>` : '';
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;
+        padding:11px 13px;margin-bottom:12px;font-size:0.82rem;line-height:1.7">
+      <div style="font-weight:700;margin-bottom:3px">🌐 模式 × 市場狀態矩陣（同一條邏輯在不同市場狀態下表不表現一致）</div>
+      <div style="font-size:0.75rem;color:var(--text2)">
+        格子顯示「勝率(樣本數) / 期望值」；未達 ${REGIME_CELL_MIN} 筆只顯示樣本數，不給結論。
+        市場狀態依 BTC 4H+日線同向且 ADX 成形判定（趨勢），其餘算盤整——與市場狀態面板同一套判定。</div>
+      ${table('一般單（依進場分支）', mainRows)}
+      ${table('快速單（依進場模式）', scalpRows)}
+      ${!mainRows.length ? '<div style="font-size:0.72rem;color:var(--text3);margin-top:4px">一般單樣本不足（需要有 entryTag 與 regime 欄位的已完結交易）</div>' : ''}
+      ${!scalpRows.length ? '<div style="font-size:0.72rem;color:var(--text3);margin-top:4px">快速單樣本不足</div>' : ''}
+    </div>`;
+  } catch(_e) { return ''; }
 }
 
 function buildTagPanel() {
@@ -13678,7 +13831,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14608,16 +14761,18 @@ async function recordSignalsFromScan(data) {
     const _sfCached = _scanFetchCache[coin.symbol];
     if (!_sfCached || (_sfNow - _sfCached.ts) > 5 * 60 * 1000) {
       try {
-        const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF] = await Promise.all([
+        const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF, _sfOB] = await Promise.all([
           fetchDerivativesData(coin.symbol),
           fetchWhaleTrades(coin.symbol),
           fetchFootprintData(coin.symbol),
           fetchLiquidationMap(coin.symbol),
           fetchMTFKlines(coin.symbol),
+          fetchOrderBookImbalance(coin.symbol),
         ]);
         if (_sfDeriv) coin.derivData = _sfDeriv;
         if (_sfWhale) coin.whaleData = _sfWhale;
         if (_sfFP)    _footprintCache[coin.symbol] = _sfFP;
+        if (_sfOB)    _orderBookCache[coin.symbol] = _sfOB;
         if (_sfLiq) {
           // 與幣種詳情頁相同的爆倉地圖後處理
           if (_sfLiq.source === 'estimated' && _sfLiq.leverages) {
@@ -21204,6 +21359,10 @@ function renderTradeLogPage() {
   let tagHtml = '';
   try { tagHtml = buildTagPanel(); } catch(_e) {}
 
+  // 模式 × 市場狀態矩陣：同一條邏輯在不同市場狀態下表不表現一致
+  let regimeMatrixHtml = '';
+  try { regimeMatrixHtml = buildRegimeMatrixHtml(); } catch(_e) {}
+
   // 進場掛單深度：勝率低於隨機基準時，兇手通常在這裡
   let pullHtml = '';
   try { pullHtml = buildPullDepthPanel(); } catch(_e) {}
@@ -21297,6 +21456,7 @@ function renderTradeLogPage() {
     ${gateHtml}
     ${condHtml}
     ${tagHtml}
+    ${regimeMatrixHtml}
     ${exitHtml}
     ${filterHtml}
     ${tableHtml}
@@ -30342,6 +30502,7 @@ const _CONV_FC_MAP = {
   rs: 'rs', oi: 'oi', liq: 'liqflow', fr: 'funding',
   nk_engulf: 'nakedk', nk_pin: 'nakedk', nk_three: 'nakedk',
   ext_idx: 'ext', ext_dxy: 'ext', ext_vix: 'ext',
+  orderbook: 'ob',
 };
 function computeDirectionConviction(coin) {
   let s = 0; const votes = [], items = [];
@@ -30422,6 +30583,15 @@ function computeDirectionConviction(coin) {
     voteStruct(coin.dayStruct, 14, '日線', 'st_day');
     voteStruct(coin.h4Struct, 12, '4H', 'st_h4');
     voteStruct(coin.struct15, 4, '15m', 'st_15');
+  } catch(_e) {}
+  // 訂單簿深度失衡（即時掛單意圖，權重刻意小——牆會撤單，只當輔助佐證，
+  // 且只在掃描候選幣/開過詳情頁時才有資料，非硬性要求）
+  try {
+    const ob = _orderBookCache[coin.symbol];
+    if (ob && Date.now() - (ob.ts || 0) < 15 * 60000 && isFinite(ob.imbalance)) {
+      if (ob.imbalance >= 0.2) add(3, `訂單簿買方失衡 ${(ob.imbalance*100).toFixed(0)}%`, 'orderbook');
+      else if (ob.imbalance <= -0.2) add(-3, `訂單簿賣方失衡 ${(ob.imbalance*100).toFixed(0)}%`, 'orderbook');
+    }
   } catch(_e) {}
   // 場外風險溫度（美股期指／DXY／VIX）：權重刻意小——它是「重力」不是
   // 「訊號」，且校準器會用實際成交決定它值多少。取不到就完全不投票。
@@ -31502,6 +31672,7 @@ const FC_PREDICTORS = {
   nakedk:  { label: '裸 K 型態',     horizonH: 4,  scope: 'coin' },
   funding: { label: '資金費率（反向）', horizonH: 4, scope: 'coin' },
   flow:    { label: '足跡訂單流',    horizonH: 4,  scope: 'coin' },
+  ob:      { label: '訂單簿深度失衡', horizonH: 4, scope: 'coin' },
 };
 let _newsBiasNow = null;   // 由 buildNewsWidget 更新
 
@@ -31606,6 +31777,11 @@ function forecastSnapshot(data) {
         try {
           const _fp = _footprintCache[c.symbol];
           if (_fp && _fp.deltaDir && _fp.deltaDir !== 'neutral') push('flow', _fp.deltaDir, px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _ob = _orderBookCache[c.symbol];
+          if (_ob && isFinite(_ob.imbalance) && Math.abs(_ob.imbalance) >= 0.2)
+            push('ob', _ob.imbalance > 0 ? 'bull' : 'bear', px, c.symbol);
         } catch(_e) {}
       }
     } catch(_e) {}

@@ -140,6 +140,7 @@ const FEED_SPEC = {
   ext:     { label: '場外行情（期指／DXY／VIX）',    fresh: 5 * 60e3, stale: 30 * 60e3,  how: '/api/macro 代理 Yahoo／Stooq，前後端各 5 分鐘快取' },
   funding: { label: '全市場資金費率',               fresh: 16 * 60e3, stale: 45 * 60e3,  how: '幣安 premiumIndex 一個請求拿全市場，15 分鐘快取；方向確信度／快速單門檻／記分卡共用' },
   halving: { label: '減半資訊',                     fresh: 6 * 3600e3, stale: 24 * 3600e3, how: 'mempool.space 區塊高度，日級資訊' },
+  orderbook: { label: '訂單簿深度失衡',              fresh: 7 * 60e3, stale: 25 * 60e3,  how: 'OKX 前 20 檔掛單快照：開啟詳情即時請求，掃描時對候選幣 5 分鐘快取；只餵確信度投票，不進止損止盈釘點' },
 };
 const _feedAt = {};   // key → { at, ok, note, fail }
 function feedStamp(key, ok, note) {
@@ -1421,6 +1422,56 @@ async function fetchLiquidationMap(symbol) {
   // Returns source='estimated' with leverages array; app.js will compute prices using current price
   feedStamp('liqmap', true, '估算（無公開來源）');
   return { longLiqs: null, shortLiqs: null, rawData: null, source: 'estimated', leverages: [3, 5, 10, 20, 50, 100] };
+}
+
+/* ═══════════════════ 訂單簿深度失衡（2026-08-24）══════════════════
+   OKX 永續合約訂單簿快照：GET /api/v5/market/books?instId=...&sz=20
+   回應 data[0] = { asks:[[px,sz,liqOrders,numOrders],...], bids:[[...]], ts }
+   （sz 為合約張數，OKX 由高到低/低到高各自排序，越靠前越貼近現價）。
+
+   這是即時掛單意圖，跟其他資料源（K 線、費率、OI）性質不同——它反映的是
+   「現在這一刻誰願意在哪個價位接單」，K 線只能告訴你「已經成交過」的事。
+   兩個指標：
+   ① imbalance：前 N 檔買賣量的不對稱比例，>0 買方掛單較厚
+   ② wall：任一檔掛單量遠超其餘檔位中位數（≥3 倍）視為「牆」——常被當成
+      支撐/壓力的參考，但牆會撤單，不能當成結構釘點，只能當成輔助證據
+      （因此只餵給確信度的證據投票，不進 computeSimpleSetup 的止損止盈）。 */
+async function fetchOrderBookImbalance(symbol) {
+  const instId = toOkxInstId(symbol);
+  if (!instId) { feedStamp('orderbook', false, '非 USDT 永續合約'); return null; }
+  try {
+    const r = await okxApiFetch('market/books', { instId, sz: 20 }, 6000);
+    if (!r || !r.json) { feedStamp('orderbook', false, 'API 不可用'); return null; }
+    const book = r.json.data && r.json.data[0];
+    if (!book || !Array.isArray(book.asks) || !Array.isArray(book.bids) || !book.asks.length || !book.bids.length) {
+      feedStamp('orderbook', false, '回應為空');
+      return null;
+    }
+    const sumSz = levels => levels.reduce((s, l) => s + (parseFloat(l[1]) || 0), 0);
+    const bidVol = sumSz(book.bids), askVol = sumSz(book.asks);
+    if (!(bidVol + askVol > 0)) { feedStamp('orderbook', false, '掛單量為零'); return null; }
+    const imbalance = (bidVol - askVol) / (bidVol + askVol);   // -1（賣壓）~ +1（買壓）
+    const findWall = (levels, side) => {
+      const szs = levels.map(l => parseFloat(l[1]) || 0).filter(v => v > 0);
+      if (szs.length < 5) return null;
+      const sorted = [...szs].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      if (!(median > 0)) return null;
+      let best = null;
+      levels.forEach(l => {
+        const sz = parseFloat(l[1]) || 0, px = parseFloat(l[0]) || 0;
+        if (sz >= median * 3 && px > 0 && (!best || sz > best.size)) best = { price: px, size: sz, side };
+      });
+      return best;
+    };
+    feedStamp('orderbook', true, symbol);
+    return {
+      bidVol: +bidVol.toFixed(2), askVol: +askVol.toFixed(2),
+      imbalance: +imbalance.toFixed(3),
+      bidWall: findWall(book.bids, 'bid'), askWall: findWall(book.asks, 'ask'),
+      ts: parseFloat(book.ts) || Date.now(),
+    };
+  } catch (_e) { feedStamp('orderbook', false, '例外：' + _e.message); return null; }
 }
 
 /* ═══════════════════ 主數據獲取函數 ══════════════════════ */
