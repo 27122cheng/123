@@ -12816,6 +12816,11 @@ let _cloudOk     = false;     // 雲端仲裁是否可用
 let _cloudReason = '';        // 不可用原因（設定頁顯示）
 let _cloudCheckedAt = 0;
 
+/* 主機心跳有效期：超過此時長沒更新＝那台裝置已關閉/斷網/閒置，
+   視同無主機，其他活著的裝置自動接手（不然主機一關全站停發）。
+   心跳每 ≤2 分鐘一次，10 分鐘的過期門檻有 5 倍裕度，不會誤判。 */
+const MASTER_STALE_MS = 10 * 60 * 1000;
+let _masterBeatAt = 0;
 async function refreshCloudMaster() {
   try {
     const r = await fetch('/api/master', { cache: 'no-store' });
@@ -12828,6 +12833,35 @@ async function refreshCloudMaster() {
     }
     _cloudOk = true; _cloudReason = '';
     _cloudMaster = j.master || null;
+    /* ── 自動仲裁（2026-08-26 使用者實案：ACH 同一分鐘收到兩台裝置各發
+       一次的進場訊號）：雲端仲裁原本要使用者手動按「設為訊號主機」才
+       生效——沒按過的話 isSignalMaster 對每台裝置都回 true，手機＋電腦
+       同時開就是兩台都在建單發訊。改為全自動：
+         · 無主機（或主機心跳過期 10 分鐘＝那台已關）→ 本裝置自動接手
+         · 本裝置是主機 → 每 2 分鐘 POST 一次心跳維持在任
+       兩台同時搶最多重複一輪（30 秒內收斂為單一主機）；手動按鈕仍在、
+       優先權不變（按了就是立即接手）。雲端未配置時完全維持單機模式。 */
+    try {
+      if (loadSettings().signalMaster !== false && !deviceIdleState().idle) {
+        const _now = Date.now();
+        const _never = !_cloudMaster || !_cloudMaster.id;
+        const _stale = _never || _now - (_cloudMaster.ts || 0) > MASTER_STALE_MS;
+        const _isMe = _cloudMaster && _cloudMaster.id === _TAB_ID;
+        if (_stale || (_isMe && _now - _masterBeatAt > 2 * 60 * 1000)) {
+          _masterBeatAt = _now;
+          const info = { id: _TAB_ID, ts: _now, ua: _deviceLabel() };
+          const pr = await fetch('/api/master', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: _TAB_ID, ua: info.ua }),
+          });
+          const pj = await pr.json().catch(() => null);
+          if (pj && pj.ok === true) {
+            _cloudMaster = pj.master || info;
+            if (_stale && !_isMe) console.info(`[master] 雲端無有效主機（${_never ? '從未宣告' : '前主機心跳過期'}），本裝置自動接手訊號主機`);
+          }
+        }
+      }
+    } catch(_hb) {}
   } catch(_e) {
     _cloudOk = false; _cloudReason = '無法連線至雲端仲裁服務';
     _cloudCheckedAt = Date.now();
@@ -12950,8 +12984,14 @@ function isSignalMaster() {
     //    價位與 SQ 全同、僅「今日預測」因兩台各自計算而差 3%）。
     //    原本此檢查排在最後，只要該裝置曾按過「設為訊號主機」，關掉開關也無效。
     if (loadSettings().signalMaster === false) return false;
-    // ② 雲端可用且已有人宣告 → 以雲端為準（跨裝置唯一主機）
-    if (_cloudOk && _cloudMaster && _cloudMaster.id) return _cloudMaster.id === _TAB_ID;
+    // ② 雲端可用且已有人宣告 → 以雲端為準（跨裝置唯一主機）。
+    //    主機心跳過期（>10 分鐘沒更新＝那台已關/斷網）視同無主機，
+    //    往下走單機判定，等 refreshCloudMaster 的自動接手補位——
+    //    否則主機裝置一關機，其餘活著的裝置全部 false，全站停發。
+    if (_cloudOk && _cloudMaster && _cloudMaster.id
+        && Date.now() - (_cloudMaster.ts || 0) < MASTER_STALE_MS) {
+      return _cloudMaster.id === _TAB_ID;
+    }
     // ③ 退回單機：只有宣告過的那個分頁是主機（僅能協調同瀏覽器的分頁）
     const m = getSignalMasterInfo();
     if (m) return m.id === _TAB_ID;
@@ -13850,7 +13890,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820g';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820h';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -29436,7 +29476,19 @@ function recordPairStrategyTrades(data) {
   if (!gate.pairs.length || !Array.isArray(data) || !data.length) return;
   const tlog = loadTradeLog();
   const btcChg = parseFloat(data.find(d => d.symbol === 'BTC/USDT')?.change24h);
+  /* 建單量上限（2026-08-26 使用者實案：驗證配對訊號連發轟炸）：
+     驗證策略路徑早有「每輪 2／24h 6」的上限，本路徑當時漏掉了——
+     配對晉升門檻（下界 55%）比驗證策略（75%）鬆，量的控制反而更不可少。
+     配額與驗證策略「共用」：兩邊都數帶 provenStrategy 欄位的單（配對單
+     也有此欄位），免風控分路徑合計 24 小時最多 6 筆、每輪最多 2 筆。 */
+  let _prThisScan = 0;
+  const _prDayCount = tlog.filter(t => Array.isArray(t.provenStrategy) && t.provenStrategy.length
+    && Date.now() - (t.timestamp || 0) < 24 * 3600e3).length;
   for (const coin of data) {
+    if (_prThisScan >= 2 || _prDayCount + _prThisScan >= 6) {
+      console.log('[pair] 驗證配對建單達量上限（免風控分路徑合計每輪 2／24h 6），其餘候選留待下輪');
+      break;
+    }
     if (!coin || coin.score === 50) continue;
     const isLong = coin.score > 50;
     const dir = isLong ? 'long' : 'short';
@@ -29484,6 +29536,7 @@ function recordPairStrategyTrades(data) {
     };
     if (!commitNewTrade(nt)) continue;
     tlog.splice(0, tlog.length, ...loadTradeLog());
+    _prThisScan++;
     try { showToast(`🧩 驗證配對：${coin.symbol} ${isLong ? '▲做多' : '▼做空'}（${hit[0]}＋${hit[1]}）`, 'success'); } catch(_t) {}
     try {
       const s = loadSettings();
