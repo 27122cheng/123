@@ -170,6 +170,25 @@ async function init() {
       + 'color:rgba(148,163,184,.65);pointer-events:none;font-family:monospace';
     document.body.appendChild(v);
   } catch(_e) {}
+  /* 版本混搭偵測（2026-08-25）：部署流程靠 ?v= 參數逼瀏覽器抓新 JS，但
+     HTML 與 JS 分開快取——快取只更新其中一邊時，裝置就跑在「新 HTML＋
+     舊 JS」（或反過來）的混搭狀態，行為半新半舊、極難排查（歷史上多次
+     「更新了但沒變化」的回報就是這個）。比對 index.html 引用的 ?v= 與
+     app.js 內建的 APP_VERSION，不一致就明講並提示強制重新整理。 */
+  try {
+    const _sc = document.querySelector('script[src*="app.js"]');
+    const _htmlVer = _sc ? new URL(_sc.src, location.href).searchParams.get('v') : null;
+    if (_htmlVer && _htmlVer !== APP_VERSION) {
+      console.warn(`[版本混搭] index.html 要求 app.js?v=${_htmlVer}，實際載入的是 v${APP_VERSION}——瀏覽器快取了其中一邊的舊檔`);
+      const w = document.createElement('div');
+      w.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b45309;color:#fff;'
+        + 'font-size:12px;padding:6px 12px;text-align:center;line-height:1.5';
+      w.innerHTML = `⚠️ 偵測到新舊版本混搭（頁面 ${_htmlVer} / 程式 ${APP_VERSION}），部分功能可能異常——`
+        + `請強制重新整理（電腦 Ctrl+Shift+R；手機請清除本站快取後重開）`
+        + `<span style="margin-left:10px;cursor:pointer;text-decoration:underline;pointer-events:auto" onclick="location.reload(true)">立即重新整理</span>`;
+      document.body.appendChild(w);
+    }
+  } catch(_e) {}
   state.settings = loadSettings();
   applySettingsToUI();
   animateLoadingBar();
@@ -13831,7 +13850,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820g';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -16899,9 +16918,14 @@ function sendCancelTelegramNotification(trade, reason) {
   if (!trade.telegramSent) {
     let _recentlyPushed = false;
     try {
-      const _ledger = JSON.parse(localStorage.getItem('csp_tg_signal_ledger') || '{}');
-      const _e = _ledger[`${trade.symbol}|${trade.direction}`];
-      _recentlyPushed = !!(_e && Date.now() - (_e.at || _e) < 60 * 60 * 1000);
+      /* ⚠️ 2026-08-25 修復：這裡原本把台帳當「物件」查（_ledger[`sym|dir`]），
+         但 tgSignalOnce 寫入的是「陣列」[{s,d,ts},…]——鍵查陣列永遠 undefined，
+         這條救援路徑（旗標沒存到但確實推播過→仍發取消通知）從上線起
+         一次都沒生效過。改用與寫入端一致的陣列掃描。 */
+      const _ledger = JSON.parse(localStorage.getItem(TG_SIGNAL_LEDGER_KEY) || '[]');
+      _recentlyPushed = Array.isArray(_ledger) && _ledger.some(e =>
+        e && e.s === trade.symbol && e.d === trade.direction
+          && Date.now() - (e.ts || 0) < 60 * 60 * 1000);
     } catch(_lg) {}
     if (!_recentlyPushed) return;
   }
@@ -25336,6 +25360,38 @@ function checkApiStatus() {
   } else {
     dot.className   = 'api-dot offline';
     txt.textContent = '演示模式（网络不可用）';
+  }
+}
+
+/* 設定頁「測試連接」按鈕（2026-08-25 補實作）：這顆按鈕從一開始就綁著
+   testApiConnection()，但函式從未存在——按下去只會在 console 拋
+   ReferenceError，畫面毫無反應，使用者以為按鈕壞了（它確實是壞的）。
+   實測本地 API /scan 可達性並即時更新連線狀態膠囊。 */
+async function testApiConnection() {
+  const dot = document.getElementById('api-dot');
+  const txt = document.getElementById('api-status-txt');
+  const raw = document.getElementById('s-api-url')?.value.trim() || 'http://127.0.0.1:8000/scan';
+  const url = raw.includes('/scan') ? raw : raw.replace(/\/$/, '') + '/scan';
+  if (txt) txt.textContent = '測試中…';
+  showToast('正在測試本地 API 連接…', 'info');
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    const apiKey = loadSettings().apiKey || '';
+    const r = await fetch(url, { signal: ctrl.signal,
+      headers: apiKey ? { 'Authorization': `Bearer ${apiKey}`, 'X-API-Key': apiKey } : {} });
+    clearTimeout(t);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    if (!Array.isArray(j)) throw new Error('回應不是陣列（非本站掃描 API 格式）');
+    if (dot) dot.className = 'api-dot online';
+    if (txt) txt.textContent = `已连接（本地 API，${j.length} 個幣種）`;
+    showToast(`✅ 本地 API 連接成功（回傳 ${j.length} 個幣種）`, 'success');
+  } catch (e) {
+    if (dot) dot.className = 'api-dot offline';
+    if (txt) txt.textContent = '本地 API 不可達（目前用幣安/OKX）';
+    const why = e.name === 'AbortError' ? '6 秒逾時' : e.message;
+    showToast(`本地 API 不可達（${why}）——不影響使用，掃描會走幣安/OKX 公開行情`, 'info');
   }
 }
 

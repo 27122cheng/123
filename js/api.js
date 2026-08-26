@@ -773,11 +773,11 @@ async function fetchAllFromBinance(timeframe) {
           dataSrc: 'binance',
           onOkx: _okxSymbolSet ? _okxSymbolSet.has(sym) : null,
           symbol: pair.s, trend: '中性', score: 50,
-          price:  fmtPrice(fallbackPrice),
+          price:  numPrice(fallbackPrice),
           rsi: 50, adx: 20,
-          ema20:  fmtPrice(fallbackPrice * 0.99),
-          ema50:  fmtPrice(fallbackPrice * 0.97),
-          ema200: fmtPrice(fallbackPrice * 0.90),
+          ema20:  numPrice(fallbackPrice * 0.99),
+          ema50:  numPrice(fallbackPrice * 0.97),
+          ema200: numPrice(fallbackPrice * 0.90),
           volume: 0, volumeStrength: '中',
           momentum: 0, strength: 20, macdHist: 0, change24h: 0,
           signal15m: null, dailySignal: null, weeklySignal: null,
@@ -817,9 +817,9 @@ function enrichData(raw) {
       symbol: item.symbol, trend, score, price, rsi, adx,
       volume:         item.volume         || 0,
       volumeStrength: item.volumeStrength ? mapVolZh(item.volumeStrength) : getVolStr(item.volume),
-      ema20:  item.ema20  || fmtPrice(price * 0.99),
-      ema50:  item.ema50  || fmtPrice(price * 0.97),
-      ema200: item.ema200 || fmtPrice(price * 0.90),
+      ema20:  item.ema20  || numPrice(price * 0.99),
+      ema50:  item.ema50  || numPrice(price * 0.97),
+      ema200: item.ema200 || numPrice(price * 0.90),
       momentum: item.momentum ?? parseFloat((rsi - 50).toFixed(1)),
       strength: item.strength ?? Math.round(adx),
       macdHist: item.macdHist ?? 0,
@@ -867,10 +867,10 @@ function generateMockData() {
     const adx      = parseFloat(randRange(8, 52).toFixed(1));
     return {
       symbol: pair.s, trend: scoreToTrend(score), score,
-      price:  fmtPrice(price), rsi, adx,
-      ema20:  fmtPrice(price * (0.978 + seededRand() * 0.044)),
-      ema50:  fmtPrice(price * (0.945 + seededRand() * 0.11)),
-      ema200: fmtPrice(price * (0.82  + seededRand() * 0.36)),
+      price:  numPrice(price), rsi, adx,
+      ema20:  numPrice(price * (0.978 + seededRand() * 0.044)),
+      ema50:  numPrice(price * (0.945 + seededRand() * 0.11)),
+      ema200: numPrice(price * (0.82  + seededRand() * 0.36)),
       volume: randInt(1_000_000, 2_000_000_000),
       volumeStrength: pick(['高','中','低']),
       momentum: parseFloat((rsi - 50).toFixed(1)),
@@ -879,7 +879,13 @@ function generateMockData() {
   });
 }
 
-function fmtPrice(p) {
+/* ⚠️ 2026-08-25 改名修復：本函式原名 fmtPrice，與 app.js 的顯示用
+   fmtPrice（回傳 "$1,234.56" 字串）同名。app.js 後載入，函式宣告覆蓋
+   全域——本檔所有呼叫點實際跑到的是字串版，price/ema 欄位被塞成
+   "$0.045" 之類的字串，下游 parseFloat("$…") 一律 NaN，K 線抓取失敗的
+   降級幣種因此整個壞掉（價格顯示 --、所有以 ema 計算的因子失效）。
+   改名 numPrice 明確表達「回傳數字」的語意，衝突解除。 */
+function numPrice(p) {
   if (p >= 1000)  return parseFloat(p.toFixed(2));
   if (p >= 1)     return parseFloat(p.toFixed(4));
   if (p >= 0.001) return parseFloat(p.toFixed(6));
