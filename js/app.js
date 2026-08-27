@@ -13890,7 +13890,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820h';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820i';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14215,12 +14215,19 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
 
   // ── 組合輸出（新格式）──
   // 順序：方向+幣種 → 時間 → KZ → 品質 → 風控分 → 價格 → [加倉] → 方向確認 → 本週/日預測 → 扣分項 → [風險] → [反轉]
+  // ── 同型態歷史證據（②資深分析師三件套）：這個訊號的同進場分支歷史上
+  //    值多少——樣本夠才顯示，期望值為負時直接標紅提醒，不粉飾 ──
+  const _evTg = setup.evStats;
+  const _evLine = (_evTg && _evTg.n >= 15)
+    ? `📚 同型態歷史（${_evTg.scope}）：${_evTg.n} 筆、勝率 ${_evTg.wr}%（下界 ${_evTg.wrLb}%）、` +
+      `期望 <b>${_evTg.exp > 0 ? '+' : ''}${_evTg.exp}R/筆</b>${_evTg.exp < 0 ? ' ⚠️ 此分支歷史為負，謹慎看待' : ''}\n`
+    : '';
   return `${_hdr}\n` +
     `<b>${_dirLabel}</b>：<b>${coin.symbol}</b>\n` +
     `⏰ ${_ts}\n` +
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
-    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` +
+    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _evLine +
     `\n${_priceLines}` + _sizeLine + `\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
@@ -14228,6 +14235,100 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     _revBlock +
     `\n${_tags}\n` +
     `🔗 <a href="${siteUrl}">查看 ${_sym} 詳細分析 →</a>`;
+}
+
+/* ══ 資深分析師三件套（2026-08-27）════════════════════════════════
+   ① 重大數據前後進場封鎖：CPI/FOMC 這類高影響數據公布前後的價格是
+      「事件擲硬幣」，結構、指標、訂單流全部暫時失效——專業交易檯的
+      基本紀律是這段時間不進新單（持倉照常管理）。站上早就有事件行事曆
+      與「N 小時後公布」的警示文案，但警示歸警示、建單歸建單，兩者
+      從未接通：數據公布前 5 分鐘照樣建單推播。
+   ② 逐訊號歷史證據：訊號當下就告訴你「同一條進場分支、同一種市場
+      狀態下，歷史上這種單值多少」——樣本、勝率（含 Wilson 下界）、
+      期望值。樣本不足就明說，不硬湊。
+   ③ 優勢衰退偵測：滾動 20 筆期望值對比前 20 筆——優勢消失時最貴的
+      錯誤是「沿用已失效的規則繼續下單」，這裡讓它第一時間現形。 */
+const EVENT_BLACKOUT_BEFORE_MIN = 45;   // 高影響數據公布前 45 分鐘停止新單
+const EVENT_BLACKOUT_AFTER_MIN  = 15;   // 公布後 15 分鐘（首波亂流）仍不進場
+let _evBlkCache = null, _evBlkCacheTs = 0;
+function econBlackout() {
+  const now = Date.now();
+  if (_evBlkCache && now - _evBlkCacheTs < 60 * 1000) return _evBlkCache;
+  let out = { blocked: false };
+  try {
+    for (const d of [0, 1]) {   // 今天＋明天（凌晨公布的數據要在前一晚就攔）
+      for (const ev of getUpcomingEconEvents(d)) {
+        if (ev.impact !== 'high' || !ev.eventTime) continue;
+        const t = ev.eventTime.getTime();
+        if (now >= t - EVENT_BLACKOUT_BEFORE_MIN * 60e3 && now <= t + EVENT_BLACKOUT_AFTER_MIN * 60e3) {
+          const m = Math.round((t - now) / 60e3);
+          out = { blocked: true, name: ev.name,
+            why: m >= 0 ? `${ev.name} ${m} 分鐘後公布` : `${ev.name} 剛公布 ${-m} 分鐘（首波亂流）` };
+          break;
+        }
+      }
+      if (out.blocked) break;
+    }
+  } catch(_e) {}
+  _evBlkCache = out; _evBlkCacheTs = now;
+  return out;
+}
+
+/* ② 逐訊號歷史證據：同進場分支 × 同市場狀態的實測樣本（60 秒快取）。
+   兩層退階：分支×狀態格 ≥15 筆用精確格；不足退到分支全體 ≥20 筆；
+   再不足回 null（訊號上不顯示，不用小樣本騙人）。 */
+let _sigEvCache = {}, _sigEvCacheTs = 0;
+function signalEvidence(entryTag) {
+  if (!entryTag) return null;
+  const now = Date.now();
+  const rgDir = (currentRegimeKey() || '').split('_')[0] || '';
+  const key = entryTag + '|' + rgDir;
+  if (now - _sigEvCacheTs > 60 * 1000) { _sigEvCache = {}; _sigEvCacheTs = now; }
+  if (key in _sigEvCache) return _sigEvCache[key];
+  let out = null;
+  try {
+    const closed = learnSamples().filter(t => t.status === 'closed'
+      && isFinite(parseFloat(t.pnlR)) && t.entryTag === entryTag);
+    const stat = (set, scope) => {
+      const w = set.filter(isWinTrade).length, l = set.filter(isLossTrade).length;
+      if (!(w + l)) return null;
+      return { n: set.length, scope,
+        wr: +(w / (w + l) * 100).toFixed(0),
+        wrLb: +(wilsonLB(w, w + l) * 100).toFixed(0),
+        exp: +(set.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / set.length).toFixed(2) };
+    };
+    const cellSet = rgDir ? closed.filter(t => (String(t.regime || '')).split('_')[0] === rgDir) : [];
+    if (cellSet.length >= 15) out = stat(cellSet, '同分支×同市場狀態');
+    else if (closed.length >= 20) out = stat(closed, '同分支全狀態');
+  } catch(_e) {}
+  _sigEvCache[key] = out;
+  return out;
+}
+
+/* ③ 優勢衰退偵測：近 20 筆 vs 前 20 筆的期望值滾動對比（60 秒快取）。
+   只在「之前確實有優勢（≥+0.05R/筆）而近期顯著轉差（掉 ≥0.25R）」時
+   告警——沒有優勢過的系統談不上衰退，波動內的小幅下滑也不喊狼來了。 */
+let _edgeDecayCache = null, _edgeDecayCacheTs = 0;
+function edgeDecayCheck() {
+  const now = Date.now();
+  if (_edgeDecayCache && now - _edgeDecayCacheTs < 60 * 1000) return _edgeDecayCache;
+  let out = { ready: false, why: '' };
+  try {
+    const closed = learnSamples().filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)))
+      .sort((a, b) => (parseFloat(a.exitTime) || 0) - (parseFloat(b.exitTime) || 0));
+    if (closed.length < 40) {
+      out = { ready: false, why: `已完結樣本 ${closed.length}/40` };
+    } else {
+      const expOf = set => set.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / set.length;
+      const lastExp = +expOf(closed.slice(-20)).toFixed(2);
+      const prevExp = +expOf(closed.slice(-40, -20)).toFixed(2);
+      out = { ready: true, lastExp, prevExp,
+        decayed:   prevExp >= 0.05 && lastExp <= prevExp - 0.25,
+        improving: lastExp >= prevExp + 0.25 && lastExp > 0 };
+    }
+  } catch(_e) {}
+  _edgeDecayCache = out; _edgeDecayCacheTs = now;
+  return out;
 }
 
 /* ── 從掃描數據自動記錄交易信號 ──────────────────────────────── */
@@ -14740,6 +14841,12 @@ async function recordSignalsFromScan(data) {
 
     // BTC 急波動保護：暫停山寨幣新單
     if (btcVolGuardBlocks(coin.symbol) && _no('BTC 急波動保護')) continue;
+
+    // 高影響數據前後封鎖：事件前 45 分鐘～後 15 分鐘不進新單（持倉照常管理）。
+    // 這段時間的價格是事件擲硬幣，結構/指標/訂單流全部暫時失效——
+    // 行事曆警示早就有，但警示歸警示、建單歸建單，這裡才是真正接通的地方。
+    { const _evB = econBlackout();
+      if (_evB.blocked && _no(`高影響數據封鎖（${_evB.why}）`)) continue; }
 
     // 今日 AI 反向 → 無論信心度一律封鎖；週預測信心<70 僅作參考
     if (isLong  && (tBias === 'bear' || tBias === 'strong_bear') && _no('今日大方向偏空，擋多')) continue;
@@ -15480,6 +15587,7 @@ async function recordSignalsFromScan(data) {
       } catch(_e) { return []; } })(),
       // 進場邏輯別（哪一條分支決定了這筆單的進場／止損／止盈）
       entryTag: setup.entryTag || null, slTag: setup.slTag || null,
+      evStats: signalEvidence(setup.entryTag) || null,   // 建單當下的同型態歷史證據（樣本不足為 null）
       tp1Tag: setup.tp1Tag || null, tp2Tag: setup.tp2Tag || null,
       // 結構階梯：加倉位與加倉後止損都釘在結構上，持倉監控直接用這兩個值
       addLevel: setup.addLevel ?? null,
@@ -21012,6 +21120,14 @@ function buildCoachCard() {
       if (bt.dirN >= 8 && bt.dirUb != null && bt.dirUb < 45)
         items.push({ pri: 2, icon: '🔮', auto: true, text: `今日方向預測近 ${bt.dirN} 筆僅命中 ${bt.dirHit} 筆（上界 ${bt.dirUb}%）——信心上限保護已生效，預測權重學習持續修正中` });
     } catch(_e) {}
+    // ⑦ 優勢衰退偵測（資深分析師三件套③）：優勢消失時最貴的錯誤是繼續照舊下單
+    try {
+      const ed = edgeDecayCheck();
+      if (ed.ready && ed.decayed)
+        items.push({ pri: 0, icon: '📉', auto: null, text: `優勢衰退警示：前 20 筆期望 ${ed.prevExp > 0 ? '+' : ''}${ed.prevExp}R/筆 → 近 20 筆 ${ed.lastExp > 0 ? '+' : ''}${ed.lastExp}R/筆——市場狀態可能已轉變，先查「模式×市場狀態矩陣」找哪條分支失效，別急著加碼攤平` });
+      else if (ed.ready && ed.improving)
+        items.push({ pri: 5, icon: '📈', auto: null, text: `優勢回升：前 20 筆 ${ed.prevExp > 0 ? '+' : ''}${ed.prevExp}R/筆 → 近 20 筆 +${ed.lastExp}R/筆——維持現行規則，不要在順風期改參數` });
+    } catch(_e) {}
     if (!items.length)
       return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:12px;font-size:0.8rem">
         <div style="font-weight:700;margin-bottom:4px">🧭 綜合行動建議</div>
@@ -21762,6 +21878,7 @@ const LEARN_KEEP_FIELDS = [
   'entryKillZone', 'entryVolBreakout', 'immediateStop', 'slReversal',
   'entryH1Aligned', 'entryWeeklyAgainst', 'entryBBWalkingBear', 'entryBBWalkingBull',
   'entryTag', 'slTag', 'tp1Tag', 'tp2Tag',   // 進場邏輯別，供逐分支績效分析
+  'evStats',                                 // 建單當下宣稱的同型態歷史證據（事後可對帳訊號有沒有說謊）
   'entryReasonCodes',                        // 進場理由（正規化代碼），供逐理由績效分析
   'kz', 'entryTime',                         // 時段勝率學習＋秒損統計（成交→止損耗時）
   'entryTags', 'pairHit', 'pairStrategy',    // 條件配對研究所的實倉樣本（封存剝掉＝配對池斷糧）
@@ -27090,6 +27207,10 @@ async function recordScalpSignals(data) {
     //      回歸家族：方向由型態決定（兩個方向都評估），需 ADX ≤ revertAdxMax
     //    原本只有順勢一種，等於盤整時段完全不出手——那是交易量的天花板。
     _scalpReject._scanned = data.length;
+    // 高影響數據前後封鎖：快速單是 5m 動能邏輯，事件亂流對它的殺傷力
+    // 比一般單更大（假突破/插針全是它的進場型態）。事件窗內整輪不建新單。
+    { const _evBS = econBlackout();
+      if (_evBS.blocked) { _sr(`高影響數據封鎖（${_evBS.why}）`); return; } }
     const cands = [];
     const revertOn = SCALP_CFG.enableRange || SCALP_CFG.enableVwapRev || SCALP_CFG.enableExhaust;
     for (const coin of data) {
