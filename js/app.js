@@ -13963,7 +13963,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820j';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820k';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -22996,7 +22996,7 @@ function renderReportPage(year, view, month) {
 
   const viewEl = document.getElementById('rpt-view-content');
   if (view === 'year') {
-    viewEl.innerHTML = _rptBuildYearView(yearTrades, year);
+    viewEl.innerHTML = _rptEquityCard(yearTrades, year) + _rptBuildYearView(yearTrades, year);
   } else {
     viewEl.innerHTML = _rptBuildMonthView(yearTrades, year, month);
   }
@@ -23012,6 +23012,71 @@ function renderReportPage(year, view, month) {
    改為與交易紀錄頁同一口徑：勝率 = 勝 ÷（勝＋負），平手不計入分母，
    並套用 effectiveOutcome。原本那個數字改名為「止盈二達成率」另外呈現——
    它本身是有用的（看止盈二設得會不會太遠），只是不該叫勝率。 */
+/* ── 權益曲線（2026-08-27，頂級用戶動線）────────────────────────
+   看績效的第一眼是曲線的「形狀」——穩定上行、鋸齒橫盤、還是一路下坡，
+   數字表格是第二眼。純 SVG 折線：零軸虛線＋最深回撤段紅色底＋終點值，
+   O(n) 算術、無外部函式庫（規則①：不算新東西，只畫已有的數字）。 */
+function _equityCurveSvg(rs, opts = {}) {
+  if (!Array.isArray(rs) || rs.length < 5) return '';
+  const W = opts.w || 680, H = opts.h || 150, PAD = 10;
+  let cum = 0; const pts = [0];
+  for (const r of rs) { cum += (parseFloat(r) || 0); pts.push(cum); }
+  let peak = 0, peakI = 0, maxDD = 0, ddFrom = 0, ddTo = 0;
+  pts.forEach((v, i) => {
+    if (v > peak) { peak = v; peakI = i; }
+    if (peak - v > maxDD) { maxDD = peak - v; ddFrom = peakI; ddTo = i; }
+  });
+  const min = Math.min(...pts), max = Math.max(...pts), span = (max - min) || 1;
+  const x = i => PAD + i / (pts.length - 1) * (W - PAD * 2);
+  const y = v => PAD + (max - v) / span * (H - PAD * 2);
+  const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const endClr = cum >= 0 ? '#22c55e' : '#ef4444';
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" preserveAspectRatio="none">
+    ${maxDD > 0.3 ? `<rect x="${x(ddFrom).toFixed(1)}" y="${PAD}" width="${Math.max(2, x(ddTo) - x(ddFrom)).toFixed(1)}" height="${H - PAD * 2}" fill="rgba(239,68,68,.08)"/>` : ''}
+    <line x1="${PAD}" y1="${y(0).toFixed(1)}" x2="${W - PAD}" y2="${y(0).toFixed(1)}" stroke="rgba(148,163,184,.35)" stroke-dasharray="4 4" stroke-width="1"/>
+    <polyline points="${line}" fill="none" stroke="${endClr}" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    <circle cx="${x(pts.length - 1).toFixed(1)}" cy="${y(cum).toFixed(1)}" r="3.5" fill="${endClr}"/>
+  </svg>`;
+}
+/* 報表頁權益曲線卡：一般單（年度範圍）＋快速單（全歷史，含封存） */
+function _rptEquityCard(yearTrades, year) {
+  try {
+    const mainRs = yearTrades.map(t => parseFloat(t.pnlR) || 0);
+    const mainCum = +mainRs.reduce((a, b) => a + b, 0).toFixed(1);
+    let peak = 0, cum = 0, maxDD = 0;
+    for (const r of mainRs) { cum += r; if (cum > peak) peak = cum; if (peak - cum > maxDD) maxDD = peak - cum; }
+    const mainSvg = _equityCurveSvg(mainRs);
+    // 快速單：目前紀錄 ∪ 封存，依平倉時間排序
+    let scalpSvg = '', scalpCum = null, scalpN = 0;
+    try {
+      const m = new Map();
+      for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
+      for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t);
+      const rows = [...m.values()].filter(t => isFinite(parseFloat(t.pnlR)))
+        .sort((a, b) => (parseFloat(a.exitTime) || 0) - (parseFloat(b.exitTime) || 0));
+      scalpN = rows.length;
+      const rs = rows.map(t => parseFloat(t.pnlR));
+      scalpCum = +rs.reduce((a, b) => a + b, 0).toFixed(1);
+      scalpSvg = _equityCurveSvg(rs, { h: 110 });
+    } catch(_e) {}
+    if (!mainSvg && !scalpSvg) return '';
+    const seg = (title, svg, cumR, n, note) => svg ? `
+      <div style="margin-bottom:${title.includes('快速') ? '0' : '14px'}">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+          <span style="font-size:0.78rem;font-weight:600;color:var(--text2)">${title}</span>
+          <span style="font-size:0.74rem;color:${cumR >= 0 ? '#22c55e' : '#ef4444'};font-weight:700">${cumR >= 0 ? '+' : ''}${cumR.toFixed(1)}R<span style="color:var(--text3);font-weight:400">（${n} 筆${note || ''}）</span></span>
+        </div>${svg}
+      </div>` : '';
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px">
+      <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px">📈 權益曲線（累計 R）
+        <span style="font-weight:400;font-size:0.7rem;color:var(--text3);margin-left:6px">紅底＝最深回撤段；虛線＝損益兩平線</span></div>
+      ${seg(`一般單（${year} 年）`, mainSvg, mainCum, mainRs.length, `，最大回撤 -${maxDD.toFixed(1)}R`)}
+      ${seg('快速單（全歷史，含封存）', scalpSvg, scalpCum, scalpN)}
+      ${!mainSvg ? `<div style="font-size:0.74rem;color:var(--text3)">一般單已完結樣本 ${mainRs.length}/5 筆，曲線待累積</div>` : ''}
+    </div>`;
+  } catch(_e) { return ''; }
+}
+
 function _rptBuildYearView(yearTrades, year) {
   const wins    = yearTrades.filter(isWinTrade);
   const losses  = yearTrades.filter(isLossTrade);
