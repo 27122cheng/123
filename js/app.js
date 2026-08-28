@@ -13963,7 +13963,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820l';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820m';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14988,6 +14988,17 @@ async function recordSignalsFromScan(data) {
     // R/R 門檻：多空皆 ≥1.3
     const _scanRR = setup.rr1 || 0;
     if (parseFloat(_scanRR) < 1.3 && _no('止盈一 R/R < 1.3')) continue;
+
+    /* 弱佐證進場抬標（2026-08-28 高勝率×大盈虧比指令）：進場點合流
+       佐證分 < 3（孤零零一條均線貼合、無型態無合流）的單，歷史上就是
+       勝率最低的一群——不硬擋（規則④：很多正常時段只有均線候選），
+       但勝率不夠就必須用賠率補：R/R 另需 ≥ 自適應門檻 + 0.3。
+       佐證充足（≥3，型態或多重合流）的單維持原門檻。 */
+    {
+      const _weakNeed = Math.max(1.3, _scanGates.minRR || 1.2) + 0.3;
+      if ((setup.entryScore || 0) < 3 && parseFloat(_scanRR) < _weakNeed
+          && _no(`弱佐證進場（合流分 ${setup.entryScore ?? 0} < 3）需 R/R ≥ ${_weakNeed.toFixed(1)}，實際 ${_scanRR}`)) continue;
+    }
 
     /* 同型態歷史負期望硬閘門（2026-08-28 勝率調查 v2）：signalEvidence
        已經會在訊號上標紅「此分支歷史為負」，但標紅歸標紅、建單歸建單——
@@ -24623,7 +24634,7 @@ function computeSimpleSetup(coin, isLong) {
   //    ＋型態基礎分（型態本身也是證據）＋距現價的可達性微調，取最高分。
   //    與止損止盈的新哲學一致：位置由佐證強度決定，不由排序決定。
   // ═══════════════════════════════════════════════
-  let entry, _entryTag = '', _entryEvidence = [];
+  let entry, _entryTag = '', _entryEvidence = [], _entryScore = 0;
   {
     const _cands = [];
     const _push = (v, tag, base) => {
@@ -24662,12 +24673,13 @@ function computeSimpleSetup(coin, isLong) {
     } catch(_e) {}
     _pool.sort((a, b) => b.score - a.score || Math.abs(a.v - price) - Math.abs(b.v - price));
     const _best = _pool[0];
-    if (_best) { entry = _best.v; _entryTag = _best.tag; _entryEvidence = _best.ev; }
+    if (_best) { entry = _best.v; _entryTag = _best.tag; _entryEvidence = _best.ev; _entryScore = _best.score; }
     else {
       // 全部候選都離現價過遠 → 退回 EMA20 貼合（維持舊行為，不讓它變成無單）
       const _emaFactor = _kzHigh ? 1.001 : 1.002;
       entry = isLong ? Math.min(price, ema20 * _emaFactor) : Math.max(price, ema20 * (2 - _emaFactor));
       _entryTag = 'ema20';
+      _entryScore = 0;   // 後備進場＝零佐證
     }
   }
 
@@ -25370,6 +25382,7 @@ function computeSimpleSetup(coin, isLong) {
        於是「哪一種進場邏輯真的會賺」這個問題根本問不出口，只能整包看勝率。
        記下來之後，實驗室就能逐條分支比較期望值。 */
     entryTag: _entryTag, slTag: _slTag, tp1Tag: _tp1Tag, tp2Tag: _tp2Tag,
+    entryScore: +(_entryScore || 0).toFixed(1),   // 進場點合流佐證分（弱佐證抬標用）
     addLevel: _ladderOpp[0] != null
       ? +(isLong ? _ladderOpp[0] + atr * _atrBuf : _ladderOpp[0] - atr * _atrBuf).toFixed(8) : null,
     addSl: (_ladder[0] != null && _ladder.length >= 2)
@@ -26266,8 +26279,8 @@ const SCALP_CFG = {
   maxHoldHardMin: 180, // 延長的硬上限（快進快出仍不留隔夜倉）
   minAdx:      12,     // 最低 ADX（20→12，只排除完全無方向的死盤）
   cooldownMin: 15,     // 同幣種同方向冷卻（30→15 分）
-  maxActive:   8,      // 同時最多持有筆數
-  maxSameDir:  5,      // 同方向持倉上限（避免全同向被大盤一次掃掉）
+  maxActive:   6,      // 同時最多持有筆數（8→6，2026-08-28 回撤最小化指令：同時在市的最壞情況從 4.8% 壓到 3.6% 權益）
+  maxSameDir:  4,      // 同方向持倉上限 5→4（同向持倉高度連動，是回撤的頭號乘數）
   maxCandidates: 40,   // 每輪最多評估幾個候選（決定 5m K 線抓取量）
   // ── 量化資金管理（把「訊號」變成可機械執行的交易）──────────────
   equity:              1000,  // 模擬帳戶權益（USDT）——僅供計算部位大小
@@ -26278,9 +26291,9 @@ const SCALP_CFG = {
   //    單一標的看錯的殺傷力下降 → 交易數增加的同時回撤反而更平順。
   riskPerTradePct:     0.6,   // 單筆風險：權益的 %（固定分數法）
   maxPortfolioRiskPct: 4.5,   // 同時在市的總風險上限（未實現風險加總）→ 可容納 7 筆
-  dailyLossLimitPct:   5.0,   // 單日虧損上限 → 觸及當日停止開倉
+  dailyLossLimitPct:   3.0,   // 單日虧損上限 5→3%（≈5 筆全虧即停；壞日子的長尾是回撤主要來源，prop desk 標準紀律）
                               //（必須大於 maxPortfolioRiskPct，否則一次同向逆風就必定熔斷）
-  maxDrawdownPct:      15.0,  // 最大回撤上限 → 觸及全面停止開倉
+  maxDrawdownPct:      10.0,  // 最大回撤上限 15→10%（回撤最小化指令；軟熔斷梯度會在 6%/8% 先減碼，觸頂機率低）
   minNotional:         5,     // 最小名目價值（低於此不下單，避免碎單）
   // ── 手續費守門（快進快出止損很近，手續費在 R 的尺度上非常吃重）──────
   //    手續費以名目價值計，損益以 R 計，兩者的換算是 0.001 ÷ (止損距離/價格)：
@@ -26309,8 +26322,9 @@ const SCALP_CFG = {
   // 熔斷：原本單日上限 3.0% 低於組合風險上限 4.5%，代表「一次正常的同向逆風」
   // 就必定觸發熔斷——熔斷應該是在真正的壞日子才啟動，不是每天例行公事。
   // 另外加上「軟熔斷」：接近上限先減碼，而不是二元的全開／全關。
-  dailySoftPct:     2.5,   // 當日虧損達此值 → 部位減半（仍可交易）
-  ddSoftPct:        8.0,   // 回撤達此值 → 部位 ×0.6
+  dailySoftPct:     2.0,   // 當日虧損達此值 → 部位減半（2.5→2.0，提早進入防守）
+  ddSoftPct:        6.0,   // 回撤達此值 → 部位 ×0.6（8→6，配合第二檔 8%→×0.45 形成梯度）
+  ddSoft2Pct:       8.0,   // 回撤第二檔 → 部位 ×0.45（熔斷前的最後防守帶，夾在 sizeMinMult 之上）
   autoPruneModes:   true,  // 用實測期望值自動停用表現差的模式（附探索額度，可翻身）
   pruneMinN:        20,    // 至少幾筆已完結才有資格被停用（樣本不足不下結論）
   pruneWrLbFloor:   38,    // 勝率 Wilson 下界低於此且期望值為負 → 停用
@@ -26848,7 +26862,12 @@ function scalpRiskMult(mode, riskScore) {
       why.push(`當日已虧 ${a.todayPnlPct}%（軟熔斷 -${cfg.dailySoftPct}%）→ ×0.5`);
       m *= 0.5;
     }
-    if (a.ddNow >= cfg.ddSoftPct) {
+    if (a.ddNow >= (cfg.ddSoft2Pct || 8)) {
+      // 第二檔：熔斷（10%）前的最後防守帶——回撤越深下注越小，
+      // 數學上直接壓扁回撤曲線的尾部（權益曲線式部位管理）
+      why.push(`回撤 ${a.ddNow}%（第二檔 ${cfg.ddSoft2Pct || 8}%）→ ×0.45`);
+      m *= 0.45;
+    } else if (a.ddNow >= cfg.ddSoftPct) {
       why.push(`回撤 ${a.ddNow}%（軟熔斷 ${cfg.ddSoftPct}%）→ ×0.6`);
       m *= 0.6;
     }
