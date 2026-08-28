@@ -500,6 +500,7 @@ function startRefreshCycle() {
     await _pt('預測快照',       () => forecastSnapshot(data));
     await _pt('預測結算',       () => forecastSettle(data));
     await _pt('預測成績單',     () => biasTrackUpdate());   // 今日/本週方向預測記帳＋結算
+    await _pt('操作環境卡',     () => renderTradeEnvCard()); // 儀表板一眼決策卡（讀快取，即時反映封鎖/熔斷）
     /* ── 重分析輪替（2026-08-15，匯入備份後崩潰的根治）──────────────
        匯入備份＝樣本數一次跳到上千筆，而配對分析／扣分審查／確信度校準／
        沙盒治理都是「全量掃過所有樣本」的重運算。它們各自都有時間節流
@@ -8313,6 +8314,77 @@ function renderErDashboardWidget() {
     ${_erPatHtml}`;
 }
 
+/* ══ 今日操作環境卡（2026-08-27，頂級用戶動線）═══════════════════
+   使用者開站的第一個問題不是「哪個幣看漲」，而是「今天適不適合下單」。
+   答案的原料站上全都有——事件封鎖、連虧熔斷、優勢衰退、市場狀態、
+   今日預測、資料鮮度、掃描漏斗——但散在七個地方，沒人幫他綜合成
+   一句話。這張卡做的就是那句話：🔴 暫停／🟡 謹慎／🟢 正常，
+   附依據與「今天為什麼沒訊號」的即時答案。
+   全部讀 60 秒級快取（規則①：渲染路徑零新分析）。 */
+function buildTradeEnvCard() {
+  const stop = [], caution = [];
+  // ── 硬停級 ──
+  try { const evB = econBlackout();
+    if (evB.blocked) stop.push(`⏰ 高影響數據封鎖：${evB.why}——事件前後的價格是擲硬幣，兩套系統都暫停新單`); } catch(_e) {}
+  try { const ls = lossStreakGuard();
+    if (ls && ls.blocked) stop.push(ls.reason || '🛑 連續止損熔斷中，暫停一切新單'); } catch(_e) {}
+  // ── 謹慎級 ──
+  try { const ed = edgeDecayCheck();
+    if (ed.ready && ed.decayed) caution.push(`📉 優勢衰退：前 20 筆 ${ed.prevExp > 0 ? '+' : ''}${ed.prevExp}R/筆 → 近 20 筆 ${ed.lastExp > 0 ? '+' : ''}${ed.lastExp}R/筆——縮小部位，查交易記錄頁的矩陣面板`); } catch(_e) {}
+  try { const stale = feedHealth().filter(r => r.state === 'stale').length;
+    if (stale >= 2) caution.push(`📡 ${stale} 個資料源已過期——依過期數據做的判讀不可信，見設定頁鮮度面板`); } catch(_e) {}
+  try { const bt = biasTrackStats('d');
+    if (bt.dirN >= 8 && bt.dirUb != null && bt.dirUb < 45)
+      caution.push(`🔮 今日預測近期命中率劣於擲硬幣（上界 ${bt.dirUb}%）——方向參考價值暫時很低`); } catch(_e) {}
+  // ── 環境描述（不進 verdict，純資訊）──
+  let rgLabel = '—', biasLabel = '—';
+  try { const rg = _regimeCache; if (rg && Date.now() - rg.at < 15 * 60e3) rgLabel = rg.label; } catch(_e) {}
+  try {
+    const lk = JSON.parse(localStorage.getItem('csp_today_bias_lock') || 'null');
+    if (lk && lk.day === new Date().toISOString().slice(0, 10))
+      biasLabel = ({ bull: '▲ 偏多', slight_bull: '▲ 小幅偏多', neutral: '◆ 中性',
+                     slight_bear: '▼ 小幅偏空', bear: '▼ 偏空' })[lk.bias] || '—';
+  } catch(_e) {}
+  // ── 今日訊號統計（回答「為什麼沒訊號」）──
+  let sigLine = '';
+  try {
+    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+    const built = loadTradeLog().filter(t => (t.timestamp || 0) >= dayStart.getTime()).length;
+    const f = JSON.parse(localStorage.getItem('csp_scan_funnel') || 'null');
+    const topRej = f && f.rejects
+      ? Object.entries(f.rejects).sort((a, b) => b[1] - a[1]).slice(0, 2)
+        .map(([k, v]) => `${k}×${v}`).join('、')
+      : '';
+    sigLine = `今日一般單建單 <b>${built}</b> 筆` +
+      (f ? `；最近一輪掃描 ${f.candidates ?? '—'} 個候選、建 ${f.built ?? 0} 筆` : '') +
+      (topRej ? `，主要攔截：${topRej}` : '');
+  } catch(_e) {}
+  const verdict = stop.length
+    ? { icon: '🔴', label: '建議暫停進場', clr: '#ef4444', bg: 'rgba(239,68,68,.08)' }
+    : caution.length
+      ? { icon: '🟡', label: '謹慎操作（縮小部位）', clr: '#f59e0b', bg: 'rgba(245,158,11,.07)' }
+      : { icon: '🟢', label: '環境正常，按系統訊號操作', clr: '#22c55e', bg: 'rgba(34,197,94,.06)' };
+  const rows = [...stop, ...caution];
+  return `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <span style="font-size:0.82rem;font-weight:700;color:var(--text2)">🧭 今日操作環境</span>
+      <span style="font-size:0.7rem;color:var(--text3)">每輪掃描自動更新</span>
+    </div>
+    <div style="background:${verdict.bg};border:1px solid ${verdict.clr}44;border-radius:9px;padding:9px 13px;margin-bottom:8px">
+      <span style="font-size:1rem;font-weight:800;color:${verdict.clr}">${verdict.icon} ${verdict.label}</span>
+    </div>
+    ${rows.length ? `<div style="font-size:0.76rem;line-height:1.8;color:var(--text2);margin-bottom:7px">${rows.map(r => `<div>• ${r}</div>`).join('')}</div>` : ''}
+    <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.75rem;color:var(--text2);margin-bottom:5px">
+      <span>市場狀態：<b>${rgLabel}</b></span>
+      <span>今日預測：<b>${biasLabel}</b></span>
+    </div>
+    ${sigLine ? `<div style="font-size:0.72rem;color:var(--text3)">${sigLine}</div>` : ''}
+    <div style="font-size:0.68rem;color:var(--text3);margin-top:5px">依據：事件封鎖／連虧熔斷（硬停）＋優勢衰退／資料鮮度／預測命中率（謹慎）——全部來自站內實測狀態，非主觀判斷</div>`;
+}
+function renderTradeEnvCard() {
+  const el = document.getElementById('trade-env-body');
+  if (el) { try { el.innerHTML = buildTradeEnvCard(); } catch(_e) {} }
+}
+
 async function loadDashboardMacro() {
   const el = document.getElementById('market-outlook-body');
   let fg = null, global = null;
@@ -8323,6 +8395,7 @@ async function loadDashboardMacro() {
     if (el) el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
   }
   // 各卡互相獨立：一張炸掉不准拖死另一張
+  try { renderTradeEnvCard(); } catch(e) { console.warn('[trade-env]', e); }
   try { renderErDashboardWidget(); } catch(e) { console.warn('[er-widget]', e); }
   try { loadDashboardNews(); } catch(e) { console.warn('[news-widget]', e); }
 }
@@ -13890,7 +13963,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820i';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820j';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -19461,6 +19534,9 @@ function renderPositionsPage() {
   // 計算整體未實現統計
   let totalUnrealR = 0, totalRisk = 0, hasPrice = 0;
   let profitCount = 0, lossCount = 0, profitTotalR = 0, lossTotalR = 0;
+  // 最壞情況曝險（頂級用戶第一個風險問題：「現在全部止損我會虧多少」）：
+  // 開倉單＝現價到止損的剩餘距離（R）；掛單＝進場即止損的 1R
+  let worstOpenR = 0;
   const cards = open.map(t => {
     const cur = parseFloat((state.data.find(d => d.symbol === t.symbol) || {}).price) || 0;
     const entry   = t.entry   || 0;
@@ -19480,6 +19556,9 @@ function renderPositionsPage() {
       priceClr     = unrealR > 0 ? 'var(--bull)' : unrealR < 0 ? 'var(--bear)' : 'var(--text2)';
       totalUnrealR += unrealR;
       totalRisk    += risk;
+      // 相對進場成本的真實虧損：止損還在成本價之外才有（已移保本＝0，
+      // 移進獲利區＝0——那是少賺不是虧）。浮盈回吐看「合計未實現」卡即可
+      worstOpenR   += Math.max(0, (isLong ? entry - sl : sl - entry) / risk);
       hasPrice++;
       if (unrealR > 0) { profitCount++; profitTotalR += unrealR; }
       else             { lossCount++;   lossTotalR  += unrealR; }
@@ -19700,6 +19779,19 @@ function renderPositionsPage() {
         </div>`;
       })()}
 
+      ${(() => {
+        // 系統下一步：頂級用戶要在機器動手「之前」知道它會做什麼，
+        // 而不是收到出場通知才發現。全部描述既有自動化，不新增行為。
+        const steps = [];
+        if (!t.tp1Hit) {
+          steps.push(`觸及止盈一 $${fmtPrice(_tpx(tp1))} → 自動減倉並把止損移到成本價`);
+          if (cur && unrealR != null && unrealR < 0.3) steps.push(`止損 $${fmtPrice(_tpx(sl))} 維持結構釘點不動`);
+        } else {
+          steps.push(`移動停利中：止損隨峰值上移（鎖獲利、地板為成本價），觸及即獲利了結`);
+        }
+        if (isLongTermOpen) steps.push('長線單：依加倉計畫分批加倉，週線/日線反向才降級');
+        return `<div style="font-size:0.74rem;color:var(--text2);background:rgba(99,102,241,.06);border-radius:7px;padding:6px 10px;margin:8px 0;line-height:1.7">🤖 <b>系統下一步</b>：${steps.join('；')}</div>`;
+      })()}
       <div class="pos-reasons">
         <div class="pos-reasons-lbl">📍 進場理由</div>
         ${reasons.length ? reasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('') : '<span style="color:var(--text3);font-size:0.78rem">無詳細原因</span>'}
@@ -19742,6 +19834,22 @@ function renderPositionsPage() {
         <div class="pos-sum-val" style="color:var(--bull)">${open.filter(t=>t.tp1Hit).length}</div>
         <div class="pos-sum-lbl">止盈一已達</div>
       </div>
+      ${(() => {
+        // 最壞情況曝險卡：開倉剩餘風險＋掛單 1R——回答「全部止損會虧多少」
+        const worst = worstOpenR + pending.length;
+        const wClr = worst >= 4 ? '#ef4444' : worst >= 2.5 ? '#f59e0b' : 'var(--text2)';
+        const nL = [...open, ...pending].filter(t => t.direction === 'long').length;
+        const nS = [...open, ...pending].filter(t => t.direction === 'short').length;
+        const oneSided = (nL + nS) >= 3 && (nL === 0 || nS === 0);
+        return `<div class="pos-sum-card" title="開倉單＝現價到止損的剩餘距離；掛單＝進場即止損的 1R。止損移過保本的單計 0——這是此刻的真實下檔，不是進場時的名目風險。">
+        <div class="pos-sum-val" style="color:${wClr}">-${worst.toFixed(1)}R</div>
+        <div class="pos-sum-lbl">最壞情況（全數止損）</div>
+      </div>
+      <div class="pos-sum-card" title="開倉＋掛單的多空分佈。全部同向時彼此高度連動，實質上是一筆放大的部位——會一起賺也會一起被掃。">
+        <div class="pos-sum-val">${nL} 多 / ${nS} 空${oneSided ? ' <span style="font-size:0.7rem;color:#f59e0b">⚠️ 全同向</span>' : ''}</div>
+        <div class="pos-sum-lbl">方向分佈</div>
+      </div>`;
+      })()}
     </div>
 
     <div class="pos-tabs">
@@ -19822,6 +19930,8 @@ function renderPositionsPage() {
                 ` : ''}
               </div>
               ${isLongTermCard && t.aiScaleReason ? `<div style="margin-top:6px;font-size:0.72rem;color:#a78bfa;padding:4px 8px;background:rgba(167,139,250,.08);border-radius:6px">🤖 ${t.aiScaleReason}</div>` : ''}
+              <div style="font-size:0.72rem;color:var(--text3);background:rgba(255,255,255,.03);border-radius:7px;padding:6px 10px;margin-top:8px;line-height:1.7">
+                🤖 <b style="color:var(--text2)">自動撤單條件</b>：訊號品質跌破門檻（每輪覆核）／趨勢反轉／價格未進場先破止損／未回踩直接飛越止盈——任一成立即撤單並通知，撤單記錄保留在交易記錄頁</div>
               ${pendReasons.length ? `<div class="pos-reasons" style="margin-top:8px"><div class="pos-reasons-lbl">📍 進場理由</div>${pendReasons.map(r => `<span class="pos-reason-chip">${r}</span>`).join('')}</div>` : ''}
               <div class="pos-footer">
                 <span style="color:var(--text3);font-size:0.72rem">信號時間：${fmtDateTime(t.timestamp)}</span>
@@ -28252,8 +28362,16 @@ function _scalpRow(t, showResult) {
     ${showResult
       ? `<span style="color:${rC};font-weight:700;margin-left:auto">${oLabel}　${r > 0 ? '+' : ''}${t.pnlR}R</span>
          <span style="color:var(--text3)">${t.holdMin ?? '--'} 分</span>`
-      : `<span style="margin-left:auto;color:${t.tp1Hit ? '#22c55e' : 'var(--text3)'}">${t.tp1Hit ? '✅ 已達止盈一' : '持倉中'}</span>
-         <span style="color:var(--text3)">${Math.round((Date.now() - (t.entryTime || t.timestamp)) / 60000)} 分</span>`}
+      : (() => {
+          // 下一步自動化：使用者要在機器動手前知道它會做什麼
+          const heldM = Math.round((Date.now() - (t.entryTime || t.timestamp)) / 60000);
+          const next = t.tp1Hit ? '✅ TP1 已達→移動停利中'
+            : t.beArmed ? '🛡️ 保本已掛（成本價）'
+            : heldM >= SCALP_CFG.timeStopMin ? `⏱️ 停滯判定中（±0.3R 內即出場）`
+            : `下一步：+${SCALP_CFG.beTriggerR}R 移保本｜${SCALP_CFG.timeStopMin - heldM} 分後停滯判定`;
+          return `<span style="margin-left:auto;color:${t.tp1Hit ? '#22c55e' : t.beArmed ? '#22c55e' : 'var(--text3)'};font-size:0.74rem">${next}</span>
+         <span style="color:var(--text3)">${heldM} 分</span>`;
+        })()}
   </div>`;
 }
 
