@@ -13963,7 +13963,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820k';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820l';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14368,6 +14368,7 @@ function signalEvidence(entryTag) {
       return { n: set.length, scope,
         wr: +(w / (w + l) * 100).toFixed(0),
         wrLb: +(wilsonLB(w, w + l) * 100).toFixed(0),
+        wrUb: +((1 - wilsonLB(l, w + l)) * 100).toFixed(0),   // 勝率上界（負期望閘門用）
         exp: +(set.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / set.length).toFixed(2) };
     };
     const cellSet = rgDir ? closed.filter(t => (String(t.regime || '')).split('_')[0] === rgDir) : [];
@@ -14987,6 +14988,23 @@ async function recordSignalsFromScan(data) {
     // R/R 門檻：多空皆 ≥1.3
     const _scanRR = setup.rr1 || 0;
     if (parseFloat(_scanRR) < 1.3 && _no('止盈一 R/R < 1.3')) continue;
+
+    /* 同型態歷史負期望硬閘門（2026-08-28 勝率調查 v2）：signalEvidence
+       已經會在訊號上標紅「此分支歷史為負」，但標紅歸標紅、建單歸建單——
+       系統明知統計上確定在虧錢的形態照樣建單推播，這說不通。改為硬擋。
+       三重門檻缺一不可（規則④防全擋）：精確格 ≥20 筆、期望 ≤ -0.15R、
+       勝率上界 < 帳戶兩平所需（統計上確定虧，不是點估計）。市場狀態一變
+       或分支表現回升，格子統計自動改變即解封；饑荒探路不越過此閘——
+       探路驗證的是「封鎖是否過時」，不是去踩已確認的負期望形態。 */
+    try {
+      const _evG = signalEvidence(setup.entryTag);
+      if (_evG && _evG.scope === '同分支×同市場狀態' && _evG.n >= 20 && _evG.exp <= -0.15) {
+        const _beG = accountBreakeven();
+        const _needWr = (_beG && _beG.need) ? _beG.need : 50;
+        if (_evG.wrUb != null && _evG.wrUb < _needWr
+            && _no(`同型態歷史負期望（${setup.entryTag}×${(currentRegimeKey() || '').split('_')[0] || '?'}：${_evG.n} 筆 ${_evG.exp}R/筆、勝率上界 ${_evG.wrUb}% < 兩平 ${_needWr}%）`)) continue;
+      }
+    } catch(_e) {}
     // 長線單：週預測信心≥70 時週向須對齊（信心<70 僅作參考）
     if (canScaleIn && wBiasConf >= 70) {
       const _wkAligned = isLong ? wBias.includes('bull') : wBias.includes('bear');
@@ -27320,10 +27338,54 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
            slDistAtr:   atr > 0 ? +(risk / atr).toFixed(3) : null };
 }
 
+/* ── 攔截統計 24h 累積（2026-08-28 交易數調查）───────────────────
+   _scalpReject 每輪歸零＝面板永遠只看得到「最近一輪」——重新整理後
+   更是從零開始。「快速單為什麼一直很少」需要的是整天的視角：
+   歸零前把上一輪合併進按日累積的持久化桶，面板同時顯示兩層。 */
+const SCALP_REJ24_KEY = 'csp_scalp_rej24';
+function _scalpRejFlush() {
+  try {
+    const keys = Object.keys(_scalpReject).filter(k => !k.startsWith('_'));
+    if (!keys.length) return;
+    const day = new Date().toISOString().slice(0, 10);
+    let b = null;
+    try { b = JSON.parse(localStorage.getItem(SCALP_REJ24_KEY) || 'null'); } catch(_e) {}
+    if (!b || b.day !== day) b = { day, counts: {}, rounds: 0 };
+    for (const k of keys) b.counts[k] = (b.counts[k] || 0) + _scalpReject[k];
+    b.rounds++;
+    localStorage.setItem(SCALP_REJ24_KEY, JSON.stringify(b));
+  } catch(_e) {}
+}
+/* 延遲成交損耗統計：作廢率與滑移方向分佈——快速單「交易數少」最大的
+   黑箱。作廢單（訊號後 45 秒滑移超限）分兩種：正向跑掉（訊號對了但
+   追不上——量的損失同時是「訊號有效」的證據）與反向作廢（進場前就
+   走壞——作廢反而是保護）。兩者比例決定該不該檢討延遲門檻。 */
+function scalpFillLossStats() {
+  try {
+    const m = new Map();
+    for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t);
+    for (const t of loadScalpLog()) if (t && t.id) m.set(t.id, t);
+    const rows = [...m.values()];
+    const cut = Date.now() - 30 * 86400e3;
+    const recent = rows.filter(t => ((parseFloat(t.exitTime) || parseFloat(t.entryTime) || parseFloat(t.timestamp) || 0) >= cut));
+    const expired = recent.filter(t => t.status === 'expired' && isFinite(parseFloat(t.slipR)));
+    const filled = recent.filter(t => t.status !== 'expired' && (t.entryTime || t.status === 'closed'));
+    const n = expired.length;
+    if (!n) return { ready: false, filled: filled.length, n: 0 };
+    const ranAway = expired.filter(t => parseFloat(t.slipR) > 0).length;   // 正向跑掉（追價超限）
+    const wentBad = n - ranAway;                                          // 反向走壞（保護性作廢）
+    const avgSlip = expired.reduce((a, t) => a + Math.abs(parseFloat(t.slipR)), 0) / n;
+    return { ready: true, n, filled: filled.length,
+      voidRate: +(n / Math.max(1, n + filled.length) * 100).toFixed(0),
+      ranAway, wentBad, avgSlip: +avgSlip.toFixed(2) };
+  } catch(_e) { return { ready: false, n: 0, filled: 0 }; }
+}
+
 /* 掃描產生快進快出訊號（獨立於 recordSignalsFromScan） */
 let _scalpLastRun = 0;      // 上次執行 recordScalpSignals 的時間（診斷用）
 async function recordScalpSignals(data) {
   // 診斷必須在所有提前 return 之前重置並記錄原因，否則整段卡在哪一道都看不到
+  _scalpRejFlush();          // 歸零前先把上一輪合併進 24h 累積桶
   _scalpReject = {};
   _scalpLastRun = Date.now();
   try {
@@ -27449,12 +27511,31 @@ async function recordScalpSignals(data) {
         + Math.max(0, still) * (parseFloat(t.riskAmt) || _acct.riskAmt);
     }
 
+    /* ── 饑荒探路（2026-08-28，與一般單同哲學的死鎖破除器）────────
+       學習型封鎖（幣種／市場狀態／確信度／條件桶）各自都有解除機制，
+       但可以同時卡死：48 小時完全沒有快速單時，每 24 小時放行 1 筆
+       探路單繞過「學習型」封鎖取樣驗證。硬性條件一律照常：ADX/MACD、
+       事件封鎖、回撤熔斷、跨系統對沖、OI 反向、風險額度——探路是
+       檢驗「封鎖是否過時」，不是關掉風控。 */
+    let _starveScalp = false, _starveScalpUsed = false;
+    try {
+      const _ssLast = log.reduce((a, t) => Math.max(a, t.entryTime || t.timestamp || 0), 0);
+      const _ssProbeAt = parseFloat(localStorage.getItem('csp_starve_probe_scalp_at') || '0');
+      _starveScalp = (Date.now() - _ssLast > 48 * 3600e3) && (Date.now() - _ssProbeAt > 24 * 3600e3);
+      if (_starveScalp) _scalpReject._starve = '饑荒探路已武裝（48h 無快速單，本輪允許 1 筆繞過學習型封鎖）';
+    } catch(_e) {}
+
     for (const { coin, isLong, dir, family } of cands) {
       if (room <= 0) break;
+      let _thisProbe = false;   // 本候選是否動用饑荒探路（建單成功才消耗名額）
+      const _probePass = () => {
+        if (_starveScalp && !_starveScalpUsed) { _thisProbe = true; return true; }
+        return false;
+      };
       // 勝率強化：此幣近 20 筆實測負期望 → 暫停（統計自己指出的「做不贏的幣」）
-      if (winupSymbolBlocked('scalp', coin.symbol)) { _sr('幣種負期望封鎖'); continue; }
+      if (winupSymbolBlocked('scalp', coin.symbol) && !_probePass()) { _sr('幣種負期望封鎖'); continue; }
       // 市場狀態×方向：此天氣下這個方向實測顯著虧 → 暫停
-      if (winupRegimeBlocked('scalp', dir)) { _sr('市場狀態負期望封鎖'); continue; }
+      if (winupRegimeBlocked('scalp', dir) && !_probePass()) { _sr('市場狀態負期望封鎖'); continue; }
       // 跨系統曝險：一般單已持有同幣反向 → 跳過；同向 → 建倉時倉位減半
       const _xE = crossExposure(coin.symbol, dir, 'scalp');
       if (_xE && _xE.state === 'opposite') { _sr('與一般單反向對沖'); continue; }
@@ -27476,7 +27557,7 @@ async function recordScalpSignals(data) {
           // 典型值 +9~25，但盤整時段常落在 -3~+5——要求嚴格 ≥0 會把整段
           // 盤整時間排除，與「回歸家族補盤整」的設計互相矛盾。
           const _need = _recov.on ? _recov.minConv : -5;
-          if (_cvS < _need) {
+          if (_cvS < _need && !_probePass()) {
             _sr(_recov.on ? `恢復模式確信度不足(${_cvS}<${_need})` : `方向確信度淨反向(${_cvS})`);
             continue;
           }
@@ -27485,7 +27566,8 @@ async function recordScalpSignals(data) {
       const setup = buildScalpSetup(coin, isLong, family);
       if (!setup) continue;
       // 進場條件持續學習：此 ADX/量能/MTF 條件桶實測顯著虧 → 暫停（回升自動解除）
-      if (winupScalpCondBlocked(setup.adx, parseFloat(setup.volRatio) || 0, setup.mtfAlign || 0)) {
+      if (winupScalpCondBlocked(setup.adx, parseFloat(setup.volRatio) || 0, setup.mtfAlign || 0)
+          && !_probePass()) {
         _sr('條件桶負期望封鎖'); continue;
       }
       // 同幣種在本輪已被另一個家族建倉 → 跳過（同一個標的不重複下注）
@@ -27575,6 +27657,13 @@ async function recordScalpSignals(data) {
       t.okxAdjusted = true;   // 資料層已對齊 OKX 價格空間，無需再換算
       // 探路單認領：這筆若是某個被封鎖的桶放行的取樣單，標記起來供實驗室單獨統計
       try { t.probeTag = winupClaimProbe(winupTagsOf('scalp', t)); } catch(_e) {}
+      if (_thisProbe) {
+        // 饑荒探路成功建單：消耗本日名額並標記（winupClaimProbe 沒標到才補）
+        _starveScalpUsed = true;
+        if (!t.probeTag) t.probeTag = 'starve:scalp';
+        try { localStorage.setItem('csp_starve_probe_scalp_at', String(Date.now())); } catch(_e) {}
+        console.info(`[scalp-starve] 饑荒探路放行 ${coin.symbol} ${dir}（48h 無快速單，取樣驗證封鎖是否過時）`);
+      }
       log.unshift(t); changed = true; room--;
       _scalpRecordLedger(coin.symbol, dir);
       /* ⚠️ 進場訊號改在「成交後」才發（見 updateScalpTrades 的 pendingFill 段）。
@@ -28525,6 +28614,24 @@ function buildScalpPositionsHtml() {
             `<span style="font-size:0.76rem;padding:3px 9px;border-radius:20px;
               background:rgba(245,158,11,.12);color:#f59e0b">${k} <b>${v}</b></span>`).join('')}</div>`
           : '<div style="font-size:0.8rem;color:#22c55e">本輪無條件擋下</div>'}
+        ${(() => { try {
+          // 24h 累積視角：單輪統計每輪歸零，回答「今天為什麼一直沒單」要看整天
+          const b = JSON.parse(localStorage.getItem(SCALP_REJ24_KEY) || 'null');
+          if (!b || b.day !== new Date().toISOString().slice(0, 10) || !b.rounds) return '';
+          const top = Object.entries(b.counts).sort((x, y) => y[1] - x[1]).slice(0, 5);
+          return `<div style="font-size:0.74rem;color:var(--text2);margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06)">
+            <b>今日累積</b>（${b.rounds} 輪掃描）：${top.map(([k, v]) => `${k} <b style="color:#f59e0b">${v}</b>`).join('　·　')}
+            <span style="color:var(--text3)">——整天下來數字最大的才是真瓶頸，單輪統計會騙人</span></div>`;
+        } catch(_e) { return ''; } })()}
+        ${(() => { try {
+          const fl = scalpFillLossStats();
+          if (!fl.ready || fl.n < 5) return '';
+          const bad = fl.voidRate >= 35;
+          return `<div style="font-size:0.74rem;color:var(--text2);margin-top:7px;padding-top:7px;border-top:1px solid rgba(255,255,255,.06)">
+            ⏱️ <b>延遲成交損耗</b>（近 30 天）：訊號作廢 ${fl.n} 筆／成交 ${fl.filled} 筆（作廢率 <b style="color:${bad ? '#ef4444' : 'var(--text2)'}">${fl.voidRate}%</b>），
+            其中 <b style="color:#f59e0b">${fl.ranAway} 筆是正向跑掉</b>（訊號對了但 45 秒內追不上）、${fl.wentBad} 筆反向走壞（保護性作廢），平均滑移 ${fl.avgSlip}R。
+            ${bad && fl.ranAway > fl.wentBad ? `<span style="color:#f59e0b">作廢率偏高且以「跑掉」為主——交易數少的主因不是條件太嚴，而是 5m 動能訊號本來就跑得比 45 秒延遲快；這部分是誠實模擬真人成交的代價，不是 bug。</span>` : ''}</div>`;
+        } catch(_e) { return ''; } })()}
         <div style="font-size:0.72rem;color:var(--text3);margin-top:7px">
           上次執行：${_lr || '—'}　·　數字最大的那項就是目前的主要瓶頸。
           若「未突破區間」最多屬正常（多數時候本來就沒有突破）；
