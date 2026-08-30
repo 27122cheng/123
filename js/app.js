@@ -13963,7 +13963,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820m';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820n';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14878,16 +14878,58 @@ async function recordSignalsFromScan(data) {
   // ── BTC 24h 漲跌幅（供 ㉓ 相對強弱因子使用，建單與監控迴圈共用）──
   const _btcChg24 = parseFloat(data?.find(d => d.symbol === 'BTC/USDT')?.change24h);
 
+  /* ── 機會品質排序＋方向融合（預測層）─────────────────────────
+     舊迴圈按「幣種清單順序」遍歷：每輪額度（同向上限、配額、風險額度）
+     被排前面的幣先吃掉，排在後面的完美機會可能整輪輪不到——這不是門檻
+     問題，是「選擇順序」根本沒在選。兩個修正都在進場前的預測層：
+     ① 建單順序改為機會品質排序：|評分−50|（指標邊際）＋方向確信度
+        對齊值 ×0.8（全站唯一經記分卡×證據校準的方向預測器）。每輪
+        先建最強的機會，額度花在刀口上。
+     ② 方向融合：評分貼近中性（|score−50| ≤ 6）時指標方向基本是擲銅板，
+        此時若確信度決斷指向反向（|cv| ≥ 20，典型同向候選 +30~45 的尺度
+        下已是明確表態，規則④），以確信度方向為準。score 恰為 50 的幣
+        以前直接丟棄，現在確信度 ≥20 也能給方向——被浪費的機會撿回來。
+        dirSource 記在單上，研究所可驗證「確信度主導的方向」實際勝率。
+     確信度每幣只算一次（_cvOf 快取），排序與迴圈內共用，總計算量不變。 */
+  const _cvCacheScan = new Map();
+  const _cvOf = (coin) => {
+    let c = _cvCacheScan.get(coin.symbol);
+    if (!c) { try { c = computeDirectionConviction(coin); } catch(_e) { c = { score: 0, votes: [], items: [] }; } _cvCacheScan.set(coin.symbol, c); }
+    return c;
+  };
+  const _dirPick = (coin) => {
+    const cv = _cvOf(coin).score;
+    const rawLong = coin.score > 50;
+    if (Math.abs((coin.score ?? 50) - 50) <= 6) {
+      if (cv >= 20 && !rawLong) return { isLong: true, src: 'conviction', cv };
+      if (cv <= -20 && rawLong) return { isLong: false, src: 'conviction', cv };
+      if (coin.score === 50 && Math.abs(cv) >= 20) return { isLong: cv > 0, src: 'conviction', cv };
+    }
+    return { isLong: rawLong, src: 'score', cv };
+  };
+  const _oppQ = (coin) => {
+    if (!coin || !isFinite(coin.score)) return -999;
+    const dp = _dirPick(coin);
+    return Math.abs(coin.score - 50) + dp.cv * (dp.isLong ? 1 : -1) * 0.8;
+  };
+  const _rankedData = [...data].sort((a, b) => _oppQ(b) - _oppQ(a));
+  try {   // 排序結果寫進漏斗：訊號主機頁看得到「這輪誰排最前、憑什麼」
+    const _top3 = _rankedData.slice(0, 3).filter(c => c && c.symbol)
+      .map(c => `${c.symbol.replace('/USDT', '')} ${Math.round(_oppQ(c))}`).join('、');
+    if (_top3) _rej['ℹ️ 機會品質排序前3（|評分−50|＋確信度對齊×0.8）：' + _top3] = 0;
+  } catch(_e) {}
+
   // ══════════════════════════════════════════════════════════════
   // 統一掃描迴圈 ── 邏輯與 buildTradeSetup 記錄時完全一致
   // 條件：幣種有明確方向（score ≠ 50）+ 無活躍倉位 + 無冷卻 + 風控分達門檻 + SQ 達門檻
   // 長線升級：日線 + 週線均同向 → canScaleIn=true
   // ══════════════════════════════════════════════════════════════
-  for (const coin of data) {
+  for (const coin of _rankedData) {
     _cand++;
     _shCtx = null;   // 每個候選重置：setup 還沒算出來之前不記影子單
-    if (coin.score === 50 && _no('評分中性(50)')) continue;
-    const isLong    = coin.score > 50;
+    const _dp = _dirPick(coin);
+    if (coin.score === 50 && _dp.src !== 'conviction' && _no('評分中性(50)')) continue;
+    const isLong    = _dp.isLong;
     const direction = isLong ? 'long' : 'short';
 
     // 宏觀資料未就緒 → 不建新單：null 時所有宏觀封鎖都會放行，
@@ -15554,7 +15596,7 @@ async function recordSignalsFromScan(data) {
     let _convScan = null, _convVotes = [], _convEvScan = null;
     let _convSupW = 0, _convOppW = 0, _convSplit = null, _convOppStruct = 0;
     try {
-      const _cv = computeDirectionConviction(coin);
+      const _cv = _cvOf(coin);   // 排序時已算過，直接用快取（同一輪內市況不變）
       const _dirMulCv = isLong ? 1 : -1;
       _convScan = _cv.score * _dirMulCv;
       _convVotes = _cv.votes;
@@ -15587,6 +15629,7 @@ async function recordSignalsFromScan(data) {
       if (_convScan <= -15) { _no(`方向確信度 ${_convScan}（多空證據淨反向）`); continue; }
       if (_convScan >= 30) _scanEntryTags.push('方向共識-強');
       else if (_convScan <= 0) _scanEntryTags.push('方向共識-弱');
+      if (_dp.src === 'conviction') _scanEntryTags.push('方向-確信度主導');
       if (_convSplit != null && _convSplit >= 0.35) _scanEntryTags.push('證據分歧-高');
       if (_convOppStruct >= 2) _scanEntryTags.push('結構級反向≥2');
       if (_convOppW > 0)
@@ -15690,6 +15733,7 @@ async function recordSignalsFromScan(data) {
       // 進場邏輯別（哪一條分支決定了這筆單的進場／止損／止盈）
       entryTag: setup.entryTag || null, slTag: setup.slTag || null,
       evStats: signalEvidence(setup.entryTag) || null,   // 建單當下的同型態歷史證據（樣本不足為 null）
+      dirSource: _dp.src,   // 方向由誰決定：score（指標評分）／conviction（近中性時證據融合反轉）
       tp1Tag: setup.tp1Tag || null, tp2Tag: setup.tp2Tag || null,
       // 結構階梯：加倉位與加倉後止損都釘在結構上，持倉監控直接用這兩個值
       addLevel: setup.addLevel ?? null,
@@ -22027,6 +22071,7 @@ const LEARN_KEEP_FIELDS = [
   'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
+  'dirSource',                               // 方向由誰決定（score/conviction）——方向融合的驗證樣本
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -27469,8 +27514,12 @@ async function recordScalpSignals(data) {
       if (_evBS.blocked) { _sr(`高影響數據封鎖（${_evBS.why}）`); return; } }
     const cands = [];
     const revertOn = SCALP_CFG.enableRange || SCALP_CFG.enableVwapRev || SCALP_CFG.enableExhaust;
-    for (const coin of data) {
-      if (!coin) continue;
+    /* 候選蒐集改按「指標邊際」排序遍歷（預測層）：maxCandidates 的幣種上限
+       以前留給「清單排前面的幣」，強訊號排在清單後段就連 5m K 線都抓不到。
+       |score−50| 大者優先進候選池——選擇順序本身就是預測的一部分。 */
+    const _scanOrder = [...data].filter(Boolean)
+      .sort((a, b) => Math.abs((b.score ?? 50) - 50) - Math.abs((a.score ?? 50) - 50));
+    for (const coin of _scanOrder) {
       if (log.some(t => t.symbol === coin.symbol && t.status === 'open')) { _sr('已有持倉'); continue; }
       const adxV = parseFloat(coin.adx) || 0;
       const macd = parseFloat(coin.macdHist) || 0;
@@ -27544,6 +27593,20 @@ async function recordScalpSignals(data) {
       if (_starveScalp) _scalpReject._starve = '饑荒探路已武裝（48h 無快速單，本輪允許 1 筆繞過學習型封鎖）';
     } catch(_e) {}
 
+    /* 建倉順序按機會品質排序（預測層）：room／同向風險額度誰先到誰先拿，
+       以前是候選蒐集順序決定——現在順勢家族按「確信度對齊值」高者優先
+       （典型同向 +9~25，證據越一致越先建），回歸家族維持 0 基準原序
+       （回歸本來就做反轉，拿確信度排它反而系統性壓後，不適用）。
+       確信度每幣只算一次，後面的順勢確信度閘門直接用同一份快取。 */
+    const _cvScalpCache = new Map();
+    const _cvScalp = (coin) => {
+      let v = _cvScalpCache.get(coin.symbol);
+      if (v === undefined) { try { v = computeDirectionConviction(coin).score; } catch(_e) { v = 0; } _cvScalpCache.set(coin.symbol, v); }
+      return v;
+    };
+    const _scalpQ = c => c.family === 'trend' ? _cvScalp(c.coin) * (c.isLong ? 1 : -1) : 0;
+    cands.sort((a, b) => _scalpQ(b) - _scalpQ(a));
+
     for (const { coin, isLong, dir, family } of cands) {
       if (room <= 0) break;
       let _thisProbe = false;   // 本候選是否動用饑荒探路（建單成功才消耗名額）
@@ -27571,7 +27634,7 @@ async function recordScalpSignals(data) {
       // 光 4H 同向(12) + MACD(5) 就有 +17，「≥0」不會全擋，只擋高週期強力唱反調的單。
       if (family === 'trend') {
         try {
-          const _cvS = computeDirectionConviction(coin).score * (isLong ? 1 : -1);
+          const _cvS = _cvScalp(coin) * (isLong ? 1 : -1);   // 排序時已算過，共用快取
           // 常態門檻回到 -5（原 0）：去重後多週期只剩小額殘票，順勢候選的
           // 典型值 +9~25，但盤整時段常落在 -3~+5——要求嚴格 ≥0 會把整段
           // 盤整時間排除，與「回歸家族補盤整」的設計互相矛盾。
