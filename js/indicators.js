@@ -281,9 +281,18 @@ function analyzeKlines(symbol, raw) {
   const { opens, highs, lows, closes, volumes, quoteVols } = parseKlines(raw);
   const price = closes[closes.length - 1];
 
+  /* 型態／結構／支撐壓力／ATR 改用已收盤棒（見 splitFormingBar 的說明）。
+     動能讀數（RSI/ADX/MACD/EMA）與價格維持即時——它們是「現在多強」的
+     連續量測，本來就該即時；會重繪的是「有沒有出現某個型態」這類是非題。
+     ATR 特別重要：成形中的 K 棒振幅還沒走完，即時 ATR 會系統性低估波動，
+     止損因此被放得太近——這是「一根雜訊就掃損」的隱性來源之一。 */
+  const _spK = splitFormingBar(raw);
+  const _cSrc = _spK.closed.length >= 30 ? _spK.closed : raw;
+  const K = parseKlines(_cSrc);
+
   const rsi    = calcRSI(closes, 14);
   const adx    = calcADX(highs, lows, closes, 14);
-  const atr    = calcATR(highs, lows, closes, 14);
+  const atr    = calcATR(K.highs, K.lows, K.closes, 14);
   const ema20  = calcEMA(closes, 20);
   const ema50  = calcEMA(closes, 50);
   const ema200 = calcEMA(closes, 200);
@@ -303,14 +312,14 @@ function analyzeKlines(symbol, raw) {
   const price24hAgo = parseFloat(raw[idx24h][4]) || price;
   const change24h   = parseFloat(((price - price24hAgo) / price24hAgo * 100).toFixed(2));
 
-  /* 影線拒絕區（震盪行情關鍵支撐壓力，lookback=150根K棒） */
-  const { wickSupports, wickResistances } = findWickZones(highs, lows, opens, closes, atr, 150);
+  /* 影線拒絕區（震盪行情關鍵支撐壓力，lookback=150根K棒）── 已收盤棒 */
+  const { wickSupports, wickResistances } = findWickZones(K.highs, K.lows, K.opens, K.closes, atr, 150);
 
-  const bb       = computeBBSignal(raw);
-  const patterns = detect123And2B(highs, lows, closes);
-  const nakedK   = detectNakedK(opens, highs, lows, closes, atr);
-  const struct15 = computeSwingStructure(highs, lows, closes, atr);
-  const strictTrend = computeStrictTrend(highs, lows, closes, volumes);
+  const bb       = computeBBSignal(raw);   // 內部自行切分：帶寬用收盤棒、%B 用即時價
+  const patterns = detect123And2B(K.highs, K.lows, K.closes);
+  const nakedK   = detectNakedK(K.opens, K.highs, K.lows, K.closes, atr);
+  const struct15 = computeSwingStructure(K.highs, K.lows, K.closes, atr);
+  const strictTrend = computeStrictTrend(K.highs, K.lows, K.closes, K.volumes);
 
   return {
     symbol,
@@ -334,6 +343,8 @@ function analyzeKlines(symbol, raw) {
     patterns,
     nakedK,
     struct15,
+    closedBased: _cSrc !== raw,                                  // 型態／結構是否以收盤棒判定
+    confirmedOn: _cSrc.length ? +_cSrc[_cSrc.length - 1][6] : null,
   };
 }
 
@@ -443,6 +454,31 @@ function analyzeOrderFlow(raw) {
 }
 
 /* ── 單一時間框架突破信號 ─────────────────────────── */
+/* ── 已收盤 K 棒切分（去重繪的根本解）────────────────────────────
+   交易所回傳的最後一根 K 棒「正在成形」：它的收盤價就是現價，會隨每
+   一次報價變動。用它去判定型態與結構，等於讓判斷跟著跳動——一根現在
+   看起來像下影拒絕的 K 棒，五分鐘後可能收成大陰線；日線訊號在一天之內
+   可以翻面好幾次再翻回來（使用者實際回報的「本日／本週預測一直變」）。
+   這正是「重繪（repaint）」：事後回頭看永遠是對的，當下卻不可信。
+
+   專業做法是把兩件事分開：
+     · 型態、結構、突破、支撐壓力、ATR ── 只認「已經收盤」的 K 棒
+     · 現價、以及「價格相對於均線／通道的位置」 ── 用即時值
+   前者要的是確定性（收盤才算數），後者要的是即時性。
+
+   回傳 closed（去掉成形棒）、live（成形棒的即時價）、forming（是否成形中）。
+   若資料已經過期（現在時間已超過該棒收盤時間），代表最後一根其實已收盤，
+   原樣回傳不動。 */
+function splitFormingBar(raw) {
+  try {
+    if (!raw || raw.length < 2) return { closed: raw || [], live: null, forming: false };
+    const last = raw[raw.length - 1];
+    const closeT = +last[6];
+    if (!(closeT > 0) || Date.now() >= closeT) return { closed: raw, live: null, forming: false };
+    return { closed: raw.slice(0, -1), live: parseFloat(last[4]), forming: true };
+  } catch(_e) { return { closed: raw || [], live: null, forming: false }; }
+}
+
 /* 未收盤 K 棒的成交量投影 ─────────────────────────────────────────
    交易所回傳的最後一根 K 棒是「正在成形」的：它的成交量只累積到現在
    這一刻。拿它直接除以 20 根「完整 K 棒」的均量，量出來的不是量能強弱，
@@ -478,13 +514,17 @@ function _projectedLastVol(raw, volumes, volSMA) {
 
 function analyzeTimeframeSignal(raw) {
   if (!raw || raw.length < 30) return null;
-  const { opens, closes, highs, lows, volumes } = parseKlines(raw);
-  const price = closes[closes.length - 1];
+  /* 判定一律用已收盤棒；價格用即時值。多週期訊號（1H/4H/日/週）是重繪
+     受害最深的地方——日線棒有一整天可以變臉、週線棒有一整週。 */
+  const _sp  = splitFormingBar(raw);
+  const src  = _sp.closed.length >= 30 ? _sp.closed : raw;   // 收盤棒不足才退回原始
+  const { opens, closes, highs, lows, volumes } = parseKlines(src);
+  const price = (_sp.live != null && src !== raw) ? _sp.live : closes[closes.length - 1];
 
   const pivotLevels = findPivotLevels(highs, lows, closes, 60);
   const { swingHigh, swingLow } = pivotLevels;
   const volSMA    = calcVolSMA(volumes, 20);
-  const _pv       = _projectedLastVol(raw, volumes, volSMA);
+  const _pv       = _projectedLastVol(src, volumes, volSMA);
   const lastVol   = _pv.vol;
   const isHighVol = lastVol > volSMA * 1.4;
   const volRatio  = volSMA > 0 ? parseFloat((lastVol / volSMA).toFixed(2)) : 1;
@@ -518,6 +558,10 @@ function analyzeTimeframeSignal(raw) {
     ema20, ema50, swingHigh, swingLow,
     bullBreak, bearBreak, isHighVol, volRatio,
     barForming: _pv.forming, barElapsed: _pv.frac,   // 成形中／已走完的比例（透明化用）
+    /* 突破／型態是以「最後一根已收盤 K 棒」判定的（非重繪）；價格為即時值。
+       confirmedOn = 判定所依據的那根 K 棒的收盤時間，方便對帳。 */
+    closedBased: src !== raw,
+    confirmedOn: src.length ? +src[src.length - 1][6] : null,
     struct: computeSwingStructure(highs, lows, closes, atr),   // 擺動結構（HH/HL、BOS、CHoCH）
     atr, pivotLevels,
   };
@@ -559,14 +603,21 @@ function calcBollingerBands(closes, period = 20, mult = 2) {
 /* ── 布林通道信號分析（含走軌/背離/收窄偵測）─────────────── */
 function computeBBSignal(raw) {
   if (!raw || raw.length < 22) return null;
-  const { closes, highs, lows } = parseKlines(raw);
+  /* 通道位置與走軌判定用已收盤棒（走軌是「連 3 根都貼著軌道」的是非題，
+     把成形棒算進去會讓它每分鐘成立又消失）；%B 與中軌相對位置改用即時
+     價去比——通道是收盤畫出來的，現價落在哪裡則是當下的事實。 */
+  const _spB = splitFormingBar(raw);
+  const _bSrc = _spB.closed.length >= 22 ? _spB.closed : raw;
+  const { closes, highs, lows } = parseKlines(_bSrc);
   const n = closes.length;
   if (n < 22) return null;
 
   const bb = calcBollingerBands(closes, 20, 2);
   if (!bb) return null;
-  const { upper, middle, lower, pctB, width } = bb;
-  const price = closes[n - 1];
+  const { upper, middle, lower, width } = bb;
+  const price = (_spB.live != null && _bSrc !== raw) ? _spB.live : closes[n - 1];
+  // %B 以即時價重算（bb.pctB 是收盤棒的位置，這裡要的是「現在」站在哪）
+  const pctB = (upper - lower) > 0 ? (price - lower) / (upper - lower) : 0.5;
   let bullBonus = 0, bearBonus = 0;
   const tags = [];
 
