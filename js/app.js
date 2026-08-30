@@ -6730,12 +6730,15 @@ const _BIAS_FACTOR_LABELS = {
     ['techScan', '技術面多空分佈'], ['daySignal', '日線訊號分佈'], ['rsiD', 'RSI 極端讀數'],
     ['chipsD', 'Taker 買賣比'], ['momentum', '動能分佈'], ['macdDistD', 'MACD 動能分佈'],
     ['adxDistD', 'ADX 趨勢確立率'], ['fpDelta', '足跡圖 Delta'], ['microstructure', '微結構質量'],
+    // 2026-08-30 併入學習層（原本完全繞過權重與獎懲）
+    ['vwapDev', 'VWAP 偏離'], ['funding', '資金費率（反向）'], ['oiAgg', 'OI 新錢聚合'], ['rotation', '資金輪動'],
   ],
   weekly: [
     ['fg', '恐慌貪婪指數'], ['mktChg', '加密市值變化'], ['btcDom', 'BTC 主導率'],
     ['techScan', '技術面多空分佈'], ['wkSignal', '週線訊號分佈'], ['rsiW', 'RSI 極端讀數'],
     ['chipsW', 'Taker 買賣比'], ['whaleW', '巨鯨動向'], ['macdDistW', 'MACD 動能分佈'],
     ['adxDistW', 'ADX 趨勢確立率'], ['fpW', '足跡圖 Delta'], ['msqW', '微結構質量'],
+    ['funding', '資金費率（反向）'], ['oiAgg', 'OI 新錢聚合'], ['rotation', '資金輪動'],
   ],
 };
 function buildBiasWeightTable(prefix) {
@@ -6783,11 +6786,16 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const learn = _loadBiasLearning();
   let weights = learn.weights || {};
   try {
+    /* 與日預測同一個病、同一帖藥：舊寫法每輪刷新 weeklyPred.timestamp，
+       「≥5 天」的結算條件永遠不成立 → 週因子權重永遠停在 1.0。改以
+       「本週起點（週日 08:00）」錨定，跨週才結算上一週那一筆。 */
     const prev = learn.weeklyPred;
-    if (prev && prev.timestamp) {
+    const _wkKey = _getThisWeekSunday8am();
+    if (prev && prev.timestamp && !prev.graded && prev.wk && prev.wk !== _wkKey) {
       const ageDays = (Date.now() - prev.timestamp) / 86400000;
       if (ageDays >= 5) {
         weights = _adjustBiasWeights(weights, prev.bias, mktChgNow, prev.factorVotes || {}, 'weekly');
+        prev.graded = true;
       }
     }
   } catch(e) {}
@@ -6901,20 +6909,26 @@ function computeWeeklyAIBias(fg, globalMkt) {
       factors.push(`${100-_wMacdBullPct}% 幣種 MACD 動能向下，本週空頭動能佔優`);
     } else { factorVotes.macdDistW = 0; }
   }
-  // ⑩ ADX 趨勢確立率（≥25 = 趨勢市場，低 = 震盪）— 提升權重
+  // ── 可靠度層（與日預測同一套：強度／品質只調力度，不投方向）──
+  let _wRelAmp = 1, _wRelConf = 0;
+  const _wRelVotes = [];
+  // ⑩ ADX 趨勢確立率（≥25 = 趨勢市場，低 = 震盪）→ 方向可信度
   const wAdxDistW = _getBiasWeight(weights, 'weekly_adxDistW');
   if (coins.length) {
     const _wAdxTrend = coins.filter(c => (parseFloat(c.adx)||0) >= 25).length;
     const _wAdxPct   = Math.round(_wAdxTrend / coins.length * 100);
+    /* 同日預測的分類修正（2026-08-30）：ADX 量的是「方向多可信」不是
+       「方向是哪邊」。原本趨勢確立度高就投多 1.5 分——空頭趨勢越明確、
+       系統反而越看多，方向完全反了。改為放大既有方向。 */
     if (_wAdxPct > 65) {
-      factorVotes.adxDistW = 2; macroBull += 1.5 * wAdxDistW;  // 趨勢確立度高 → 加強信號
-      factors.push(`${_wAdxPct}% 幣種趨勢確立（ADX ≥25），本週市場方向性極強，利好趨勢交易`);
+      _wRelAmp *= 1 + 0.22 * wAdxDistW; _wRelConf += 5; _wRelVotes.push('adxDistW');
+      factors.push(`${_wAdxPct}% 幣種趨勢確立（ADX ≥25），本週方向可信度極高（放大既有方向 ×${(1 + 0.22 * wAdxDistW).toFixed(2)}）`);
     } else if (_wAdxPct > 50) {
-      factorVotes.adxDistW = 1; macroBull += 0.8 * wAdxDistW;
-      factors.push(`${_wAdxPct}% 幣種趨勢確立，本週市場方向性明確`);
+      _wRelAmp *= 1 + 0.12 * wAdxDistW; _wRelConf += 3; _wRelVotes.push('adxDistW');
+      factors.push(`${_wAdxPct}% 幣種趨勢確立，本週市場方向性明確（放大既有方向）`);
     } else if (_wAdxPct < 28) {
-      factorVotes.adxDistW = -1; macroBear += 0.8 * wAdxDistW;
-      factors.push(`僅 ${_wAdxPct}% 幣種趨勢確立，本週市場普遍震盪，方向不明確`);
+      _wRelAmp *= 1 - 0.15 * wAdxDistW; _wRelConf -= 6; factorVotes.adxDistW = 0;
+      factors.push(`僅 ${_wAdxPct}% 幣種趨勢確立，本週市場普遍震盪，方向不明確（方向分收斂向中性）`);
     } else { factorVotes.adxDistW = 0; }
   }
   // ⑪ 足跡圖 Delta 聚合 + 背離檢查（市場微觀結構，未公開訊息指標）
@@ -6953,8 +6967,9 @@ function computeWeeklyAIBias(fg, globalMkt) {
     }
     // 背離警告：高背離 = 市場轉折訊號
     if (fpDivRatio >= 0.35) {
-      macroBear += 0.8;
-      factors.push(`⚠️ 足跡圖 ${(fpDivRatio*100).toFixed(0)}% 背離，本週出現拉鋸局面，後續轉向風險高`);
+      // 同日預測：背離是「動能可疑」不是「看空」（下跌中背離＝止跌訊號）
+      _wRelAmp *= 0.9; _wRelConf -= 4;
+      factors.push(`⚠️ 足跡圖 ${(fpDivRatio*100).toFixed(0)}% 背離，本週出現拉鋸局面，後續轉向風險高（方向分收斂，不預設偏空）`);
     }
   }
   // ⑫ 週度市場微結構質量（Tick 品質聚合 + VWAP 偏離）
@@ -6964,11 +6979,11 @@ function computeWeeklyAIBias(fg, globalMkt) {
     const avgMsqW = _wMsqEntries.reduce((s, fp) => s + fp.microstructureQuality, 0) / _wMsqEntries.length;
     const highNoiseW = _wMsqEntries.filter(fp => fp.bidAskBounceScore > 65).length / _wMsqEntries.length;
     if (avgMsqW >= 70 && highNoiseW < 0.2) {
-      factorVotes.msqW = 1; macroBull += 1 * wMsqW;
-      factors.push(`市場微結構質量良好（均${avgMsqW.toFixed(0)}分），本週 Tick 訂單流一致性強，訊號可靠性高`);
+      _wRelAmp *= 1 + 0.12 * wMsqW; _wRelConf += 3; _wRelVotes.push('msqW');
+      factors.push(`市場微結構質量良好（均${avgMsqW.toFixed(0)}分），本週 Tick 訂單流一致性強，訊號可靠性高（放大既有方向）`);
     } else if (highNoiseW > 0.5) {
-      factorVotes.msqW = -1; macroBear += 1 * wMsqW;
-      factors.push(`本週市場微結構噪音偏高（${(highNoiseW*100).toFixed(0)}% 幣種 Bid-Ask Bounce），信心折扣`);
+      _wRelAmp *= 1 - 0.12 * wMsqW; _wRelConf -= 5; factorVotes.msqW = 0;
+      factors.push(`本週市場微結構噪音偏高（${(highNoiseW*100).toFixed(0)}% 幣種 Bid-Ask Bounce），信心折扣（方向分收斂向中性）`);
     } else { factorVotes.msqW = 0; }
   }
 
@@ -6977,10 +6992,12 @@ function computeWeeklyAIBias(fg, globalMkt) {
     const _wFrCoins = ((typeof state !== 'undefined' && state.data) ? state.data : []).filter(c => c.derivData?.fundingRate != null);
     if (_wFrCoins.length >= 3) {
       const _wAvgFr = _wFrCoins.reduce((s, c) => s + c.derivData.fundingRate, 0) / _wFrCoins.length;
-      if (_wAvgFr > 0.003)       { macroBear += 1.2; factors.push(`資金費率均值 ${(_wAvgFr*100).toFixed(3)}%（偏高），多頭槓桿擁擠，本週回調擠壓風險升高`); }
-      else if (_wAvgFr > 0.001)  { macroBull += 0.5; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（健康偏多），多頭持倉主導但未過熱`); }
-      else if (_wAvgFr < -0.003) { macroBull += 1.2; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（極端負值），空頭擁擠，本週軋空反彈動能蓄積`); }
-      else if (_wAvgFr < -0.001) { macroBull += 0.8; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（負值），空頭付費過熱，有利多頭反彈`); }
+      const wFrW = _getBiasWeight(weights, 'weekly_funding');   // 接上學習層（原本繞過）
+      if (_wAvgFr > 0.003)       { factorVotes.funding = -2; macroBear += 1.2 * wFrW; factors.push(`資金費率均值 ${(_wAvgFr*100).toFixed(3)}%（偏高），多頭槓桿擁擠，本週回調擠壓風險升高`); }
+      else if (_wAvgFr > 0.001)  { factorVotes.funding =  1; macroBull += 0.5 * wFrW; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（健康偏多），多頭持倉主導但未過熱`); }
+      else if (_wAvgFr < -0.003) { factorVotes.funding =  2; macroBull += 1.2 * wFrW; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（極端負值），空頭擁擠，本週軋空反彈動能蓄積`); }
+      else if (_wAvgFr < -0.001) { factorVotes.funding =  1; macroBull += 0.8 * wFrW; factors.push(`資金費率 ${(_wAvgFr*100).toFixed(3)}%（負值），空頭付費過熱，有利多頭反彈`); }
+      else                       { factorVotes.funding =  0; }
     }
   } catch(_e) {}
 
@@ -6997,28 +7014,35 @@ function computeWeeklyAIBias(fg, globalMkt) {
       else if (_wT.regime === 'long_liq') _wOIScore += 0.3;
     }
     if (_wOIN >= 5) {
-      if (_wOIScore >= 3)       { macroBull += 0.8; factors.push(`OI 聚合：${_wOIN} 個合約以新多進場為主，新錢驅動上行（真趨勢特徵）`); }
-      else if (_wOIScore <= -3) { macroBear += 0.8; factors.push(`OI 聚合：${_wOIN} 個合約以新空進場為主，空方新錢驅動下行`); }
+      const wOiW = _getBiasWeight(weights, 'weekly_oiAgg');
+      if (_wOIScore >= 3)       { factorVotes.oiAgg =  1; macroBull += 0.8 * wOiW; factors.push(`OI 聚合：${_wOIN} 個合約以新多進場為主，新錢驅動上行（真趨勢特徵）`); }
+      else if (_wOIScore <= -3) { factorVotes.oiAgg = -1; macroBear += 0.8 * wOiW; factors.push(`OI 聚合：${_wOIN} 個合約以新空進場為主，空方新錢驅動下行`); }
+      else                      { factorVotes.oiAgg =  0; }
     }
   } catch(_e) {}
 
   // ⑮ 資金輪動（山寨季 = 掃描池整體偏多環境；BTC 季 = 山寨失血）
   try {
     const _wRot = getRotationRegime();
-    if (_wRot && _wRot.regime === 'alt_season')      { macroBull += 0.5; factors.push(`資金輪動：山寨季特徵（ETH/BTC ${_wRot.ebChg != null ? (_wRot.ebChg > 0 ? '+' : '') + _wRot.ebChg + '%' : '—'}），資金外溢利山寨`); }
-    else if (_wRot && _wRot.regime === 'btc_season') { macroBear += 0.5; factors.push(`資金輪動：BTC 季特徵（BTC.D ${_wRot.domChg != null ? (_wRot.domChg > 0 ? '+' : '') + _wRot.domChg + 'pp' : '—'}），山寨資金失血`); }
+    const wRotW = _getBiasWeight(weights, 'weekly_rotation');
+    if (_wRot && _wRot.regime === 'alt_season')      { factorVotes.rotation =  1; macroBull += 0.5 * wRotW; factors.push(`資金輪動：山寨季特徵（ETH/BTC ${_wRot.ebChg != null ? (_wRot.ebChg > 0 ? '+' : '') + _wRot.ebChg + '%' : '—'}），資金外溢利山寨`); }
+    else if (_wRot && _wRot.regime === 'btc_season') { factorVotes.rotation = -1; macroBear += 0.5 * wRotW; factors.push(`資金輪動：BTC 季特徵（BTC.D ${_wRot.domChg != null ? (_wRot.domChg > 0 ? '+' : '') + _wRot.domChg + 'pp' : '—'}），山寨資金失血`); }
+    else if (_wRot)                                  { factorVotes.rotation =  0; }
   } catch(_e) {}
 
-  // ⑤ 本週重大事件風險
+  // ⑤ 本週重大事件風險（不確定性 → 扣信心，不投方向票，同日預測的修正）
   const weekEvents = getWeeklyEconEvents().filter(ev => ev.impact === 'high');
   const highRisk   = weekEvents.length >= 2;
-  if (weekEvents.length >= 3) { macroBear += 1; }  // 多重高風險事件 → 輕微空方壓力
+  const _wEvConfPen = Math.min(12, weekEvents.length * 3);
   const riskNote = weekEvents.length
     ? `本週 ${weekEvents.length} 項高影響數據（${weekEvents.map(e=>e.name.slice(0,10)).join('、')}），注意波動風險`
     : '本週無重大高影響數據，行情以技術面為主';
 
-  const totalScore = macroBull - macroBear;
+  const _wDirRaw   = macroBull - macroBear;
+  const totalScore = +(_wDirRaw * _wRelAmp).toFixed(3);
   const absScore   = Math.abs(totalScore);
+  { const _wrs = _wDirRaw > 0 ? 1 : _wDirRaw < 0 ? -1 : 0;
+    for (const k of _wRelVotes) factorVotes[k] = _wrs; }
   // 若本週已有快取方向 → 鎖定方向不變；風控分始終用當天最新數據計算
   const freshBias  = totalScore >= 4 ? 'strong_bull' : totalScore >= 2 ? 'bull'
                    : totalScore <= -4 ? 'strong_bear' : totalScore <= -2 ? 'bear' : 'neutral';
@@ -7026,7 +7050,8 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const biasLabel  = { strong_bull:'▲▲ 強勢偏多', bull:'▲ 偏多', strong_bear:'▼▼ 強勢偏空', bear:'▼ 偏空', neutral:'◆ 震盪中性' }[bias];
   const biasColor  = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
   // 風控分根據當天最新市場數據計算（每天更新）
-  const conf       = Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0) + (fgValNow != null ? 5 : 0));
+  const conf       = Math.max(30, Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0)
+                     + (fgValNow != null ? 5 : 0) + _wRelConf - _wEvConfPen));
   const confColor  = conf >= 60 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
 
   const _wTopFacts = factors.slice(0, 2).map(f => f.split('，')[0]).join('；');
@@ -7046,7 +7071,14 @@ function computeWeeklyAIBias(fg, globalMkt) {
 
   // ── 學習記錄 + 寫入快取（方向戳記保留週日時間戳；風控分每次刷新）──
   try {
-    learn.weeklyPred = { bias, factorVotes, mktChgAtTime: mktChgNow, timestamp: Date.now() };
+    const _wkKey2 = _getThisWeekSunday8am();
+    if (learn.weeklyPred && learn.weeklyPred.wk === _wkKey2) {
+      learn.weeklyPred.bias = bias;
+      learn.weeklyPred.factorVotes = factorVotes;
+      learn.weeklyPred.mktChgAtTime = mktChgNow;
+    } else {
+      learn.weeklyPred = { bias, factorVotes, mktChgAtTime: mktChgNow, wk: _wkKey2, timestamp: Date.now(), graded: false };
+    }
     learn.weights = weights;
     _saveBiasLearning(learn);
     // 保留原本週日時間戳（使方向判定週期不重置），風控分已更新於 result.conf
@@ -7155,12 +7187,23 @@ function computeTodayAIBias(fg, globalMkt) {
   const learn = _loadBiasLearning();
   let weights = learn.weights || {};
   const mktChg = globalMkt?.marketCapChange || 0;
+  /* ⚠️ 2026-08-30 修復：這套權重學習從來沒有真的跑過 ──────────────
+     舊寫法在每次呼叫的結尾都把 learn.dailyPred.timestamp 重設成 Date.now()，
+     而觸發條件是「上一筆預測 ≥20 小時」。掃描每 15 秒一輪，時間戳每輪
+     被刷新一次 → 年齡永遠是 0，條件永遠不成立。實測：連掃 5 輪後年齡
+     0.0000 小時、權重表是空的 {}；把時間戳手動改成 25 小時前，同一份
+     程式立刻產出 {daily_fg:0.8, daily_techScan:0.8, …}——邏輯本身沒問題，
+     是永遠沒被叫到。只有「關站超過 20 小時再打開」才會學一次。
+     修法：預測以「日期」錨定，同一天內只更新內容不動時間戳；跨日才換
+     一筆新的，並在結算後標記 graded 避免重複打分。 */
   try {
     const prev = learn.dailyPred;
-    if (prev && prev.timestamp) {
+    const _todayKey = new Date().toISOString().slice(0, 10);
+    if (prev && prev.timestamp && !prev.graded && prev.day && prev.day !== _todayKey) {
       const ageHours = (Date.now() - prev.timestamp) / 3600000;
-      if (ageHours >= 20) { // 20+ hours old → evaluate yesterday's call
+      if (ageHours >= 20) { // 跨日且滿 20 小時 → 結算昨天那一筆
         weights = _adjustBiasWeights(weights, prev.bias, mktChg, prev.factorVotes || {}, 'daily');
+        prev.graded = true;
       }
     }
   } catch(e) {}
@@ -7270,17 +7313,29 @@ function computeTodayAIBias(fg, globalMkt) {
       reasons.push(`${100-_dMacdBullPct}% 幣種 MACD 動能向下，今日空頭動能佔優`);
     } else { factorVotes.macdDistD = 0; }
   }
-  // ⑩ ADX 趨勢確立率（高 = 方向確定性強）
+  /* ── 可靠度層（2026-08-30 修正一類分類錯誤）─────────────────────
+     ADX 與微結構品質量的是「方向有多可信」，不是「方向是哪一邊」。原本
+     兩者都直接投多空票：ADX 高 → bull +0.5、微結構乾淨 → bull +1。實測
+     證據：一個全數下跌、ADX 35 的空頭市場，⑩ 照樣投多並寫下「今日市場
+     方向性強」——趨勢明確被當成利多，這是把強度誤讀成方向。反過來，
+     盤整（ADX 低）被當成利空，於是系統在每一段橫盤裡都自動偏空。
+     正確用法：趨勢確立度高 → 放大「既有方向」的分數；橫盤／高噪音 →
+     收斂向中性並扣信心。方向由方向性證據決定，可靠度只調整它的力度。
+     學習仍然保留：可靠度因子的方向票 = 它當下放大的那一邊，事後照樣
+     被 _adjustBiasWeights 打分。 */
+  let _relAmp = 1, _relConf = 0;
+  const _relVotes = [];
+  // ⑩ ADX 趨勢確立率（方向的可靠度，不是方向本身）
   const wAdxDistD = _getBiasWeight(weights, 'daily_adxDistD');
   if (coins.length) {
     const _dAdxTrend = coins.filter(c => (parseFloat(c.adx)||0) >= 25).length;
     const _dAdxPct   = Math.round(_dAdxTrend / coins.length * 100);
     if (_dAdxPct > 55) {
-      factorVotes.adxDistD = 1; bull += 0.5 * wAdxDistD;
-      reasons.push(`${_dAdxPct}% 幣種趨勢確立，今日市場方向性強`);
+      _relAmp *= 1 + 0.15 * wAdxDistD; _relConf += 4; _relVotes.push('adxDistD');
+      reasons.push(`${_dAdxPct}% 幣種趨勢確立，今日方向可信度高（放大既有方向 ×${(1 + 0.15 * wAdxDistD).toFixed(2)}）`);
     } else if (_dAdxPct < 28) {
-      factorVotes.adxDistD = -1; bear += 0.5 * wAdxDistD;
-      reasons.push(`僅 ${_dAdxPct}% 幣種趨勢確立，今日震盪為主，訊號可靠性低`);
+      _relAmp *= 1 - 0.15 * wAdxDistD; _relConf -= 6; factorVotes.adxDistD = 0;
+      reasons.push(`僅 ${_dAdxPct}% 幣種趨勢確立，今日震盪為主，訊號可靠性低（方向分收斂向中性）`);
     } else { factorVotes.adxDistD = 0; }
   }
   // ⑪ 足跡圖累積 Delta 聚合（以已緩存的幣種足跡圖推算今日流向）
@@ -7309,8 +7364,10 @@ function computeTodayAIBias(fg, globalMkt) {
       factorVotes.fpDelta = 0;
     }
     if (fpDivN >= Math.ceil(fpTotal * 0.5)) {
-      bear += 0.5;
-      reasons.push(`足跡圖偵測 ${fpDivN} 幣種 Delta 背離，趨勢動能可疑`);
+      // 背離＝「趨勢動能可疑」，多空皆然（下跌中的背離是止跌訊號，不是利空）
+      // 原本一律投空票，等於在每一段趨勢末端都自動偏空。改為收斂＋扣信心。
+      _relAmp *= 0.92; _relConf -= 3;
+      reasons.push(`足跡圖偵測 ${fpDivN} 幣種 Delta 背離，趨勢動能可疑（方向分收斂，不預設偏空）`);
     }
   }
   // ⑫ 市場微結構質量（Tick 品質 + VWAP 偏離聚合）
@@ -7321,10 +7378,11 @@ function computeTodayAIBias(fg, globalMkt) {
     const highNoiseFps = _fpMsqEntries.filter(fp => fp.bidAskBounceScore > 65).length;
     const highNoiseRatio = highNoiseFps / _fpMsqEntries.length;
     if (avgMsq >= 70 && highNoiseRatio < 0.2) {
-      factorVotes.microstructure = 1; bull += 1 * wMsq;
-      reasons.push(`市場微結構質量良好（平均 ${avgMsq.toFixed(0)} 分），Tick 訂單流方向一致，訊號可靠性高`);
+      // 品質好＝訊號可信，不是「看多」（同 ⑩ 的分類修正）
+      _relAmp *= 1 + 0.12 * wMsq; _relConf += 3; _relVotes.push('microstructure');
+      reasons.push(`市場微結構質量良好（平均 ${avgMsq.toFixed(0)} 分），Tick 訂單流方向一致，訊號可靠性高（放大既有方向）`);
     } else if (highNoiseRatio > 0.5) {
-      factorVotes.microstructure = -1; bear += 1 * wMsq;
+      _relAmp *= 1 - 0.12 * wMsq; _relConf -= 5; factorVotes.microstructure = 0;
       reasons.push(`⚠️ ${(highNoiseRatio*100).toFixed(0)}% 幣種 Tick 存在 Bid-Ask Bounce 高噪音，市場微結構不穩定，訊號可靠性下降`);
     } else {
       factorVotes.microstructure = 0;
@@ -7336,13 +7394,19 @@ function computeTodayAIBias(fg, globalMkt) {
       const belowVwap = fpWithVwap.filter(fp => fp.lastClose < fp.vwap * 0.985).length;
       const abovePct = Math.round(aboveVwap / fpWithVwap.length * 100);
       const belowPct = Math.round(belowVwap / fpWithVwap.length * 100);
+      /* ⚠️ 2026-08-30：VWAP／費率／OI／輪動這四項以前完全繞過學習層——
+         沒有權重乘數、也沒有寫進 factorVotes，所以既不會被校準、事後也
+         查不出它們準不準。它們的分量並不小（合計可達 ±2.8，而 bias 門檻
+         只有 0.75／2），等於「學習系統只管得到一半的分數，另一半永遠
+         按出廠設定投票」。全部接上權重與投票，與 ①–⑫ 同一套獎懲。 */
+      const wVwapD = _getBiasWeight(weights, 'daily_vwapDev');
       if (abovePct > 60) {
-        bear += 0.5;
+        factorVotes.vwapDev = -1; bear += 0.5 * wVwapD;
         reasons.push(`${abovePct}% 幣種顯著偏離 VWAP 向上（>1.5%），均值回歸風險，追漲謹慎`);
       } else if (belowPct > 60) {
-        bull += 0.5;
+        factorVotes.vwapDev = 1; bull += 0.5 * wVwapD;
         reasons.push(`${belowPct}% 幣種顯著偏離 VWAP 向下（>1.5%），超賣反彈機會，可關注做多`);
-      }
+      } else { factorVotes.vwapDev = 0; }
     }
   }
 
@@ -7350,11 +7414,13 @@ function computeTodayAIBias(fg, globalMkt) {
   try {
     const _tFrCoins = ((typeof state !== 'undefined' && state.data) ? state.data : []).filter(c => c.derivData?.fundingRate != null);
     if (_tFrCoins.length >= 3) {
+      const wFrD = _getBiasWeight(weights, 'daily_funding');
       const _tAvgFr = _tFrCoins.reduce((s, c) => s + c.derivData.fundingRate, 0) / _tFrCoins.length;
-      if (_tAvgFr > 0.003)       { bear += 1;   reasons.push(`資金費率均值 ${(_tAvgFr*100).toFixed(3)}%（偏高），多頭槓桿擁擠，今日回調擠壓風險`); }
-      else if (_tAvgFr > 0.001)  { bull += 0.5; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（健康偏多），多頭持倉主導未過熱`); }
-      else if (_tAvgFr < -0.003) { bull += 1;   reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（極端負值），空頭擁擠，今日軋空反彈機會`); }
-      else if (_tAvgFr < -0.001) { bull += 0.7; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（負值），空頭付費過熱，有利反彈`); }
+      if (_tAvgFr > 0.003)       { factorVotes.funding = -2; bear += 1   * wFrD; reasons.push(`資金費率均值 ${(_tAvgFr*100).toFixed(3)}%（偏高），多頭槓桿擁擠，今日回調擠壓風險`); }
+      else if (_tAvgFr > 0.001)  { factorVotes.funding =  1; bull += 0.5 * wFrD; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（健康偏多），多頭持倉主導未過熱`); }
+      else if (_tAvgFr < -0.003) { factorVotes.funding =  2; bull += 1   * wFrD; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（極端負值），空頭擁擠，今日軋空反彈機會`); }
+      else if (_tAvgFr < -0.001) { factorVotes.funding =  1; bull += 0.7 * wFrD; reasons.push(`資金費率 ${(_tAvgFr*100).toFixed(3)}%（負值），空頭付費過熱，有利反彈`); }
+      else                       { factorVotes.funding =  0; }
     }
   } catch(_e) {}
 
@@ -7371,16 +7437,20 @@ function computeTodayAIBias(fg, globalMkt) {
       else if (_tT.regime === 'long_liq') _tOIScore += 0.3;
     }
     if (_tOIN >= 5) {
-      if (_tOIScore >= 3)       { bull += 0.8; reasons.push(`OI 聚合：${_tOIN} 個合約以新多進場為主，今日新錢驅動上行`); }
-      else if (_tOIScore <= -3) { bear += 0.8; reasons.push(`OI 聚合：${_tOIN} 個合約以新空進場為主，今日空方新錢主導`); }
+      const wOiD = _getBiasWeight(weights, 'daily_oiAgg');
+      if (_tOIScore >= 3)       { factorVotes.oiAgg =  1; bull += 0.8 * wOiD; reasons.push(`OI 聚合：${_tOIN} 個合約以新多進場為主，今日新錢驅動上行`); }
+      else if (_tOIScore <= -3) { factorVotes.oiAgg = -1; bear += 0.8 * wOiD; reasons.push(`OI 聚合：${_tOIN} 個合約以新空進場為主，今日空方新錢主導`); }
+      else                      { factorVotes.oiAgg =  0; }
     }
   } catch(_e) {}
 
   // ⑮ 資金輪動（與週預測同邏輯）
   try {
     const _tRot = getRotationRegime();
-    if (_tRot && _tRot.regime === 'alt_season')      { bull += 0.5; reasons.push(`資金輪動：山寨季特徵，資金外溢至山寨`); }
-    else if (_tRot && _tRot.regime === 'btc_season') { bear += 0.5; reasons.push(`資金輪動：BTC 季特徵，山寨資金失血`); }
+    const wRotD = _getBiasWeight(weights, 'daily_rotation');
+    if (_tRot && _tRot.regime === 'alt_season')      { factorVotes.rotation =  1; bull += 0.5 * wRotD; reasons.push(`資金輪動：山寨季特徵，資金外溢至山寨`); }
+    else if (_tRot && _tRot.regime === 'btc_season') { factorVotes.rotation = -1; bear += 0.5 * wRotD; reasons.push(`資金輪動：BTC 季特徵，山寨資金失血`); }
+    else if (_tRot)                                  { factorVotes.rotation =  0; }
   } catch(_e) {}
 
   // ⑤ 今日高影響數據事件 + 政策訊息（最關鍵因素，加強預測精度）
@@ -7398,25 +7468,40 @@ function computeTodayAIBias(fg, globalMkt) {
     }
   });
 
-  // 即將公布 = 不確定性極高，大幅減少今日信心
+  /* ⚠️ 2026-08-30 修復：不確定性不是「看空」──────────────────────
+     原本即將公布的高影響數據 bear += 1.0、臨近 += 0.5，直接加在「方向」
+     那一側。但 FOMC 半小時後公布不代表會跌，只代表「不知道」。這個寫法
+     有三個後果：① 每逢數據日系統系統性偏空（實測：極溫和偏多盤面只要
+     有 1 個高影響事件就從「小幅偏多」被推成「中性」）；② 事件是 forEach
+     逐筆累加、無上限，三個事件就是 bear +3，足以壓過所有技術面因子；
+     ③ 註解本來就寫「大幅減少今日信心」——原意是扣信心，實作卻扣了方向。
+     改為只累計信心扣分（不確定性 = 信心低，方向仍由證據決定），並設上限
+     18 分避免事件多的日子把信心壓到地板。 */
+  let _evConfPen = 0;
   imminent.forEach(ev => {
-    bear += 1.0;  // 加強扣分
+    _evConfPen += 9;
     const timeLabel = ev.mins < 0 ? '已公布' : `${Math.round(ev.mins)}分鐘後`;
-    reasons.push(`🚨 <b>${ev.name}（${timeLabel}）</b>：${ev.aiPred ? `預測 ${ev.aiPred}（信心 ${ev.aiConf}%）` : '極高風險，建議觀望'}`);
+    reasons.push(`🚨 <b>${ev.name}（${timeLabel}）</b>：${ev.aiPred ? `預測 ${ev.aiPred}（信心 ${ev.aiConf}%）` : '極高風險，建議觀望'}（不確定性扣信心，不改方向）`);
   });
-
-  // 臨近公布 = 中等不確定
   near.forEach(ev => {
-    bear += 0.5;
+    _evConfPen += 5;
     const timeLabel = `${(ev.mins / 60).toFixed(0)}小時後`;
     reasons.push(`⚠️ ${ev.name}（${timeLabel}）：${ev.aiPred || '高影響數據待公布'}`);
   });
+  _evConfPen = Math.min(18, _evConfPen);
 
   // 較遠或已公布 = 監測作用，不扣分
   const relevantHighEvs = imminent.concat(near);
 
-  const score    = bull - bear;
+  /* 方向分 = 方向性證據淨值 × 可靠度放大（⑩ADX／⑫微結構）。
+     放大器只改力度不改正負號：橫盤／高噪音時分數收斂向 0（更容易落進
+     中性死區），趨勢明確時既有方向更容易越過門檻。 */
+  const _dirRaw  = bull - bear;
+  const score    = +(_dirRaw * _relAmp).toFixed(3);
   const absScore = Math.abs(score);
+  // 可靠度因子的方向票＝它實際放大的那一側，事後照樣被獎懲（不放大就記 0）
+  { const _rs = _dirRaw > 0 ? 1 : _dirRaw < 0 ? -1 : 0;
+    for (const k of _relVotes) factorVotes[k] = _rs; }
   // 死區：|score| < 0.75 一律中性——原本 score>0 即偏多、<0 即偏空，
   // 分數在 0 附近時任何微小市場變動就翻面，SQ 因子③跟著 ±1 來回擺（同分鐘建單→取消的主因之一）
   let bias = score >= 2 ? 'bull' : score <= -2 ? 'bear'
@@ -7457,7 +7542,12 @@ function computeTodayAIBias(fg, globalMkt) {
   const biasLabel = { bull:'▲ 偏多', bear:'▼ 偏空', slight_bull:'▲ 小幅偏多', slight_bear:'▼ 小幅偏空', neutral:'◆ 中性觀望' }[bias];
   const biasColor = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text3)';
   // 提升日預測區分度：強信號提升 +6，加上高影響事件扣分
-  let conf = Math.max(30, Math.min(88, 45 + absScore * 10 + (bias !== 'neutral' && bias.includes !== 'slight' ? 6 : 0) + (fgVal != null ? 4 : 0) - relevantHighEvs.length * 5));
+  /* ⚠️ 2026-08-30 修復：原本寫 `bias.includes !== 'slight'`——把「函式本身」
+     拿去跟字串比，永遠為 true，所以 slight_bull/slight_bear 也照領這 +6 的
+     「明確方向」加分。弱訊號被灌上跟強訊號一樣的信心，是信心分長期偏高、
+     與實測命中率對不上的直接原因之一。 */
+  let conf = Math.max(30, Math.min(88, 45 + absScore * 10 + (bias !== 'neutral' && !bias.includes('slight') ? 6 : 0)
+    + (fgVal != null ? 4 : 0) + _relConf - _evConfPen));
   /* 成績單回饋（保守）：近期已結算的方向預測 ≥8 筆且命中率 Wilson 上界 <45%
      ——統計上確定比擲硬幣差——信心分上限壓到 52 並明寫原因。方向照給，
      但不再帶著沒有實績支撐的高信心。命中率回升會自動解除。 */
@@ -7475,7 +7565,16 @@ function computeTodayAIBias(fg, globalMkt) {
 
   // ── Persist current prediction for future self-evaluation ──
   try {
-    learn.dailyPred = { bias, factorVotes, mktChgAtTime: mktChg, timestamp: Date.now() };
+    /* 以「日期」錨定：同一天內只更新內容（方向可能因新證據翻面），時間戳
+       維持當日第一次計算的時刻——否則年齡永遠歸零，結算條件永遠不成立。 */
+    const _todayKey2 = new Date().toISOString().slice(0, 10);
+    if (learn.dailyPred && learn.dailyPred.day === _todayKey2) {
+      learn.dailyPred.bias = bias;
+      learn.dailyPred.factorVotes = factorVotes;
+      learn.dailyPred.mktChgAtTime = mktChg;
+    } else {
+      learn.dailyPred = { bias, factorVotes, mktChgAtTime: mktChg, day: _todayKey2, timestamp: Date.now(), graded: false };
+    }
     learn.weights = weights;
     _saveBiasLearning(learn);
   } catch(e) {}
@@ -13963,7 +14062,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820n';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820p';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -32299,10 +32398,26 @@ function forecastSnapshot(data) {
     const btc = data.find(d => d && d.symbol === 'BTC/USDT');
     const btcPx = parseFloat(btc && btc.price) || 0;
     if (!(btcPx > 0)) return;
+    /* ⚠️ 2026-08-30 修復：重疊窗口被當成獨立樣本 ────────────────────
+       每 30 分鐘拍一次快照，但「今日 AI 預測」的視野是 8 小時——同一個
+       判斷會被 16 個重疊窗口重複量測，全部進了同一個 Wilson 區間。實測：
+       minN=20 只要 0.42 天就湊滿，也就是「一天半的行情」就能讓某個預測器
+       被判定為 good（乘數 ×1.3）或 bad（×0.4）。這些乘數現在直接餵進方向
+       確信度，而確信度又是建單排序與方向融合的依據——統計假象會被一路
+       放大到實單。
+       修法：同一個預測器＋同一個標的，同時只允許一筆「未結算」的預測。
+       視野走完、結算了才收下一筆 → 窗口天然不重疊，樣本近似獨立。
+       代價是樣本累積變慢（日預測從每天 48 筆降到 3 筆），但那正是它本來
+       就該有的速度：8 小時的預測，一天本來就只能驗三次。 */
+    const _open = new Set();
+    try { for (const r of loadForecastLog()) if (!r.res) _open.add(r.k + '|' + (r.symbol || 'BTC/USDT')); } catch(_e) {}
     const rows = [];
     const push = (key, call, ref, symbol) => {
       if (!call || !FC_PREDICTORS[key]) return;
-      rows.push({ id: `fc-${key}-${symbol || 'MKT'}-${now}`, k: key, call, ref, symbol: symbol || 'BTC/USDT',
+      const sym = symbol || 'BTC/USDT';
+      if (_open.has(key + '|' + sym)) return;   // 上一筆還沒到期 → 不重複下注同一個判斷
+      _open.add(key + '|' + sym);
+      rows.push({ id: `fc-${key}-${sym}-${now}`, k: key, call, ref, symbol: sym,
         at: now, due: now + FC_PREDICTORS[key].horizonH * 3600e3, res: null });
     };
     const norm = b => {

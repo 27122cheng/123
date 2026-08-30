@@ -443,6 +443,39 @@ function analyzeOrderFlow(raw) {
 }
 
 /* ── 單一時間框架突破信號 ─────────────────────────── */
+/* 未收盤 K 棒的成交量投影 ─────────────────────────────────────────
+   交易所回傳的最後一根 K 棒是「正在成形」的：它的成交量只累積到現在
+   這一刻。拿它直接除以 20 根「完整 K 棒」的均量，量出來的不是量能強弱，
+   而是「現在是這根 K 棒的第幾分鐘」。
+   實測（2026-08-30）：同一根 1H K 棒，剛開盤時 volRatio = 0.05、快收盤
+   時 = 1.00，差 20 倍——而 isHighVol（>1.4）幾乎只可能在收盤前成立。
+   後果：突破的「帶量確認」在日線／週線上幾乎永遠拿不到（日線 K 棒要到
+   UTC 深夜才累積夠量），strong_bull / strong_bear 這兩個最高等級的訊號
+   因此長期難產；volRatio 又被快速單的條件桶學習當特徵，等於在學一個
+   「掃描時機」的假訊號。
+   修正：把成形中 K 棒的量按「已經過去的時間比例」投影成整根的預估量，
+   再去比。已收盤的 K 棒（elapsed ≥ 1）完全不受影響。 */
+function _projectedLastVol(raw, volumes, volSMA) {
+  const lastVol = volumes[volumes.length - 1];
+  try {
+    const last = raw[raw.length - 1];
+    const openT = +last[0], closeT = +last[6];
+    if (!(closeT > openT)) return { vol: lastVol, forming: false, frac: 1 };
+    const span = closeT - openT + 1;
+    const frac = (Date.now() - openT) / span;
+    if (!(frac > 0) || frac >= 1) return { vol: lastVol, forming: false, frac: 1 };
+    const projected = lastVol / frac;
+    /* K 棒才剛開的時候，投影本身也不可信（一筆大單就能推出 25 倍的假爆量）。
+       正確的處理不是「夾住」而是「承認資訊不足」：走完越少，越往中性先驗
+       （＝近 20 根均量，也就是 volRatio 1.0「無意見」）收縮；走完 35% 以上
+       才完全採信投影。這樣兩端都不會說謊——剛開盤不會假裝量很小（舊版
+       0.05 的病），也不會把一筆大單吹成爆量突破。 */
+    const w = Math.min(1, frac / 0.35);
+    const prior = (volSMA > 0) ? volSMA : lastVol;
+    return { vol: w * projected + (1 - w) * prior, forming: true, frac: +frac.toFixed(3) };
+  } catch(_e) { return { vol: lastVol, forming: false, frac: 1 }; }
+}
+
 function analyzeTimeframeSignal(raw) {
   if (!raw || raw.length < 30) return null;
   const { opens, closes, highs, lows, volumes } = parseKlines(raw);
@@ -451,7 +484,8 @@ function analyzeTimeframeSignal(raw) {
   const pivotLevels = findPivotLevels(highs, lows, closes, 60);
   const { swingHigh, swingLow } = pivotLevels;
   const volSMA    = calcVolSMA(volumes, 20);
-  const lastVol   = volumes[volumes.length - 1];
+  const _pv       = _projectedLastVol(raw, volumes, volSMA);
+  const lastVol   = _pv.vol;
   const isHighVol = lastVol > volSMA * 1.4;
   const volRatio  = volSMA > 0 ? parseFloat((lastVol / volSMA).toFixed(2)) : 1;
 
@@ -483,6 +517,7 @@ function analyzeTimeframeSignal(raw) {
     signal, price, rsi: parseFloat(rsi.toFixed(1)), rsiSlope,
     ema20, ema50, swingHigh, swingLow,
     bullBreak, bearBreak, isHighVol, volRatio,
+    barForming: _pv.forming, barElapsed: _pv.frac,   // 成形中／已走完的比例（透明化用）
     struct: computeSwingStructure(highs, lows, closes, atr),   // 擺動結構（HH/HL、BOS、CHoCH）
     atr, pivotLevels,
   };
