@@ -14062,7 +14062,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820q';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820r';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -17063,7 +17063,7 @@ function updateOpenTrades(data) {
     changed = true;
   }
   if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
-  if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits);
+  if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits).catch(e => console.warn('[tp1-notify]', e));
   // 出場參數自我調整：資料變動後才重評，且每小時最多一次（網格重放不便宜）
   if (changed && Date.now() - (updateOpenTrades._exitAt || 0) > 3600 * 1000) {
     updateOpenTrades._exitAt = Date.now();
@@ -17209,15 +17209,28 @@ async function verifyIntrabarHits() {
       try { if (typeof showToast === 'function') showToast(`📍 ${trade.symbol} 1m插針判定：${outcome === 'tp2' ? '止盈二' : outcome === 'be' ? '保本出場' : '止損'}（輪詢間隙觸及）`, outcome === 'tp2' ? 'success' : 'warning'); } catch(_t) {}
     }
     if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
-    if (tp1Hits.length > 0) { try { sendTP1Notifications(tp1Hits); } catch(_e) {} }
+    // .catch 而不是 try/catch：沒有 await 的 async 呼叫，try/catch 接不到它的拒絕
+    if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits).catch(e => console.warn('[tp1-notify]', e));
   } catch(_e) { console.warn('[wick-check]', _e); }
   finally { _wickCheckBusy = false; }
 }
 
+/* ── 止盈一達成通知 ──────────────────────────────────────────────
+   ⚠️ 2026-08-31 修復（使用者截圖回報頁面下方紅色錯誤條
+   「[promise] Assignment to constant variable.」）：
+   訊息本文原本宣告為 const 卻在下一行 `msg +=` 接上連結，每次止盈一達成
+   都會拋 TypeError。兩個呼叫端都沒有 await（其中一個包了 try/catch，但
+   try/catch 接不住「沒有 await 的 async 呼叫」回傳的拒絕），所以它一路
+   變成未處理的 Promise 拒絕、被錯誤條抓下來顯示。
+   實際損害不只是那條紅字：例外發生在迴圈中間，① 該筆的 Telegram 通知
+   從來沒送出過 ②「本輪同時達到止盈一」的其餘單子連瀏覽器通知都收不到
+   （迴圈直接中斷）。自 2026-07-28 起就一直如此。
+   同時把每一筆包成獨立 try/catch：一筆通知失敗不該拖垮其他筆。 */
 async function sendTP1Notifications(hits) {
   const s = loadSettings();
   if (!s.notifBrowser && !s.notifTelegram) return;
   for (const { trade, coin, cur } of hits) {
+   try {
     const dir = trade.direction === 'long' ? '做多' : '做空';
     const rr  = (Math.abs(trade.tp1 - trade.entry) / (Math.abs(trade.entry - trade.sl) || 1)).toFixed(1);
     if (s.notifBrowser) {
@@ -17229,7 +17242,9 @@ async function sendTP1Notifications(hits) {
     }
     if (s.notifTelegram && s.tgToken && s.tgChatId) {
       const fmt = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
-      const msg =
+      // ⚠️ 必須是 let：下面要 `msg +=` 接上連結。原本寫 const → 每次止盈一
+      // 達成都拋 TypeError，Telegram 通知從來沒送出過（見下方註解）。
+      let msg =
         `🎯 <b>止盈一已達到！止損已自動保本</b>\n\n` +
         `💎 <b>${trade.symbol}</b>  <b>${trade.direction === 'long' ? '▲ 做多' : '▼ 做空'}</b>\n\n` +
         `✅ 止盈一：<b>$${fmt(trade.tp1)}</b>\n` +
@@ -17241,6 +17256,7 @@ async function sendTP1Notifications(hits) {
       msg += `\n\n🔗 <a href="${siteUrl}">查看 ${trade.symbol.replace('/USDT','').replace('USDT','')} 詳細分析 →</a>`;
       sendTelegramMessage(s.tgToken, s.tgChatId, msg);
     }
+   } catch(_e) { console.warn('[tp1-notify]', trade && trade.symbol, _e); }
   }
 }
 
