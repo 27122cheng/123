@@ -11,8 +11,13 @@
    未設定時回 503 並附說明，前端會自動退回單機（localStorage）模式，
    不會因此壞掉。
 
-   GET  /api/master        → 讀取目前主機 { id, ts, ua }
-   POST /api/master {id,ua}→ 宣告主機（最新宣告覆蓋前者），回傳存入的值 */
+   GET    /api/master        → 讀取目前主機 { id, ts, ua }
+   POST   /api/master {id,ua}→ 宣告主機（最新宣告覆蓋前者），回傳存入的值
+   DELETE /api/master        → 刪除雲端上存的主機資料（這支函式在雲端只存
+                               這一把 key，等於清空本站的全部雲端資料）。
+                               前端「清除雲端資料」按鈕會呼叫它；清除後若
+                               雲端同步開關仍開著，下一輪心跳會再寫回去，
+                               所以前端會同時把開關關掉。 */
 
 const KV_URL   = process.env.KV_REST_API_URL   || process.env.UPSTASH_REDIS_REST_URL;
 const KV_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -53,6 +58,11 @@ module.exports = async (req, res) => {
       const info = { id: String(id), ts: Date.now(), ua: String((body && body.ua) || '') };
       await redis(['SET', KEY, JSON.stringify(info)]);
       res.status(200).json({ ok: true, master: info });
+      return;
+    }
+    if (req.method === 'DELETE') {
+      const removed = await redis(['DEL', KEY]);
+      res.status(200).json({ ok: true, deleted: Number(removed) || 0, key: KEY });
       return;
     }
     const raw = await redis(['GET', KEY]);

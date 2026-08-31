@@ -989,8 +989,34 @@ function analyzeWhalePattern(whale) {
   return { pattern, strength, label, color, buyPct, sellPct: parseFloat(sellPct.toFixed(1)), bigBuyCount, bigSellCount, netFlow };
 }
 
-/* 恐慌貪婪指數 (alternative.me) */
+/* ── 加密宏觀同源代理（/api/crypto）的共用取用層 ────────────────────
+   加密大盤與恐慌貪婪原本由瀏覽器直連。CoinGecko 免費端點依來源 IP 限速，
+   而掃描每輪都在請求，踩到 429 之後會長時間拿不到資料——使用者實例：
+   這兩項在資料鮮度頁停在「15 小時前 · 過期」，同時間幣價／K 線都是秒級
+   新鮮。改成優先走伺服器端代理（一個 IP、5 分鐘快取、所有裝置共用），
+   直連保留為備援：代理不可用（例如本機開檔測試）時行為與以前完全相同。 */
+let _cgProxy = { at: 0, body: null };
+async function _cryptoMacroProxy() {
+  if (_cgProxy.body && Date.now() - _cgProxy.at < 60e3) return _cgProxy.body;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 7000);
+    const r = await fetch('/api/crypto', { signal: ctrl.signal, cache: 'no-store' });
+    clearTimeout(t);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || j.ok !== true) return null;
+    _cgProxy = { at: Date.now(), body: j };
+    return j;
+  } catch { return null; }
+}
+
+/* 恐慌貪婪指數 (alternative.me；優先同源代理) */
 async function fetchFearGreed() {
+  try {
+    const px = await _cryptoMacroProxy();
+    if (px && px.fg) { feedStamp('fg', true, '同源代理'); return px.fg; }
+  } catch(_e) {}
   try {
     const ctrl = new AbortController();
     const t    = setTimeout(() => ctrl.abort(), 5000);
@@ -998,7 +1024,7 @@ async function fetchFearGreed() {
     clearTimeout(t);
     if (!res.ok) throw new Error();
     const _fgv = (await res.json()).data[0];
-    feedStamp('fg', !!_fgv);
+    feedStamp('fg', !!_fgv, '直連');
     return _fgv;
   } catch { feedStamp('fg', false); return null; }
 }
@@ -1006,6 +1032,10 @@ async function fetchFearGreed() {
 
 /* ── 全球加密貨幣市場數據（CoinGecko 免費）──────────────────── */
 async function fetchGlobalMarket() {
+  try {
+    const px = await _cryptoMacroProxy();
+    if (px && px.global) { feedStamp('global', true, '同源代理'); return px.global; }
+  } catch(_e) {}
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 6000);

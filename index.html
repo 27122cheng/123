@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260820s" />
+  <link rel="stylesheet" href="css/styles.css?v=20260820t" />
 </head>
 <body>
 
@@ -983,6 +983,28 @@
             📡 將本分頁設為訊號主機
           </button>
           <div id="signal-master-status" style="font-size:0.82rem;line-height:1.7"></div>
+
+          <!-- 雲端同步開關＋清除雲端資料 -->
+          <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:10px">
+            <div class="setting-row" style="padding:0 0 6px">
+              <div>
+                <div class="setting-name">☁️ 使用雲端同步（跨裝置仲裁）</div>
+                <div class="setting-desc">關閉後完全不讀寫雲端，退回單機模式（僅同瀏覽器分頁互相協調）。網站與所有功能照常運作。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="s-cloud-sync" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <button class="btn-ghost" onclick="clearCloudDataUI()" style="font-size:0.84rem;color:#f59e0b">
+              🗑️ 清除雲端上的資料
+            </button>
+            <div class="setting-desc" style="margin-top:4px">
+              本站在雲端只存一筆「目前哪一台是訊號主機」的紀錄，沒有交易紀錄、沒有設定、沒有任何個人資料。
+              按下後會刪除該筆紀錄並自動關閉雲端同步（否則兩分鐘後心跳會再寫回去）。
+              網站本身與所有雲端函式都會保留，隨時把上面的開關打開就恢復。
+            </div>
+          </div>
         </div>
       </div>
 
@@ -999,8 +1021,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260820s"></script>
-  <script src="js/api.js?v=20260820s"></script>
-  <script src="js/app.js?v=20260820s"></script>
+  <script src="js/indicators.js?v=20260820t"></script>
+  <script src="js/api.js?v=20260820t"></script>
+  <script src="js/app.js?v=20260820t"></script>
 </body>
 </html>

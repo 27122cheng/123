@@ -273,8 +273,23 @@ async function init() {
 /* 宏觀快取持久化：CoinGecko 免費端點限速兇，429 的空窗期一般單會整輪停擺。
    存最後一份成功的快照（2 小時內視為可用），重新整理或限速窗內不從零開始。 */
 function _persistMacro() {
+  try { _macroCacheAt = Date.now(); } catch(_e) {}
   try { localStorage.setItem('csp_macro_snapshot', JSON.stringify({ at: Date.now(), v: _macroCache })); } catch(_e) {}
 }
+/* ── 宏觀快取的年齡（2026-08-31）────────────────────────────────
+   使用者截圖：資料鮮度頁紅字寫著「加密大盤 15 小時前 · 過期」「恐慌貪婪
+   15 小時前 · 過期 —— 這些數字不該再拿來做決策」，但系統照樣在建單。
+   原因：持久化快照有 2 小時保護，那個保護卻只在「記憶體快取是空的」時候
+   才會用到；_macroCache 本身沒有任何時間戳。分頁一直開著沒重整、之後
+   CoinGecko／恐貪開始失敗，15 小時前那份數字就永遠留在記憶體裡，每一輪
+   掃描的大方向、多空封鎖、宏觀逆風扣分、今日／本週預測全都吃它。
+   修法：給記憶體快取同一個 2 小時標準——超過就當作「沒有宏觀資料」，
+   走既有的「宏觀資料未就緒」路徑（漏斗大聲寫、一般單暫停、快速單不受
+   影響）。標準與持久化快照一致，不是新增門檻。 */
+let _macroCacheAt = 0;
+const MACRO_MAX_AGE_MS = 2 * 3600e3;
+function macroAgeMs() { return _macroCacheAt ? Date.now() - _macroCacheAt : Infinity; }
+function macroUsable() { return !!_macroCache && macroAgeMs() < MACRO_MAX_AGE_MS; }
 async function _prefetchMacroCache() {
   try {
     const [fg, gm] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
@@ -13004,7 +13019,48 @@ let _cloudCheckedAt = 0;
    心跳每 ≤2 分鐘一次，10 分鐘的過期門檻有 5 倍裕度，不會誤判。 */
 const MASTER_STALE_MS = 10 * 60 * 1000;
 let _masterBeatAt = 0;
+/* 清除雲端資料：本站在雲端只存一把 key（csp:signal_master），刪掉它等於
+   把雲端上的資料清空。同時關閉雲端同步——否則下一輪心跳（2 分鐘）就會
+   把資料再寫回去，「刪掉」等於沒刪。網站與所有 /api 函式一律保留不動，
+   隨時把開關打開就能恢復。 */
+async function clearCloudMasterData() {
+  const s = loadSettings();
+  s.cloudSync = false;                 // 先關同步，避免刪完又被心跳寫回
+  saveSettings(s);
+  _cloudOk = false; _cloudMaster = null; _cloudReason = '雲端同步已由使用者關閉';
+  try {
+    const r = await fetch('/api/master', { method: 'DELETE', cache: 'no-store' });
+    const j = await r.json().catch(() => null);
+    if (j && j.ok) return { ok: true, deleted: j.deleted, key: j.key };
+    return { ok: false, reason: (j && (j.hint || j.reason)) || `HTTP ${r.status}` };
+  } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
+}
+
+/* 設定頁「清除雲端上的資料」按鈕：先確認再刪，結果如實回報（含刪不掉的原因）*/
+async function clearCloudDataUI() {
+  if (!confirm('確定要清除雲端上的資料嗎？\n\n'
+    + '雲端只存一筆「目前哪一台是訊號主機」的紀錄，不含交易紀錄、設定或個人資料。\n'
+    + '清除後會自動關閉雲端同步，改用單機模式（僅同瀏覽器分頁互相協調）。\n'
+    + '網站與所有功能都會保留，隨時可以把雲端同步重新打開。')) return;
+  const r = await clearCloudMasterData();
+  try { const t = document.getElementById('s-cloud-sync'); if (t) t.checked = false; } catch(_e) {}
+  try { renderSignalMasterStatus(); } catch(_e) {}
+  if (r.ok) {
+    showToast(r.deleted ? '雲端資料已清除，並已關閉雲端同步' : '雲端上本來就沒有資料；已關閉雲端同步', 'success');
+  } else {
+    // 誠實回報：同步已關（本機不再寫入），但雲端那筆可能還在
+    showToast('已關閉雲端同步，但刪除請求失敗：' + r.reason, 'warning');
+  }
+}
+
 async function refreshCloudMaster() {
+  // 使用者關閉雲端同步 → 完全不碰 /api/master（不讀、不寫、不心跳），走單機模式
+  if (loadSettings().cloudSync === false) {
+    _cloudOk = false; _cloudMaster = null;
+    _cloudReason = '雲端同步已關閉（單機模式）——設定頁可重新開啟';
+    _cloudCheckedAt = Date.now();
+    return;
+  }
   try {
     const r = await fetch('/api/master', { cache: 'no-store' });
     const j = await r.json().catch(() => null);
@@ -14073,7 +14129,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820s';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820t';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15048,13 +15104,26 @@ async function recordSignalsFromScan(data) {
     // 快取，CoinGecko 被限速時只有一般單靜默停擺。三道補救：
     //   ① 先試 2 小時內的持久化快照（重新整理／限速窗內不再從零開始）
     //   ② 仍然沒有 → 大聲寫進漏斗，訊號主機狀態頁看得到，不再無聲 break
-    if (!_macroCache) {
+    //   ③ 記憶體快取本身也要看年齡：分頁長開不重整時，15 小時前的恐貪／
+    //      市值會一直被當成「有資料」拿來建單（使用者實例）。逾時＝視同沒有。
+    // 年齡要在清空前先取下：清空後時間戳歸零，會分不出「從未取得」與「太舊」
+    const _staleAgeH = (_macroCache && macroAgeMs() >= MACRO_MAX_AGE_MS && isFinite(macroAgeMs()))
+      ? (macroAgeMs() / 3600e3).toFixed(1) : null;
+    if (!macroUsable()) {
+      _macroCache = null; _macroCacheAt = 0;
       try {
         const _ms = JSON.parse(localStorage.getItem('csp_macro_snapshot') || 'null');
-        if (_ms && _ms.at && Date.now() - _ms.at < 2 * 3600e3 && _ms.v) _macroCache = _ms.v;
+        if (_ms && _ms.at && Date.now() - _ms.at < MACRO_MAX_AGE_MS && _ms.v) {
+          _macroCache = _ms.v; _macroCacheAt = _ms.at;
+        }
       } catch(_e) {}
     }
-    if (!_macroCache) { _rej['宏觀資料未就緒（CoinGecko/恐貪未回應，本輪一般單全停——快速單不受影響）'] = data.length - _cand + 1; break; }
+    if (!_macroCache) {
+      _rej[_staleAgeH
+        ? `宏觀資料過期 ${_staleAgeH} 小時（CoinGecko/恐貪抓不到，逾 2 小時即不可用於決策——本輪一般單全停，快速單不受影響）`
+        : '宏觀資料未就緒（CoinGecko/恐貪未回應，本輪一般單全停——快速單不受影響）'] = data.length - _cand + 1;
+      break;
+    }
 
     // 強烈宏觀硬封鎖（與 buildTradeSetup macroBlockedForRecord 完全一致）
     if (isLong  && blockLong && _no('宏觀禁多')) continue;
@@ -23953,7 +24022,7 @@ async function checkAndSendAlerts(data) {
   if (!_macroCache) {
     try {
       const [fg, gm] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-      if (fg || gm) _macroCache = { ...(gm || {}), fg };
+      if (fg || gm) { _macroCache = { ...(gm || {}), fg }; _persistMacro(); }   // 補時間戳：否則這條路徑設的快取永遠「零歲」
     } catch (e) { /* 若 fetch 失敗繼續執行，後續用 null 處理 */ }
   }
 
@@ -25840,6 +25909,8 @@ function populateSettingsPage() {
   if (tgToggle) tgToggle.checked = !!s.notifTelegram;
   const masterToggle = document.getElementById('s-master-toggle');
   if (masterToggle) masterToggle.checked = s.signalMaster !== false;  // 預設開啟
+  const cloudSyncTgl = document.getElementById('s-cloud-sync');
+  if (cloudSyncTgl) cloudSyncTgl.checked = s.cloudSync !== false;     // 預設開啟
   const scalpTgl = document.getElementById('s-scalp-toggle');
   if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
   const scalpTg = document.getElementById('s-scalp-tg-toggle');
@@ -25879,6 +25950,7 @@ function saveAllSettings() {
     bearThreshold:   parseInt(document.getElementById('s-bear-threshold')?.value) || 40,
     notifTelegram:   document.getElementById('s-tg-toggle')?.checked ?? false,
     signalMaster:    document.getElementById('s-master-toggle')?.checked ?? true,
+    cloudSync:       document.getElementById('s-cloud-sync')?.checked ?? true,
     scalpEnabled:    document.getElementById('s-scalp-toggle')?.checked ?? false,
     notifScalp:      document.getElementById('s-scalp-tg-toggle')?.checked ?? false,
     tgToken2:        document.getElementById('s-tg-token2')?.value.trim()  || '',
