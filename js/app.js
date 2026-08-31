@@ -47,6 +47,7 @@ window.addEventListener('DOMContentLoaded', init);
    逾時）只進環形紀錄不上畫面。最近 20 筆存 csp_err_log。 */
 function _bootErrHook() {
   const NOISY = /fetch|network|load failed|abort|timeout|websocket/i;
+  let _errChipN = 0;
   const log = (kind, msg) => {
     const text = String(msg || 'unknown').slice(0, 300);
     try {
@@ -73,8 +74,18 @@ function _bootErrHook() {
         el.appendChild(b);
         (document.body || document.documentElement).appendChild(el);
       }
+      /* 錯誤條自帶版本與時間戳（2026-08-31）：它一旦顯示就不會自己消失，
+         使用者截圖回報時無從判斷「這是現在還在發生，還是三小時前發生過
+         一次的殘影，而且是不是已經修好的舊版本」。標上版本與時分＋累計
+         次數，截圖本身就能自我診斷。 */
       const b = document.getElementById('err-chip-body');
-      if (b) b.textContent = `[${kind}] ${text}`;
+      if (b) {
+        _errChipN++;
+        const _ts = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+        const _ver = (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?';
+        b.textContent = `[${kind}] ${text}　—— v${_ver}　${_ts}`
+          + (_errChipN > 1 ? `　(本次載入第 ${_errChipN} 次)` : '');
+      }
     } catch(_e) {}
   };
   try {
@@ -14062,7 +14073,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820r';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820s';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -18762,17 +18773,22 @@ function mergeRulesIntoMemory(freshRules, freshIssues, freshBest, freshStats) {
     }
   }
 
-  // ── 累積個別問題統計（永遠只增不減）──
+  /* ── 個別問題統計：這裡不再累加（2026-08-31 修復灌水）───────────────
+     舊寫法用「本輪視窗內的出現次數 − 上次記錄值」當增量。但那個視窗會縮
+     （月度歸檔、紀錄裁切），縮小時 countAtLastUpdate 被改寫成較小的值，
+     等樣本重新累積回來，同一批交易的差額就被再加一次。而 archiveExpired-
+     ToMemory 已經用 archivedIds 對「每一筆交易只計一次」做過去重——兩條
+     路徑同時往同一個 count 加，於是每縮放一輪就多算一輪。
+     實測：20 筆真實止損，視窗縮到 5 筆再回到 20 筆之後，計數變成 40。
+     長期累積下來就是使用者截圖上的「歷史止損 889 次教訓」。
+     修法：計數由 archiveExpiredToMemory 單一負責（它本來就有 ID 去重），
+     這裡只維護建議文字與最後出現時間。 */
   for (const { text, suggestion, count } of freshIssues) {
     if (!mem.issues[text]) {
       mem.issues[text] = { text, suggestion, count: 0, firstDetected: now, lastSeen: now };
     }
-    // 只在新一輪分析中出現才增加計數（避免重複累加）
-    const prev = mem.issues[text].countAtLastUpdate || 0;
-    if (count > prev) {
-      mem.issues[text].count += (count - prev);
-    }
-    mem.issues[text].countAtLastUpdate = count;
+    if (!mem.issues[text].suggestion && suggestion) mem.issues[text].suggestion = suggestion;
+    mem.issues[text].countAtLastUpdate = count;   // 保留欄位供診斷，不再拿來加總
     mem.issues[text].lastSeen = now;
   }
 
@@ -18864,6 +18880,12 @@ function computeLearnProfile() {
 
   const losses = closed.filter(isLossTrade);   // 平手(be)不算敗仗，避免學習系統把「主動換防」當失敗情境
   const wins   = closed.filter(isWinTrade);
+
+  /* 註：既有使用者儲存的止損原因計數已被舊版重複累加灌水（實例：889）。
+     這裡刻意「不」改寫儲存值——交易紀錄視窗會暫時縮小（月度歸檔、裁切），
+     在那個當下夾取會把正確的計數永久砍掉且救不回來（實測：20 → 5）。
+     改在讀取端夾：applyLearnAdjustment 用 _cntEff = min(count, 止損總筆數)，
+     灌水值當場失效，儲存值則留著不破壞。 */
 
   // ── 區間分析 helper ──
   const zoneStats = (arr, field, ranges) =>
@@ -19309,19 +19331,38 @@ function applyLearnAdjustment(direction, rsi, adx, ctx = {}) {
           (s.includes('量能') && s.includes('確認') && ctx.volDivergence === 'bearish_div' && direction === 'long') ||
           (s.includes('多週期') && (ctx.mtfAlign ?? 99) <= 1) ||
           ((s.includes('週期') && s.includes('信號一致')) && (ctx.mtfAlign ?? 99) <= 1);
-        if (cnt >= 100) {
-          // 止損原因出現 ≥100 次：AI 判定改進方法為必須條件，違反直接扣信心分
+        /* ── 「必須條件」晉升改為證據制（2026-08-31）──────────────────
+           舊規則：某個止損原因累計出現 ≥100 次 → 直接升格為必須條件，違反
+           扣 10 分。兩個問題：
+           ① 那個計數會灌水（見 archiveExpiredToMemory／mergeRulesIntoMemory
+              的重複累加，實測 20 筆真實止損可以跑到 40），使用者截圖上出現
+              「歷史止損 889 次教訓」——實際止損筆數遠遠不到。門檻因此被
+              過早跨過，一堆建議升格成硬扣分。
+           ② 就算計數正確，「絕對次數」也不是證據：止損 300 筆裡出現 100 次
+              （33%）跟止損 120 筆裡出現 100 次（83%）意義完全不同。
+           新規則：看「這個原因佔全部止損的比例」，並用 Wilson 下界確保不是
+           小樣本僥倖——止損樣本 ≥30 筆、且比例下界 ≥50%（統計上確定它至少
+           出現在一半的止損裡）才升格。門檻對照實際尺度（規則④）：真正的
+           系統性弱點（例如長期在 ADX 過低時進場）比例本來就會超過一半，
+           偶發原因則到不了，不會全部升格也不會全部失效。 */
+        const _lossDen = Math.max(0, _totLosses);
+        const _cntEff  = Math.min(cnt, _lossDen || cnt);   // 次數不可能多於止損總筆數
+        const _share   = _lossDen > 0 ? _cntEff / _lossDen : 0;
+        const _shareLb = _lossDen > 0 ? wilsonLB(_cntEff, _lossDen) : 0;
+        const _isRequired = _lossDen >= 30 && _shareLb >= 0.5;
+        if (_isRequired) {
           if (suggViolated) {
             const _sgPen = 10;
             penalty += _sgPen;
-            warnings.push(`🔒 必須條件未滿足（歷史止損 ${cnt} 次教訓）：${s.slice(0, 50)}，扣 ${_sgPen} 分`);
-            defenseChecks.push({ type: 'sugg_required', label: s.slice(0, 55), count: cnt, pass: false, penalty: _sgPen });
+            warnings.push(`🔒 必須條件未滿足（此原因出現在 ${_cntEff}/${_lossDen} 筆止損中，`
+              + `佔比 ${(_share * 100).toFixed(0)}%、保守下界 ${(_shareLb * 100).toFixed(0)}%）：${s.slice(0, 50)}，扣 ${_sgPen} 分`);
+            defenseChecks.push({ type: 'sugg_required', label: s.slice(0, 55), count: _cntEff, pass: false, penalty: _sgPen });
           } else {
-            defenseChecks.push({ type: 'sugg_required', label: s.slice(0, 55), count: cnt, pass: true, penalty: 0 });
+            defenseChecks.push({ type: 'sugg_required', label: s.slice(0, 55), count: _cntEff, pass: true, penalty: 0 });
           }
         } else {
-          // < 100 次：改進建議僅作為 AI 交易建議參考，不影響信心評分
-          defenseChecks.push({ type: 'sugg_ref', label: s.slice(0, 55), count: cnt, pass: !suggViolated, penalty: 0 });
+          // 未達證據門檻：只當參考，不影響信心評分
+          defenseChecks.push({ type: 'sugg_ref', label: s.slice(0, 55), count: _cntEff, pass: !suggViolated, penalty: 0 });
         }
       }
     }
