@@ -14129,7 +14129,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820t';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820u';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -17362,6 +17362,31 @@ function _markCancelTgSent(symbol, direction) {
    改單，否則模擬與實倉的出場價會脫節。此通知於止損變動當下立即送出，
    不進任何佇列、不等下一輪掃描。
    只在「建單通知已送出」的單上通知，避免使用者收到沒看過的單的改單訊息。 */
+/* ── 同一輪內的止損變動合併（2026-08-31）──────────────────────────
+   使用者回報：同一筆 UNI 多單在 09:57 收到三則止損訊息。原因是一輪掃描裡
+   止損可能被連續推進兩次（先「觸及止盈一→減倉並移到保本」，價格續漲後再
+   「移動停利推進」），每一次都各自立刻發一則；再加上另一條只給建議的
+   AI 追蹤止損也發了一則，就成了三則。
+   對使用者而言那是同一件事的三個中間狀態——真正要知道的只有「最後止損
+   在哪」。這裡把短時間內同一筆單的多次變動合併成一則：起點取第一次的
+   原止損、終點取最後一次的新止損、原因逐條列出。 */
+const SL_NOTIF_MERGE_MS = 2500;
+const _slNotifBuf = new Map();     // trade.id → { trade, oldSL, newSL, reasons[], timer }
+const _slMovedAt  = new Map();     // trade.id → 上次「實際移動止損」的時間（建議路徑用來避免重複打擾）
+function slMovedRecently(id, withinMs) {
+  const t = _slMovedAt.get(id);
+  return !!t && (Date.now() - t) < withinMs;
+}
+function _flushSLNotif(e) {
+  try {
+    const s = loadSettings();
+    if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+    if (e.oldSL === e.newSL) return;          // 推進後又退回原點：沒有淨變化就不吵
+    _slMovedAt.set(e.trade.id || e.trade.symbol, Date.now());
+    sendTelegramMessage(s.tgToken, s.tgChatId, _buildSLChangeText(e.trade, e.oldSL, e.newSL, e.reasons));
+  } catch(_e) { console.warn('[sl-change-flush]', _e); }
+}
+
 function sendSLChangeNotification(trade, oldSL, newSL, reason) {
   try {
     const s = loadSettings();
@@ -17369,6 +17394,22 @@ function sendSLChangeNotification(trade, oldSL, newSL, reason) {
     if (!trade.telegramSent) return;
     const _o = parseFloat(oldSL), _n = parseFloat(newSL);
     if (!isFinite(_o) || !isFinite(_n) || _o === _n) return;
+    const id = trade.id || trade.symbol;
+    const buf = _slNotifBuf.get(id);
+    if (buf) {                                 // 併入已排程的那一則
+      buf.newSL = _n;                          // 終點永遠取最新
+      buf.trade = trade;
+      if (reason && buf.reasons.indexOf(reason) < 0) buf.reasons.push(reason);
+      return;
+    }
+    const entry = { trade, oldSL: _o, newSL: _n, reasons: reason ? [reason] : [] };
+    entry.timer = setTimeout(() => { _slNotifBuf.delete(id); _flushSLNotif(entry); }, SL_NOTIF_MERGE_MS);
+    _slNotifBuf.set(id, entry);
+  } catch(_e) { console.warn('[sl-change-notify]', _e); }
+}
+
+function _buildSLChangeText(trade, _o, _n, reasons) {
+  {
     const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
     const sym    = trade.symbol.replace('/USDT', '');
     const isLong = trade.direction === 'long';
@@ -17381,20 +17422,25 @@ function sendSLChangeNotification(trade, oldSL, newSL, reason) {
     const lockLine = lockR > 0.01 ? `🔒 已鎖定獲利：+${lockR.toFixed(2)}R（此價出場即為贏單）`
                    : lockR < -0.01 ? `⚠️ 仍在虧損區：${lockR.toFixed(2)}R`
                    : `⚖️ 移至成本價（保本）`;
-    const text = [
+    // 一輪內多次推進 → 逐條列出，讓使用者看得出「為什麼一路移到這裡」
+    const rs = (reasons || []).filter(Boolean);
+    const reasonBlock = rs.length > 1
+      ? rs.map((r, i) => `📝 ${i + 1}. ${r}`).join('\n')
+      : `📝 ${rs[0] || '止損更新'}`;
+    return [
       `🛠️ <b>止損調整</b> — ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}`,
       ``,
       `📍 原止損：$${fmt(_o)}`,
       `➡️ 新止損：<b>$${fmt(_n)}</b>`,
       lockLine,
       ``,
-      `📝 ${reason || '止損更新'}`,
+      reasonBlock,
+      ...(rs.length > 1 ? [``, `（本輪連續推進 ${rs.length} 次，已合併為一則；上面就是最終止損）`] : []),
       ``,
       `⏰ ${ts}`,
       `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #止損調整`,
     ].join('\n');
-    sendTelegramMessage(s.tgToken, s.tgChatId, text);
-  } catch(_e) { console.warn('[sl-change-notify]', _e); }
+  }
 }
 
 function sendCancelTelegramNotification(trade, reason) {
@@ -18584,6 +18630,12 @@ function checkPostDataReversal(data) {
     const sl    = trade.sl;
     if (!cur || !entry || !sl) continue;
     const isLong = trade.direction === 'long';
+    /* ⚠️ 2026-08-31：系統剛剛才「實際」移動過這筆單的止損 → 不再另發建議。
+       使用者實例（UNI 多單 09:57 收到三則）：其中兩則是系統自己把止損從
+       5.13214 推到 5.21683 再推到 5.25883，第三則是這條建議路徑叫使用者
+       移到 5.17749——比系統實際已經設的還鬆。照著做等於把已鎖住的獲利
+       吐回去。建議只該在「系統沒動作」時補位，不該和自動化打架。 */
+    if (slMovedRecently(trade.id, 30 * 60000)) continue;
 
     // ATR：優先用掃描快取的真實 ATR14（15 分鐘內有效），否則依 ADX 估算
     const adx = parseFloat(coin.adx) || 20;
@@ -18632,6 +18684,18 @@ function checkPostDataReversal(data) {
 
     if (!suggestNewSl) continue;
 
+    /* 建議只能「收緊」，不能放鬆——而且要拿最新的止損來比。
+       trade 來自本函式開頭的 loadTradeLog() 快照，自動化在這之後可能又推進
+       過；用舊值比較就會算出「上移」，實際上是叫使用者把停損往回搬。
+       重讀最新值，且新建議必須比現有止損更靠獲利方向才發。 */
+    let _curSl = sl;
+    try {
+      const _fresh = loadTradeLog().find(t => t.id === trade.id);
+      const _fv = _fresh ? parseFloat(_fresh.sl) : NaN;
+      if (isFinite(_fv)) _curSl = _fv;
+    } catch(_e) {}
+    if (!(isLong ? suggestNewSl > _curSl : suggestNewSl < _curSl)) continue;
+
     // 同一止損位不重複通報（以四捨五入到 0.01 的止損價為 key）
     const _slKey = Math.round(suggestNewSl * 100);
     const alertId = `${trade.id}_${alertType}_${_slKey}`;
@@ -18644,9 +18708,8 @@ function checkPostDataReversal(data) {
     const fmt     = v => parseFloat(v).toPrecision(6).replace(/\.?0+$/, '');
     const dir     = isLong ? '▲ 多' : '▼ 空';
     const pnlSign = currentPnlR >= 0 ? '+' : '';
-    const slMove  = isLong
-      ? (suggestNewSl > sl ? `⬆ 上移 ${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}` : `${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}`)
-      : (suggestNewSl < sl ? `⬇ 下移 ${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}` : `${fmt(_slPx(sl))} → ${fmt(_slPx(suggestNewSl))}`);
+    // 走到這裡必定是收緊（上面已擋掉放鬆），且以最新止損 _curSl 為起點
+    const slMove  = `${isLong ? '⬆ 上移' : '⬇ 下移'} ${fmt(_slPx(_curSl))} → ${fmt(_slPx(suggestNewSl))}`;
 
     const _atrFmt = (atr * 100 / cur).toFixed(2);
 
