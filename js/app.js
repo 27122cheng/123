@@ -11587,6 +11587,8 @@ const EXIT_CFG = {
   trailGiveR:   0.8,            // 移動停利的回吐容忍：鎖住「峰值 − 此值」
   timeStopH:    16,             // 時間止損：短線單持倉超過幾小時
   timeStopBandR:0.3,            // 時間止損的「原地踏步」帶寬（±R）
+  provenMfeR:   0.8,            // 浮盈曾達此值 → 視為「論點已被市場驗證過一次」
+  provenCapR:   0.35,           // 之後最大虧損縮到此值（止損仍在進場價後方，保留呼吸空間）
 };
 const EXIT_APPLY_KEY = 'csp_exit_applied';
 function loadExitApplied() {
@@ -14129,7 +14131,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820u';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820v';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -16776,6 +16778,31 @@ function updateOpenTrades(data) {
       // 觸發條件仍是「在 ±0.3R 內原地踏步」，但結果要照實際損益標記：
       // 在 -0.29R 出場是虧損，標成平手會讓它被排除在勝率分母外，帳面勝率灌水
       if (Math.abs(_uRt) < _xc.timeStopBandR) { trade.timeStopped = true; outcome = outcomeByR(_uRt); }
+    }
+
+    /* ── 已證明的單：虧損上限收緊（2026-09-01）────────────────────────
+       每日日報「輸單曾浮盈 ≥0.8R：一般 35%」——三成五的輸單曾經有 +0.8R 的
+       浮盈，最後卻吞回整整 1R。2026-07 拿掉的「+1R 保本」是另一個極端：止損
+       直接放在成本價，+1R 後的正常回踩就在 0R 被洗掉。
+       兩者之間有一個不對稱的中間點：浮盈曾達 provenMfeR（0.8R）後，把最大
+       虧損從 1R 縮到 provenCapR（0.35R）。止損仍在進場價「後方」——從峰值算
+       起要回撤 1.15R 才出場，比舊版保本的 1.0R 更寬，不會在成本價被洗；但論點
+       已被市場驗證過一次的單，不該再承受全額 1R 的虧損。長線單（canScaleIn）
+       目標遠、+0.8R 只是小波動，不適用。標記 lossCapArmed 與進場標籤，配對
+       研究所可以量出它到底值不值。 */
+    if (!outcome && !trade.tp1Hit && !trade.lossCapArmed && !trade.canScaleIn
+        && (trade.mfeR || 0) >= _xc.provenMfeR) {
+      const _capSL = isLong ? entry - baseRisk * _xc.provenCapR : entry + baseRisk * _xc.provenCapR;
+      if (isLong ? _capSL > trade.sl : _capSL < trade.sl) {
+        const _oldCap = trade.sl;
+        trade.sl = _capSL; trade.lossCapArmed = true; changed = true;
+        try {
+          trade.entryTags = Array.isArray(trade.entryTags) ? trade.entryTags : [];
+          if (trade.entryTags.indexOf('虧損上限-已收緊') < 0) trade.entryTags.push('虧損上限-已收緊');
+        } catch(_e) {}
+        sendSLChangeNotification(trade, _oldCap, _capSL,
+          `浮盈曾達 +${_xc.provenMfeR}R：最大虧損由 1R 縮到 ${_xc.provenCapR}R（止損仍在進場價${isLong ? '下' : '上'}方，保留呼吸空間）`);
+      }
     }
 
     // ── TP1 後移動停利（優化）：鎖住峰值後方 0.8R，只往獲利方向棘輪不回落 ──
@@ -22221,6 +22248,7 @@ const QLAB_KEEP_FIELDS = [
   'id', 'symbol', 'mode', 'family', 'direction', 'timestamp', 'exitTime', 'holdMin',
   'outcome', 'pnlR', 'entry', 'exitPrice', 'atrAtEntry', 'levelGapAtr', 'slDistAtr',
   'slMult', 'slMultSrc', 'maeAtr', 'mfeAtr', 'adx', 'rsi', 'volRatio', 'kzQuality', 'slHuntAvoid', 'fillDelaySec', 'slipR', 'regime',
+  'geom', 'rrAtFill', 'rr1AtFill', 'riskAtFillR', 'voidWhy',
   'riskScore', 'riskKeys', 'sizeMult', 'mtfAlign', 'tp1Hit', 'beArmed', 'extended', 'maxHoldExit',
   'probeTag',   // 探路單標記：被封鎖的桶放行的取樣單，封存剝掉＝封鎖決策再也無法驗證
 ];
@@ -22360,6 +22388,7 @@ const LEARN_KEEP_FIELDS = [
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
   'dirSource',                               // 方向由誰決定（score/conviction）——方向融合的驗證樣本
+  'lossCapArmed',                            // 已證明的單虧損上限是否收緊（出場學習用）
 ];
 const _learnSlim = _slimBy(LEARN_KEEP_FIELDS);
 function loadLearnArchive() { return _loadArchive(LEARN_ARCHIVE_KEY); }
@@ -27046,6 +27075,7 @@ const SCALP_KEEP_FIELDS = new Set([
   // 止損建議／機器人學習止損與量化重放
   'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter',
   'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed', 'fillDelaySec', 'slipR',
+  'geom', 'rrAtFill', 'rr1AtFill', 'riskAtFillR', 'voidWhy',
   // 分群用（時段／波動／量能／多週期）
   'adx', 'rsi', 'macdHist', 'volRatio', 'kzQuality', 'oiState', 'mtfAlign', 'breakLevel', 'slHuntAvoid', 'regime',
   // 旗標
@@ -28121,10 +28151,46 @@ function updateScalpTrades(data) {
           console.info(`[scalp] ${t.symbol} 延遲後滑移 ${t.slipR}R，訊號作廢未發送`);
           continue;
         }
-        const _slD = Math.abs(t.entry - t.sl), _t1D = Math.abs(t.tp1 - t.entry), _t2D = Math.abs(t.tp2 - t.entry);
+        /* ── 成交幾何：止損／止盈釘在結構位，不隨成交價位移（2026-09-01）──
+           舊做法把 SL/TP「整組平移」到成交價：距離不變、帳面 R/R 不變，但止損
+           離開了它本來釘著的結構位。實測：均線回踩單訊號止損 99.3（回踩低點
+           99.6 外側），+0.5R 滑移成交在 100.35 後止損被搬到 99.65——在回踩
+           低點「上方」。之後價格只要正常回測那個低點就被掃出場，而論點（低點
+           守得住）根本沒被否定。這正是使用者說的「實倉止盈止損不一樣、倒置
+           止損時回撤很大」：人看圖照結構掛單，系統照成交價掛單，兩者對不上，
+           而系統那組是錯的。
+           正確做法（也是真人交易員的做法）：結構位不動，用實際成交價重算
+           風險與賺賠比；賺賠比掉到不值得就不進（作廢），值得就照實際風險
+           重算部位——固定風險金額不變，只是張數變了。 */
+        const _riskFill = Math.abs(cur - t.sl);
+        if (!(_riskFill > 0)) {
+          t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
+          t.pendingFill = false; t.voidWhy = '成交價已越過結構止損'; changed = true; continue;
+        }
+        const _feeFill = 2 * SCALP_CFG.feeRate * cur / _riskFill;
+        const _rr2Fill = Math.abs(t.tp2 - cur) / _riskFill;
+        const _rr1Fill = Math.abs(t.tp1 - cur) / _riskFill;
+        // 成交後淨賺賠比下限（規則④對照：訊號時門檻順勢 1.3／回歸 1.0，成交後允許有限度退化；
+        // 順勢 tp2R 1.8 滑移 +0.3R → 淨 ≈1.08 仍過，+0.4R → 0.93 作廢——追價超過 0.35R 的單本來就不該追）
+        const _netMin = (t.family === 'revert') ? 0.8 : 1.0;
+        if (_rr2Fill - _feeFill < _netMin || _rr1Fill < 0.35) {
+          t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
+          t.pendingFill = false; changed = true;
+          t.voidWhy = `成交後賺賠比不足（淨 ${(_rr2Fill - _feeFill).toFixed(2)} < ${_netMin}，止盈一僅 ${_rr1Fill.toFixed(2)}R）`;
+          console.info(`[scalp] ${t.symbol} ${t.voidWhy}，訊號作廢未發送`);
+          continue;
+        }
         t.entry = cur; t.entryPrice = cur; t.peakPrice = cur;
-        t.sl = cur - _dirF * _slD; t.baseSl = t.sl;
-        t.tp1 = cur + _dirF * _t1D; t.tp2 = cur + _dirF * _t2D;
+        t.baseSl = t.sl;                      // 止損不動：它釘的是結構，不是訊號價；tp1/tp2 同樣不動
+        try {                                 // 以實際風險重算部位：風險金額不變，張數隨止損距離變
+          const _sz2 = scalpPositionSize(cur, t.sl, parseFloat(t.riskAmt) || 0);
+          if (_sz2) { t.qty = +_sz2.qty.toPrecision(8); t.notional = +_sz2.notional.toFixed(2); }
+        } catch(_e) {}
+        t.geom = 'struct';
+        t.riskAtFillR = +(_riskFill / _risk0).toFixed(3);     // 實際風險 ÷ 訊號風險（>1＝順向滑移後風險變大）
+        t.rrAtFill = +_rr2Fill.toFixed(2); t.rr1AtFill = +_rr1Fill.toFixed(2);
+        t.feeR = +_feeFill.toFixed(3); t.slDistPct = +(_riskFill / cur * 100).toFixed(3);
+        if (t.atrAtEntry > 0) t.slDistAtr = +(_riskFill / t.atrAtEntry).toFixed(3);
         t.entryTime = Date.now(); t.pendingFill = false; changed = true;
         // 成交後才發進場訊號：訊息上的價位＝系統真正追蹤的價位
         if (_notifyOk) sendScalpTelegram(t, 'open');
@@ -28153,7 +28219,12 @@ function updateScalpTrades(data) {
           if (Array.isArray(bars)) {
             for (const bar of bars) {
               const bt = parseFloat(bar[0]);
-              if (!isFinite(bt) || bt + 300000 < t0) continue;   // 完全在進場之前的棒略過
+              /* 只認「成交後才開」的棒。跨越成交時刻的那根含有成交前的行情，
+                 其高低點會污染 MFE/MAE——實測：成交前 3 分鐘的插針讓保本在
+                 成交當下就掛上（浮盈 0 的單止損已在成本價，任何呼吸都洗成平手）；
+                 MAE 同理被高估，機器人學習止損因此被推寬。跨越棒的成交後段
+                 由現價快照補足，寧可少記也不能記到成交前。 */
+              if (!isFinite(bt) || bt < t0) continue;
               const hi = parseFloat(bar[2]), lo = parseFloat(bar[3]);
               if (!isFinite(hi) || !isFinite(lo)) continue;
               const advWorst = ((isLong ? lo : hi) - t.entry) * (isLong ? 1 : -1) / t.atrAtEntry;
@@ -28302,6 +28373,10 @@ function sendScalpTelegram(t, kind, extra = {}) {
         t.fillDelaySec != null
           ? `📡 本訊號於偵測後 ${t.fillDelaySec} 秒以實際報價成交（滑移 ${t.slipR > 0 ? '+' : ''}${t.slipR}R），`
             + `上面每個價位都是系統實際追蹤的價位——請直接照這組數字掛單，不要用更早的價格`
+          : '',
+        (t.geom === 'struct' && t.rrAtFill != null)
+          ? `📐 成交後幾何：止損釘在結構位 <b>$${fmt(t.sl)}</b>（未隨成交價位移）｜實際風險 ${t.slDistPct}%`
+            + `（訊號時的 ${t.riskAtFillR}×）｜止盈二賺賠比 ${t.rrAtFill}（訊號時 ${t.tp2RUsed}）`
           : '',
         t.riskRecs && t.riskRecs.length ? `💡 ${_e(t.riskRecs[0])}` : '',
         ``,
