@@ -14131,7 +14131,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820v';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820w';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15292,11 +15292,32 @@ async function recordSignalsFromScan(data) {
             if (_sfR4h?.length >= 5 && typeof detectFairValueGaps === 'function') _sfFVG4h= detectFairValueGaps(_sfR4h, isLong);
             if (_sfR4h?.length >= 30 && typeof detectChartPatterns === 'function') _sfPat = detectChartPatterns(_sfR4h, isLong);
           } catch(_ice) {}
+          /* ── ICT 進階模型（2026-09-02）：OTE／IDM／IFVG／缺口分類／趨勢線／SMT／供需區有效性 ──
+             全部在這裡（掃描後段）算一次寫進快取，computeSimpleSetup 與確信度直接讀，
+             不在任何渲染路徑重算（規則①）。 */
+          let _sfOTE = null, _sfIDM = null, _sfIFVG = null, _sfTL = null, _sfSMT = null, _sfGapK = null, _sfZoneQ = null;
+          try {
+            const _atr1h = calcATR14FromKlines(_sfR1h) || 0;
+            if (_sfR1h?.length >= 40 && _atr1h > 0) {
+              _sfOTE  = computeOTE(_sfR1h, isLong, _atr1h);
+              _sfIDM  = detectInducement(_sfR1h, isLong, _atr1h);
+              _sfIFVG = detectIFVG(_sfR1h, isLong);
+              _sfGapK = _sfFVG ? classifyGap(_sfR1h, _sfFVG, isLong, parseFloat(coin.rsi), _atr1h) : null;
+              _sfZoneQ = _sfOB ? scoreSupplyDemandZone(_sfR1h, _sfOB, isLong, _atr1h) : null;
+            }
+            if (_sfR4h?.length >= 40) { const _atr4h = calcATR14FromKlines(_sfR4h) || 0; if (_atr4h > 0) _sfTL = computeTrendline(_sfR4h, isLong, _atr4h); }
+            // SMT：本幣 vs BTC（BTC 自己則 vs ETH）；參照幣 1h K 線由主掃描的快取提供
+            const _refSym = coin.symbol === 'BTC/USDT' ? 'ETHUSDT' : 'BTCUSDT';
+            const _refRaw = (typeof _klineCacheGet === 'function') ? _klineCacheGet(`${_refSym}|1h|100`, '1h') : null;
+            if (_sfR1h?.length >= 40 && _refRaw && _refRaw.length >= 40) _sfSMT = detectSMTDivergence(_sfR1h, _refRaw, isLong);
+          } catch(_ice2) {}
           if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
           Object.assign(_tradeSetupCache[coin.symbol], {
             orderBlock: _sfOB, fvg: _sfFVG,
             orderBlock4h: _sfOB4h, fvg4h: _sfFVG4h,
             chartPat: _sfPat,
+            ote: _sfOTE, idm: _sfIDM, ifvg: _sfIFVG, trendline: _sfTL, smt: _sfSMT,
+            fvgKind: _sfGapK, obQuality: _sfZoneQ, ictAt: Date.now(),
             killZone: typeof computeKillZone === 'function' ? computeKillZone() : null,
           });
           // 真實 ATR14（1h K 線）→ 供 computeSimpleSetup 取代 ADX 估算值，止損/止盈更貼近實際波動
@@ -24892,6 +24913,11 @@ function computeSimpleSetup(coin, isLong) {
 
   // ── SMC 型態 ──
   const _pat = coin.patterns || null;
+  // ICT 進階模型（掃描時算好的快取；方向不符者不用）
+  const _sameDir = o => o && (o.dirLong === undefined || o.dirLong === isLong) ? o : null;
+  const _ote  = _sameDir(_ict.ote), _idm = _sameDir(_ict.idm), _ifvg = _sameDir(_ict.ifvg);
+  const _tl   = _sameDir(_ict.trendline), _smt = _ict.smt || null;
+  const _gapK = _ict.fvgKind || null, _obQ = _ict.obQuality || null;
 
   // ── MTF 多週期確認（5 個時間軸）──
   // 長線單條件：週線 + 日線 + 4H + 15m 均同向
@@ -24950,7 +24976,11 @@ function computeSimpleSetup(coin, isLong) {
     if (isFinite(n) && n > 0) _srcPool.push({ v: n, label, w: w || 1 });
   };
   _addLv(_ob && _ob.low,  'OB下緣'); _addLv(_ob && _ob.high, 'OB上緣');
-  _addLv(_fvg && _fvg.mid, 'FVG中點');
+  // 缺口依類型加權：突破/延續缺口是強證據，耗盡缺口只剩半票（不追）
+  _addLv(_fvg && _fvg.mid, _gapK ? `FVG中點（${_gapK.label}）` : 'FVG中點', _gapK ? _gapK.w : 1);
+  if (_ote && !_ote.overshoot) _addLv(_ote.ote705, 'OTE 0.705', 2);
+  if (_ifvg) _addLv(_ifvg.mid, 'IFVG反轉缺口', 2);
+  if (_tl && _tl.touches >= 2 && !_tl.broken) _addLv(_tl.level, `4H趨勢線×${_tl.touches}`, Math.min(3, _tl.touches));
   _addLv(_bbLo, 'BB下軌'); _addLv(_bbUp, 'BB上軌');
   _addLv(ema20, 'EMA20'); _addLv(ema50, 'EMA50'); _addLv(ema200, 'EMA200');
   _addLv(_h4Hi, '4H前高', 2); _addLv(_h4Lo, '4H前低', 2);
@@ -25013,8 +25043,18 @@ function computeSimpleSetup(coin, isLong) {
     };
     if (_ob && _ob.priceInOB && _ob.high > 0 && _ob.low > 0) {
       const _obMid = (_ob.high + _ob.low) / 2;
-      _push(isLong ? Math.min(price, _obMid) : Math.max(price, _obMid), 'ob', 3);
+      _push(isLong ? Math.min(price, _obMid) : Math.max(price, _obMid), 'ob', 3 + (_obQ ? _obQ.score * 0.5 : 0));
     }
+    /* ── ICT 進階候選（2026-09-02）────────────────────────────────
+       OTE：推動腿 0.62–0.79 回撤的甜蜜點 0.705，只在折價側（多）／溢價側（空）
+       才算；已在帶內基礎分 3、只在折價側 2。IFVG：反轉缺口重測 2.5。
+       趨勢線：4H 行動線觸點 ≥2 且價格貼近，1.5＋每觸點 0.5。 */
+    if (_ote && !_ote.overshoot && _ote.inDiscount)
+      _push(isLong ? Math.min(price, _ote.ote705) : Math.max(price, _ote.ote705), 'ote', _ote.inZone ? 3 : 2);
+    if (_ifvg && _ifvg.retesting)
+      _push(isLong ? Math.min(price, _ifvg.mid) : Math.max(price, _ifvg.mid), 'ifvg', 2.5);
+    if (_tl && _tl.near && _tl.touches >= 2)
+      _push(_tl.level, 'trendline', 1.5 + Math.min(1.5, _tl.touches * 0.5));
     if (_pat && (isLong ? _pat.bull2B : _pat.bear2B))
       _push(isLong ? Math.min(price, ema20 * 1.001) : Math.max(price, ema20 * 0.999), '2b', 2.5);
     if (_pat && (isLong ? _pat.bull123 : _pat.bear123))
@@ -25026,6 +25066,15 @@ function computeSimpleSetup(coin, isLong) {
     {
       const _emaFactor = _kzHigh ? 1.001 : 1.002;
       _push(isLong ? Math.min(price, ema20 * _emaFactor) : Math.max(price, ema20 * (2 - _emaFactor)), 'ema20', 0.5);
+    }
+    /* IDM 誘導：候選進場位若落在「現價與未掃的 IDM 之間」，成交前會先被掃
+       一次（散戶停損堆在那裡）→ 扣 1 分並註明；IDM 已掃且收復 → 加 0.5。 */
+    if (_idm && _idm.level > 0) {
+      for (const c of _cands) {
+        const _beforeIdm = isLong ? (c.v > _idm.level && c.v < price) : (c.v < _idm.level && c.v > price);
+        if (!_idm.taken && _beforeIdm) { c.score -= 1; c.ev.push('IDM 未掃（進場前仍有誘導流動性）'); }
+        else if (_idm.taken && _idm.reclaimed) { c.score += 0.5; c.ev.push('IDM 已掃並收復'); }
+      }
     }
     // 學習閘門：實測長期虧錢的進場分支直接不列入候選（winup 的分支封鎖）
     let _pool = _cands;
@@ -25674,6 +25723,22 @@ function computeSimpleSetup(coin, isLong) {
     const _nearEv = (_entryEvidence && _entryEvidence.length) ? _entryEvidence
       : _srcPool.filter(s => Math.abs(s.v - entry) < atr * 0.35).map(s => s.label);
     if (_nearEv.length) reasons.push(`📍 進場位佐證（擇優）：${_nearEv.join('、')}`);
+    /* ICT 模型檢核（HTF POI + 掃蕩/IDM + MSS + FVG + OTE + SMT）：逐項打勾，
+       讓使用者一眼看出這筆單在 ICT 框架下缺哪一塊，而不是只給一個分數。 */
+    try {
+      const _ck = [];
+      _ck.push(`${_idm && _idm.taken ? '✅' : '⬜'} 掃蕩/IDM${_idm ? (_idm.taken ? '（已掃）' : '（未掃）') : ''}`);
+      const _st = coin.h4Struct;
+      const _mss = _st && (isLong ? (_st.bosUp || _st.chochUp) : (_st.bosDown || _st.chochDown));
+      _ck.push(`${_mss ? '✅' : '⬜'} MSS/BOS`);
+      _ck.push(`${_fvg ? '✅' : '⬜'} FVG${_gapK ? '（' + _gapK.label + '）' : ''}`);
+      _ck.push(`${_ote && _ote.inZone ? '✅' : _ote && _ote.inDiscount ? '🟡' : '⬜'} OTE 0.62–0.79${_ote ? '（回撤 ' + _ote.retracePct + '%）' : ''}`);
+      if (_ifvg) _ck.push(`${_ifvg.retesting ? '✅' : '🟡'} IFVG 重測`);
+      if (_tl) _ck.push(`${_tl.broken ? '❌' : _tl.near ? '✅' : '🟡'} 4H趨勢線×${_tl.touches}${_tl.broken ? '（已破）' : ''}`);
+      if (_smt) _ck.push(`${(isLong ? _smt.bull : _smt.bear) ? '✅' : '⬜'} SMT 背離${(isLong ? _smt.bull : _smt.bear) ? '（' + _smt.detail + '）' : ''}`);
+      if (_obQ) _ck.push(`🧱 供需區 ${_obQ.score}/4（${_obQ.label}）`);
+      reasons.push(`📋 ICT 檢核：${_ck.join('　')}`);
+    } catch(_e) {}
   } catch(_e) {}
   // R:R 不足警告（僅記錄，實際 blocked 在掃描層已過濾）
   if (rrBlocked) reasons.push(`⚠️ ${rrReason}`);
@@ -31453,6 +31518,7 @@ const CONV_EV_LABELS = {
   nk_engulf: '裸K吞噬', nk_pin: '裸K針形', nk_three: '裸K三兵鴉',
   st_day: '日線結構', st_h4: '4H結構', st_15: '15m結構',
   ext_idx: '美股期指', ext_dxy: '美元指數', ext_vix: 'VIX',
+  smt: 'SMT背離', tl: '4H趨勢線', ifvg: 'IFVG反轉缺口',
 };
 let _convWCache = null, _convWTs = 0;
 function _convWeights() {
@@ -31470,7 +31536,7 @@ const _CONV_FC_MAP = {
   rs: 'rs', oi: 'oi', liq: 'liqflow', fr: 'funding',
   nk_engulf: 'nakedk', nk_pin: 'nakedk', nk_three: 'nakedk',
   ext_idx: 'ext', ext_dxy: 'ext', ext_vix: 'ext',
-  orderbook: 'ob',
+  orderbook: 'ob', smt: 'smt', tl: 'struct', ifvg: 'struct',
 };
 function computeDirectionConviction(coin) {
   let s = 0; const votes = [], items = [];
@@ -31581,6 +31647,14 @@ function computeDirectionConviction(coin) {
         else if (vix.price <= EXT_CFG.vixLow) add(4, `VIX ${vix.price}`, 'ext_vix');
       }
     }
+  } catch(_e) {}
+  // ICT 進階模型（掃描快取；2026-09-02）：SMT 是跨資產證據、趨勢線破位與 IFVG 是結構證據
+  try {
+    const ic = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache[coin.symbol]) || {};
+    if (ic.smt) { if (ic.smt.bull) add(6, 'SMT多頭背離', 'smt'); if (ic.smt.bear) add(-6, 'SMT空頭背離', 'smt'); }
+    if (ic.trendline && ic.trendline.touches >= 2 && ic.trendline.broken)
+      add(ic.trendline.dirLong ? -4 : 4, `4H趨勢線×${ic.trendline.touches}已破`, 'tl');
+    if (ic.ifvg && ic.ifvg.retesting) add(ic.ifvg.dirLong ? 3 : -3, 'IFVG重測', 'ifvg');
   } catch(_e) {}
   return { score: Math.max(-100, Math.min(100, s)), votes, items };
 }
@@ -32641,6 +32715,7 @@ const FC_PREDICTORS = {
   funding: { label: '資金費率（反向）', horizonH: 4, scope: 'coin' },
   flow:    { label: '足跡訂單流',    horizonH: 4,  scope: 'coin' },
   ob:      { label: '訂單簿深度失衡', horizonH: 4, scope: 'coin' },
+  smt:     { label: 'SMT 背離',      horizonH: 4, scope: 'coin' },
 };
 let _newsBiasNow = null;   // 由 buildNewsWidget 更新
 
@@ -32766,6 +32841,10 @@ function forecastSnapshot(data) {
           const _ob = _orderBookCache[c.symbol];
           if (_ob && isFinite(_ob.imbalance) && Math.abs(_ob.imbalance) >= 0.2)
             push('ob', _ob.imbalance > 0 ? 'bull' : 'bear', px, c.symbol);
+        } catch(_e) {}
+        try {
+          const _smt = _tradeSetupCache[c.symbol] && _tradeSetupCache[c.symbol].smt;
+          if (_smt && _smt.bull !== _smt.bear) push('smt', _smt.bull ? 'bull' : 'bear', px, c.symbol);
         } catch(_e) {}
       }
     } catch(_e) {}

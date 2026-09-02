@@ -1036,7 +1036,7 @@ function detectOrderBlocks(klines, isLong) {
       const obHigh = Math.max(opens[i], closes[i]);
       const obLow  = Math.min(opens[i], closes[i]);
       if (cur >= obLow * 0.994 && cur <= obHigh * 1.025) {
-        return { type: 'bullish', high: obHigh, low: obLow,
+        return { type: 'bullish', high: obHigh, low: obLow, idx: i,
                  priceInOB: cur >= obLow && cur <= obHigh, label: '看多訂單塊 OB' };
       }
     }
@@ -1050,7 +1050,7 @@ function detectOrderBlocks(klines, isLong) {
       const obHigh = Math.max(opens[i], closes[i]);
       const obLow  = Math.min(opens[i], closes[i]);
       if (cur >= obLow * 0.975 && cur <= obHigh * 1.006) {
-        return { type: 'bearish', high: obHigh, low: obLow,
+        return { type: 'bearish', high: obHigh, low: obLow, idx: i,
                  priceInOB: cur >= obLow && cur <= obHigh, label: '看空訂單塊 OB' };
       }
     }
@@ -1075,14 +1075,14 @@ function detectFairValueGaps(klines, isLong) {
       const gL = highs[i - 2], gH = lows[i];
       if (gH > gL && cur > gL) {
         const size = (gH - gL) / gL * 100;
-        if (size >= 0.15) gaps.push({ high: gH, low: gL, mid: (gH + gL) / 2, size, filled: cur < gH });
+        if (size >= 0.15) gaps.push({ high: gH, low: gL, mid: (gH + gL) / 2, size, filled: cur < gH, idx: i });
       }
     } else {
       // Bearish FVG: candle i-2 low > candle i high → gap down
       const gH = lows[i - 2], gL = highs[i];
       if (gH > gL && cur < gH) {
         const size = (gH - gL) / gL * 100;
-        if (size >= 0.15) gaps.push({ high: gH, low: gL, mid: (gH + gL) / 2, size, filled: cur > gL });
+        if (size >= 0.15) gaps.push({ high: gH, low: gL, mid: (gH + gL) / 2, size, filled: cur > gL, idx: i });
       }
     }
   }
@@ -1809,4 +1809,225 @@ function verifyBreakoutConfirmed(klines, isLong) {
       return { confirmed: true, warn: '' };
     }
   } catch(_e) { return { confirmed: true, warn: '' }; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ICT 進階模型（2026-09-02）：OTE、IDM 誘導、IFVG、缺口分類、趨勢線、
+   SMT 背離、供需區有效性
+   ------------------------------------------------------------------
+   全部只在掃描時對 1H/4H K 線計算並寫入 _tradeSetupCache（規則①：不在渲染
+   路徑），由 computeSimpleSetup 當「進場候選＋佐證」、由 computeDirection-
+   Conviction 當方向證據。門檻全以 ATR 標準化。 */
+
+/* 反轉式擺動樞紐（與 computeSwingStructure 同法，靈敏度可調） */
+function _ictPivots(highs, lows, atr, revK) {
+  const n = highs.length, piv = [];
+  let dir = 1, extP = highs[0], extI = 0;
+  for (let i = 1; i < n; i++) {
+    if (dir === 1) {
+      if (highs[i] >= extP) { extP = highs[i]; extI = i; }
+      else if (extP - lows[i] >= revK * atr) { piv.push({ i: extI, p: extP, hi: true }); dir = -1; extP = lows[i]; extI = i; }
+    } else {
+      if (lows[i] <= extP) { extP = lows[i]; extI = i; }
+      else if (highs[i] - extP >= revK * atr) { piv.push({ i: extI, p: extP, hi: false }); dir = 1; extP = highs[i]; extI = i; }
+    }
+  }
+  return piv;
+}
+function _ohlc(klines) {
+  return { opens: klines.map(k => parseFloat(k[1])), highs: klines.map(k => parseFloat(k[2])),
+    lows: klines.map(k => parseFloat(k[3])), closes: klines.map(k => parseFloat(k[4])), vols: klines.map(k => parseFloat(k[5]) || 0) };
+}
+
+/* ── OTE 最優進場區（推動腿的 0.62–0.79 回撤，0.705 為甜蜜點）──────────
+   多：最近一個擺動低點 → 其後最高點 ＝ 推動腿；價格回撤到腿的 62–79% 為
+   OTE，回撤 ≥50% 才算在折價側。回撤 >100%＝整段腿被吃掉，論點失效。 */
+function computeOTE(klines, isLong, atr) {
+  if (!klines || klines.length < 30 || !(atr > 0)) return null;
+  const { highs, lows, closes } = _ohlc(klines);
+  const n = closes.length, cur = closes[n - 1];
+  const from = Math.max(0, n - 80);
+  let lo, hi;
+  if (isLong) {
+    // 腿頂＝視窗內最高點（至少 2 根前，代表已在回撤）；腿底＝腿頂之前的最低點
+    let H = { p: -Infinity, i: -1 };
+    for (let i = from; i < n - 2; i++) if (highs[i] > H.p) H = { p: highs[i], i };
+    if (H.i < 0) return null;
+    let L = { p: Infinity, i: -1 };
+    for (let i = Math.max(from, H.i - 60); i < H.i; i++) if (lows[i] < L.p) L = { p: lows[i], i };
+    if (L.i < 0 || !(H.p > L.p) || H.i - L.i < 3 || cur >= H.p) return null;
+    lo = L.p; hi = H.p;
+  } else {
+    let Ll = { p: Infinity, i: -1 };
+    for (let i = from; i < n - 2; i++) if (lows[i] < Ll.p) Ll = { p: lows[i], i };
+    if (Ll.i < 0) return null;
+    let Hh = { p: -Infinity, i: -1 };
+    for (let i = Math.max(from, Ll.i - 60); i < Ll.i; i++) if (highs[i] > Hh.p) Hh = { p: highs[i], i };
+    if (Hh.i < 0 || !(Hh.p > Ll.p) || Ll.i - Hh.i < 3 || cur <= Ll.p) return null;
+    lo = Ll.p; hi = Hh.p;
+  }
+  const leg = hi - lo;
+  if (leg < 2 * atr) return null;                       // 不到 2 ATR 的腿不算推動腿
+  const f = k => isLong ? hi - leg * k : lo + leg * k;
+  const retr = isLong ? (hi - cur) / leg : (cur - lo) / leg;
+  return { legLow: lo, legHigh: hi, eq: f(0.5), ote62: f(0.62), ote705: f(0.705), ote79: f(0.79),
+    retracePct: +(retr * 100).toFixed(1), inZone: retr >= 0.62 && retr <= 0.79,
+    inDiscount: retr >= 0.5, overshoot: retr > 1, legAtr: +(leg / atr).toFixed(2), dirLong: isLong };
+}
+
+/* ── IDM 內部流動性／誘導 ─────────────────────────────────────────────
+   多：最近一次推升之前的那個次級回檔低點——散戶把停損放在那裡，聰明錢
+   先掃它再走。taken＝已被掃過；reclaimed＝掃過後價格已回到其上。
+   進場位若落在「現價與未掃 IDM 之間」，成交前會先被掃一次。 */
+function detectInducement(klines, isLong, atr) {
+  if (!klines || klines.length < 40 || !(atr > 0)) return null;
+  const { highs, lows, closes } = _ohlc(klines);
+  const n = closes.length, cur = closes[n - 1];
+  // 主要／次要樞紐門檻要拉開（0.8 vs 3.0 ATR）：太近時誘導低點本身會被當成主要低點而被排除
+  const minor = _ictPivots(highs, lows, atr, 0.8);
+  const major = _ictPivots(highs, lows, atr, 3.0);
+  if (isLong) {
+    const ML = major.filter(p => !p.hi).pop(); if (!ML) return null;
+    const after = minor.filter(p => p.i > ML.i);
+    const lastHi = after.filter(p => p.hi).pop(); if (!lastHi) return null;
+    const idm = after.filter(p => !p.hi && p.i < lastHi.i).pop(); if (!idm) return null;
+    let taken = false; for (let j = idm.i + 1; j < n; j++) if (lows[j] < idm.p - 0.05 * atr) { taken = true; break; }
+    return { level: idm.p, idx: idm.i, taken, reclaimed: taken && cur > idm.p, ageBars: n - 1 - idm.i, dirLong: true };
+  } else {
+    const MH = major.filter(p => p.hi).pop(); if (!MH) return null;
+    const after = minor.filter(p => p.i > MH.i);
+    const lastLo = after.filter(p => !p.hi).pop(); if (!lastLo) return null;
+    const idm = after.filter(p => p.hi && p.i < lastLo.i).pop(); if (!idm) return null;
+    let taken = false; for (let j = idm.i + 1; j < n; j++) if (highs[j] > idm.p + 0.05 * atr) { taken = true; break; }
+    return { level: idm.p, idx: idm.i, taken, reclaimed: taken && cur < idm.p, ageBars: n - 1 - idm.i, dirLong: false };
+  }
+}
+
+/* ── IFVG 反轉公平價值缺口 ────────────────────────────────────────────
+   多：一個「看空缺口」被價格向上收盤穿越＝缺口反轉，原本的壓力翻成支撐；
+   回測該區進場。回傳離現價最近、位於現價下方（或內部）的反轉缺口。 */
+function detectIFVG(klines, isLong) {
+  if (!klines || klines.length < 20) return null;
+  const { highs, lows, closes } = _ohlc(klines);
+  const n = closes.length, cur = closes[n - 1];
+  const out = [];
+  for (let i = Math.max(2, n - 60); i < n - 2; i++) {
+    if (isLong) {
+      const gH = lows[i - 2], gL = highs[i];              // 看空缺口
+      if (!(gH > gL) || (gH - gL) / gL < 0.001) continue;
+      let inv = false; for (let j = i + 1; j < n; j++) if (closes[j] > gH) { inv = true; break; }
+      if (!inv || gL > cur * 1.004) continue;
+      out.push({ high: gH, low: gL, mid: (gH + gL) / 2, idx: i, retesting: cur >= gL * 0.997 && cur <= gH * 1.004 });
+    } else {
+      const gH = lows[i], gL = highs[i - 2];              // 看多缺口
+      if (!(gH > gL) || (gH - gL) / gL < 0.001) continue;
+      let inv = false; for (let j = i + 1; j < n; j++) if (closes[j] < gL) { inv = true; break; }
+      if (!inv || gH < cur * 0.996) continue;
+      out.push({ high: gH, low: gL, mid: (gH + gL) / 2, idx: i, retesting: cur <= gH * 1.003 && cur >= gL * 0.996 });
+    }
+  }
+  if (!out.length) return null;
+  out.sort((a, b) => Math.abs(cur - a.mid) - Math.abs(cur - b.mid));
+  return { ...out[0], dirLong: isLong };
+}
+
+/* ── 缺口分類：突破／延續／耗盡／普通 ────────────────────────────────
+   突破缺口：從壓縮區間跳出且放量（最強）；延續缺口：趨勢中段放量；
+   耗盡缺口：RSI 極端且很快被回補或推進力遞減（不追）；其餘普通缺口。 */
+function classifyGap(klines, gap, isLong, rsi, atr) {
+  if (!klines || !gap || gap.idx == null || !(atr > 0)) return null;
+  const { opens, highs, lows, closes, vols } = _ohlc(klines);
+  const n = closes.length, i = gap.idx;
+  if (i < 22 || i >= n) return null;
+  const avgVol = vols.slice(i - 21, i - 1).reduce((a, b) => a + b, 0) / 20 || 1;
+  const volR = (vols[i - 1] || 0) / avgVol;                       // 推動棒（缺口中間那根）
+  const pre = { hi: Math.max(...highs.slice(i - 17, i - 2)), lo: Math.min(...lows.slice(i - 17, i - 2)) };
+  const preRangeAtr = (pre.hi - pre.lo) / atr;
+  let filledFast = false;
+  for (let j = i + 1; j < Math.min(n, i + 6); j++) if (isLong ? lows[j] <= gap.low : highs[j] >= gap.high) { filledFast = true; break; }
+  const bodies = []; for (let j = i; j < Math.min(n, i + 4); j++) bodies.push(Math.abs(closes[j] - opens[j]));
+  const shrinking = bodies.length >= 3 && bodies[1] < bodies[0] && bodies[2] < bodies[1];
+  const extreme = isFinite(rsi) && (isLong ? rsi >= 70 : rsi <= 30);
+  let kind, label, w;
+  if (extreme && (filledFast || shrinking)) { kind = 'exhaustion'; label = '耗盡缺口'; w = 0.5; }
+  else if (preRangeAtr <= 3 && volR >= 1.2)  { kind = 'breakaway';  label = '突破缺口'; w = 2.5; }
+  else if (volR >= 1.2)                      { kind = 'continuation'; label = '延續缺口'; w = 2; }
+  else                                       { kind = 'common';     label = '普通缺口'; w = 1; }
+  return { kind, label, w, volR: +volR.toFixed(2), preRangeAtr: +preRangeAtr.toFixed(2), filledFast };
+}
+
+/* ── 趨勢線（行動線）：≥2 個樞紐觸點的擺動線 ────────────────────────
+   多：近 4 個逐步墊高的擺動低點擬合直線；觸點＝樞紐落在線 ±0.3ATR 內。
+   broken＝收盤跌破線 0.15ATR（原趨勢性格改變）；near＝價格在線附近（進場）。 */
+function computeTrendline(klines, isLong, atr) {
+  if (!klines || klines.length < 40 || !(atr > 0)) return null;
+  const { highs, lows, closes } = _ohlc(klines);
+  const n = closes.length, cur = closes[n - 1];
+  const piv = _ictPivots(highs, lows, atr, 1.5).filter(p => isLong ? !p.hi : p.hi).slice(-4);
+  if (piv.length < 2) return null;
+  // 只取單調（多：逐步墊高）的尾段
+  let pts = [piv[piv.length - 1]];
+  for (let k = piv.length - 2; k >= 0; k--) {
+    const ok = isLong ? piv[k].p < pts[0].p : piv[k].p > pts[0].p;
+    if (!ok) break; pts.unshift(piv[k]);
+  }
+  if (pts.length < 2) return null;
+  const m = pts.length; let sx = 0, sy = 0, sxy = 0, sxx = 0;
+  for (const p of pts) { sx += p.i; sy += p.p; sxy += p.i * p.p; sxx += p.i * p.i; }
+  const slope = (m * sxy - sx * sy) / (m * sxx - sx * sx || 1);
+  const b = (sy - slope * sx) / m;
+  const at = i => slope * i + b;
+  const touches = pts.filter(p => Math.abs(p.p - at(p.i)) <= 0.3 * atr).length;
+  if (touches < 2) return null;
+  const level = at(n - 1);
+  const broken = isLong ? cur < level - 0.15 * atr : cur > level + 0.15 * atr;
+  return { touches, level, broken, near: !broken && Math.abs(cur - level) <= 0.5 * atr,
+    slopeAtrPerBar: +(slope / atr).toFixed(4), spanBars: pts[m - 1].i - pts[0].i, dirLong: isLong };
+}
+
+/* ── SMT 背離：兩個相關資產，一個掃了流動性另一個沒掃 ──────────────
+   多頭 SMT：A 破前低而 B 守住（或反之）→ 賣壓不是全面性的，反轉訊號。
+   兩組 K 線需同週期同長度（都是 1h×100），取尾端對齊。 */
+function detectSMTDivergence(rawA, rawB, isLong, lookback = 40, recent = 8) {
+  if (!rawA || !rawB || rawA.length < lookback || rawB.length < lookback) return null;
+  const A = _ohlc(rawA.slice(-lookback)), B = _ohlc(rawB.slice(-lookback));
+  const n = lookback;
+  const seg = (arr, from, to) => arr.slice(from, to);
+  const aRL = Math.min(...seg(A.lows, n - recent, n)), aPL = Math.min(...seg(A.lows, 0, n - recent));
+  const bRL = Math.min(...seg(B.lows, n - recent, n)), bPL = Math.min(...seg(B.lows, 0, n - recent));
+  const aRH = Math.max(...seg(A.highs, n - recent, n)), aPH = Math.max(...seg(A.highs, 0, n - recent));
+  const bRH = Math.max(...seg(B.highs, n - recent, n)), bPH = Math.max(...seg(B.highs, 0, n - recent));
+  const aLL = aRL < aPL * 0.999, bLL = bRL < bPL * 0.999;
+  const aHH = aRH > aPH * 1.001, bHH = bRH > bPH * 1.001;
+  const bull = aLL !== bLL;   // 一破一守
+  const bear = aHH !== bHH;
+  if (!bull && !bear) return null;
+  return { bull, bear,
+    detail: bull ? `${aLL ? '本幣' : '參照幣'}破前低、${aLL ? '參照幣' : '本幣'}守住`
+                 : `${aHH ? '本幣' : '參照幣'}破前高、${aHH ? '參照幣' : '本幣'}未過` };
+}
+
+/* ── 供需區有效性（供給區／需求區的高機率條件檢核）────────────────
+   ① 形成前掃過流動性 ② 離開時留下失衡（FVG）③ 之後突破結構 ④ 強力離開。
+   四項各 1 分；分數直接加進 OB 進場候選的基礎分。 */
+function scoreSupplyDemandZone(klines, ob, isLong, atr) {
+  if (!klines || !ob || ob.idx == null || !(atr > 0)) return null;
+  const { highs, lows } = _ohlc(klines);
+  const n = highs.length, i = ob.idx;
+  if (i < 13 || i + 2 >= n) return null;
+  let sweep, imbalance, bos, strongLeave;
+  if (isLong) {
+    sweep = Math.min(...lows.slice(i - 2, i + 1)) < Math.min(...lows.slice(i - 12, i - 2));
+    imbalance = false; for (let j = i + 2; j <= Math.min(n - 1, i + 4); j++) if (lows[j] > highs[j - 2]) { imbalance = true; break; }
+    bos = Math.max(...highs.slice(i + 1, Math.min(n, i + 16))) > Math.max(...highs.slice(i - 20 < 0 ? 0 : i - 20, i));
+    strongLeave = (Math.max(...highs.slice(i + 1, Math.min(n, i + 6))) - ob.high) / atr >= 1.5;
+  } else {
+    sweep = Math.max(...highs.slice(i - 2, i + 1)) > Math.max(...highs.slice(i - 12, i - 2));
+    imbalance = false; for (let j = i + 2; j <= Math.min(n - 1, i + 4); j++) if (highs[j] < lows[j - 2]) { imbalance = true; break; }
+    bos = Math.min(...lows.slice(i + 1, Math.min(n, i + 16))) < Math.min(...lows.slice(i - 20 < 0 ? 0 : i - 20, i));
+    strongLeave = (ob.low - Math.min(...lows.slice(i + 1, Math.min(n, i + 6)))) / atr >= 1.5;
+  }
+  const score = [sweep, imbalance, bos, strongLeave].filter(Boolean).length;
+  const tags = [sweep && '掃蕩', imbalance && '失衡', bos && '結構突破', strongLeave && '強力離開'].filter(Boolean);
+  return { score, sweep, imbalance, bos, strongLeave, label: tags.length ? tags.join('+') : '無驗證條件' };
 }
