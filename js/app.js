@@ -14184,7 +14184,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820x';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820y';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -16654,7 +16654,7 @@ function updateOpenTrades(data) {
   // ── 取消通知重試：送出失敗的取消單每輪補發，最多 3 次、24 小時內 ──
   try {
     for (const t of tlog) {
-      if (t.status !== 'cancelled' || t.cancelNotifySent) continue;
+      if (!(t.status === 'cancelled' || (t.status === 'expired' && t.cancelReason)) || t.cancelNotifySent) continue;
       if (!t.telegramSent) { t.cancelNotifySent = true; changed = true; continue; }   // 沒發過進場訊號→不需取消通知
       if ((t.cancelNotifyTries || 0) >= 3 || Date.now() - (t.cancelTime || 0) > 24 * 3600e3) continue;
       t.cancelNotifyTries = (t.cancelNotifyTries || 0) + 1; changed = true;
@@ -16702,8 +16702,24 @@ function updateOpenTrades(data) {
       // 震盪單：影線區域失效快（2小時）；定向短線單：4小時等待回踩；長線單（canScaleIn=true）：24小時有效
       const isLongTermTrade = trade.canScaleIn === true;
       const expiryMs = isLongTermTrade ? SIGNAL_COOLDOWN * 12 : SIGNAL_COOLDOWN * 2;
+      /* 2026-09-03（使用者接 Telegram 機器人實單）：掛單「逾時」與「掃描資料缺席」
+         原本都是靜默 expired——網站不追蹤了，但機器人那邊的限價單還掛著，
+         這是最危險的一種不一致。改為：逾時 → 作廢並發取消通知（走同一套重試）；
+         資料缺席 → 連續 3 輪沒有這個幣的報價才作廢（單輪缺席多半是 API 抖動），
+         同樣發通知。狀態仍記 expired（統計口徑不變），只是多了取消通知欄位。 */
+      if (!coin) {
+        trade.noDataRounds = (trade.noDataRounds || 0) + 1; changed = true;
+        if (trade.noDataRounds < 3) continue;
+      } else if (trade.noDataRounds) { trade.noDataRounds = 0; changed = true; }
       if (!coin || Date.now() - (trade.timestamp || 0) > expiryMs) {
-        trade.status = 'expired'; changed = true; continue;
+        const _exReason = !coin
+          ? `連續 ${trade.noDataRounds} 輪掃描沒有 ${trade.symbol} 的報價（下架或資料源中斷），掛單作廢（未成交、無虧損），請撤掉掛單`
+          : `掛單 ${Math.round(expiryMs / 3600e3)} 小時未成交，逾時作廢（未成交、無虧損），請撤掉掛單`;
+        trade.status = 'expired'; trade.cancelReason = _exReason; trade.cancelTime = Date.now();
+        trade.cancelNotifySent = false; trade.cancelNotifyTries = 0;
+        changed = true;
+        try { sendCancelTelegramNotification(trade, _exReason); } catch(_e) {}
+        continue;
       }
       const cur    = parseFloat(coin.price) || 0;
       const isLong = trade.direction === 'long';
@@ -20860,6 +20876,8 @@ function winrateFactorAdj(field, value) {
    避免「晉升標準」與「加分標準」各用一套造成不一致。 */
 const LAB_MIN_SAMPLES = 50;   // 單一標籤最低樣本數
 const LAB_MIN_WR      = 75;   // 開始加分的勝率門檻（%）
+const LAB_MIN_DAYS    = 7;    // 晉升白名單：樣本至少跨 7 個交易日（同一天湊滿的不算）
+const LAB_MIN_SYMBOLS = 10;   // 晉升白名單：樣本至少來自 10 個幣
 const LAB_MAX_BONUS   = 5;    // 加分上限
 /* 勝率 → 加分（越高加越多，75% 起跳、95% 封頂 +5） */
 function labWrToBonus(wr) {
@@ -20875,9 +20893,12 @@ function labTagStats() {
   const closed = loadAILab().filter(o => o.status === 'closed');
   const stats = {};
   for (const o of closed) for (const t of (o.tags || [])) {
-    stats[t] = stats[t] || { n: 0, w: 0 };
-    stats[t].n++;
-    if ((o.pnlR || 0) > 0) stats[t].w++;
+    const s = stats[t] || (stats[t] = { n: 0, w: 0, days: new Set(), syms: new Set() });
+    s.n++;
+    if ((o.pnlR || 0) > 0) s.w++;
+    // 樣本分散度：同一天同一批幣的 50 筆是一個行情不是 50 個證據（晉升白名單時用）
+    try { s.days.add(new Date(o.entryTime || o.timestamp || 0).toISOString().slice(0, 10)); } catch(_e) {}
+    if (o.symbol) s.syms.add(o.symbol);
   }
   return { stats, closedCount: closed.length };
 }
@@ -20941,9 +20962,34 @@ function getProvenLabTags() {
      卻被晉升成「免風控分、監控不覆核」的白名單，掃描池幾十個幣同時命中
      就變成驗證策略單連發。晉升給的是最高等級的豁免，證據也要用最嚴的算法；
      標籤「加分」（labWrToBonus，最多 +5）仍用原始勝率，不受此收緊影響。 */
+  /* 2026-09-03 追加分散度門檻：樣本至少跨 7 個交易日、10 個幣。實驗室每輪掃描
+     全池收樣，趨勢日一天就能替「ADX強趨勢」湊 50 筆同方向樣本——那是一段行情，
+     不是 50 個獨立證據；靠它晉升的白名單在行情反轉後就變成連環驗證單＋取消。 */
   return Object.entries(stats)
-    .filter(([, s]) => s.n >= LAB_MIN_SAMPLES && wilsonLB(s.w, s.n) * 100 >= LAB_MIN_WR)
+    .filter(([, s]) => s.n >= LAB_MIN_SAMPLES && wilsonLB(s.w, s.n) * 100 >= LAB_MIN_WR
+      && (!s.days || s.days.size >= LAB_MIN_DAYS) && (!s.syms || s.syms.size >= LAB_MIN_SYMBOLS))
     .map(([t]) => t);
+}
+
+/* 免風控分路徑（驗證策略／驗證配對）共用的三道守門（2026-09-03，使用者實案：
+   「驗證單一直出現、還一直有取消訊號」）。根因：這兩條路徑跳過所有門檻，
+   掛回踩限價單 → 未回踩就飛越／逾時／進場前失效 → 取消通知 → 2 小時冷卻
+   一過，同一個幣同一個標籤又命中 → 再建、再發、再取消。實驗室的統計只算
+   「有成交」的樣本（missed/expired 不入統計），所以它永遠學不到這件事。
+   ① 高影響數據封鎖期間不建（環境卡早就寫「兩套系統都暫停」，這裡才接通）
+   ② 同幣同向的免風控分單 24 小時內取消／逾時／止損過 → 不重建同一個想法
+   ③ 現價已越過止盈一或止損失效位 → 這筆下一輪必被取消，不建 */
+function provenIdeaFailedRecently(tlog, symbol, dir) {
+  const now = Date.now();
+  return (tlog || []).some(t => t && t.symbol === symbol && t.direction === dir
+    && Array.isArray(t.provenStrategy) && t.provenStrategy.length
+    && (((t.status === 'cancelled' || t.status === 'expired') && now - (t.cancelTime || t.exitTime || t.timestamp || 0) < 24 * 3600e3)
+        || (t.status === 'closed' && effectiveOutcome(t) === 'sl' && now - (t.exitTime || 0) < 24 * 3600e3)));
+}
+function provenSetupInvalidNow(coin, setup, isLong) {
+  const cur = parseFloat(coin && coin.price) || 0;
+  if (!(cur > 0) || !setup) return false;
+  return isLong ? (cur >= setup.tp1 || cur <= setup.sl) : (cur <= setup.tp1 || cur >= setup.sl);
 }
 
 /* 驗證策略建單：命中白名單標籤的訊號直接建正式單，免風控分/SQ 門檻。
@@ -20951,6 +20997,7 @@ function getProvenLabTags() {
    確保正式運行複製的是被驗證過的同一套進場情境）。 */
 function recordProvenStrategyTrades(data) {
   if (!isSignalMaster()) return;  // 非訊號主機：不建單
+  try { if (econBlackout().blocked) return; } catch(_e) {}
   const proven = getProvenLabTags();
   if (!proven.length || !Array.isArray(data) || !data.length) return;
   const tlog = loadTradeLog();
@@ -20973,6 +21020,7 @@ function recordProvenStrategyTrades(data) {
     const dir = isLong ? 'long' : 'short';
     if (tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
     if (inCooldown(tlog, coin.symbol, dir)) continue;
+    if (provenIdeaFailedRecently(tlog, coin.symbol, dir)) continue;
     if (btcVolGuardBlocks(coin.symbol)) continue;
     // 同方向集中度控管：驗證策略單跳過 SQ 加嚴（傳 99），但活躍上限與止損熔斷仍適用
     if (sameDirGuard(tlog, dir, 99)) continue;
@@ -20987,6 +21035,7 @@ function recordProvenStrategyTrades(data) {
     let setup = null;
     try { setup = computeSimpleSetup(coin, isLong); } catch(_e) {}
     if (!setup || !(setup.entry > 0) || !(setup.sl > 0) || !(setup.tp1 > 0)) continue;
+    if (provenSetupInvalidNow(coin, setup, isLong)) continue;
     let risk = { score: 0, level: '低風險', keys: [] };
     try { risk = computeFullRisk(coin, setup, isLong); } catch(_e) {}
     const nt = {
@@ -30615,6 +30664,7 @@ function pairHitOf(tags, pairs) {
    原子去重），差別只在依據：命中「驗證配對」而不是單一驗證標籤。 */
 function recordPairStrategyTrades(data) {
   if (!isSignalMaster()) return;
+  try { if (econBlackout().blocked) return; } catch(_e) {}
   const gate = pairGateState();
   if (!gate.pairs.length || !Array.isArray(data) || !data.length) return;
   const tlog = loadTradeLog();
@@ -30637,6 +30687,7 @@ function recordPairStrategyTrades(data) {
     const dir = isLong ? 'long' : 'short';
     if (tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'))) continue;
     if (inCooldown(tlog, coin.symbol, dir)) continue;
+    if (provenIdeaFailedRecently(tlog, coin.symbol, dir)) continue;
     if (btcVolGuardBlocks(coin.symbol)) continue;
     if (sameDirGuard(tlog, dir, 99)) continue;
     if (lossStreakGuard().blocked) continue;
@@ -30650,6 +30701,7 @@ function recordPairStrategyTrades(data) {
     let setup = null;
     try { setup = computeSimpleSetup(coin, isLong); } catch(_e) {}
     if (!setup || !(setup.entry > 0) || !(setup.sl > 0) || !(setup.tp1 > 0)) continue;
+    if (provenSetupInvalidNow(coin, setup, isLong)) continue;
     let risk = { score: 0, level: '低風險', keys: [] };
     try { risk = computeFullRisk(coin, setup, isLong); } catch(_e) {}
     const nt = {
