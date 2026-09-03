@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260820w" />
+  <link rel="stylesheet" href="css/styles.css?v=20260820x" />
 </head>
 <body>
 
@@ -787,6 +787,16 @@
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
           </label>
         </div>
+        <div class="setting-row" style="margin-top:6px">
+          <div>
+            <div class="setting-name">🤖 快速單機器人模式（自動交易連動）</div>
+            <div class="setting-desc">給自動交易機器人執行時開啟：訊號一產生就立刻推送（不等 45 秒延遲成交），下一輪掃描直接以結構位計成交、不重複推送；風控扣分、模式閘門改為縮小倉位而非整筆擋掉，ICT 證據（OTE／SMT／誘導）加進排序。關閉時維持人工模擬模式。</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-scalp-bot" onchange="try{saveAllSettings()}catch(e){}" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
         <div class="setting-row vertical" style="gap:10px;margin-top:6px">
           <div>
             <div class="setting-name">🤖 快進快出專用 Telegram 機器人</div>
@@ -1005,6 +1015,20 @@
               網站本身與所有雲端函式都會保留，隨時把上面的開關打開就恢復。
             </div>
           </div>
+
+          <!-- 學習凍結：樣本不足時停止自動調權重 -->
+          <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:10px">
+            <div class="setting-row" style="padding:0">
+              <div>
+                <div class="setting-name">🧊 學習凍結（停止自動調權重）</div>
+                <div class="setting-desc" id="s-learn-freeze-desc">開啟後 28 天內：方向權重、止損學習、模式閘門、配對閘門等全部固定，只累積樣本不調整。樣本少於 200 筆時自動調權重只會追噪音，建議凍結。</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="s-learn-freeze" onchange="try{saveAllSettings()}catch(e){};try{populateSettingsPage()}catch(e){}" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1021,8 +1045,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260820w"></script>
-  <script src="js/api.js?v=20260820w"></script>
-  <script src="js/app.js?v=20260820w"></script>
+  <script src="js/indicators.js?v=20260820x"></script>
+  <script src="js/api.js?v=20260820x"></script>
+  <script src="js/app.js?v=20260820x"></script>
 </body>
 </html>
