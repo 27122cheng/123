@@ -1581,7 +1581,7 @@ let _cryptoNewsCache = null;
 let _cryptoNewsFetchAt = 0;
 
 async function fetchCryptoNews() {
-  const TTL = 25 * 60 * 1000; // 25 分鐘快取
+  const TTL = 10 * 60 * 1000; // 10 分鐘快取（與伺服器端快取同步）
   if (_cryptoNewsCache && Date.now() - _cryptoNewsFetchAt < TTL) return _cryptoNewsCache;
 
   const RSS_SOURCES = [
@@ -1593,6 +1593,27 @@ async function fetchCryptoNews() {
   ];
 
   const strip = html => (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 250);
+
+  // 同源代理優先（伺服器端直抓 RSS、10 分鐘共用快取）：不吃第三方轉換服務的額度與失效
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 7000);
+    const r = await fetch('/api/news', { signal: ctrl.signal, cache: 'no-store' });
+    clearTimeout(t);
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.ok && Array.isArray(j.items) && j.items.length >= 3) {
+        const items = j.items.map(it => ({ title: String(it.title || '').trim(), body: strip(it.body || ''),
+          url: it.url || '', source: it.source || 'RSS', publishedAt: isFinite(it.publishedAt) ? it.publishedAt : null }))
+          .filter(it => it.title.length > 10);
+        if (items.length >= 3) {
+          _cryptoNewsCache = items; _cryptoNewsFetchAt = Date.now();
+          feedStamp('news', true, '同源代理');
+          return items;
+        }
+      }
+    }
+  } catch(e) { console.warn('[fetchCryptoNews] 同源代理失敗:', e?.message); }
 
   for (const src of RSS_SOURCES) {
     try {

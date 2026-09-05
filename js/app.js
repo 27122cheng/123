@@ -393,33 +393,15 @@ function hideLoading() {
    只追蹤 BTC 與 ETH 兩大主流幣（各需 6 次 K 線請求），每輪都更新，
    讓 Telegram 每日簡報與通知能取得最新反轉信心，無需手動開啟詳情頁 */
 async function backgroundExtremeRevScan() {
-  if (_erScanRunning) return;
-  if (!state.data || !state.data.length) return;
-  _erScanRunning = true;
-  try {
-    const coins = state.data.filter(c =>
-      c?.symbol === 'BTC/USDT' || c?.symbol === 'ETH/USDT');
-    for (let n = 0; n < coins.length; n++) {
-      const coin = coins[n];
-      if (!coin?.symbol) continue;
-      try {
-        const mtfData = await fetchMTFKlines(coin.symbol);
-        const er = detectExtremeReversal(
-          coin, mtfData,
-          coin.derivData || null,
-          _macroCache || null,
-          coin.whaleData || null,
-          _macroCache?.fg || null
-        );
-        if (!_tradeSetupCache[coin.symbol]) _tradeSetupCache[coin.symbol] = {};
-        _tradeSetupCache[coin.symbol].extremeRev = er;
-        _tradeSetupCache[coin.symbol].extremeRevTime = Date.now();
-      } catch(e) { /* 單一幣種失敗不中斷輪掃 */ }
-      // 批內限流，避免瞬間打滿 K 線 API
-      await new Promise(r => setTimeout(r, 700));
-    }
-  } finally { _erScanRunning = false; }
+  /* 2026-09-05：原本「掃描資料還沒來就直接 return」——儀表板剛開、或掃描還沒跑完時
+     按重試等於沒按，卡片永遠「計算中」而且沒有任何原因。改為不依賴掃描資料
+     （BTC/ETH 自己抓 K 線），失敗把原因寫進快取讓卡片顯示出來。 */
+  // 上一輪卡住（網路逾時累加可超過一分鐘）時，重試不該被「進行中」旗標永遠擋住
+  if (_erScanRunning && Date.now() - _erScanStartedAt < 60e3) return;
+  _erScanRunning = true; _erScanStartedAt = Date.now();
+  try { await ensureBriefMarketData(); } finally { _erScanRunning = false; }
 }
+let _erScanStartedAt = 0;
 
 /* ── 自动刷新 ───────────────────────────────────────────────── */
 function startRefreshCycle() {
@@ -2123,8 +2105,9 @@ function detectExtremeReversal(coin, mtfData, deriv, globalMkt, whale, fearGreed
     }
 
     // ── 5b. 公開輿論（真實財經新聞頭條情緒，反指邏輯：一面倒 = 反轉風險）──
+    // 2026-09-05：新聞只顯示不評分（NEWS_IN_SCORING=false）——頭條情緒由關鍵字粗判，證據力不足以加分
     try {
-      const newsItems = (typeof _newsSentimentCache !== 'undefined' && Array.isArray(_newsSentimentCache)) ? _newsSentimentCache : [];
+      const newsItems = (NEWS_IN_SCORING && typeof _newsSentimentCache !== 'undefined' && Array.isArray(_newsSentimentCache)) ? _newsSentimentCache : [];
       if (newsItems.length >= 5) {
         const _48h = Date.now() - 48 * 60 * 60 * 1000;
         const recent = newsItems.filter(n => !n.publishedAt || n.publishedAt >= _48h);
@@ -7099,8 +7082,8 @@ function computeWeeklyAIBias(fg, globalMkt) {
   const biasLabel  = { strong_bull:'▲▲ 強勢偏多', bull:'▲ 偏多', strong_bear:'▼▼ 強勢偏空', bear:'▼ 偏空', neutral:'◆ 震盪中性' }[bias];
   const biasColor  = bias.includes('bull') ? 'var(--bull)' : bias.includes('bear') ? 'var(--bear)' : 'var(--text2)';
   // 風控分根據當天最新市場數據計算（每天更新）
-  const conf       = Math.max(30, Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0)
-                     + (fgValNow != null ? 5 : 0) + _wRelConf - _wEvConfPen));
+  const conf       = Math.round(Math.max(30, Math.min(92, 50 + absScore * 10 + (bias.includes('strong') ? 8 : 0)
+                     + (fgValNow != null ? 5 : 0) + _wRelConf - _wEvConfPen)));
   const confColor  = conf >= 60 ? 'var(--bull)' : conf >= 50 ? '#f0a500' : 'var(--text3)';
 
   const _wTopFacts = factors.slice(0, 2).map(f => f.split('，')[0]).join('；');
@@ -7595,8 +7578,8 @@ function computeTodayAIBias(fg, globalMkt) {
      拿去跟字串比，永遠為 true，所以 slight_bull/slight_bear 也照領這 +6 的
      「明確方向」加分。弱訊號被灌上跟強訊號一樣的信心，是信心分長期偏高、
      與實測命中率對不上的直接原因之一。 */
-  let conf = Math.max(30, Math.min(88, 45 + absScore * 10 + (bias !== 'neutral' && !bias.includes('slight') ? 6 : 0)
-    + (fgVal != null ? 4 : 0) + _relConf - _evConfPen));
+  let conf = Math.round(Math.max(30, Math.min(88, 45 + absScore * 10 + (bias !== 'neutral' && !bias.includes('slight') ? 6 : 0)
+    + (fgVal != null ? 4 : 0) + _relConf - _evConfPen)));   // 整數：59.879999% 這種浮點尾數不該出現在訊息裡
   /* 成績單回饋（保守）：近期已結算的方向預測 ≥8 筆且命中率 Wilson 上界 <45%
      ——統計上確定比擲硬幣差——信心分上限壓到 52 並明寫原因。方向照給，
      但不再帶著沒有實績支撐的高信心。命中率回升會自動解除。 */
@@ -8395,7 +8378,12 @@ function renderErDashboardWidget() {
   const cache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache) ? _tradeSetupCache : {};
   const rows = ['BTC/USDT', 'ETH/USDT'].map(sym => {
     const er = cache[sym]?.extremeRev;
-    if (!er) return `<div style="color:var(--text3);font-size:0.82rem;padding:4px 0">📊 <b>${sym}</b> — 反轉數據計算中…</div>`;
+    if (!er) {
+      const err = cache[sym]?.extremeRevErr;
+      return err
+        ? `<div style="color:#f59e0b;font-size:0.82rem;padding:4px 0">📊 <b>${sym}</b> — 取得失敗：${err}（按重試再抓一次）</div>`
+        : `<div style="color:var(--text3);font-size:0.82rem;padding:4px 0">📊 <b>${sym}</b> — 反轉數據計算中…</div>`;
+    }
     if (!er.direction) {
       return `<div style="font-size:0.82rem;padding:4px 0;color:var(--text2)">📊 <b>${sym}</b> — 無顯著反轉訊號（頂部 ${er.topScore||0} / 底部 ${er.bottomScore||0}）</div>`;
     }
@@ -8701,13 +8689,13 @@ function aiGenerateMarketInsights() {
 
 // 真實新聞情緒快取（供極端反轉「公開輿論」分析使用）
 let _newsSentimentCache = [];
+const NEWS_IN_SCORING = false;   // 新聞情緒是否進入任何評分／條件：否（只在儀表板與分析頁顯示）
 
 async function loadDashboardNews() {
   const el = document.getElementById('news-body');
-  /* 2026-09-03 停用：新聞情緒對建單與預測沒有實際影響（4 天沒更新也沒人發現），
-     來源常失效，留著只會讓人以為系統有在看新聞。經濟事件日曆不受影響。 */
-  if (el) el.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:8px 4px;line-height:1.6">📰 新聞情緒已停用——它從未進入建單與預測（經濟事件日曆照常運作）。</div>';
-  if (true) return;
+  /* 2026-09-05 恢復顯示（使用者要求）：新聞只做「看」，不進任何建單／預測條件
+     （NEWS_IN_SCORING=false）。來源改走同源代理 /api/news 直抓 RSS，每則附發布
+     時間、面板附更新時間，一眼看得出是不是即時。 */
   // 先顯示本地 AI 新聞（即時可見，不等待網路）
   if (el) el.innerHTML = buildNewsWidget(aiGenerateMarketInsights());
   // 非同步拉取真實新聞：無論容器是否存在都抓取（極端反轉「公開輿論」分析依賴此快取）
@@ -8730,13 +8718,28 @@ async function loadDashboardNews() {
       _newsSentimentCache = processed;
       // 確認容器仍存在（用戶可能已切換頁面）
       const elNow = document.getElementById('news-body');
-      if (elNow) elNow.innerHTML = buildNewsWidget(processed);
+      if (elNow) elNow.innerHTML = _newsFreshnessLine(processed) + buildNewsWidget(processed);
+    } else if (el) {
+      el.innerHTML = '<div style="font-size:0.78rem;color:var(--text3);padding:8px 4px">📰 新聞來源暫時取不到（同源代理／RSS／CoinGecko 皆失敗），稍後自動重試。</div>';
     }
   } catch(e) {
     console.warn('[loadDashboardNews] 真實新聞載入失敗:', e?.message);
   }
   const cfEl = document.getElementById('capital-flow-body');
   if (cfEl) cfEl.innerHTML = buildCapitalFlowEventsWidget();
+}
+
+/* 新聞鮮度列：更新時間＋最新一則距今多久。新聞是「看」的，不進條件（見 NEWS_IN_SCORING）。 */
+function _newsFreshnessLine(items) {
+  try {
+    const ts = (items || []).map(i => i.publishedAt).filter(v => isFinite(v) && v > 0);
+    const newest = ts.length ? Math.max(...ts) : 0;
+    const ageMin = newest ? Math.max(0, Math.round((Date.now() - newest) / 60000)) : null;
+    const ageTxt = ageMin == null ? '來源未附時間' : ageMin < 60 ? `${ageMin} 分鐘前` : ageMin < 1440 ? `${Math.round(ageMin / 60)} 小時前` : `${Math.round(ageMin / 1440)} 天前`;
+    const stale = ageMin != null && ageMin > 12 * 60;
+    const upd = new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+    return `<div style="font-size:0.7rem;color:${stale ? '#f59e0b' : 'var(--text3)'};margin-bottom:6px">🕒 更新 ${upd}　·　最新一則 ${ageTxt}${stale ? '（超過 12 小時，來源可能停更）' : ''}　·　新聞僅供閱讀，不進建單與預測條件</div>`;
+  } catch(_e) { return ''; }
 }
 
 /* ── 籌碼分佈 / 巨鯨 / 成交量AI 面板 ────────────────────────── */
@@ -14184,7 +14187,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820y';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260820z';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -17980,10 +17983,41 @@ function startDailyBriefingCheck() {
   }, 60 * 1000);
 }
 
+/* 簡報要用的 BTC/ETH 反轉與 4H 圖形：原本只靠背景輪掃（開頁 5 秒後、每輪掃描後）
+   或幣種頁順手算的快取，簡報若在快取空的時候送出就永遠是「計算中」。
+   改為簡報前主動抓 K 線算一次（兩個幣、各一次 API），失敗才退回快取。 */
+async function ensureBriefMarketData() {
+  const syms = ['BTC/USDT', 'ETH/USDT'];
+  for (const sym of syms) {
+    if (!_tradeSetupCache[sym]) _tradeSetupCache[sym] = {};
+    try {
+      const coin = (state.data || []).find(c => c && c.symbol === sym) || { symbol: sym, score: 50, price: 0 };
+      const mtfData = await fetchMTFKlines(sym);
+      if (!mtfData || !mtfData['4h']) { _tradeSetupCache[sym].extremeRevErr = 'K 線取得失敗（交易所 API 無回應或限速）'; continue; }
+      _tradeSetupCache[sym].extremeRevErr = '';
+      try {
+        _tradeSetupCache[sym].extremeRev = detectExtremeReversal(coin, mtfData, coin.derivData || null,
+          _macroCache || null, coin.whaleData || null, _macroCache?.fg || null);
+        _tradeSetupCache[sym].extremeRevTime = Date.now();
+      } catch(_e) {}
+      try {
+        const raw4h = mtfData['4h']?.raw;
+        if (raw4h && raw4h.length >= 30 && typeof detectChartPatterns === 'function') {
+          const isLong = (parseFloat(coin.score) || 50) >= 50;
+          _tradeSetupCache[sym].chartPat = detectChartPatterns(raw4h, isLong);
+          _tradeSetupCache[sym].chartPatTime = Date.now();
+        }
+      } catch(_e) {}
+    } catch(_e) { _tradeSetupCache[sym].extremeRevErr = String(_e?.message || _e); console.warn('[brief-data]', sym, _e?.message); }
+    await new Promise(r => setTimeout(r, 400));   // 兩個幣之間限流，避免瞬間打滿 K 線 API
+  }
+}
+
 async function sendDailyBriefing() {
   const s = loadSettings();
   if (!s.tgToken || !s.tgChatId) return false;  // only need token+chatId, not toggle
   try {
+    try { await ensureBriefMarketData(); } catch(_e) {}
     const [fg, globalMkt] = await Promise.allSettled([fetchFearGreed(), fetchGlobalMarket()]);
     const fgData  = fg.status === 'fulfilled' ? fg.value : null;
     const mktData = globalMkt.status === 'fulfilled' ? globalMkt.value : null;
@@ -18056,13 +18090,21 @@ function buildDailyBriefingMsg(fg, mkt) {
     return `<b>${bias}</b>\n${args.join('\n') || '• 數據更新中'}`;
   })();
 
-  // 宏觀 AI 預測摘要（每季固定重點，每月人工更新）
-  const macroPredSection = [
-    '• 美聯儲維持利率（6月）：信心 82%，預期偏多 BTC +3%~8%',
-    '• CPI 2.4%~2.6%（5月）：信心 71%，低於 2.4% 偏多，高於 2.7% 承壓',
-    '• BTC ETF 持續淨流入：信心 78%，每日 3~8 億美元提供底部支撐',
-    '• 全球流動性擴張：信心 74%，M2 增長歷史上與加密牛市高度相關',
-  ].join('\n');
+  // 場外宏觀即時快照（2026-09-05：取代原本寫死的「美聯儲維持利率（6月）」等過期文字）
+  const macroPredSection = (() => {
+    try {
+      const c = (typeof _extCache !== 'undefined') ? _extCache : null;
+      const q = c && c.quotes; if (!q) return '• 場外報價暫無（設定頁可開啟外部宏觀資料）';
+      const st = extRiskState();
+      const fmt = (k, name) => { const v = q[k]; if (!v || !isFinite(v.price)) return null;
+        return `• ${name} ${v.price}${v.chgPct != null ? `（${v.chgPct > 0 ? '+' : ''}${v.chgPct}%）` : ''}`; };
+      const rows = [fmt('nq', '納指期貨'), fmt('spx', '標普期貨'), fmt('dxy', '美元指數'), fmt('vix', 'VIX')].filter(Boolean);
+      if (!rows.length) return '• 場外報價暫無';
+      const ageMin = c.at ? Math.round((Date.now() - c.at) / 60000) : null;
+      return `<b>${st ? st.label : '場外中性'}</b>${ageMin != null ? `（${ageMin} 分鐘前）` : ''}\n${rows.join('\n')}`
+        + (st && st.why && st.why.length ? `\n   • ${st.why.slice(0, 2).join('；')}` : '');
+    } catch(_e) { return '• 場外報價暫無'; }
+  })();
 
   // HTML-escape helper（避免 < > & 破壞 Telegram HTML 解析）
   const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -18132,7 +18174,7 @@ function buildDailyBriefingMsg(fg, mkt) {
       const cache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache) ? _tradeSetupCache : {};
       const lines = ['BTC/USDT', 'ETH/USDT'].map(sym => {
         const er = cache[sym]?.extremeRev;
-        if (!er) return `📊 <b>${esc(sym)}</b> 反轉數據計算中…`;
+        if (!er) return `📊 <b>${esc(sym)}</b> 暫無資料（K 線取得失敗，下次簡報重試）`;
         if (!er.direction) {
           return `📊 <b>${esc(sym)}</b> 無顯著反轉訊號（頂部 ${er.topScore || 0} / 底部 ${er.bottomScore || 0}）`;
         }
@@ -18155,7 +18197,8 @@ function buildDailyBriefingMsg(fg, mkt) {
     const _cpCache = (typeof _tradeSetupCache !== 'undefined' && _tradeSetupCache) ? _tradeSetupCache : {};
     const lines = ['BTC/USDT', 'ETH/USDT'].map(sym => {
       const cp = _cpCache[sym]?.chartPat;
-      if (!cp || !cp.patterns.length) return `📐 ${sym.replace('/USDT','')} — 無明顯形態`;
+      if (!cp) return `📐 ${sym.replace('/USDT','')} — 暫無資料（K 線取得失敗）`;
+      if (!cp.patterns.length) return `📐 ${sym.replace('/USDT','')} — 4H 近 30 根無可辨識形態`;
       const confirmed = cp.patterns.filter(p => p.status !== 'forming').slice(0, 2);
       const forming   = cp.patterns.filter(p => p.status === 'forming').slice(0, 1);
       const parts = [
@@ -18175,7 +18218,7 @@ function buildDailyBriefingMsg(fg, mkt) {
     `🌐 <b>加密市場大方向</b>\n${marketDirSection}\n\n` +
     `📈 <b>本週 AI 走勢預測</b>\n${weeklyAISection}\n\n` +
     `📅 <b>今日 AI 多空預測</b>\n${todayAISection}\n\n` +
-    `🤖 <b>宏觀 AI 預測</b>\n${macroPredSection}\n\n` +
+    `🌎 <b>場外宏觀即時</b>\n${macroPredSection}\n\n` +
     `📆 <b>今日重要數據</b>\n${eventSection}\n\n` +
     (() => { try { const cf = buildCapitalFlowTelegramSection(fg, mkt); return `💹 <b>資金流動事件提醒</b>\n${cf || '• 本月無近期資金流動事件'}\n\n`; } catch { return ''; } })() +
     `<i>🤖 由 AI 自動分析生成 · 僅供參考，不構成投資建議</i>`;
@@ -20979,6 +21022,9 @@ function getProvenLabTags() {
    ① 高影響數據封鎖期間不建（環境卡早就寫「兩套系統都暫停」，這裡才接通）
    ② 同幣同向的免風控分單 24 小時內取消／逾時／止損過 → 不重建同一個想法
    ③ 現價已越過止盈一或止損失效位 → 這筆下一輪必被取消，不建 */
+/* 免風控分路徑（驗證策略＋驗證配對合計）的量：2026-09-05 由每輪 2／24h 6 降到每輪 1／24h 3。
+   使用者實案：一天內連續多筆驗證配對訊號。這條路徑跳過所有門檻，量本來就該最小。 */
+const PROVEN_QUOTA = { perScan: 1, perDay: 3 };
 function provenIdeaFailedRecently(tlog, symbol, dir) {
   const now = Date.now();
   return (tlog || []).some(t => t && t.symbol === symbol && t.direction === dir
@@ -21011,8 +21057,8 @@ function recordProvenStrategyTrades(data) {
   const _pvDayCount = tlog.filter(t => Array.isArray(t.provenStrategy) && t.provenStrategy.length
     && Date.now() - (t.timestamp || 0) < 24 * 3600e3).length;
   for (const coin of data) {
-    if (_pvThisScan >= 2 || _pvDayCount + _pvThisScan >= 6) {
-      console.log('[proven] 驗證策略建單達量上限（每輪 2／24h 6），其餘候選留待下輪');
+    if (_pvThisScan >= PROVEN_QUOTA.perScan || _pvDayCount + _pvThisScan >= PROVEN_QUOTA.perDay) {
+      console.log(`[proven] 驗證策略建單達量上限（每輪 ${PROVEN_QUOTA.perScan}／24h ${PROVEN_QUOTA.perDay}），其餘候選留待下輪`);
       break;
     }
     if (!coin || coin.score === 50) continue;
@@ -21564,7 +21610,7 @@ function renderLabPage() {
   const provenTags = getProvenLabTags();
   const provenHtml = `
     <div style="background:${provenTags.length ? 'rgba(251,191,36,.06)' : 'var(--card)'};border:1px solid ${provenTags.length ? 'rgba(251,191,36,.3)' : 'var(--border)'};border-radius:10px;padding:12px 14px;margin-bottom:12px">
-      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥50 筆樣本且 Wilson 勝率下界 ≥75% 自動晉升正式系統，免風控分建單；每輪最多建 2 筆、24h 最多 6 筆）</div>
+      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥50 筆樣本且 Wilson 勝率下界 ≥75% 自動晉升正式系統，免風控分建單；每輪最多建 1 筆、24h 最多 3 筆）</div>
       ${provenTags.length
         ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${provenTags.map(t => `<span style="font-size:0.74rem;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.4);padding:3px 10px;border-radius:14px;font-weight:700">⭐ ${t}</span>`).join('')}</div>
            <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">命中白名單標籤的訊號會直接建立正式掛單（標記 ⭐ 驗證策略），不經風控分/SQ 門檻，監控中亦不覆核取消</div>`
@@ -30518,6 +30564,8 @@ const PAIR_CFG = {
   minN:            40,    // 晉升門檻：配對完結樣本數
   minWLB:          55,    // 晉升門檻：勝率 Wilson 95% 下界（%）
   minAvgR:         0.02,  // 晉升門檻：平均 R 需為正（略高於 0 以扣掉手續費雜訊）
+  minDays:         7,     // 晉升門檻：樣本至少跨 7 個交易日（同一天湊滿的不算）
+  minSymbols:      10,    // 晉升門檻：樣本至少來自 10 個幣
   displayMinN:     8,     // 頁面排行的最低樣本（觀察用，非晉升）
   stage2MinPairs:  5,     // 進入 stage 2 所需的驗證配對數
   stage2MinTrades: 30,    // 進入 stage 2 所需的配對實倉完結筆數
@@ -30533,19 +30581,22 @@ function pairSamples() {
     for (const o of _recentN(labSamples(), 800)) {
       if (!Array.isArray(o.tags) || o.tags.length < 2) continue;
       const r = parseFloat(o.pnlR) || 0;
-      out.push({ tags: o.tags, win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r, src: 'lab' });
+      out.push({ tags: o.tags, win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, r, src: 'lab',
+        sym: o.symbol || '', day: _dayKey(o.entryTime || o.timestamp) });
     }
   } catch(_e) {}
   try {
     for (const t of _recentN(learnSamples(), 800)) {
       if (t.status !== 'closed' || !Array.isArray(t.entryTags) || t.entryTags.length < 2) continue;
       const r = parseFloat(t.pnlR) || 0;
-      out.push({ tags: t.entryTags, win: isWinTrade(t), loss: isLossTrade(t), r, src: 'real' });
+      out.push({ tags: t.entryTags, win: isWinTrade(t), loss: isLossTrade(t), r, src: 'real',
+        sym: t.symbol || '', day: _dayKey(t.entryTime || t.timestamp) });
     }
   } catch(_e) {}
   return out;
 }
 
+function _dayKey(ts) { try { return new Date(parseFloat(ts) || 0).toISOString().slice(0, 10); } catch(_e) { return ''; } }
 let _pairLabCache = null;
 let _pairLabRunAt = 0;
 function pairLabAnalyze() {
@@ -30555,8 +30606,9 @@ function pairLabAnalyze() {
     const tg = s.tags.slice().sort();
     for (let i = 0; i < tg.length; i++) for (let j = i + 1; j < tg.length; j++) {
       const key = tg[i] + '｜' + tg[j];
-      const c = stats[key] || (stats[key] = { a: tg[i], b: tg[j], n: 0, w: 0, l: 0, r: 0, real: 0 });
+      const c = stats[key] || (stats[key] = { a: tg[i], b: tg[j], n: 0, w: 0, l: 0, r: 0, real: 0, days: new Set(), syms: new Set() });
       c.n++; c.r += s.r;
+      if (s.day) c.days.add(s.day); if (s.sym) c.syms.add(s.sym);
       if (s.win) c.w++; else if (s.loss) c.l++;
       if (s.src === 'real') c.real++;
     }
@@ -30568,7 +30620,8 @@ function pairLabAnalyze() {
     const wr = denom ? c.w / denom * 100 : 0;
     const wlb = denom ? wilsonLB(c.w, denom) * 100 : 0;
     rows.push({ a: c.a, b: c.b, n: c.n, real: c.real, wr: +wr.toFixed(1),
-      wlb: +wlb.toFixed(1), totalR: +c.r.toFixed(2), avgR: +(c.r / c.n).toFixed(3) });
+      wlb: +wlb.toFixed(1), totalR: +c.r.toFixed(2), avgR: +(c.r / c.n).toFixed(3),
+      days: c.days.size, syms: c.syms.size });
   }
   rows.sort((x, y) => y.wlb - x.wlb || y.avgR - x.avgR);
   /* 多重檢定控制：同時檢定幾百組配對，總有幾組純靠運氣越線。
@@ -30577,7 +30630,11 @@ function pairLabAnalyze() {
      轉鑰匙」仍是最終防線，這裡把第一道門也上鎖。 */
   const testedN = rows.filter(r => r.n >= PAIR_CFG.minN).length;
   const wlbEff = +(PAIR_CFG.minWLB + Math.max(0, 3 * Math.log10(Math.max(1, testedN) / 10))).toFixed(1);
-  const proven = rows.filter(r => r.n >= PAIR_CFG.minN && r.wlb >= wlbEff && r.avgR > PAIR_CFG.minAvgR);
+  /* 2026-09-05 分散度門檻（與驗證策略白名單同一規則）：樣本要跨 ≥7 個交易日、≥10 個幣。
+     實驗室每輪掃描全池收樣，趨勢日一天就能替一組配對湊 40 筆同方向樣本——那是
+     一段行情不是 40 個證據；靠它晉升的配對在行情反轉後就是連環驗證單＋取消。 */
+  const proven = rows.filter(r => r.n >= PAIR_CFG.minN && r.wlb >= wlbEff && r.avgR > PAIR_CFG.minAvgR
+    && r.days >= PAIR_CFG.minDays && r.syms >= PAIR_CFG.minSymbols);
 
   // ── 階段判定（漸進替代 + 自動退回）──────────────────────────────
   // 配對建單的實倉表現：stage 2 的鑰匙必須由「真金白銀的完結單」轉動，
@@ -30594,7 +30651,7 @@ function pairLabAnalyze() {
   } catch(_e) {}
   let stage = 0, why = '';
   if (!proven.length) {
-    why = `尚無配對達晉升門檻（需樣本 ≥${PAIR_CFG.minN}、勝率下界 ≥${PAIR_CFG.minWLB}%、平均 R > 0）`;
+    why = `尚無配對達晉升門檻（需樣本 ≥${PAIR_CFG.minN}、勝率下界 ≥${PAIR_CFG.minWLB}%、平均 R > 0、跨 ≥${PAIR_CFG.minDays} 天 ≥${PAIR_CFG.minSymbols} 幣）`;
   } else if (proven.length < PAIR_CFG.stage2MinPairs) {
     stage = 1;
     why = `${proven.length} 組驗證配對（stage 2 需 ≥${PAIR_CFG.stage2MinPairs} 組）→ 配對建單已啟用，原邏輯照常`;
@@ -30678,8 +30735,8 @@ function recordPairStrategyTrades(data) {
   const _prDayCount = tlog.filter(t => Array.isArray(t.provenStrategy) && t.provenStrategy.length
     && Date.now() - (t.timestamp || 0) < 24 * 3600e3).length;
   for (const coin of data) {
-    if (_prThisScan >= 2 || _prDayCount + _prThisScan >= 6) {
-      console.log('[pair] 驗證配對建單達量上限（免風控分路徑合計每輪 2／24h 6），其餘候選留待下輪');
+    if (_prThisScan >= PROVEN_QUOTA.perScan || _prDayCount + _prThisScan >= PROVEN_QUOTA.perDay) {
+      console.log(`[pair] 驗證配對建單達量上限（免風控分路徑合計每輪 ${PROVEN_QUOTA.perScan}／24h ${PROVEN_QUOTA.perDay}），其餘候選留待下輪`);
       break;
     }
     if (!coin || coin.score === 50) continue;
