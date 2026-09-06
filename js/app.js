@@ -45,6 +45,17 @@ window.addEventListener('DOMContentLoaded', init);
    手機上看不到 console——真正的錯誤（TypeError/ReferenceError…）直接
    顯示成畫面底部的紅色小條，截圖即可診斷；網路類雜訊（fetch 失敗、
    逾時）只進環形紀錄不上畫面。最近 20 筆存 csp_err_log。 */
+var _cspStepMem = '';          // 目前正在跑的步驟（記憶體，長任務記錄用）
+var _cspStepAt = 0;
+/* 凍結麵包屑（2026-09-06，使用者實案「倒數到 58 秒就卡住」）：畫面一旦整個卡死，
+   console 與錯誤看板都來不及寫。做法：每個重步驟開始前把名稱同步寫進
+   localStorage（一次 setItem，成本可忽略），正常關閉時改寫成 unload、閒置時
+   改寫成 idle。下次開頁若看到的既不是 unload 也不是 idle，就代表上次是卡在
+   那一步被強制關掉的——直接顯示在錯誤看板，截圖就能定位。 */
+function _stepMark(name) {
+  _cspStepMem = name; _cspStepAt = Date.now();
+  try { localStorage.setItem('csp_last_step', JSON.stringify({ n: name, t: _cspStepAt, v: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?' })); } catch(_e) {}
+}
 function _bootErrHook() {
   const NOISY = /fetch|network|load failed|abort|timeout|websocket/i;
   let _errChipN = 0;
@@ -93,6 +104,37 @@ function _bootErrHook() {
       (e.message || '') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || '')));
     window.addEventListener('unhandledrejection', e =>
       log('promise', e.reason && (e.reason.message || e.reason)));
+  } catch(_e) {}
+  // ── 上次是不是卡死？（麵包屑不是 unload/idle → 上次在那一步被強制關掉）──
+  try {
+    const prev = JSON.parse(localStorage.getItem('csp_last_step') || 'null');
+    if (prev && prev.n && prev.n !== 'unload' && prev.n !== 'idle') {
+      const when = new Date(prev.t || 0).toLocaleString('zh-TW', { hour12: false });
+      log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}）——若當時畫面卡住，卡點就在這一步`);
+    }
+  } catch(_e) {}
+  try {
+    const bye = () => { try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'unload', t: Date.now() })); } catch(_e) {} };
+    window.addEventListener('pagehide', bye);
+    window.addEventListener('beforeunload', bye);
+  } catch(_e) {}
+  // ── 長任務記錄：主執行緒被單一工作占住 ≥300ms 就記下當時步驟；≥2 秒上看板 ──
+  try {
+    if (typeof PerformanceObserver !== 'undefined') {
+      const po = new PerformanceObserver(list => {
+        for (const e of list.getEntries()) {
+          const ms = Math.round(e.duration || 0);
+          if (ms < 300) continue;
+          try {
+            const arr = JSON.parse(localStorage.getItem('csp_longtask') || '[]');
+            arr.unshift({ t: Date.now(), ms, step: _cspStepMem || '?' });
+            localStorage.setItem('csp_longtask', JSON.stringify(arr.slice(0, 20)));
+          } catch(_e) {}
+          if (ms >= 2000) log('主執行緒卡住', `${(ms / 1000).toFixed(1)} 秒　步驟：${_cspStepMem || '?'}`);
+        }
+      });
+      po.observe({ type: 'longtask', buffered: true });
+    }
   } catch(_e) {}
 }
 
@@ -510,6 +552,7 @@ function startRefreshCycle() {
        就不再是同一塊巨石。 */
     const _pt = async (name, fn) => {
       await new Promise(r => setTimeout(r, 0));
+      _stepMark('掃描後段 ' + name);
       const t = performance.now();
       try { fn(); } catch(e) { console.warn('[post-scan ' + name + ']', e); }
       const ms = Math.round(performance.now() - t);
@@ -571,7 +614,9 @@ function startRefreshCycle() {
         localStorage.setItem(SCAN_PROF_KEY, JSON.stringify(arr)); }
     } catch(_e) {}
     try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
+    _stepMark('掃描後段 資料反轉檢查');
     try { checkPostDataReversal(data); } catch(e) { console.error('[refresh] checkPostDataReversal 錯誤:', e); }
+    setTimeout(() => { if (Date.now() - _cspStepAt >= 1500) _stepMark('idle'); }, 2000);
     // 自動掃描長線/短線狀態變化（異步，不阻塞主掃描；每幣種 30 分鐘最多一次）
     backgroundMonitorLongTermStatus().catch(e => console.warn('[ltMonitor] 掃描錯誤:', e));
     try {
@@ -882,6 +927,7 @@ function applyFilters() {
 
 /* ── 全量渲染 ───────────────────────────────────────────────── */
 function renderAll() {
+  _stepMark('渲染 ' + (state.currentPage || '?'));
   applyFilters();
   updateOverviewCards();
   renderDashboardTables();
@@ -8692,6 +8738,7 @@ let _newsSentimentCache = [];
 const NEWS_IN_SCORING = false;   // 新聞情緒是否進入任何評分／條件：否（只在儀表板與分析頁顯示）
 
 async function loadDashboardNews() {
+  _stepMark('新聞元件');
   const el = document.getElementById('news-body');
   /* 2026-09-05 恢復顯示（使用者要求）：新聞只做「看」，不進任何建單／預測條件
      （NEWS_IN_SCORING=false）。來源改走同源代理 /api/news 直抓 RSS，每則附發布
@@ -14187,7 +14234,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260820z';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15150,6 +15197,11 @@ async function recordSignalsFromScan(data) {
   // ══════════════════════════════════════════════════════════════
   for (const coin of _rankedData) {
     _cand++;
+    /* 2026-09-06：每 3 個候選讓出一次主執行緒（macrotask）。迴圈裡的 await 只在
+       真的打網路時才會讓瀏覽器喘氣，快取命中時整輪掃描是一塊同步巨石——
+       軟門上線後進入重運算段的候選變多，弱機器就出現「倒數到 58 秒卡住」。 */
+    if (_cand % 3 === 0) await new Promise(r => setTimeout(r, 0));
+    _stepMark('掃描候選 ' + coin.symbol);
     _shCtx = null;   // 每個候選重置：setup 還沒算出來之前不記影子單
     /* ── 軟門（2026-09-03）：學習型／統計型條件不再擋單，改為倉位係數 ────
        40 道門裡有一半是「歷史說這種情況勝率低」——擋掉它們就失去樣本，統計
@@ -16269,6 +16321,7 @@ async function backgroundRefineNewTrades() {
 
   for (const trade of toRefine.slice(0, 3)) { // 每次最多 3 筆，避免 API 負荷
     try {
+      _stepMark('精煉新單 ' + trade.symbol);
       const mtfData  = await fetchMTFKlines(trade.symbol);
       const direction = trade.direction;
       const isLong    = direction === 'long';
@@ -16650,6 +16703,7 @@ function reboundFrac(entry, sl) {
 
 function updateOpenTrades(data) {
   if (!isSignalMaster()) return new Set();  // 非訊號主機：不更新持倉狀態、不發通知
+  _stepMark('持倉更新');
   const tlog = loadTradeLog();
   let changed = false;
   const cancelledSymbols = new Set(); // 本次週期被取消的幣種
@@ -17986,9 +18040,17 @@ function startDailyBriefingCheck() {
 /* 簡報要用的 BTC/ETH 反轉與 4H 圖形：原本只靠背景輪掃（開頁 5 秒後、每輪掃描後）
    或幣種頁順手算的快取，簡報若在快取空的時候送出就永遠是「計算中」。
    改為簡報前主動抓 K 線算一次（兩個幣、各一次 API），失敗才退回快取。 */
+let _briefDataInflight = null;
 async function ensureBriefMarketData() {
+  // 簡報、儀表板重試、背景輪掃可能同時觸發：共用同一次計算，不重複抓 K 線
+  if (_briefDataInflight) return _briefDataInflight;
+  _briefDataInflight = _ensureBriefMarketDataRun().finally(() => { _briefDataInflight = null; });
+  return _briefDataInflight;
+}
+async function _ensureBriefMarketDataRun() {
   const syms = ['BTC/USDT', 'ETH/USDT'];
   for (const sym of syms) {
+    _stepMark('簡報資料 ' + sym);
     if (!_tradeSetupCache[sym]) _tradeSetupCache[sym] = {};
     try {
       const coin = (state.data || []).find(c => c && c.symbol === sym) || { symbol: sym, score: 50, price: 0 };
@@ -28121,6 +28183,7 @@ function _scalpAutopsyPanel() {
 /* 掃描產生快進快出訊號（獨立於 recordSignalsFromScan） */
 let _scalpLastRun = 0;      // 上次執行 recordScalpSignals 的時間（診斷用）
 async function recordScalpSignals(data) {
+  _stepMark('快速單訊號');
   // 診斷必須在所有提前 return 之前重置並記錄原因，否則整段卡在哪一道都看不到
   _scalpRejFlush();          // 歸零前先把上一輪合併進 24h 累積桶
   _scalpReject = {};
