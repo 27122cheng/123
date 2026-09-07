@@ -54,7 +54,10 @@ var _cspStepAt = 0;
    那一步被強制關掉的——直接顯示在錯誤看板，截圖就能定位。 */
 function _stepMark(name) {
   _cspStepMem = name; _cspStepAt = Date.now();
-  try { localStorage.setItem('csp_last_step', JSON.stringify({ n: name, t: _cspStepAt, v: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?' })); } catch(_e) {}
+  try {
+    let mem = null; try { mem = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null; } catch(_m) {}
+    localStorage.setItem('csp_last_step', JSON.stringify({ n: name, t: _cspStepAt, v: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?', mem }));
+  } catch(_e) {}
 }
 function _bootErrHook() {
   const NOISY = /fetch|network|load failed|abort|timeout|websocket/i;
@@ -110,7 +113,7 @@ function _bootErrHook() {
     const prev = JSON.parse(localStorage.getItem('csp_last_step') || 'null');
     if (prev && prev.n && prev.n !== 'unload' && prev.n !== 'idle') {
       const when = new Date(prev.t || 0).toLocaleString('zh-TW', { hour12: false });
-      log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}）——若當時畫面卡住，卡點就在這一步`);
+      log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}）——若當時畫面卡住，卡點就在這一步`);
     }
   } catch(_e) {}
   try {
@@ -566,7 +569,10 @@ function startRefreshCycle() {
     await _pt('實驗室機會記錄', () => recordLabOpportunities(data));
     await _pt('實驗室機會更新', () => updateLabOpportunities(data));
     await _pt('止損鬆緊觀察',   () => updateSLTightnessWatch(data));
-    await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
+    /* 2026-09-07（頂級交易員檢討）：驗證策略／驗證配對的「免風控分自動建單」關閉。
+       它們跳過所有門檻，依據是只算有成交樣本的紙上統計，是驗證單連發與取消訊號的
+       來源。命中標籤的加分（labTagSqBonus）照常，只是不再直接下單。 */
+    if (PROVEN_AUTO_BUILD) await _pt('驗證策略記錄',   () => recordProvenStrategyTrades(data));
     await _pt('閘門影子更新',   () => shadowUpdate(data));
     await _pt('再進場影子更新', () => reentryUpdate(data));
     // 預測記分卡：拍快照＋到期結算（統一以本輪掃描資料為唯一參考價來源）
@@ -584,7 +590,7 @@ function startRefreshCycle() {
        只是把「同時到期」攤開；所有分析仍然每天跑很多次，結論不受影響。 */
     _heavyTurn = (_heavyTurn + 1) % 4;
     if (_heavyTurn === 0) await _pt('條件配對分析', () => maybePairLabAnalyze());
-    await _pt('配對策略建單',   () => recordPairStrategyTrades(data));
+    if (PROVEN_AUTO_BUILD) await _pt('配對策略建單',   () => recordPairStrategyTrades(data));
     // 快進快出（自動交易試跑）：獨立資料流，不影響上方任何原有流程
     await _pt('快速單持倉更新', () => updateScalpTrades(data));
     try { recordScalpSignals(data).catch(e => console.warn('[scalp] 訊號流程錯誤', e)); }
@@ -5246,6 +5252,7 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     // 全局連續止損熔斷（跨方向長連虧防護）
     if (_canAutoRecord) {
       if (lossStreakGuard().blocked) _canAutoRecord = false;  // 只剩硬停；漸進壓制交給 learnDrag
+      if (dailyRGuard().blocked) _canAutoRecord = false;      // 單日虧損上限（與掃描建單同一道）
     }
     // ── 與掃描建單套用完全相同的門檻（修「打開詳情頁才出現這筆單」）──────
     // 問題：本路徑原本只檢查 SQ 等級(A)＋風控分 60，缺少掃描路徑的數道關卡，
@@ -8510,6 +8517,7 @@ function buildTradeEnvCard() {
     if (evB.blocked) stop.push(`⏰ 高影響數據封鎖：${evB.why}——事件前後的價格是擲硬幣，兩套系統都暫停新單`); } catch(_e) {}
   try { const ls = lossStreakGuard();
     if (ls && ls.blocked) stop.push(ls.reason || '🛑 連續止損熔斷中，暫停一切新單'); } catch(_e) {}
+  try { const dr = dailyRGuard(); if (dr.blocked) stop.push(dr.reason); } catch(_e) {}
   // ── 謹慎級 ──
   try { const ed = edgeDecayCheck();
     if (ed.ready && ed.decayed) caution.push(`📉 優勢衰退：前 20 筆 ${ed.prevExp > 0 ? '+' : ''}${ed.prevExp}R/筆 → 近 20 筆 ${ed.lastExp > 0 ? '+' : ''}${ed.lastExp}R/筆——縮小部位，查交易記錄頁的矩陣面板`); } catch(_e) {}
@@ -14019,6 +14027,27 @@ function globalLossStreak() {
   return val;
 }
 let _lsgNoticeShown = 0;
+/* 一般單單日虧損上限（2026-09-07，頂級交易員檢討）：原本只有「連續止損 8 筆」全局熔斷，
+   等於先賠 8R 才停。改為今日已完結一般單淨虧 ≥ MAIN_DAILY_R_CAP 即停止新單，隔日自動恢復。
+   快速單另有自己的單日 % 熔斷，不重複。 */
+const MAIN_DAILY_R_CAP = 3;
+let _dailyRCache = null, _dailyRCacheTs = 0;
+function dailyRGuard() {
+  const now = Date.now();
+  if (_dailyRCache && now - _dailyRCacheTs < 30e3) return _dailyRCache;
+  let out = { blocked: false, sumR: 0, n: 0, reason: '' };
+  try {
+    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+    const closed = loadTradeLog().filter(t => t.status === 'closed'
+      && (parseFloat(t.exitTime) || 0) >= dayStart.getTime() && isFinite(parseFloat(t.pnlR)));
+    const sum = closed.reduce((a, t) => a + parseFloat(t.pnlR), 0);
+    const blocked = sum <= -MAIN_DAILY_R_CAP;
+    out = { blocked, sumR: +sum.toFixed(2), n: closed.length,
+      reason: blocked ? `📉 單日虧損上限：今日一般單 ${closed.length} 筆淨 ${sum.toFixed(2)}R ≤ -${MAIN_DAILY_R_CAP}R，今日停止新單（明日自動恢復）` : '' };
+  } catch(_e) {}
+  _dailyRCache = out; _dailyRCacheTs = now;
+  return out;
+}
 function lossStreakGuard() {
   try {
     const { streak, lastSlTime } = globalLossStreak();
@@ -14234,7 +14263,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15806,6 +15835,7 @@ async function recordSignalsFromScan(data) {
 
     // 全局連續止損熔斷：只剩重大連虧的硬停；漸進壓制交給自適應 learnDrag
     if (lossStreakGuard().blocked && _no('全局連續止損熔斷')) continue;
+    if (dailyRGuard().blocked && _no(`單日虧損上限（今日 ${dailyRGuard().sumR}R ≤ -${MAIN_DAILY_R_CAP}R）`)) continue;
 
     // ── 止損最小距離守門（AI/USDT 實案：止損僅 0.57%，一根 1m 雜訊就掃掉）──
     // 地板取「0.8%」與「0.9 × 15m ATR」較大者：止損距離低於當下正常波動，
@@ -21087,6 +21117,7 @@ function getProvenLabTags() {
 /* 免風控分路徑（驗證策略＋驗證配對合計）的量：2026-09-05 由每輪 2／24h 6 降到每輪 1／24h 3。
    使用者實案：一天內連續多筆驗證配對訊號。這條路徑跳過所有門檻，量本來就該最小。 */
 const PROVEN_QUOTA = { perScan: 1, perDay: 3 };
+const PROVEN_AUTO_BUILD = false;   // 2026-09-07：免風控分自動建單關閉（白名單與配對只加分，不下單）
 function provenIdeaFailedRecently(tlog, symbol, dir) {
   const now = Date.now();
   return (tlog || []).some(t => t && t.symbol === symbol && t.direction === dir
@@ -21672,7 +21703,7 @@ function renderLabPage() {
   const provenTags = getProvenLabTags();
   const provenHtml = `
     <div style="background:${provenTags.length ? 'rgba(251,191,36,.06)' : 'var(--card)'};border:1px solid ${provenTags.length ? 'rgba(251,191,36,.3)' : 'var(--border)'};border-radius:10px;padding:12px 14px;margin-bottom:12px">
-      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥50 筆樣本且 Wilson 勝率下界 ≥75% 自動晉升正式系統，免風控分建單；每輪最多建 1 筆、24h 最多 3 筆）</div>
+      <div style="font-size:0.85rem;font-weight:700;color:${provenTags.length ? '#fbbf24' : 'var(--text1)'};margin-bottom:6px">⭐ 驗證策略白名單（≥50 筆樣本、Wilson 勝率下界 ≥75%、跨 ≥7 天 ≥10 幣）——自動建單已關閉（2026-09-07），命中標籤只在 SQ 評分加分，不再直接下單</div>
       ${provenTags.length
         ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${provenTags.map(t => `<span style="font-size:0.74rem;background:rgba(251,191,36,.15);color:#fbbf24;border:1px solid rgba(251,191,36,.4);padding:3px 10px;border-radius:14px;font-weight:700">⭐ ${t}</span>`).join('')}</div>
            <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">命中白名單標籤的訊號會直接建立正式掛單（標記 ⭐ 驗證策略），不經風控分/SQ 門檻，監控中亦不覆核取消</div>`
@@ -25273,6 +25304,27 @@ function computeSimpleSetup(coin, isLong) {
       const _obMid = (_ob.high + _ob.low) / 2;
       _push(isLong ? Math.min(price, _obMid) : Math.max(price, _obMid), 'ob', 3 + (_obQ ? _obQ.score * 0.5 : 0));
     }
+    /* ── 動能訊號：停損買進（2026-09-07，頂級交易員檢討）────────────────
+       三種主要進場標籤全是回踩限價，但動能行情不回踩——結果是飛越取消。
+       動能判定：ADX ≥25、15m 與 1H 同向、價格已離開 EMA20 ≥0.3×ATR（推動中）。
+       進場改掛在「現價上方最近的結構位」（多）／下方（空）上緣＋0.05×ATR，
+       只在 0.15～1.2×ATR 內找；沒有結構位就用現價 ±0.3×ATR。價格真的突破才成交，
+       不成交就是沒突破，不是錯過。成交語意由 isLimitFilled 依 entryPrice 判定（突破：高點觸及）。 */
+    {
+      const _emaGap = (isLong ? price - ema20 : ema20 - price) / (atr || 1);
+      const _momentum = adx >= 25 && _15mAligned && _h1Aligned && _emaGap >= 0.3;
+      if (_momentum) {
+        const _ahead = _srcPool.filter(s => isLong ? (s.v > price) : (s.v < price))
+          .map(s => ({ ...s, d: Math.abs(s.v - price) / (atr || 1) }))
+          .filter(s => s.d >= 0.15 && s.d <= 1.2)
+          .sort((a, b) => a.d - b.d);
+        const _trig = _ahead.length ? _ahead[0] : null;
+        const _stopPx = _trig ? (isLong ? _trig.v + atr * 0.05 : _trig.v - atr * 0.05)
+                              : (isLong ? price + atr * 0.3 : price - atr * 0.3);
+        const _stopEv = _trig ? [`突破 ${_trig.label} 觸發`] : ['動能延續（無近端結構，現價外 0.3×ATR 觸發）'];
+        _cands.push({ v: +_stopPx.toFixed(8), tag: 'stopbreak', score: 3 + (_trig ? Math.min(2, _trig.w) : 0), ev: _stopEv, stop: true });
+      }
+    }
     /* ── ICT 進階候選（2026-09-02）────────────────────────────────
        OTE：推動腿 0.62–0.79 回撤的甜蜜點 0.705，只在折價側（多）／溢價側（空）
        才算；已在帶內基礎分 3、只在折價側 2。IFVG：反轉缺口重測 2.5。
@@ -25320,6 +25372,7 @@ function computeSimpleSetup(coin, isLong) {
       _entryTag = 'ema20';
       _entryScore = 0;   // 後備進場＝零佐證
     }
+    var _entryIsStop = !!(_best && _best.stop);   // 停損買進：進場在現價外側，成交＝突破
   }
 
   /* ── 掛單深度封頂（2026-08-23 勝率調查）────────────────────────
@@ -25468,6 +25521,21 @@ function computeSimpleSetup(coin, isLong) {
     _slStructure = `ATR × ${(1.5 * _mtfSlFactor * _slWiden).toFixed(1)}`;
   }
 
+  /* ── 停損買進的幾何（2026-09-07）───────────────────────────────
+     突破單的止損釘在觸發位下方（被突破的壓力轉為支撐，失守即論點被否定），
+     不是回踩單的深層結構——否則進場往上移、止損留在深處，R:R 直接塌掉。
+     0.9×ATR：比回踩單 1.3～1.5×ATR 緊，比雜訊 0.5×ATR 寬。結構止損若更近則沿用。 */
+  if (typeof _entryIsStop !== 'undefined' && _entryIsStop) {
+    // 與掃描的止損波動地板同一口徑（0.8% 與 0.9×掃描 ATR 較大者，乘秒損學習倍數），再留 5% 餘裕
+    let _floorAbs = Math.max(price * 0.008, 0.9 * (parseFloat(coin.atr) || 0));
+    try { if (typeof mainSlFloorMult === 'function') _floorAbs *= mainSlFloorMult(); } catch(_e) {}
+    const _brkDist = Math.max(atr * 0.9, _floorAbs * 1.05);
+    const _brkSl = isLong ? entry - _brkDist : entry + _brkDist;
+    if (isLong ? (sl < _brkSl) : (sl > _brkSl)) {
+      sl = _brkSl; _slTag = 'breakout';
+      _slStructure = '突破止損 0.9×ATR（觸發位下方，壓力轉支撐失守即出）';
+    }
+  }
   // ── 止損最小安全距離：至少 0.5%（自適應加寬時同步撐開）且不超過 3% ──
   const _minSl = price * 0.005 * _slWiden;
   const _maxSl = price * 0.03;
@@ -25598,6 +25666,13 @@ function computeSimpleSetup(coin, isLong) {
   // TP2 至少比 TP1 再遠 30%
   if (isLong  && tp2 < tp1 * 1.003) tp2 = tp1 + Math.abs(tp1 - entry) * 0.5;
   if (!isLong && tp2 > tp1 * 0.997) tp2 = tp1 - Math.abs(entry - tp1) * 0.5;
+  // 停損買進：目標至少 1.5R／3R——突破單靠的是延續，近端結構目標太近就延伸到 R 倍數
+  if (typeof _entryIsStop !== 'undefined' && _entryIsStop && risk > 0) {
+    const _t1 = isLong ? entry + risk * 1.5 : entry - risk * 1.5;
+    const _t2 = isLong ? entry + risk * 3.0 : entry - risk * 3.0;
+    if (isLong ? tp1 < _t1 : tp1 > _t1) { tp1 = _t1; _tp1Tag = 'rr'; }
+    if (isLong ? tp2 < _t2 : tp2 > _t2) { tp2 = _t2; _tp2Tag = 'rr'; }
+  }
 
   // 長線單（_isLongTerm）：估算 8:1 RR 目標並驗證 >= 7:1
   let _isLongTermFinal = _isLongTerm;
@@ -26037,6 +26112,7 @@ function computeSimpleSetup(coin, isLong) {
        於是「哪一種進場邏輯真的會賺」這個問題根本問不出口，只能整包看勝率。
        記下來之後，實驗室就能逐條分支比較期望值。 */
     entryTag: _entryTag, slTag: _slTag, tp1Tag: _tp1Tag, tp2Tag: _tp2Tag,
+    entryMode: (typeof _entryIsStop !== 'undefined' && _entryIsStop) ? 'stop' : 'limit',   // stop＝突破觸發才成交（停損買進），limit＝回踩限價
     entryScore: +(_entryScore || 0).toFixed(1),   // 進場點合流佐證分（弱佐證抬標用）
     addLevel: _ladderOpp[0] != null
       ? +(isLong ? _ladderOpp[0] + atr * _atrBuf : _ladderOpp[0] - atr * _atrBuf).toFixed(8) : null,
@@ -27449,10 +27525,12 @@ function scalpModeGate(mode) {
   const cfg = SCALP_CFG;
   try {
     if (SCALP_CFG[SCALP_MODE_CFGKEY[mode]] === false) return { allow: false, why: '手動停用' };
-    if (learnFrozen()) return { allow: true, why: '學習凍結中，不自動停用' };
     if (!cfg.autoPruneModes) return { allow: true };
     const all = loadScalpLog();
     const closed = all.filter(t => t.status === 'closed' && t.mode === mode);
+    /* 2026-09-07：學習凍結只凍結「調權重」，不凍結證據型硬規則——樣本 ≥30 的負期望模式
+       照樣停用（回撤解剖指出的就是這些模式）；樣本不足 30 才因凍結而續觀察。 */
+    if (learnFrozen() && closed.length < 30) return { allow: true, why: `學習凍結中（樣本 ${closed.length}/30，不自動停用）` };
     if (closed.length < cfg.pruneMinN) return { allow: true, why: `樣本 ${closed.length}/${cfg.pruneMinN}，續觀察` };
     const rs = closed.map(t => parseFloat(t.pnlR) || 0);
     const exp = rs.reduce((a, b) => a + b, 0) / rs.length;
