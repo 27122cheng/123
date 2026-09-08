@@ -789,6 +789,8 @@ async function fetchAllFromBinance(timeframe) {
 
     /* 通知進度（若 app.js 已定義 updateScanProgress） */
     const pct = Math.min(Math.round(((i + batchSize) / pairs.length) * 100), 100);
+    // 每批 20 個幣的同步分析做完先讓出主執行緒（弱機器上 5 批連著跑會變成一塊長任務）
+    await new Promise(r => setTimeout(r, 0));
     if (typeof updateScanProgress === 'function') updateScanProgress(pct);
 
     /* 批次間短暫停頓，避免觸發幣安限速 */

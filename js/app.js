@@ -116,6 +116,13 @@ function _bootErrHook() {
       log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}）——若當時畫面卡住，卡點就在這一步`);
     }
   } catch(_e) {}
+  // ── 上次載入卡在哪？（開頁軌跡沒走到 done → 本次自動安全模式，並把停住的位置顯示出來）──
+  try {
+    if (AUTO_SAFE) {
+      const pt = JSON.parse(localStorage.getItem('csp_boot_trace_prev') || '[]');
+      if (Array.isArray(pt) && pt.length) log('載入線索', `上次載入停在「${pt.slice(-2).join(' → ')}」之後沒有走完——卡點就在最後一步之後（本次以安全模式啟動）`);
+    }
+  } catch(_e) {}
   try {
     const bye = () => { try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'unload', t: Date.now() })); } catch(_e) {} };
     window.addEventListener('pagehide', bye);
@@ -415,7 +422,14 @@ function animateLoadingBar() {
 function randBetween(a, b) { return a + Math.random() * (b - a); }
 
 /* ── 掃描進度條（K線批次加載時顯示）─────────────────────────── */
+let _lastScanMarkPct = -100;
 function updateScanProgress(pct) {
+  // 開頁期間把掃描進度也寫進開頁軌跡：載入畫面下方會看到「掃描 40%@12.3s」——
+  // 分得出「還在跑（慢）」與「凍住」；凍住時最後一個百分比就是卡點
+  try {
+    if (typeof _bootTraceArr !== 'undefined' && !_bootTraceArr.some(x => String(x).indexOf('done') === 0)
+        && Math.abs(pct - _lastScanMarkPct) >= 20) { _lastScanMarkPct = pct; _bootMark('掃描 ' + Math.round(pct) + '%'); }
+  } catch(_e) {}
   const bar  = document.getElementById('scan-bar-fill');
   const txt  = document.getElementById('scan-bar-txt');
   const wrap = document.getElementById('scan-bar');
@@ -14263,7 +14277,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
