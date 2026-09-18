@@ -290,6 +290,7 @@ async function init() {
     const { data, source } = await fetchMarketData(state.timeframe);
     state.data       = data;
     state.dataSource = source;
+    await _maybeFetchPionex();   // 一般單價格來源＝Pionex 時，先拿到報價再建單／監控
     state.filtered   = [...data];
     refreshOkxPrices().catch(() => {});
   } catch (e) {
@@ -471,6 +472,7 @@ function startRefreshCycle() {
   clearInterval(_bgScanTimer);
   _bgScanTimer = setInterval(() => {
     if (!state.data || !state.data.length) return;
+    _maybeFetchPionex().catch(() => {});   // 背景輪：報價更新非同步，本輪用上一份（10 秒內）
     withCreateLock("scanSignals", () => recordSignalsFromScan(state.data));
     try { updateOpenTrades(state.data); } catch(e) {}
     // 1m 插針驗證：補輪詢間隙的止損/止盈觸及（實體交易已掃損但頁面沒發現的根因）
@@ -540,6 +542,7 @@ function startRefreshCycle() {
     // 資料取得成功，後續渲染步驟各自保護
     state.data       = data;
     state.dataSource = source;
+    await _maybeFetchPionex();   // 一般單價格來源＝Pionex 時，先拿到報價再建單／監控
     refreshOkxPrices().catch(() => {});
     hideScanBar();
     try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); }
@@ -1650,7 +1653,8 @@ function buildOpenPositionSetup(t, currentPrice) {
 function buildPendingPositionSetup(t, currentPrice) {
   const isLong   = t.direction === 'long';
   const dirColor = isLong ? 'var(--bull)' : 'var(--bear)';
-  const dirLabel = isLong ? '▲ 等待做多進場' : '▼ 等待做空進場';
+  const _isStop  = t.entryMode === 'stop';
+  const dirLabel = isLong ? (_isStop ? '▲ 等待突破做多（停損買進）' : '▲ 等待做多進場') : (_isStop ? '▼ 等待跌破做空（停損賣出）' : '▼ 等待做空進場');
   const entry    = t.entry || 0;
   const sl       = t.sl   || 0;
   const tp1      = t.tp1  || 0;
@@ -14047,6 +14051,41 @@ let _lsgNoticeShown = 0;
 /* 一般單單日虧損上限（2026-09-07，頂級交易員檢討）：原本只有「連續止損 8 筆」全局熔斷，
    等於先賠 8R 才停。改為今日已完結一般單淨虧 ≥ MAIN_DAILY_R_CAP 即停止新單，隔日自動恢復。
    快速單另有自己的單日 % 熔斷，不重複。 */
+/* ── 一般單價格來源（2026-09-19）：使用者一般單在 Pionex 執行、快速單在 OKX ──
+   結構（EMA／前高低／影線／ATR）仍由 OKX K 線算，但一般單的進場／止損／止盈與
+   監控現價改用 Pionex 報價：把整組價位依「Pionex 現價 ÷ OKX 現價」等比對齊，
+   結構幾何不變、絕對數字對上 Pionex。比值超出 ±3% 視為報價異常，退回 OKX。 */
+function mainPriceSrc() { try { return loadSettings().mainPriceSrc === 'pionex' ? 'pionex' : 'okx'; } catch(_e) { return 'okx'; } }
+function _mainPx(symbol, fallback, trade) {
+  try {
+    const src = trade ? (trade.priceSrc || 'okx') : mainPriceSrc();
+    if (src !== 'pionex' || typeof pionexPrice !== 'function') return fallback;
+    const px = pionexPrice(symbol);
+    if (!(px > 0)) return fallback;
+    if (fallback > 0 && Math.abs(px / fallback - 1) > 0.03) return fallback;   // 兩邊差超過 3%：報價異常
+    return px;
+  } catch(_e) { return fallback; }
+}
+function _coinForMain(coin) {
+  try {
+    if (mainPriceSrc() !== 'pionex' || !coin) return coin;
+    const okx = parseFloat(coin.price) || 0; const px = _mainPx(coin.symbol, okx);
+    if (!(okx > 0) || !(px > 0) || px === okx) return coin;
+    const r = px / okx;
+    const sc = v => { const x = parseFloat(v); return isFinite(x) && x > 0 ? +(x * r).toPrecision(9) : v; };
+    const c = { ...coin, price: String(sc(coin.price)), _pxSrc: 'pionex', _pxRatio: +r.toFixed(6) };
+    for (const k of ['ema20', 'ema50', 'ema200', 'h4SwingHigh', 'h4SwingLow', 'atr', 'vwap']) if (c[k] != null) c[k] = sc(c[k]);
+    if (coin.bb) c.bb = { ...coin.bb, upper: sc(coin.bb.upper), lower: sc(coin.bb.lower), mid: sc(coin.bb.mid), middle: sc(coin.bb.middle) };
+    for (const k of ['dayStruct', 'h4Struct']) if (coin[k]) c[k] = { ...coin[k], lastHigh: sc(coin[k].lastHigh), lastLow: sc(coin[k].lastLow) };
+    for (const k of ['wickSupports', 'wickResistances']) if (Array.isArray(coin[k]))
+      c[k] = coin[k].map(z => (z && typeof z === 'object') ? { ...z, level: sc(z.level) } : sc(z));
+    return c;
+  } catch(_e) { return coin; }
+}
+async function _maybeFetchPionex() {
+  if (mainPriceSrc() !== 'pionex' || typeof fetchPionexPrices !== 'function') return;
+  try { await fetchPionexPrices(); } catch(_e) {}
+}
 const MAIN_DAILY_R_CAP = 3;
 const MAIN_ROUND_CAP   = 3;     // 每輪掃描最多建單數（依機會品質排序先到先得）
 const SOFT_MULT_MIN    = 0.5;   // 軟門預算：倉位係數低於此不建（弱點疊加不是機會，只是便宜）
@@ -14282,7 +14321,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14430,7 +14469,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const canScaleIn = !!(setup.canScaleIn || setup.isLongTerm);
   const _price = parseFloat(coin.price) || 1;
   const _pSym  = (coin.symbol || '').replace('/', '').toUpperCase();
-  const _px    = v => { try { return toOkx(_pSym, _price, v); } catch(e) { return v.toFixed(4); } };
+  const _px    = v => { try { return setup.priceSrc === 'pionex' ? +(+v).toPrecision(6) : toOkx(_pSym, _price, v); } catch(e) { return v.toFixed(4); } };
 
   // ── AI 週/日趨勢（優先從 macroCache 即時計算，fallback 用 setup 存儲值）──
   let wBias = 'neutral', wBiasLabel = setup.weeklyBias || '', wBiasConf = setup.weeklyConf || 0;
@@ -14590,14 +14629,16 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   // ── 價格區塊 ──
   const _hdrDefault = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
   const _hdr = (opts && opts.headerOverride) ? opts.headerOverride : _hdrDefault;
-  const _priceLines = canScaleIn
-    ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b>\n` +
+  const _modeTag = setup.entryMode === 'stop' ? '（突破觸發・停損買進，價格穿過才成交）' : '（回踩限價）';
+  const _srcLine = setup.priceSrc === 'pionex' ? `💱 價位空間：Pionex 現貨報價（一般單依此掛單）\n` : '';
+  const _priceLines = _srcLine + (canScaleIn
+    ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b> ${_modeTag}\n` +
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)` +
        _scaleBlock)
-    : (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b>\n` +
+    : (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b> ${_modeTag}\n` +
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)\n` +
        `🎯 <b>止盈一：$${_fmt(_px(setup.tp1))}</b>  (${_tp1Sign}${_tp1Pct}% | R:R ${_rr1}:1)\n` +
-       (_rr2 && setup.tp2 ? `🚀 <b>止盈二：$${_fmt(_px(setup.tp2))}</b>  (${_tp1Sign}${_tp2Pct}% | R:R ${_rr2}:1)\n` : ''));
+       (_rr2 && setup.tp2 ? `🚀 <b>止盈二：$${_fmt(_px(setup.tp2))}</b>  (${_tp1Sign}${_tp2Pct}% | R:R ${_rr2}:1)\n` : '')));
   // ── 建議倉位（有算才顯示）：固定分數法，數量與帳戶大小成正比 ──
   const _sizeLine = (setup.sizeQty > 0 && setup.sizeNotional > 0)
     ? `📦 建議倉位：<b>${setup.sizeQty}</b>（名目 $${setup.sizeNotional}｜風險 ${setup.sizeRiskPct}% 權益` +
@@ -15343,7 +15384,7 @@ async function recordSignalsFromScan(data) {
     }
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
-    let setup = computeSimpleSetup(coin, isLong);
+    let setup = computeSimpleSetup(_coinForMain(coin), isLong);
     // 影子追蹤的上下文：此後任何 _no() 都會順手記一筆被擋下的紙上單
     _shCtx = { coin, dir: direction, setup };
     if (setup.hardBlocked && _no('進場結構硬性封鎖')) continue;
@@ -15534,7 +15575,7 @@ async function recordSignalsFromScan(data) {
     {
       const _atrReal = _tradeSetupCache[coin.symbol]?.atrReal || 0;
       if (_atrReal > 0 && (setup.atr || 0) > 0 && Math.abs(_atrReal - setup.atr) / setup.atr > 0.15) {
-        const _setup2 = computeSimpleSetup(coin, isLong);
+        const _setup2 = computeSimpleSetup(_coinForMain(coin), isLong);
         if (_setup2 && !_setup2.hardBlocked && !_setup2.rrBlocked && (parseFloat(_setup2.rr1) || 0) >= 1.3) {
           setup = _setup2;
         } else {
@@ -16140,6 +16181,8 @@ async function recordSignalsFromScan(data) {
       } catch(_e) { return []; } })(),
       // 進場邏輯別（哪一條分支決定了這筆單的進場／止損／止盈）
       entryTag: setup.entryTag || null, slTag: setup.slTag || null,
+      entryMode: setup.entryMode || 'limit',        // stop＝突破觸發（停損買進），limit＝回踩限價
+      priceSrc: setup.priceSrc || 'okx',            // 這筆單的價位空間：pionex／okx（監控用同一來源的現價）
       evStats: signalEvidence(setup.entryTag) || null,   // 建單當下的同型態歷史證據（樣本不足為 null）
       dirSource: _dp.src,   // 方向由誰決定：score（指標評分）／conviction（近中性時證據融合反轉）
       softGates: _softGates.map(g => g.reason), softMult: +_softMult.toFixed(3),   // 軟門：縮倉而非擋單（研究所量它擋掉的是賺還是賠）
@@ -16162,7 +16205,7 @@ async function recordSignalsFromScan(data) {
       gateRelaxed: _scanGates.relaxed || undefined,  // 配額寬鬆模式建單標記（分組統計/熔斷識別用）
     };
     // 若現價已超過進場位 0.3%，標記為等待回踩
-    const _scanCurPrice = parseFloat(coin.price) || 0;
+    const _scanCurPrice = _mainPx(coin.symbol, parseFloat(coin.price) || 0);
     if (_scanCurPrice > 0 && newTrade.entry > 0) {
       const _pastEntry = isLong
         ? _scanCurPrice > newTrade.entry * 1.003   // 多單：現價已漲過進場位 0.3%
@@ -16865,7 +16908,7 @@ function updateOpenTrades(data) {
         try { sendCancelTelegramNotification(trade, _exReason); } catch(_e) {}
         continue;
       }
-      const cur    = parseFloat(coin.price) || 0;
+      const cur    = _mainPx(trade.symbol, parseFloat(coin.price) || 0, trade);
       const isLong = trade.direction === 'long';
       const entry  = trade.entry;
 
@@ -16993,7 +17036,7 @@ function updateOpenTrades(data) {
     if (trade.status !== 'open') continue;
     const coin = data.find(d => d.symbol === trade.symbol);
     if (!coin) continue;
-    const cur = parseFloat(coin.price) || 0;
+    const cur = _mainPx(trade.symbol, parseFloat(coin.price) || 0, trade);
     if (!cur) continue;
     const { entry, sl, tp1, tp2, direction } = trade;
     // baseSl：原始止損（止盈一後 sl 移至成本，用 baseSl 保持 R 計算正確）
@@ -20563,14 +20606,14 @@ function renderPositionsPage() {
 
     <input class="pos-search" id="pos-search-input" placeholder="搜尋幣種..." oninput="filterPositionCards(this.value)">
     <div class="pos-list" id="pos-list-container">${cards}</div>
-    ${pending.length > 0 ? `<div id="pos-pending-section-hdr" style="display:none;margin:16px 0 6px;padding:8px 12px;border-radius:8px;background:rgba(255,215,64,0.07);border:1px solid rgba(255,215,64,0.18);font-size:0.8rem;font-weight:600;color:#f0a500">⏳ 等待進場（${pending.length} 筆）— 等待現價回踩確認後自動開倉</div>` : ''}
+    ${pending.length > 0 ? `<div id="pos-pending-section-hdr" style="display:none;margin:16px 0 6px;padding:8px 12px;border-radius:8px;background:rgba(255,215,64,0.07);border:1px solid rgba(255,215,64,0.18);font-size:0.8rem;font-weight:600;color:#f0a500">⏳ 等待進場（${pending.length} 筆）— 回踩單等價格回踩、突破單等價格穿過進場位，觸發後自動開倉</div>` : ''}
     <div class="pos-list" id="pos-pending-container" style="display:none">
       ${pending.length === 0
         ? '<div class="pos-empty" style="margin-top:12px">目前沒有等待進場的交易建議</div>'
         : pending.map(t => {
             const isLong  = t.direction === 'long';
             const dirClr  = isLong ? 'var(--bull)' : 'var(--bear)';
-            const dirLbl  = isLong ? '▲ 等待做多' : '▼ 等待做空';
+            const dirLbl  = isLong ? (t.entryMode === 'stop' ? '▲ 等待突破做多' : '▲ 等待做多') : (t.entryMode === 'stop' ? '▼ 等待跌破做空' : '▼ 等待做空');
             const fmt     = v => v ? fmtPrice(v) : '—';
             const isLongTermCard = t.canScaleIn === true;
             const _fbR    = Math.abs((t.entry || 0) - (t.sl || 0));
@@ -26172,6 +26215,7 @@ function computeSimpleSetup(coin, isLong) {
        於是「哪一種進場邏輯真的會賺」這個問題根本問不出口，只能整包看勝率。
        記下來之後，實驗室就能逐條分支比較期望值。 */
     entryTag: _entryTag, slTag: _slTag, tp1Tag: _tp1Tag, tp2Tag: _tp2Tag,
+    priceSrc: coin._pxSrc || 'okx',
     entryMode: (typeof _entryIsStop !== 'undefined' && _entryIsStop) ? 'stop' : 'limit',   // stop＝突破觸發才成交（停損買進），limit＝回踩限價
     entryScore: +(_entryScore || 0).toFixed(1),   // 進場點合流佐證分（弱佐證抬標用）
     addLevel: _ladderOpp[0] != null
@@ -26434,6 +26478,8 @@ function populateSettingsPage() {
   if (cloudSyncTgl) cloudSyncTgl.checked = s.cloudSync !== false;     // 預設開啟
   const scalpTgl = document.getElementById('s-scalp-toggle');
   if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
+  const mpsSel = document.getElementById('s-main-price-src');
+  if (mpsSel) mpsSel.value = s.mainPriceSrc === 'pionex' ? 'pionex' : 'okx';
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
   const freezeTgl = document.getElementById('s-learn-freeze');
@@ -26485,6 +26531,7 @@ function saveAllSettings() {
     cloudSync:       document.getElementById('s-cloud-sync')?.checked ?? true,
     scalpEnabled:    document.getElementById('s-scalp-toggle')?.checked ?? false,
     scalpBotMode:    document.getElementById('s-scalp-bot')?.checked ?? false,
+    mainPriceSrc:    document.getElementById('s-main-price-src')?.value === 'pionex' ? 'pionex' : 'okx',
     // 學習凍結：勾選 → 沿用尚未到期的舊值，否則從現在起 28 天；取消 → 0（立即解凍）
     learnFreezeUntil: (() => {
       const el = document.getElementById('s-learn-freeze');

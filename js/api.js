@@ -1578,6 +1578,32 @@ function saveSettings(patch) {
   return next;
 }
 
+/* ── Pionex 現貨報價（一般單價格對齊）────────────────────────────
+   一般單在 Pionex 執行時，進場／止損／止盈與監控用的現價改用 Pionex 報價。
+   走同源代理 /api/pionex（伺服器端 10 秒快取），前端再快取 10 秒；
+   失敗時回傳空表，呼叫端自動退回 OKX 價位（不會因此少單）。 */
+let _pionexPx = { at: 0, prices: {} };
+async function fetchPionexPrices() {
+  if (Date.now() - _pionexPx.at < 10e3 && Object.keys(_pionexPx.prices).length) return _pionexPx.prices;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 7000);
+    const r = await fetch('/api/pionex', { signal: ctrl.signal, cache: 'no-store' });
+    clearTimeout(t);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    if (j && j.ok && j.prices && Object.keys(j.prices).length) {
+      _pionexPx = { at: Date.now(), prices: j.prices };
+      try { feedStamp('pionex', true, '同源代理'); } catch(_e) {}
+    } else { try { feedStamp('pionex', false, j && j.err); } catch(_e) {} }
+  } catch(e) { try { feedStamp('pionex', false, e && e.message); } catch(_e) {} }
+  return _pionexPx.prices;
+}
+function pionexPrice(symbol) {
+  const v = _pionexPx.prices[symbol];
+  return (isFinite(v) && v > 0 && Date.now() - _pionexPx.at < 5 * 60e3) ? v : null;   // 5 分鐘內的報價才算有效
+}
+
 /* ── 真實加密貨幣新聞抓取（RSS via rss2json + CoinGecko fallback）── */
 let _cryptoNewsCache = null;
 let _cryptoNewsFetchAt = 0;
