@@ -76,6 +76,27 @@ if (!sc.built || sc.priceSrc !== 'pionex' || !sc.entryMode) throw new Error('掃
 if (!sc.tgSrc || !sc.tgMode) throw new Error('Telegram 文字缺價位空間或觸發方式：' + JSON.stringify(sc));
 console.log(`✓ 掃描建單：priceSrc=${sc.priceSrc}、entryMode=${sc.entryMode}、進場 ${sc.entry}（Pionex 空間）；Telegram 含「價位空間：Pionex」與觸發方式`);
 
+// ══ ④ 合約優先、無合約退現貨；停損買進成交通知 ══
+const pp = await p.evaluate(async (mk) => {
+  const mkCoin = (0, eval)('(' + mk + ')');
+  const s = loadSettings(); s.mainPriceSrc = 'pionex_perp'; s.notifTelegram = true; s.tgToken = 't'; s.tgChatId = 'c'; saveSettings(s);
+  _pionexPx = { at: Date.now(), prices: { 'PX/USDT': 101, 'NP/USDT': 102 }, perp: { 'PX/USDT': 101.5 } };
+  const a = _coinForMain(mkCoin('PX/USDT', 74)), b2 = _coinForMain(mkCoin('NP/USDT', 74));
+  let sent = []; sendTelegramMessage = async (tk, ch, text) => { sent.push(text); return true; };
+  isSignalMaster = () => true; sendCancelTelegramNotification = () => {};
+  const now = Date.now();
+  localStorage.setItem(TRADE_LOG_KEY, JSON.stringify([{ id: 'sb', symbol: 'PX/USDT', direction: 'long', status: 'pending', entry: 101.2, entryPrice: 100.8, sl: 99.5, tp1: 104, tp2: 106,
+    timestamp: now - 60e3, telegramSent: true, conf: 70, tradeType: 'directional', refined: true, priceSrc: 'pionex_perp', entryMode: 'stop' }])); _tlogRaw = null; _tlogArr = null;
+  updateOpenTrades([{ symbol: 'PX/USDT', price: '100.4', score: 70, trend: '看漲' }]);
+  updateOpenTrades([{ symbol: 'PX/USDT', price: '100.4', score: 70, trend: '看漲' }]);   // 第二輪不重發
+  const t = loadTradeLog().find(x => x.id === 'sb');
+  const s2 = loadSettings(); s2.mainPriceSrc = 'okx'; s2.notifTelegram = false; saveSettings(s2);
+  return { aSrc: a._pxSrc, aPx: a.price, bSrc: b2._pxSrc, bPx: b2.price, status: t.status, notified: t.fillNotified, sent: sent.length, text: sent[0] || '' };
+}, MK);
+if (pp.aSrc !== 'pionex_perp' || pp.aPx !== '101.5' || pp.bSrc !== 'pionex' || pp.bPx !== '102') throw new Error('合約優先／退現貨錯誤：' + JSON.stringify(pp));
+if (pp.status !== 'open' || pp.sent !== 1 || !pp.text.includes('突破成交') || !pp.text.includes('Pionex 合約')) throw new Error('成交通知錯誤：' + JSON.stringify(pp));
+console.log(`✓ 合約優先：PX 用合約 ${pp.aPx}（priceSrc=${pp.aSrc}），NP 無合約 ticker 退現貨 ${pp.bPx}（${pp.bSrc}）；停損買進穿過觸發位 → 一則「突破成交」通知（第二輪不重發）`);
+
 await p.evaluate(() => { const s = loadSettings(); s.mainPriceSrc = 'okx'; saveSettings(s); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_pionex');

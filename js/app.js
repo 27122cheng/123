@@ -14048,6 +14048,23 @@ function globalLossStreak() {
   return val;
 }
 let _lsgNoticeShown = 0;
+/* 停損買進單的成交通知（2026-09-19）：訊號在突破前就發（讓執行端能預掛觸價單），
+   真的穿過觸發位時再補一則確認——執行端若只能市價進場，就以這一則為進場時點。 */
+function sendEntryFilledNotification(trade, cur) {
+  try {
+    const s = loadSettings();
+    if (!s.notifTelegram || !s.tgToken || !s.tgChatId) return;
+    const isLong = trade.direction === 'long';
+    const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
+    const sym = String(trade.symbol || '').replace('/USDT', '');
+    const srcTxt = trade.priceSrc === 'pionex_perp' ? 'Pionex 合約' : trade.priceSrc === 'pionex' ? 'Pionex 現貨' : 'OKX';
+    const text = `✅ <b>突破成交</b> — ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
+      `價格已${isLong ? '漲穿' : '跌穿'}觸發位 $${fmt(trade.entry)}（現價 $${fmt(cur)}，${srcTxt}）\n` +
+      `🛑 止損 $${fmt(trade.sl)}　🎯 止盈一 $${fmt(trade.tp1)}${trade.tp2 ? `　🚀 止盈二 $${fmt(trade.tp2)}` : ''}\n` +
+      `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #成交`;
+    Promise.resolve(sendTelegramMessage(s.tgToken, s.tgChatId, text)).catch(() => {});
+  } catch(_e) {}
+}
 /* 一般單單日虧損上限（2026-09-07，頂級交易員檢討）：原本只有「連續止損 8 筆」全局熔斷，
    等於先賠 8R 才停。改為今日已完結一般單淨虧 ≥ MAIN_DAILY_R_CAP 即停止新單，隔日自動恢復。
    快速單另有自己的單日 % 熔斷，不重複。 */
@@ -14055,12 +14072,12 @@ let _lsgNoticeShown = 0;
    結構（EMA／前高低／影線／ATR）仍由 OKX K 線算，但一般單的進場／止損／止盈與
    監控現價改用 Pionex 報價：把整組價位依「Pionex 現價 ÷ OKX 現價」等比對齊，
    結構幾何不變、絕對數字對上 Pionex。比值超出 ±3% 視為報價異常，退回 OKX。 */
-function mainPriceSrc() { try { return loadSettings().mainPriceSrc === 'pionex' ? 'pionex' : 'okx'; } catch(_e) { return 'okx'; } }
+function mainPriceSrc() { try { const v = loadSettings().mainPriceSrc; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; } catch(_e) { return 'okx'; } }
 function _mainPx(symbol, fallback, trade) {
   try {
     const src = trade ? (trade.priceSrc || 'okx') : mainPriceSrc();
-    if (src !== 'pionex' || typeof pionexPrice !== 'function') return fallback;
-    const px = pionexPrice(symbol);
+    if (!String(src).startsWith('pionex') || typeof pionexPrice !== 'function') return fallback;
+    const px = pionexPrice(symbol, src === 'pionex_perp' ? 'perp' : 'spot');
     if (!(px > 0)) return fallback;
     if (fallback > 0 && Math.abs(px / fallback - 1) > 0.03) return fallback;   // 兩邊差超過 3%：報價異常
     return px;
@@ -14068,12 +14085,16 @@ function _mainPx(symbol, fallback, trade) {
 }
 function _coinForMain(coin) {
   try {
-    if (mainPriceSrc() !== 'pionex' || !coin) return coin;
+    const src = mainPriceSrc();
+    if (!src.startsWith('pionex') || !coin) return coin;
     const okx = parseFloat(coin.price) || 0; const px = _mainPx(coin.symbol, okx);
     if (!(okx > 0) || !(px > 0) || px === okx) return coin;
     const r = px / okx;
+    // 實際用到的是合約還是現貨（選合約但該幣沒有合約 ticker 時退回現貨，單上如實記錄）
+    const q = (typeof pionexQuote === 'function') ? pionexQuote(coin.symbol, src === 'pionex_perp' ? 'perp' : 'spot') : null;
+    const usedSrc = (q && q.kind === 'perp') ? 'pionex_perp' : 'pionex';
     const sc = v => { const x = parseFloat(v); return isFinite(x) && x > 0 ? +(x * r).toPrecision(9) : v; };
-    const c = { ...coin, price: String(sc(coin.price)), _pxSrc: 'pionex', _pxRatio: +r.toFixed(6) };
+    const c = { ...coin, price: String(sc(coin.price)), _pxSrc: usedSrc, _pxRatio: +r.toFixed(6) };
     for (const k of ['ema20', 'ema50', 'ema200', 'h4SwingHigh', 'h4SwingLow', 'atr', 'vwap']) if (c[k] != null) c[k] = sc(c[k]);
     if (coin.bb) c.bb = { ...coin.bb, upper: sc(coin.bb.upper), lower: sc(coin.bb.lower), mid: sc(coin.bb.mid), middle: sc(coin.bb.middle) };
     for (const k of ['dayStruct', 'h4Struct']) if (coin[k]) c[k] = { ...coin[k], lastHigh: sc(coin[k].lastHigh), lastLow: sc(coin[k].lastLow) };
@@ -14083,7 +14104,7 @@ function _coinForMain(coin) {
   } catch(_e) { return coin; }
 }
 async function _maybeFetchPionex() {
-  if (mainPriceSrc() !== 'pionex' || typeof fetchPionexPrices !== 'function') return;
+  if (!mainPriceSrc().startsWith('pionex') || typeof fetchPionexPrices !== 'function') return;
   try { await fetchPionexPrices(); } catch(_e) {}
 }
 const MAIN_DAILY_R_CAP = 3;
@@ -14321,7 +14342,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14469,7 +14490,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const canScaleIn = !!(setup.canScaleIn || setup.isLongTerm);
   const _price = parseFloat(coin.price) || 1;
   const _pSym  = (coin.symbol || '').replace('/', '').toUpperCase();
-  const _px    = v => { try { return setup.priceSrc === 'pionex' ? +(+v).toPrecision(6) : toOkx(_pSym, _price, v); } catch(e) { return v.toFixed(4); } };
+  const _px    = v => { try { return String(setup.priceSrc || '').startsWith('pionex') ? +(+v).toPrecision(6) : toOkx(_pSym, _price, v); } catch(e) { return v.toFixed(4); } };
 
   // ── AI 週/日趨勢（優先從 macroCache 即時計算，fallback 用 setup 存儲值）──
   let wBias = 'neutral', wBiasLabel = setup.weeklyBias || '', wBiasConf = setup.weeklyConf || 0;
@@ -14630,7 +14651,8 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _hdrDefault = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
   const _hdr = (opts && opts.headerOverride) ? opts.headerOverride : _hdrDefault;
   const _modeTag = setup.entryMode === 'stop' ? '（突破觸發・停損買進，價格穿過才成交）' : '（回踩限價）';
-  const _srcLine = setup.priceSrc === 'pionex' ? `💱 價位空間：Pionex 現貨報價（一般單依此掛單）\n` : '';
+  const _srcLine = setup.priceSrc === 'pionex_perp' ? `💱 價位空間：Pionex 永續合約報價（一般單依此掛單）\n`
+                 : setup.priceSrc === 'pionex' ? `💱 價位空間：Pionex 現貨報價（一般單依此掛單）\n` : '';
   const _priceLines = _srcLine + (canScaleIn
     ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b> ${_modeTag}\n` +
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)` +
@@ -16946,6 +16968,8 @@ function updateOpenTrades(data) {
         trade.status    = 'open';
         trade.entryTime = Date.now();
         changed = true;
+        // 停損買進單成交＝價格真的穿過觸發位：發一則「已突破成交」讓執行端確認（回踩單維持原本不另發）
+        if (trade.entryMode === 'stop' && !trade.fillNotified) { trade.fillNotified = true; try { sendEntryFilledNotification(trade, cur); } catch(_e) {} }
         continue;
       }
 
@@ -26479,7 +26503,7 @@ function populateSettingsPage() {
   const scalpTgl = document.getElementById('s-scalp-toggle');
   if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
   const mpsSel = document.getElementById('s-main-price-src');
-  if (mpsSel) mpsSel.value = s.mainPriceSrc === 'pionex' ? 'pionex' : 'okx';
+  if (mpsSel) mpsSel.value = (s.mainPriceSrc === 'pionex' || s.mainPriceSrc === 'pionex_perp') ? s.mainPriceSrc : 'okx';
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
   const freezeTgl = document.getElementById('s-learn-freeze');
@@ -26531,7 +26555,7 @@ function saveAllSettings() {
     cloudSync:       document.getElementById('s-cloud-sync')?.checked ?? true,
     scalpEnabled:    document.getElementById('s-scalp-toggle')?.checked ?? false,
     scalpBotMode:    document.getElementById('s-scalp-bot')?.checked ?? false,
-    mainPriceSrc:    document.getElementById('s-main-price-src')?.value === 'pionex' ? 'pionex' : 'okx',
+    mainPriceSrc:    (() => { const v = document.getElementById('s-main-price-src')?.value; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; })(),
     // 學習凍結：勾選 → 沿用尚未到期的舊值，否則從現在起 28 天；取消 → 0（立即解凍）
     learnFreezeUntil: (() => {
       const el = document.getElementById('s-learn-freeze');

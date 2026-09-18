@@ -27,14 +27,25 @@ module.exports = async (req, res) => {
     if (!r.ok) { res.status(200).json({ ok: false, at: now, n: 0, prices: {}, err: 'HTTP ' + r.status }); return; }
     const j = await r.json();
     const list = (j && j.data && Array.isArray(j.data.tickers)) ? j.data.tickers : (Array.isArray(j && j.data) ? j.data : []);
-    const prices = {};
+    const prices = {}, perp = {};
     for (const t of list) {
       const sym = String(t.symbol || '');
-      if (!sym.endsWith('_USDT')) continue;
       const px = parseFloat(t.close ?? t.last ?? t.price);
-      if (isFinite(px) && px > 0) prices[sym.replace('_USDT', '/USDT')] = px;
+      if (!(isFinite(px) && px > 0)) continue;
+      /* 永續合約：Pionex 的合約代號未在公開文件固定下來，這裡同時接受常見寫法
+         （BTC_USDT_PERP／BTC.PERP_USDT／BTC_USDT.PERP／type 欄位含 PERP），
+         全部歸一成 'BTC/USDT'；沒有任何合約 ticker 時 perp 為空表，前端退回現貨。 */
+      const isPerp = /PERP|SWAP/i.test(sym) || /PERP|SWAP/i.test(String(t.type || t.category || ''));
+      if (isPerp) {
+        const base = sym.replace(/[._-]?(PERP|SWAP)[._-]?/i, '_').replace(/__+/g, '_').replace(/^_|_$/g, '');
+        if (base.endsWith('_USDT')) perp[base.replace('_USDT', '/USDT')] = px;
+        continue;
+      }
+      if (!sym.endsWith('_USDT')) continue;
+      prices[sym.replace('_USDT', '/USDT')] = px;
     }
-    const body = { ok: Object.keys(prices).length > 0, at: now, n: Object.keys(prices).length, prices };
+    const body = { ok: Object.keys(prices).length > 0 || Object.keys(perp).length > 0, at: now,
+      n: Object.keys(prices).length, nPerp: Object.keys(perp).length, prices, perp };
     if (body.ok) _cache = { at: now, body };
     res.status(200).json(body);
   } catch (e) {
