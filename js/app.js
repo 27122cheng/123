@@ -8559,7 +8559,10 @@ function buildTradeEnvCard() {
       ? Object.entries(f.rejects).sort((a, b) => b[1] - a[1]).slice(0, 2)
         .map(([k, v]) => `${k}×${v}`).join('、')
       : '';
-    sigLine = `今日一般單建單 <b>${built}</b> 筆` +
+    const _dr = dailyRGuard();
+    const _budgetClr = _dr.blocked ? '#ef4444' : _dr.sumR <= -2 ? '#f59e0b' : 'var(--text2)';
+    sigLine = `今日風險預算：已用 <b style="color:${_budgetClr}">${_dr.sumR > 0 ? '+' : ''}${_dr.sumR}R</b>／上限 -${MAIN_DAILY_R_CAP}R（${_dr.n} 筆完結）　·　` +
+      `今日一般單建單 <b>${built}</b> 筆（每輪最多 ${MAIN_ROUND_CAP} 筆）` +
       (f ? `；最近一輪掃描 ${f.candidates ?? '—'} 個候選、建 ${f.built ?? 0} 筆` : '') +
       (topRej ? `，主要攔截：${topRej}` : '');
   } catch(_e) {}
@@ -14045,6 +14048,8 @@ let _lsgNoticeShown = 0;
    等於先賠 8R 才停。改為今日已完結一般單淨虧 ≥ MAIN_DAILY_R_CAP 即停止新單，隔日自動恢復。
    快速單另有自己的單日 % 熔斷，不重複。 */
 const MAIN_DAILY_R_CAP = 3;
+const MAIN_ROUND_CAP   = 3;     // 每輪掃描最多建單數（依機會品質排序先到先得）
+const SOFT_MULT_MIN    = 0.5;   // 軟門預算：倉位係數低於此不建（弱點疊加不是機會，只是便宜）
 let _dailyRCache = null, _dailyRCacheTs = 0;
 function dailyRGuard() {
   const now = Date.now();
@@ -14277,7 +14282,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14743,6 +14748,19 @@ function attachScanExtras(coin) {
   return missing;
 }
 
+/* 預測是否已被成績單證明有效：近 ≥30 筆已結算方向預測命中率 ≥55%。
+   證明之前，今日／本週預測只顯示，不進任何評分與倉位係數（快取 60 秒）。 */
+const _biasProvenCache = {};
+function biasProven(kind) {
+  try {
+    const c = _biasProvenCache[kind];
+    if (c && Date.now() - c.at < 60e3) return c.v;
+    const bt = biasTrackStats(kind);
+    const v = !!(bt && bt.dirN >= 30 && (bt.dirRate || 0) >= 55);
+    _biasProvenCache[kind] = { at: Date.now(), v };
+    return v;
+  } catch(_e) { return false; }
+}
 function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
   _ctx = _ctx || { wBias: 'neutral', tBias: 'neutral', btcChg24: NaN };
     let _sqRC = 0;  // recheck score
@@ -14767,13 +14785,15 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
     const _rcMacd = parseFloat(_sqCoin.macdHist) || 0;
     if (_sqIsLong ? _rcMacd > 0 : _rcMacd < 0) _sqRC += 1;
 
-    // ② 本週 AI 同向 ±1
-    if (_sqIsLong ? _ctx.wBias.includes('bull') : _ctx.wBias.includes('bear')) _sqRC += 1;
-    else if (_sqIsLong ? _ctx.wBias.includes('bear') : _ctx.wBias.includes('bull')) _sqRC -= 1;
-
-    // ③ 今日 AI 同向 ±1
-    if (_sqIsLong ? _ctx.tBias.includes('bull') : _ctx.tBias.includes('bear')) _sqRC += 1;
-    else if (_sqIsLong ? _ctx.tBias.includes('bear') : _ctx.tBias.includes('bull')) _sqRC -= 1;
+    // ②③ 本週／今日 AI 同向 ±1（2026-09-18：預測是投票不是結構——成績單證明命中率 ≥55% 才進評分）
+    if (biasProven('w')) {
+      if (_sqIsLong ? _ctx.wBias.includes('bull') : _ctx.wBias.includes('bear')) _sqRC += 1;
+      else if (_sqIsLong ? _ctx.wBias.includes('bear') : _ctx.wBias.includes('bull')) _sqRC -= 1;
+    }
+    if (biasProven('d')) {
+      if (_sqIsLong ? _ctx.tBias.includes('bull') : _ctx.tBias.includes('bear')) _sqRC += 1;
+      else if (_sqIsLong ? _ctx.tBias.includes('bear') : _ctx.tBias.includes('bull')) _sqRC -= 1;
+    }
 
     // ④ 宏觀環境 ±2（與 buildTradeSetup 一致）
     if (_macroCache) try {
@@ -15108,6 +15128,7 @@ async function recordSignalsFromScan(data) {
      成交結果標記 probeTag 由實驗室驗收。這不是放水：一筆/24h、有標記、
      有驗收，而且它是唯一能讓凍結的統計重新開始更新的路。 */
   let _starveProbe = false;
+  let _roundBuilt = 0;   // 本輪實際建單數（漏斗 built 以此為準，不再用「候選 − 攔截」反推）
   try {
     const _lastBuild = tlog.reduce((m, t) => Math.max(m, t.timestamp || 0), 0);
     const _lastProbe = parseFloat(localStorage.getItem('csp_starve_probe_at')) || 0;
@@ -15245,6 +15266,9 @@ async function recordSignalsFromScan(data) {
        軟門上線後進入重運算段的候選變多，弱機器就出現「倒數到 58 秒卡住」。 */
     if (_cand % 3 === 0) await new Promise(r => setTimeout(r, 0));
     _stepMark('掃描候選 ' + coin.symbol);
+    /* 2026-09-18：每輪最多建 MAIN_ROUND_CAP 筆。候選已依機會品質排序，迴圈先到先得＝
+       只讓排名最前、且通過所有硬條件的候選建單，其餘留到下一輪（機會還在就還會建）。 */
+    if (_roundBuilt >= MAIN_ROUND_CAP && _no(`本輪建單上限 ${MAIN_ROUND_CAP} 筆（依機會排序，其餘下輪）`)) continue;
     _shCtx = null;   // 每個候選重置：setup 還沒算出來之前不記影子單
     /* ── 軟門（2026-09-03）：學習型／統計型條件不再擋單，改為倉位係數 ────
        40 道門裡有一半是「歷史說這種情況勝率低」——擋掉它們就失去樣本，統計
@@ -15311,8 +15335,12 @@ async function recordSignalsFromScan(data) {
     // 今日預測強偏向仍硬擋；一般偏向改倉位係數（預測是投票不是結構，不該一票否決）
     if (isLong  && tBias === 'strong_bear' && _no('今日大方向強偏空，擋多')) continue;
     if (!isLong && tBias === 'strong_bull' && _no('今日大方向強偏多，擋空')) continue;
-    if (isLong  && tBias === 'bear') _soft('今日大方向偏空', 0.7);
-    if (!isLong && tBias === 'bull') _soft('今日大方向偏多', 0.7);
+    /* 今日預測是投票不是結構（2026-09-18）：成績單連續 30 筆命中率 ≥55% 之前完全不參與，
+       只當資訊顯示；證明有效後才恢復為 0.7 的倉位係數。強偏向的硬擋仍在上方。 */
+    if ((isLong && tBias === 'bear') || (!isLong && tBias === 'bull')) {
+      if (biasProven('d')) _soft(isLong ? '今日大方向偏空' : '今日大方向偏多', 0.7);
+      else _rej['ℹ️ 今日預測反向，但成績單未達 55%（≥30 筆）→ 不參與建單'] = 0;
+    }
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     let setup = computeSimpleSetup(coin, isLong);
@@ -15826,6 +15854,11 @@ async function recordSignalsFromScan(data) {
     } else if (!canScaleIn && _scanSqScore < _sqFloor) {
       _soft(`SQ ${_scanSqScore} < ${_sqFloor}`, 0.7);
     }
+    /* 雙弱不建（2026-09-18）：SQ 低於門檻、風控分（扣風險分後）也低於門檻——單一項弱可以縮倉，
+       兩項同時弱代表這筆單沒有任何一層證據站得住。饑荒探路單例外（它的目的就是取樣）。 */
+    if (!_starveThis && _scanSqScore < _sqFloor
+        && Math.max(0, (setup.conf || 0) - _scanRiskPen) < _scanGates.minConf
+        && _no(`雙弱不建：SQ ${_scanSqScore} < ${_sqFloor} 且風控分 ${Math.max(0, (setup.conf || 0) - _scanRiskPen)} < ${_scanGates.minConf}`)) continue;
     if (_starveThis) _scanSqFactors.push('🧪 饑荒探路單：風控分被歷史止損記憶拖累（55~64），結構與 R/R 照常達標——放行讓凍結的統計重新更新，成效由實驗室驗收');
     if (_scanGates.relaxed) _scanSqFactors.push(`ℹ️ ${_scanGates.label}`);
 
@@ -16139,7 +16172,16 @@ async function recordSignalsFromScan(data) {
     // 進場條件封鎖：對「即將寫進紀錄的那個物件」求值，判定欄位與事後統計
     // 欄位保證是同一份。封鎖名單每次都由實測重算，條件轉好會自動解除。
     _profMark('終審'); const _condBlock = condBlockCheck(newTrade);
-    if (_condBlock) _soft('條件封鎖：' + _condBlock.split('（')[0], 0.6);
+    if (_condBlock) {
+      _soft('條件封鎖：' + _condBlock.split('（')[0], 0.6);
+      // 這道軟門在部位算完之後才判定：把係數同步回單上，否則縮倉只寫在理由裡、沒縮到部位
+      newTrade.softMult = +_softMult.toFixed(3); newTrade.softGates = _softGates.map(g => g.reason);
+      for (const k of ['sizeQty', 'sizeNotional', 'sizeRiskPct'])
+        if (isFinite(parseFloat(newTrade[k]))) newTrade[k] = +(parseFloat(newTrade[k]) * 0.6).toPrecision(6);
+    }
+    /* 軟門預算（2026-09-18）：一個弱點用縮倉承擔，兩三個弱點疊在一起不是好機會只是便宜。
+       總係數低於 SOFT_MULT_MIN 就不建（0.7×0.7＝0.49 即兩道 0.7 的門同時踩到）。 */
+    if (_softMult < SOFT_MULT_MIN && _no(`軟門預算：倉位係數 ${_softMult.toFixed(2)} < ${SOFT_MULT_MIN}（${_softGates.map(g => g.reason.split('（')[0]).join('＋')}）`)) continue;
     // 探路單認領：這筆若是被封鎖的桶放行的取樣單，標記起來供實驗室單獨統計
     try { newTrade.probeTag = winupClaimProbe(winupTagsOf('main', newTrade)); } catch(_e) {}
     if (_starveThis) {
@@ -16150,7 +16192,8 @@ async function recordSignalsFromScan(data) {
     }
     // 建單唯一入口（原子：重新載入→去重→存檔），杜絕多路徑並行建出重複訊號
     _profMark('條件封鎖');
-    if (!commitNewTrade(newTrade)) {
+    if (commitNewTrade(newTrade)) _roundBuilt++;
+    else {
       console.log(`[dedup] ${coin.symbol} 已有相同訊號，略過重複建單`);
       _no('去重（同訊號已存在）'); continue;
     }
@@ -16335,10 +16378,10 @@ async function recordSignalsFromScan(data) {
     saveTradeLog(tlog);
   }
   _profMark('掃描迴圈尾段');
-  try { _profEnd({ coins: _cand, built: Math.max(0, _cand - Object.values(_rej).reduce((a, b) => a + b, 0)) }); } catch(_e) {}
+  try { _profEnd({ coins: _cand, built: _roundBuilt }); } catch(_e) {}
   // 淘汰漏斗存檔：實驗室據此顯示「這輪掃了幾個候選、各被什麼擋掉」
   try {
-    const _built = Object.values(_rej).length ? _cand - Object.values(_rej).reduce((a, b) => a + b, 0) : _cand;
+    const _built = _roundBuilt;   // 軟門（↓）也會在漏斗計數，反推法會把縮倉建單當成攔截
     localStorage.setItem(SCAN_FUNNEL_KEY, JSON.stringify({
       at: Date.now(), candidates: _cand, built: Math.max(0, _built),
       gates: { minConf: _scanGates.minConf, minSq: _scanGates.minSq, minRR: _scanGates.minRR },
@@ -18426,11 +18469,14 @@ function getUpcomingEconEvents(extraDays = 0) {
   const weekOfMonth = Math.ceil(targetDate.getDate() / 7);
   const events = [];
 
+  /* 2026-09-18：排程表裡寫死的「AI 預測值／預測方向／信心」是固定文字不是預測，
+     這種假精準會誤導判斷——事件只保留名稱、時間、影響等級、多空解讀規則。 */
+  const _strip = ev => { const { aiPred, aiConf, aiDir, aiDirReason, aiMarketImpact, ...rest } = ev; return rest; };
   WEEKLY_DATA_SCHEDULE.forEach(ev => {
     if (ev.dayOfWeek === dayOfWeek) {
       const eventTime = new Date(targetDate);
       eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
-      events.push({ ...ev, eventTime, type: 'weekly', daysAhead: extraDays });
+      events.push({ ..._strip(ev), eventTime, type: 'weekly', daysAhead: extraDays });
     }
   });
 
@@ -18439,7 +18485,7 @@ function getUpcomingEconEvents(extraDays = 0) {
     if (ev.dayOfWeek === dayOfWeek && weekMatch) {
       const eventTime = new Date(targetDate);
       eventTime.setHours(ev.twHour, ev.twMin, 0, 0);
-      events.push({ ...ev, eventTime, type: 'monthly', daysAhead: extraDays });
+      events.push({ ..._strip(ev), eventTime, type: 'monthly', daysAhead: extraDays });
     }
   });
 
