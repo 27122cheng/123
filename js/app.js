@@ -14342,7 +14342,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821g';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -17511,15 +17511,22 @@ async function verifyIntrabarHits() {
   if (typeof fetchKlines !== 'function') return;
   _wickCheckBusy = true;
   try {
-    const tlog = loadTradeLog();
-    const actives = tlog.filter(t => (t.status === 'open' || t.status === 'pending') && t.entry && t.sl);
-    if (!actives.length) return;
-    let changed = false;
+    /* 2026-09-19（使用者實案：訊號已取消，卻又收到「止盈一達到、止損已保本」）：
+       這裡原本一開始就把整份紀錄拍成快照，逐幣 await 抓 1m K 線（好幾秒），最後
+       把整份快照存回去。這幾秒內主迴圈若已把掛單取消／作廢並存檔，快照一存回，
+       取消就被覆蓋、單子復活，接著用 1m 插針判它成交＋止盈一，還發通知。
+       改法：只記 id；每個幣 await 回來後重新讀最新紀錄、找同 id、狀態仍是
+       open/pending 才動它；改完立刻存那一份最新紀錄，不再整份快照回寫。 */
+    const activeIds = loadTradeLog().filter(t => (t.status === 'open' || t.status === 'pending') && t.entry && t.sl).map(t => t.id);
+    if (!activeIds.length) return;
     const tp1Hits = [];
-    for (const trade of actives) {
-      const sym = trade.symbol.replace('/', '');
+    for (const _id of activeIds) {
+      const _pre = loadTradeLog().find(t => t.id === _id);
+      if (!_pre || !(_pre.status === 'open' || _pre.status === 'pending')) continue;
+      const sym = _pre.symbol.replace('/', '');
+      const _preStatus = _pre.status;
       // 從上次檢查點（或建單/進場時間）補到現在，最多回看 30 根 1m
-      const sinceTs = trade.lastWickCheck || trade.entryTime || trade.timestamp || (Date.now() - 5 * 60000);
+      const sinceTs = _pre.lastWickCheck || _pre.entryTime || _pre.timestamp || (Date.now() - 5 * 60000);
       const needBars = Math.min(30, Math.max(3, Math.ceil((Date.now() - sinceTs) / 60000) + 1));
       let raw = null;
       // OKX 優先：實體單在 OKX 成交，用 OKX 的 1m 插針判定掃損最貼近實際
@@ -17527,6 +17534,11 @@ async function verifyIntrabarHits() {
       // 只有掛單／持倉中的少數幣會走到這裡，不影響掃描的限速額度
       try { raw = await (typeof fetchKlinesExec === 'function' ? fetchKlinesExec : fetchKlines)(sym, '1m', needBars); } catch(_e) {}
       if (!raw || !raw.length) continue;
+      // await 回來：以最新紀錄為準。這期間被取消／作廢／已平倉（或狀態變了）→ 不碰、不通知
+      const tlog = loadTradeLog();
+      const trade = tlog.find(t => t.id === _id);
+      if (!trade || trade.status !== _preStatus) continue;
+      let changed = false;
       const isLong = trade.direction === 'long';
       const { entry, tp1, tp2 } = trade;
 
@@ -17556,13 +17568,15 @@ async function verifyIntrabarHits() {
             trade.status = 'expired';
             addCancelCooldown(trade, _wReason);
             sendCancelTelegramNotification(trade, _wReason);
-            changed = true;
             trade.lastWickCheck = Date.now();
+            saveTradeLog(tlog);
             continue;
           }
-          trade.status = 'open'; trade.entryTime = Date.now(); changed = true;
+          trade.status = 'open'; trade.entryTime = Date.now();
+          if (trade.entryMode === 'stop' && !trade.fillNotified) { trade.fillNotified = true; try { sendEntryFilledNotification(trade, entry); } catch(_e) {} }
         }
-        trade.lastWickCheck = Date.now(); changed = true;
+        trade.lastWickCheck = Date.now();
+        saveTradeLog(tlog);
         continue;
       }
 
@@ -17602,7 +17616,7 @@ async function verifyIntrabarHits() {
         if (tp2Hit) { outcome = 'tp2'; break; }
       }
       trade.lastWickCheck = Date.now(); changed = true;
-      if (!outcome) continue;
+      if (!outcome) { saveTradeLog(tlog); continue; }
 
       const baseRisk = Math.abs(entry - (trade.baseSl ?? trade.sl)) || Math.abs(entry - trade.sl) || 1;
       trade.status   = 'closed';
@@ -17634,10 +17648,12 @@ async function verifyIntrabarHits() {
       }
       try { archiveExpiredToMemory([trade]); } catch(_e) {}
       try { if (typeof showToast === 'function') showToast(`📍 ${trade.symbol} 1m插針判定：${outcome === 'tp2' ? '止盈二' : outcome === 'be' ? '保本出場' : '止損'}（輪詢間隙觸及）`, outcome === 'tp2' ? 'success' : 'warning'); } catch(_t) {}
+      if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
     }
-    if (changed) { saveTradeLog(tlog); invalidateLearnCache(); }
+    // 發通知前再對一次最新狀態：這期間被取消的單不發「止盈一達到」
+    const _liveHits = tp1Hits.filter(h => { try { const t = loadTradeLog().find(x => x.id === h.trade.id); return !!t && t.status === 'open' && t.tp1Hit; } catch(_e) { return false; } });
     // .catch 而不是 try/catch：沒有 await 的 async 呼叫，try/catch 接不到它的拒絕
-    if (tp1Hits.length > 0) sendTP1Notifications(tp1Hits).catch(e => console.warn('[tp1-notify]', e));
+    if (_liveHits.length > 0) sendTP1Notifications(_liveHits).catch(e => console.warn('[tp1-notify]', e));
   } catch(_e) { console.warn('[wick-check]', _e); }
   finally { _wickCheckBusy = false; }
 }
@@ -17657,6 +17673,7 @@ async function sendTP1Notifications(hits) {
   const s = loadSettings();
   if (!s.notifBrowser && !s.notifTelegram) return;
   for (const { trade, coin, cur } of hits) {
+    try { const _live = loadTradeLog().find(x => x.id === trade.id); if (_live && _live.status !== 'open') continue; } catch(_e) {}
    try {
     const dir = trade.direction === 'long' ? '做多' : '做空';
     const rr  = (Math.abs(trade.tp1 - trade.entry) / (Math.abs(trade.entry - trade.sl) || 1)).toFixed(1);
