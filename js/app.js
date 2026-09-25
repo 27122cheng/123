@@ -14342,7 +14342,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821g';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821h';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -23079,8 +23079,9 @@ function qlabEffective() {
     // 回歸家族維持原本「目標較近」的比例，不硬套順勢家族的倍數
     const r1 = SCALP_CFG.revertTp1R / SCALP_CFG.tp1R;
     const r2 = SCALP_CFG.revertTp2R / SCALP_CFG.tp2R;
-    return { slMult: a.slMult, tp1R: a.tp1R, tp2R: a.tp2R,
-             revertTp1R: +(a.tp1R * r1).toFixed(2), revertTp2R: +(a.tp2R * r2).toFixed(2),
+    const _min1 = SCALP_CFG.minTp1R || 1.0;
+    return { slMult: a.slMult, tp1R: Math.max(_min1, a.tp1R), tp2R: Math.max(1.6, a.tp2R),
+             revertTp1R: Math.max(_min1, +(a.tp1R * r1).toFixed(2)), revertTp2R: Math.max(1.6, +(a.tp2R * r2).toFixed(2)),
              applied: true, at: a.appliedAt };
   }
   return { slMult: SCALP_CFG.slAtrMult, tp1R: SCALP_CFG.tp1R, tp2R: SCALP_CFG.tp2R,
@@ -23350,8 +23351,8 @@ function buildQuantLabHtml() {
   };
 
   const slRows = qlabSweep(trades, base, 'slMult', [0.35, 0.45, 0.6, 0.75, 0.9, 1.1, 1.3, 1.6]);
-  const t1Rows = qlabSweep(trades, base, 'tp1R',   [0.6, 0.8, 1.0, 1.2, 1.5]);
-  const t2Rows = qlabSweep(trades, base, 'tp2R',   [1.0, 1.3, 1.6, 2.0, 2.5, 3.0]);
+  const t1Rows = qlabSweep(trades, base, 'tp1R',   [1.0, 1.2, 1.5]);            // 止盈一不掃 <1R（止損不得大於止盈）
+  const t2Rows = qlabSweep(trades, base, 'tp2R',   [1.6, 2.0, 2.5, 3.0]);
 
   // ── 最佳組合 ──
   const delta = best && cur.n ? +(best.netR - cur.netR).toFixed(2) : 0;
@@ -27143,8 +27144,12 @@ const SCALP_CFG = {
                             //（窄區間裡 ATR 可能接近整個區間寬，照 ATR 放會讓 R 大到做不成）
   vwapDevMin:       0.022,  // VWAP 偏離 ≥2.2% 才視為過度延伸
   exhaustBars:      3,      // 連續同向棒數
-  revertTp1R:       0.8,    // 回歸模式的止盈較近（目標是回到均值，不是追延續）
-  revertTp2R:       1.3,
+  /* 2026-09-25（使用者實案：止損大於止盈，交易一直虧）：止盈一不得小於 1R——
+     0.8R 的止盈一配 1R 的止損，勝率要 60% 才打平，5 分鐘級別做不到。回歸模式的
+     目標若離進場不到 1.6R，代表均值太近、不值得賭，直接不建。 */
+  revertTp1R:       1.0,    // 回歸模式止盈一（原 0.8）
+  revertTp2R:       1.6,    // 回歸模式止盈二（原 1.3）
+  minTp1R:          1.0,    // 硬底線：任何模式、任何學習結果，止盈一距離 ≥ 止損距離
   retestMaxDist:    0.004,  // C：回踩後距突破位的最大距離 0.4%
   trapMaxBars:      2,      // D：假突破需於幾根內收回
   trapMinPierce:    0.0008, // D：至少刺破 0.08% 才算誘多/誘空
@@ -28205,17 +28210,19 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
                       : (_eff ? _eff.tp1R       : SCALP_CFG.tp1R);
   const _t2R = _isRev ? (_eff ? _eff.revertTp2R : SCALP_CFG.revertTp2R)
                       : (_eff ? _eff.tp2R       : SCALP_CFG.tp2R);
-  let tp1 = isLong ? entry + risk * _t1R : entry - risk * _t1R;
+  const _t1Eff = Math.max(SCALP_CFG.minTp1R || 1.0, _t1R);   // 止盈一硬底線 ≥1R（學習結果也不得低於）
+  let tp1 = isLong ? entry + risk * _t1Eff : entry - risk * _t1Eff;
   let tp2 = isLong ? entry + risk * _t2R : entry - risk * _t2R;
   // 回歸模式若均值目標比 tp2 更近，就以均值為準——目標訂在價格根本到不了的
   // 位置只會讓單子一路拖到停滯出場，那是勝率被吃掉的隱形來源。
   const _revTarget = mode === 'range' ? rangeMid : mode === 'vwapRev' ? vwapTarget : null;
   if (_revTarget && isFinite(_revTarget)) {
     if (isLong ? _revTarget < tp2 : _revTarget > tp2) tp2 = _revTarget;
-    if (isLong ? tp1 > tp2 : tp1 < tp2) tp1 = isLong ? entry + (tp2 - entry) * 0.6 : entry - (entry - tp2) * 0.6;
+    // 原本把止盈一縮到目標的 60%（可能只剩 0.5R）——止損比止盈大，就是這裡來的。改為目標不夠遠就不建。
   }
   const _rr = Math.abs(tp2 - entry) / risk;
-  if (_rr < 0.9) return _sr('回歸目標太近(R/R不足)');
+  if (_rr < 1.5) return _sr(`回歸目標太近(${_rr.toFixed(2)}R<1.5R)`);
+  if (isLong ? tp1 > tp2 : tp1 < tp2) return _sr('止盈一超過目標(R/R不足)');
   // 扣費後的賺賠比下限：毛 R/R 好看、淨值不行照樣賠。順勢家族需淨 ≥1.5；
   // 回歸家族目標本來就近（賭均值回歸不賭延續），需淨 ≥1.05。
   // 對照實際常數確認不會全擋：順勢預設 tp2R 1.8 − feeR ≤0.12 = 1.68 ✓、
@@ -28251,7 +28258,7 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
            macd: parseFloat(coin.macdHist) || 0,
            breakLevel: level, breakExtent: +(Math.max(0, extent) * 100).toFixed(2),
            volRatio: +(curVol / avgVol).toFixed(2), oiState,
-           tp1R: _t1R, tp2R: +_rr.toFixed(2), revTarget: _revTarget || null,
+           tp1R: _t1Eff, tp2R: +_rr.toFixed(2), revTarget: _revTarget || null,
            mtfWhy: _mtf.why, mtfAlign: _mtf.n,
            // 學習止損的存證：倍數、來源、理由，以及回頭學習所需的 ATR 標準化欄位
            feeR: +_feeR.toFixed(3), riskPct: +(risk / entry * 100).toFixed(3),
@@ -28827,6 +28834,36 @@ function updateScalpTrades(data) {
         if (!(_riskFill > 0)) {
           t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
           t.pendingFill = false; t.voidWhy = '成交價已越過結構止損'; changed = true; continue;
+        }
+        /* 2026-09-25：追價超過 0.35R 一律作廢（原本靠淨賺賠比間接擋，門檻不一）。
+           成交後止盈一若不足 1R（順向滑移讓止損變寬、止盈變近），把止盈一／二依實際
+           進場與實際風險重錨到 R 倍數——目標本來就是 R 倍數不是結構位，止損仍釘結構。
+           回歸模式目標被均值封頂、重錨後仍不足 1.5R → 作廢。機器人模式訊號已在成交前
+           發出，數字不能事後改 → 不重錨，直接作廢。 */
+        if (_moveR > 0.35) {
+          t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
+          t.pendingFill = false; changed = true; t.voidWhy = `追價 ${_moveR.toFixed(2)}R > 0.35R，不追`;
+          continue;
+        }
+        if (Math.abs(t.tp1 - cur) / _riskFill < (SCALP_CFG.minTp1R || 1.0)) {
+          if (t.botMode) {
+            t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
+            t.pendingFill = false; changed = true; t.voidWhy = `成交後止盈一僅 ${(Math.abs(t.tp1 - cur) / _riskFill).toFixed(2)}R < 1R（機器人模式不改已發數字）`;
+            continue;
+          }
+          const _dirF2 = isLong ? 1 : -1;
+          const _t1 = Math.max(SCALP_CFG.minTp1R || 1.0, parseFloat(t.tp1RUsed) || 1.0);
+          const _t2 = Math.max(1.6, parseFloat(t.tp2RUsed) || 1.8);
+          let _tp2n = cur + _dirF2 * _riskFill * _t2;
+          if (t.revTarget && isFinite(t.revTarget) && (isLong ? t.revTarget < _tp2n : t.revTarget > _tp2n)) _tp2n = t.revTarget;
+          const _tp1n = cur + _dirF2 * _riskFill * _t1;
+          if ((Math.abs(_tp2n - cur) / _riskFill) < 1.5 || (isLong ? _tp1n > _tp2n : _tp1n < _tp2n)) {
+            t.status = 'expired'; t.outcome = 'missed'; t.exitTime = Date.now();
+            t.pendingFill = false; changed = true; t.voidWhy = `成交後回歸目標不足 1.5R（${(Math.abs(_tp2n - cur) / _riskFill).toFixed(2)}R）`;
+            continue;
+          }
+          t.tpBeforeReanchor = { tp1: t.tp1, tp2: t.tp2 };
+          t.tp1 = +_tp1n.toPrecision(9); t.tp2 = +_tp2n.toPrecision(9); t.tpReanchored = true;
         }
         const _feeFill = 2 * SCALP_CFG.feeRate * cur / _riskFill;
         const _rr2Fill = Math.abs(t.tp2 - cur) / _riskFill;
