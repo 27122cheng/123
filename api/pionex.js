@@ -16,40 +16,42 @@ module.exports = async (req, res) => {
     res.status(200).json({ ..._cache.body, cached: true });
     return;
   }
-  const ctrl = new AbortController();
-  const tm = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const r = await fetch('https://api.pionex.com/api/v1/market/tickers', {
-      signal: ctrl.signal,
-      headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; crypto-scan/1.0)' },
-    });
-    clearTimeout(tm);
-    if (!r.ok) { res.status(200).json({ ok: false, at: now, n: 0, prices: {}, err: 'HTTP ' + r.status }); return; }
-    const j = await r.json();
-    const list = (j && j.data && Array.isArray(j.data.tickers)) ? j.data.tickers : (Array.isArray(j && j.data) ? j.data : []);
-    const prices = {}, perp = {};
-    for (const t of list) {
-      const sym = String(t.symbol || '');
-      const px = parseFloat(t.close ?? t.last ?? t.price);
-      if (!(isFinite(px) && px > 0)) continue;
-      /* 永續合約：Pionex 的合約代號未在公開文件固定下來，這裡同時接受常見寫法
-         （BTC_USDT_PERP／BTC.PERP_USDT／BTC_USDT.PERP／type 欄位含 PERP），
-         全部歸一成 'BTC/USDT'；沒有任何合約 ticker 時 perp 為空表，前端退回現貨。 */
-      const isPerp = /PERP|SWAP/i.test(sym) || /PERP|SWAP/i.test(String(t.type || t.category || ''));
-      if (isPerp) {
-        const base = sym.replace(/[._-]?(PERP|SWAP)[._-]?/i, '_').replace(/__+/g, '_').replace(/^_|_$/g, '');
-        if (base.endsWith('_USDT')) perp[base.replace('_USDT', '/USDT')] = px;
-        continue;
-      }
-      if (!sym.endsWith('_USDT')) continue;
-      prices[sym.replace('_USDT', '/USDT')] = px;
-    }
-    const body = { ok: Object.keys(prices).length > 0 || Object.keys(perp).length > 0, at: now,
-      n: Object.keys(prices).length, nPerp: Object.keys(perp).length, prices, perp };
-    if (body.ok) _cache = { at: now, body };
-    res.status(200).json(body);
-  } catch (e) {
-    clearTimeout(tm);
-    res.status(200).json({ ok: false, at: now, n: 0, prices: {}, err: String((e && e.message) || e) });
+  /* Pionex 的 tickers 端點預設只回現貨；永續合約要另外帶 type=PERP（合約代號如 BTC_USDT_PERP）。
+     兩個請求並行、各自失敗不影響對方；另回傳樣本代號與錯誤，設定頁可直接看到抓到什麼。 */
+  const pull = async (url) => {
+    const ctrl = new AbortController();
+    const tm = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetch(url, { signal: ctrl.signal, headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; crypto-scan/1.0)' } });
+      clearTimeout(tm);
+      if (!r.ok) return { list: [], err: 'HTTP ' + r.status };
+      const j = await r.json();
+      const list = (j && j.data && Array.isArray(j.data.tickers)) ? j.data.tickers : (Array.isArray(j && j.data) ? j.data : []);
+      return { list, err: (j && j.result === false) ? String(j.message || j.code || 'result=false') : null };
+    } catch (e) { clearTimeout(tm); return { list: [], err: String((e && e.message) || e) }; }
+  };
+  const [spotR, perpR] = await Promise.all([
+    pull('https://api.pionex.com/api/v1/market/tickers'),
+    pull('https://api.pionex.com/api/v1/market/tickers?type=PERP'),
+  ]);
+  const prices = {}, perp = {};
+  const norm = sym => sym.replace(/[._-]?(PERP|SWAP)[._-]?/i, '_').replace(/__+/g, '_').replace(/^_|_$/g, '');
+  for (const t of spotR.list) {
+    const sym = String(t.symbol || ''); const px = parseFloat(t.close ?? t.last ?? t.price);
+    if (!(isFinite(px) && px > 0)) continue;
+    if (/PERP|SWAP/i.test(sym)) { const b = norm(sym); if (b.endsWith('_USDT')) perp[b.replace('_USDT', '/USDT')] = px; continue; }
+    if (sym.endsWith('_USDT')) prices[sym.replace('_USDT', '/USDT')] = px;
   }
+  for (const t of perpR.list) {
+    const sym = String(t.symbol || ''); const px = parseFloat(t.close ?? t.last ?? t.price);
+    if (!(isFinite(px) && px > 0)) continue;
+    const b = norm(sym);
+    if (b.endsWith('_USDT')) perp[b.replace('_USDT', '/USDT')] = px;
+  }
+  const body = { ok: Object.keys(prices).length > 0 || Object.keys(perp).length > 0, at: now,
+    n: Object.keys(prices).length, nPerp: Object.keys(perp).length, prices, perp,
+    sample: { spot: spotR.list[0] ? String(spotR.list[0].symbol) : null, perp: perpR.list[0] ? String(perpR.list[0].symbol) : null },
+    err: { spot: spotR.err, perp: perpR.err } };
+  if (body.ok) _cache = { at: now, body };
+  res.status(200).json(body);
 };

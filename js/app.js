@@ -14103,6 +14103,24 @@ function _coinForMain(coin) {
     return c;
   } catch(_e) { return coin; }
 }
+/* 設定頁 Pionex 報價狀態：抓到幾個現貨／合約、多久前、樣本代號、錯誤——一眼看出「合約沒抓到」 */
+function renderPionexStatus() {
+  const el = document.getElementById('s-main-price-src-status'); if (!el) return;
+  const px = (typeof _pionexPx !== 'undefined') ? _pionexPx : null;
+  if (!px || !px.at) { el.textContent = 'Pionex 報價狀態：尚未抓取（選 Pionex 後每輪掃描自動抓；或按下方按鈕立即測試）'; return; }
+  const nS = Object.keys(px.prices || {}).length, nP = Object.keys(px.perp || {}).length;
+  const age = Math.round((Date.now() - px.at) / 1000);
+  const btc = px.perp && px.perp['BTC/USDT'] ? `合約 BTC ${px.perp['BTC/USDT']}` : (px.prices && px.prices['BTC/USDT'] ? `現貨 BTC ${px.prices['BTC/USDT']}` : '');
+  const err = px.err && (px.err.spot || px.err.perp) ? `　錯誤：現貨 ${px.err.spot || '—'}／合約 ${px.err.perp || '—'}` : '';
+  const smp = px.sample ? `　樣本代號：${px.sample.spot || '—'}／${px.sample.perp || '—'}` : '';
+  el.innerHTML = `Pionex 報價狀態：現貨 <b>${nS}</b> 個、合約 <b style="color:${nP ? '#22c55e' : '#ef4444'}">${nP}</b> 個（${age} 秒前）${btc ? '　' + btc : ''}${smp}${err}`
+    + (nP === 0 ? `<br><span style="color:#f59e0b">合約報價 0 個：選「永續合約」時會退回現貨；請把這一行截圖回報，依樣本代號調整解析。</span>` : '');
+}
+async function pionexTestNow() {
+  try { _pionexPx = { at: 0, prices: {}, perp: {} }; await fetchPionexPrices(); } catch(_e) {}
+  try { renderPionexStatus(); } catch(_e) {}
+  try { showToast('Pionex 報價已重新抓取', 'info'); } catch(_e) {}
+}
 async function _maybeFetchPionex() {
   if (!mainPriceSrc().startsWith('pionex') || typeof fetchPionexPrices !== 'function') return;
   try { await fetchPionexPrices(); } catch(_e) {}
@@ -14342,7 +14360,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821h';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821i';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -26522,6 +26540,7 @@ function populateSettingsPage() {
   if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
   const mpsSel = document.getElementById('s-main-price-src');
   if (mpsSel) mpsSel.value = (s.mainPriceSrc === 'pionex' || s.mainPriceSrc === 'pionex_perp') ? s.mainPriceSrc : 'okx';
+  try { renderPionexStatus(); } catch(_e) {}
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
   const freezeTgl = document.getElementById('s-learn-freeze');

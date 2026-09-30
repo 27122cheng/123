@@ -1594,10 +1594,10 @@ async function fetchPionexPrices() {
     const j = await r.json();
     const nS = j && j.prices ? Object.keys(j.prices).length : 0, nP = j && j.perp ? Object.keys(j.perp).length : 0;
     if (j && j.ok && (nS || nP)) {
-      _pionexPx = { at: Date.now(), prices: j.prices || {}, perp: j.perp || {} };
+      _pionexPx = { at: Date.now(), prices: j.prices || {}, perp: j.perp || {}, sample: j.sample || null, err: j.err || null };
       try { feedStamp('pionex', true, `同源代理（現貨 ${nS}／合約 ${nP}）`); } catch(_e) {}
-    } else { try { feedStamp('pionex', false, j && j.err); } catch(_e) {} }
-  } catch(e) { try { feedStamp('pionex', false, e && e.message); } catch(_e) {} }
+    } else { _pionexPx.err = (j && j.err) || { spot: 'empty', perp: 'empty' }; _pionexPx.sample = (j && j.sample) || null; try { feedStamp('pionex', false, JSON.stringify(j && j.err)); } catch(_e) {} }
+  } catch(e) { _pionexPx.err = { spot: String(e && e.message), perp: String(e && e.message) }; try { feedStamp('pionex', false, e && e.message); } catch(_e) {} }
   return _pionexPx.prices;
 }
 /* kind='perp' 優先取合約報價，沒有該幣的合約 ticker 時退回現貨（回傳 {px, kind}） */
