@@ -1818,6 +1818,9 @@ function coreConsensusDelta(coin, isLong) {
    對向插針不誤判成交（限價單本就只在該側成交）。無緩衝，碰到即算成交。 */
 function isLimitFilled(trade) {
   const entry = parseFloat(trade.entry) || 0;
+  /* 停損買進（2026-09-30）：影線刺過觸發位就算成交＝把最多的假突破全吃進來。
+     改為要「1m 收盤站上觸發位」或「掃描當下現價站上」（stopConfirmed 由兩條監控路徑寫入）。 */
+  if (trade.entryMode === 'stop') return trade.stopConfirmed === true;
   if (!entry || trade.loSince == null || trade.hiSince == null) return false;
   const ref = parseFloat(trade.entryPrice) || 0;
   if (ref <= 0) {
@@ -5306,11 +5309,15 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
       }
     } catch(_btsGateE) { console.warn('[detail-gate]', _btsGateE); }
     if (_canAutoRecord) {
+      const _btsAlign = (() => { try { const c2 = _coinForMain(coin); return { r: c2._pxRatio || 1, src: c2._pxSrc || 'okx' }; } catch(_e) { return { r: 1, src: 'okx' }; } })();
+      const _btsR = _btsAlign.r, _btsSrc = _btsAlign.src;
       const _btsNewTrade = {
         id: `${coin.symbol}-${Date.now()}`,
         symbol: coin.symbol, direction,
         timestamp: Date.now(),
-        entryPrice: price, entry, sl, tp1, tp2,
+        // 詳情頁自動建單：整組價位等比對齊一般單價格來源（Pionex 合約／現貨），與掃描建單同一空間
+        entryPrice: +(price * _btsR).toPrecision(9), entry: +(entry * _btsR).toPrecision(9), sl: +(sl * _btsR).toPrecision(9),
+        tp1: +(tp1 * _btsR).toPrecision(9), tp2: tp2 ? +(tp2 * _btsR).toPrecision(9) : tp2, priceSrc: _btsSrc,
         rsi: parseFloat(coin.rsi) || 50,
         adx: parseFloat(coin.adx) || 20,
         score: coin.score, trend: coin.trend, conf, rawConf,
@@ -10655,7 +10662,7 @@ function buildTopTraderPlan(coin, mtfData, deriv, globalMkt, whale, fg, halving)
         <ul style="margin:0 0 0 16px;padding:0">${need.map(n => `<li>${n}</li>`).join('')}</ul>
       </div>`;
     } else {
-      const su = computeSimpleSetup(coin, isLong);
+      const su = computeSimpleSetup(_coinForMain(coin), isLong);
       const risk = Math.abs(su.entry - su.sl) || 0;
       const eqS = parseFloat(loadSettings().mainEquity);
       const eq  = eqS > 0 ? eqS : 1000;
@@ -10968,8 +10975,8 @@ async function renderCoinDetail(symbol) {
   const _frEl = document.getElementById('full-risk-body');
   if (_frEl) {
     try {
-      const _frLSetup = computeSimpleSetup(coin, true);
-      const _frSSetup = computeSimpleSetup(coin, false);
+      const _frLSetup = computeSimpleSetup(_coinForMain(coin), true);
+      const _frSSetup = computeSimpleSetup(_coinForMain(coin), false);
       const _frLong   = computeFullRisk(coin, _frLSetup, true);
       const _frShort  = computeFullRisk(coin, _frSSetup, false);
       _frEl.innerHTML = buildFullRiskCard(_frLong, '📈 做多') + buildFullRiskCard(_frShort, '📉 做空');
@@ -14360,7 +14367,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821i';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821j';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14499,6 +14506,8 @@ function inCooldown(tlog, symbol, direction) {
 
 /* ── Telegram 訊息建構（buildTradeSetup / checkAndSendAlerts / recordSignalsFromScan 共用）── */
 function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
+  // 訊息裡的「現價」與精度要跟訊號同一個價位空間：Pionex 單就用 Pionex 現價
+  if (String((setup && setup.priceSrc) || '').startsWith('pionex')) { try { coin = _coinForMain(coin); } catch(_e) {} }
   const isLong    = direction === 'long';
   const _fmt  = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
   const _pct  = (a, b) => b ? ((Math.abs(a - b) / Math.abs(b)) * 100).toFixed(2) : '0.00';
@@ -15422,6 +15431,23 @@ async function recordSignalsFromScan(data) {
       if (biasProven('d')) _soft(isLong ? '今日大方向偏空' : '今日大方向偏多', 0.7);
       else _rej['ℹ️ 今日預測反向，但成績單未達 55%（≥30 筆）→ 不參與建單'] = 0;
     }
+    /* ── 準確度閘門（2026-09-30）────────────────────────────────────
+       ① 逆 BTC 1H：山寨單逆著 BTC 小時線做，是統計上最差的一類。相對強弱 <35
+          又逆 BTC → 不建（既弱又逆風）；其餘逆 BTC → 倉位 ×0.75。
+       ② 低品質時段（非亞洲／倫敦／紐約主力時段）→ 倉位 ×0.8：流動性差的時段
+          結構位常被無量掃損。 */
+    if (coin.symbol !== 'BTC/USDT') {
+      try {
+        const _btcH1 = String((data || []).find(d => d && d.symbol === 'BTC/USDT')?.h1Signal || '');
+        const _againstBtc = isLong ? _btcH1.includes('bear') : _btcH1.includes('bull');
+        if (_againstBtc) {
+          const _rsB = (typeof _rsRank !== 'undefined') ? _rsRank[coin.symbol] : null;
+          if (isFinite(_rsB) && _rsB < 35 && _no(`逆 BTC 1H 且相對弱勢（RS ${Math.round(_rsB)} < 35）`)) continue;
+          _soft('逆 BTC 1H 方向', 0.75);
+        }
+      } catch(_e) {}
+    }
+    try { if (computeKillZone()?.quality === 'low') _soft('低品質時段', 0.8); } catch(_e) {}
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
     let setup = computeSimpleSetup(_coinForMain(coin), isLong);
@@ -16963,6 +16989,7 @@ function updateOpenTrades(data) {
         if (_nHi !== trade.hiSince || _nLo !== trade.loSince) {
           trade.hiSince = _nHi; trade.loSince = _nLo; changed = true;  // 持久化區間追蹤
         }
+        if (trade.entryMode === 'stop' && !trade.stopConfirmed && (isLong ? cur >= entry : cur <= entry)) { trade.stopConfirmed = true; changed = true; }
       }
       if (isLimitFilled(trade)) {
         // ── 同輪掃過「進場點＋止損」的模糊單：作廢，不是成交後秒止損 ──
@@ -17573,6 +17600,9 @@ async function verifyIntrabarHits() {
           const hi = parseFloat(bar[2]), lo = parseFloat(bar[3]);
           if (isFinite(hi)) trade.hiSince = Math.max(trade.hiSince ?? hi, hi);
           if (isFinite(lo)) trade.loSince = Math.min(trade.loSince ?? lo, lo);
+          // 停損買進：1m 收盤站上觸發位才算確認（影線刺過不算）
+          const _cl = parseFloat(bar[4]);
+          if (trade.entryMode === 'stop' && isFinite(_cl) && (isLong ? _cl >= entry : _cl <= entry)) trade.stopConfirmed = true;
         }
         if (isLimitFilled(trade)) {
           // 與 updateOpenTrades 同一道模糊單防護：1m 補價後若區間同時掃過進場與止損，
@@ -24641,7 +24671,7 @@ async function checkAndSendAlerts(data) {
     let notifSetup = _tradeSetupCache[coin.symbol] || null;
     // 快取缺少進場價格資料（監控更新覆蓋）→ 重新計算
     if (!notifSetup || !notifSetup.entry) {
-      notifSetup = computeSimpleSetup(coin, isLong);
+      notifSetup = computeSimpleSetup(_coinForMain(coin), isLong);
       if (_macroCache) {
         try {
           const fg = _macroCache.fg;
@@ -24921,7 +24951,8 @@ async function checkAndSendAlerts(data) {
           id: `${coin.symbol}-${Date.now()}`,
           symbol: coin.symbol, direction: dir,
           timestamp: Date.now(),
-          entryPrice: parseFloat(coin.price) || 0,
+          entryPrice: _mainPx(coin.symbol, parseFloat(coin.price) || 0),
+          priceSrc: notifSetup.priceSrc || 'okx', entryMode: notifSetup.entryMode || 'limit',
           entry: notifSetup.entry, sl: notifSetup.sl,
           tp1: notifSetup.tp1, tp2: notifSetup.tp2,
           entryReason: notifSetup.entryReason, slReason: notifSetup.slReason,
