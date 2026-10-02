@@ -220,11 +220,11 @@ async function refreshOkxPrices() {
 }
 
 function toOkx(sym, binanceCur, level) {
-  if (!level || !binanceCur) return level;
-  const key = sym.replace('/', '').toUpperCase();
-  const px = _okxPrices[key];
-  if (!px || px <= 0) return level;
-  return level * (px / binanceCur);
+  /* 2026-10-02 停用換算（使用者實案：WLD 訊號進場 0.567901，一分鐘後成交通知 0.560152，
+     整組差 1.4%）。K 線早在 fetchKlinesSmart 就對齊 OKX 價格空間，這裡再用「OKX 報價快取
+     ÷ 掃描現價」把顯示數字乘一次，等於用一份可能是幾分鐘前的報價去扭曲訊息——
+     訊息上的數字跟系統追蹤的數字不一樣，是最危險的一種不一致。顯示一律以紀錄為準。 */
+  return level;
 }
 
 /* ---------- 幣安 API 端點（依序嘗試）---------- */
