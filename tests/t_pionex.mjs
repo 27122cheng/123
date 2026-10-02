@@ -94,7 +94,7 @@ const pp = await p.evaluate(async (mk) => {
   return { aSrc: a._pxSrc, aPx: a.price, bSrc: b2._pxSrc, bPx: b2.price, status: t.status, notified: t.fillNotified, sent: sent.length, text: sent[0] || '' };
 }, MK);
 if (pp.aSrc !== 'pionex_perp' || pp.aPx !== '101.5' || pp.bSrc !== 'pionex' || pp.bPx !== '102') throw new Error('合約優先／退現貨錯誤：' + JSON.stringify(pp));
-if (pp.status !== 'open' || pp.sent !== 1 || !pp.text.includes('突破成交') || !pp.text.includes('Pionex 合約')) throw new Error('成交通知錯誤：' + JSON.stringify(pp));
+if (pp.status !== 'open' || pp.sent !== 1 || !pp.text.includes('突破成交') || !pp.text.includes('Pionex 永續合約')) throw new Error('成交通知錯誤：' + JSON.stringify(pp));
 console.log(`✓ 合約優先：PX 用合約 ${pp.aPx}（priceSrc=${pp.aSrc}），NP 無合約 ticker 退現貨 ${pp.bPx}（${pp.bSrc}）；停損買進穿過觸發位 → 一則「突破成交」通知（第二輪不重發）`);
 
 await p.evaluate(() => { const s = loadSettings(); s.mainPriceSrc = 'okx'; saveSettings(s); });

@@ -14064,11 +14064,11 @@ function sendEntryFilledNotification(trade, cur) {
     const isLong = trade.direction === 'long';
     const fmt = v => v != null ? parseFloat(v).toPrecision(6).replace(/\.?0+$/, '') : '--';
     const sym = String(trade.symbol || '').replace('/USDT', '');
-    const srcTxt = trade.priceSrc === 'pionex_perp' ? 'Pionex 合約' : trade.priceSrc === 'pionex' ? 'Pionex 現貨' : 'OKX';
+    const srcTxt = _priceSpaceText(trade.priceSrc || 'okx', trade.symbol);
     const text = `✅ <b>突破成交</b> — ${sym} ${isLong ? '▲ 做多' : '▼ 做空'}\n` +
       `價格已${isLong ? '漲穿' : '跌穿'}觸發位 $${fmt(trade.entry)}（現價 $${fmt(cur)}，${srcTxt}）\n` +
       `🛑 止損 $${fmt(trade.sl)}　🎯 止盈一 $${fmt(trade.tp1)}${trade.tp2 ? `　🚀 止盈二 $${fmt(trade.tp2)}` : ''}\n` +
-      `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #成交`;
+      `#${sym.toLowerCase()} #${isLong ? 'long' : 'short'} #成交\n🖥 ${(() => { try { return _deviceLabel(); } catch(_e) { return '裝置'; } })()} · v${APP_VERSION}`;
     Promise.resolve(sendTelegramMessage(s.tgToken, s.tgChatId, text)).catch(() => {});
   } catch(_e) {}
 }
@@ -14080,15 +14080,37 @@ function sendEntryFilledNotification(trade, cur) {
    監控現價改用 Pionex 報價：把整組價位依「Pionex 現價 ÷ OKX 現價」等比對齊，
    結構幾何不變、絕對數字對上 Pionex。比值超出 ±3% 視為報價異常，退回 OKX。 */
 function mainPriceSrc() { try { const v = loadSettings().mainPriceSrc; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; } catch(_e) { return 'okx'; } }
+const _pionexFallbackWhy = {};   // 每個幣最近一次沒用到 Pionex 報價的原因（訊息上直接說）
 function _mainPx(symbol, fallback, trade) {
   try {
     const src = trade ? (trade.priceSrc || 'okx') : mainPriceSrc();
     if (!String(src).startsWith('pionex') || typeof pionexPrice !== 'function') return fallback;
     const px = pionexPrice(symbol, src === 'pionex_perp' ? 'perp' : 'spot');
-    if (!(px > 0)) return fallback;
-    if (fallback > 0 && Math.abs(px / fallback - 1) > 0.03) return fallback;   // 兩邊差超過 3%：報價異常
+    if (!(px > 0)) { _pionexFallbackWhy[symbol] = pionexDiag(); return fallback; }
+    if (fallback > 0 && Math.abs(px / fallback - 1) > 0.03) { _pionexFallbackWhy[symbol] = `Pionex ${px} 與掃描價 ${fallback} 差 ${(Math.abs(px / fallback - 1) * 100).toFixed(1)}% > 3%，視為異常`; return fallback; }
+    delete _pionexFallbackWhy[symbol];
     return px;
   } catch(_e) { return fallback; }
+}
+/* Pionex 報價現況一句話：給訊息與設定頁用 */
+function pionexDiag() {
+  try {
+    const px = (typeof _pionexPx !== 'undefined') ? _pionexPx : null;
+    if (!px || !px.at) return 'Pionex 報價尚未抓到（/api/pionex 無回應或未部署）';
+    const nS = Object.keys(px.prices || {}).length, nP = Object.keys(px.perp || {}).length;
+    const age = Math.round((Date.now() - px.at) / 1000);
+    const err = px.err && (px.err.spot || px.err.perp) ? `，錯誤 現貨 ${px.err.spot || '—'}／合約 ${px.err.perp || '—'}` : '';
+    if (age > 300) return `Pionex 報價過期（${age} 秒前，現貨 ${nS}／合約 ${nP}）${err}`;
+    return `Pionex 現貨 ${nS}／合約 ${nP} 個（${age} 秒前）${err}`;
+  } catch(_e) { return 'Pionex 狀態不明'; }
+}
+/* 訊息用的價位空間說明：設定是 Pionex 但這筆單退回 OKX 時，把原因寫出來 */
+function _priceSpaceText(priceSrc, symbol) {
+  const want = mainPriceSrc();
+  if (priceSrc === 'pionex_perp') return 'Pionex 永續合約報價';
+  if (priceSrc === 'pionex') return want === 'pionex_perp' ? `Pionex 現貨報價（該幣無合約報價：${pionexDiag()}）` : 'Pionex 現貨報價';
+  if (want.startsWith('pionex')) return `OKX（⚠️ 設定為 ${want === 'pionex_perp' ? 'Pionex 合約' : 'Pionex 現貨'}，但未套用：${_pionexFallbackWhy[symbol] || pionexDiag()}）`;
+  return 'OKX';
 }
 function _coinForMain(coin) {
   try {
@@ -14367,7 +14389,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821k';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821l';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14678,8 +14700,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _hdrDefault = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
   const _hdr = (opts && opts.headerOverride) ? opts.headerOverride : _hdrDefault;
   const _modeTag = setup.entryMode === 'stop' ? '（突破觸發・停損買進，價格穿過才成交）' : '（回踩限價）';
-  const _srcLine = setup.priceSrc === 'pionex_perp' ? `💱 價位空間：Pionex 永續合約報價（一般單依此掛單）\n`
-                 : setup.priceSrc === 'pionex' ? `💱 價位空間：Pionex 現貨報價（一般單依此掛單）\n` : '';
+  const _srcLine = `💱 價位空間：${_priceSpaceText(setup.priceSrc || 'okx', coin.symbol)}\n`;
   const _priceLines = _srcLine + (canScaleIn
     ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b> ${_modeTag}\n` +
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)` +
@@ -14716,7 +14737,8 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     _riskBanner +
     _revBlock +
     `\n${_tags}\n` +
-    `🔗 <a href="${siteUrl}">查看 ${_sym} 詳細分析 →</a>`;
+    `🔗 <a href="${siteUrl}">查看 ${_sym} 詳細分析 →</a>\n` +
+    `🖥 ${(() => { try { return _deviceLabel(); } catch(_e) { return '裝置'; } })()} · v${APP_VERSION}`;   // 哪台裝置、哪個版本發的：兩台同時當主機時一眼可辨
 }
 
 /* ══ 資深分析師三件套（2026-08-27）════════════════════════════════
