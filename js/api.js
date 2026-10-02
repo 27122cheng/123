@@ -764,6 +764,8 @@ async function fetchAllFromBinance(timeframe) {
           h4SwingLow:     h4Sig?.swingLow   || null,
           h4Rsi:          h4Sig?.rsi        || null,
           h1Rsi:          h1Sig?.rsi        || null,
+          // 4H ADX（2026-10 回測：4H ADX<20 的突破單期望值 ≈0，≥20 才有邊際；一般單建單閘門用）
+          h4Adx:          (() => { try { if (!h4Raw || h4Raw.length < 30) return null; const _k = parseKlines(h4Raw); return calcADX(_k.highs, _k.lows, _k.closes, 14); } catch(_e) { return null; } })(),
           h4Struct:       h4Sig?.struct     || null,   // 4H 擺動結構（HH/HL、BOS、CHoCH）
           dayStruct:      daySig?.struct    || null,   // 日線擺動結構
         };
@@ -838,6 +840,7 @@ function enrichData(raw) {
       h4SwingLow:      item.h4SwingLow        ?? null,
       h4Rsi:           item.h4Rsi             ?? null,
       h1Rsi:           item.h1Rsi             ?? null,
+      h4Adx:           item.h4Adx             ?? null,
       bb:              item.bb                ?? null,
       nakedK:          item.nakedK            ?? null,
       struct15:        item.struct15          ?? null,

@@ -4,7 +4,7 @@ const errs = []; p.on('pageerror', e => errs.push(String(e.message)));
 await p.goto('http://127.0.0.1:8765/index.html?safe=1', { waitUntil: 'domcontentloaded' });
 await p.waitForFunction(() => typeof recordSignalsFromScan === 'function' && typeof isLimitFilled === 'function', { timeout: 15000 });
 
-// ══ ① 停損買進：影線刺過不成交、收盤／現價站上才成交 ══
+// ══ ① 停損買進：觸及觸發價即成交（與交易所停損單一致；2026-10 回測：等收盤確認多付 0.58R）══
 const fill = await p.evaluate(async () => {
   isSignalMaster = () => true; sendCancelTelegramNotification = () => {}; sendEntryFilledNotification = () => {};
   const now = Date.now(); const t0 = now - 4 * 60000;
@@ -21,8 +21,8 @@ const fill = await p.evaluate(async () => {
   set(); fetchKlinesExec = async () => [bar(t0 + 60000, 100.5, 101.5, 100.4, 101.1)]; await verifyIntrabarHits(); const closeBar = loadTradeLog().find(x => x.id === 'st').status;
   return { wick, above, wickBar, closeBar };
 });
-if (fill.wick !== 'pending' || fill.above !== 'open' || fill.wickBar !== 'pending' || fill.closeBar !== 'open') throw new Error('停損買進確認規則錯誤：' + JSON.stringify(fill));
-console.log(`✓ 停損買進：影線刺到 101.4 但現價 100.6 → ${fill.wick}；現價 101.2 → ${fill.above}；1m 高 101.5 收 100.9 → ${fill.wickBar}；收 101.1 → ${fill.closeBar}`);
+if (fill.wick !== 'open' || fill.above !== 'open' || fill.wickBar !== 'open' || fill.closeBar !== 'open') throw new Error('停損買進應觸及即成交：' + JSON.stringify(fill));
+console.log(`✓ 停損買進：影線刺到 101.4（現價 100.6）→ ${fill.wick}；現價 101.2 → ${fill.above}；1m 高 101.5 收 100.9 → ${fill.wickBar}；收 101.1 → ${fill.closeBar}`);
 
 // ══ ② 逆 BTC 1H：×0.75；RS<35 且逆 BTC → 不建；低品質時段 ×0.8 ══
 const MK = `(s, score) => ({
