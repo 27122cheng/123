@@ -1,0 +1,24 @@
+name: fetch-okx-data
+# 暫時性：回測資料抓取（沙箱連不到交易所，由 Actions 代抓）。資料寫到 backtest-data 分支，不進 main。
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: fetch-okx
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: backtest-data, fetch-depth: 1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: node scripts/fetch_okx.mjs
+      - run: |
+          git config user.name "backtest-bot"
+          git config user.email "backtest-bot@users.noreply.github.com"
+          git add data
+          git commit -m "回測資料更新（OKX 永續 K 線）" || echo "no changes"
+          git push origin HEAD:backtest-data
