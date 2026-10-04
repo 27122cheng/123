@@ -766,6 +766,27 @@ async function fetchAllFromBinance(timeframe) {
           h1Rsi:          h1Sig?.rsi        || null,
           // 4H ADX（2026-10 回測：4H ADX<20 的突破單期望值 ≈0，≥20 才有邊際；一般單建單閘門用）
           h4Adx:          (() => { try { if (!h4Raw || h4Raw.length < 30) return null; const _k = parseKlines(h4Raw); return calcADX(_k.highs, _k.lows, _k.closes, 14); } catch(_e) { return null; } })(),
+          /* 1H 突破訊號（2026-10 回測：1H 收盤突破 20 根高低點、4H 同向，1,049 筆勝率 64%、+0.24R，
+             三個 30 天段都為正，回撤只有 15m 突破的 1/6）。只用已收盤棒：最近 4 根已收盤棒中，
+             最新一根「收盤穿過其前 20 根高/低點且實體同向」者；lvl＝被突破的高/低點，atr＝1H ATR(14)。 */
+          ...(() => { try {
+            if (!h1Raw || h1Raw.length < 40) return { h1Brk: null, h1Atr: null };
+            const _k = parseKlines(h1Raw.slice(0, -1));   // 去掉形成中的最後一根
+            const n = _k.closes.length; const h1Atr = calcATR(_k.highs, _k.lows, _k.closes, 14);
+            let h1Brk = null;
+            for (let j = n - 1; j >= n - 4 && j >= 21; j--) {
+              let hh = -Infinity, ll = Infinity;
+              for (let q = j - 20; q < j; q++) { hh = Math.max(hh, _k.highs[q]); ll = Math.min(ll, _k.lows[q]); }
+              const c = _k.closes[j], o = _k.opens[j];
+              if (c > hh && c > o) { h1Brk = { dir: 'bull', lvl: hh, atr: h1Atr, t: h1Raw[j][0], age: n - 1 - j }; break; }
+              if (c < ll && c < o) { h1Brk = { dir: 'bear', lvl: ll, atr: h1Atr, t: h1Raw[j][0], age: n - 1 - j }; break; }
+            }
+            // 突破後若價格已越過觸發位（lvl±0.05ATR），停損單早已成交，這個訊號對現在掛單沒有意義
+            if (h1Brk) { const later = h1Raw.slice(h1Raw.length - 1 - h1Brk.age); const trig = h1Brk.dir === 'bull' ? h1Brk.lvl + 0.05 * h1Atr : h1Brk.lvl - 0.05 * h1Atr;
+              const crossed = later.some(b => h1Brk.dir === 'bull' ? parseFloat(b[2]) >= trig : parseFloat(b[3]) <= trig);
+              if (crossed) h1Brk = { ...h1Brk, crossed: true }; }
+            return { h1Brk, h1Atr };
+          } catch(_e) { return { h1Brk: null, h1Atr: null }; } })(),
           h4Struct:       h4Sig?.struct     || null,   // 4H 擺動結構（HH/HL、BOS、CHoCH）
           dayStruct:      daySig?.struct    || null,   // 日線擺動結構
         };
@@ -841,6 +862,8 @@ function enrichData(raw) {
       h4Rsi:           item.h4Rsi             ?? null,
       h1Rsi:           item.h1Rsi             ?? null,
       h4Adx:           item.h4Adx             ?? null,
+      h1Brk:           item.h1Brk             ?? null,
+      h1Atr:           item.h1Atr             ?? null,
       bb:              item.bb                ?? null,
       nakedK:          item.nakedK            ?? null,
       struct15:        item.struct15          ?? null,

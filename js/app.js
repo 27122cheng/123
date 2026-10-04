@@ -14399,7 +14399,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821m';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821n';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14709,8 +14709,14 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   // ── 價格區塊 ──
   const _hdrDefault = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
   const _hdr = (opts && opts.headerOverride) ? opts.headerOverride : _hdrDefault;
-  const _modeTag = setup.entryMode === 'stop' ? '（突破觸發・停損買進，價格穿過才成交）' : '（回踩限價）';
+  const _modeTag = setup.entryMode === 'stop'
+    ? (setup.entryTag === 'h1break' ? '（1H 突破觸發・停損買進，價格穿過才成交）' : '（突破觸發・停損買進，價格穿過才成交）')
+    : '（回踩限價）';
   const _srcLine = `💱 價位空間：${_priceSpaceText(setup.priceSrc || 'okx', coin.symbol)}\n`;
+  // 回測機率模型預測勝率（7 因子邏輯迴歸，樣本外 AUC 0.60）；<56% 時倉位已自動縮小
+  const _bpLine = isFinite(parseFloat(setup.btProb))
+    ? `📈 回測模型預測勝率：<b>${Math.round(parseFloat(setup.btProb) * 100)}%</b>${parseFloat(setup.btProb) < 0.56 ? '（偏低，倉位已縮）' : parseFloat(setup.btProb) >= 0.65 ? '（高分位）' : ''}\n`
+    : '';
   const _priceLines = _srcLine + (canScaleIn
     ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b> ${_modeTag}\n` +
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)` +
@@ -14740,7 +14746,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     `⏰ ${_ts}\n` +
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
-    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _evLine +
+    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + _evLine +
     `\n${_priceLines}` + _sizeLine + `\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
@@ -15367,7 +15373,11 @@ async function recordSignalsFromScan(data) {
   const _oppQ = (coin) => {
     if (!coin || !isFinite(coin.score)) return -999;
     const dp = _dirPick(coin);
-    return Math.abs(coin.score - 50) + dp.cv * (dp.isLong ? 1 : -1) * 0.8;
+    // 回測機率模型（2026-10-04）：預測勝率每高 1 個百分點加 0.5 分（p 0.5→0.7 差 10 分，
+    // 與 |評分−50| 同尺度），讓每輪 3 筆名額先給樣本外驗證過的高勝率結構。
+    let _pTerm = 0;
+    try { const _bp = btWinProb(coin, dp.isLong).p; if (isFinite(_bp)) _pTerm = (_bp - 0.6) * 50; } catch(_e) {}
+    return Math.abs(coin.score - 50) + dp.cv * (dp.isLong ? 1 : -1) * 0.8 + _pTerm;
   };
   const _rankedData = [...data].sort((a, b) => _oppQ(b) - _oppQ(a));
   try {   // 排序結果寫進漏斗：訊號主機頁看得到「這輪誰排最前、憑什麼」
@@ -15500,6 +15510,12 @@ async function recordSignalsFromScan(data) {
     // 影子追蹤的上下文：此後任何 _no() 都會順手記一筆被擋下的紙上單
     _shCtx = { coin, dir: direction, setup };
     if (setup.hardBlocked && _no('進場結構硬性封鎖')) continue;
+    // 回測機率模型（2026-10-04）：樣本外最低四分之一（p<0.5）期望 −0.09R → 倉位 ×0.6；0.5～0.56 ×0.8
+    if (isFinite(parseFloat(setup.btProb))) {
+      const _bp = parseFloat(setup.btProb);
+      if (_bp < 0.5) _soft(`回測模型預測勝率 ${Math.round(_bp * 100)}% <50%`, 0.6);
+      else if (_bp < 0.56) _soft(`回測模型預測勝率 ${Math.round(_bp * 100)}% <56%`, 0.8);
+    }
     // 結構階梯不完整＝四個價位沒辦法全部釘在結構上 → 不建單。
     // 沒有結構可釘時硬用固定 R 湊出價位，正是這次要改掉的事。
     if (setup.ladderOk === false && _no('結構不足（四個價位無法全部釘在結構上）')) continue;
@@ -16254,6 +16270,7 @@ async function recordSignalsFromScan(data) {
       entryLs: (() => { try { const l = parseFloat(coin.derivData?.lsRatio); return isFinite(l) ? l : null; } catch(_e) { return null; } })(),   // 多空人數比快照（回測因子驗證用）
       h4Adx:   (() => { const a = parseFloat(coin.h4Adx); return isFinite(a) ? a : null; })(),
       btcD1:   (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : null,   // 建單當下 BTC 日線方向
+      btProb:  isFinite(parseFloat(setup.btProb)) ? parseFloat(setup.btProb) : null,   // 回測機率模型預測勝率（校準對照用）
       tp1FracPlan:  isFinite(parseFloat(setup.tp1FracPlan))  ? parseFloat(setup.tp1FracPlan)  : null,   // 突破單專用出場：止盈一減倉比例
       tp1LockRPlan: isFinite(parseFloat(setup.tp1LockRPlan)) ? parseFloat(setup.tp1LockRPlan) : null,   // 突破單專用出場：止盈一後鎖利 R
       entryTBias: tBias, entryWBias: wBias,   // 建單當下的今日／本週大盤預測：
@@ -22924,7 +22941,7 @@ const LEARN_KEEP_FIELDS = [
   'entryTBias', 'entryWBias',                // 建單當下的大盤預測（監控可比性補償用）
   'probeTag',                                // 探路單標記（封鎖決策的驗證樣本，封存剝掉＝驗證斷糧）
   'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
-  'entryLs', 'h4Adx', 'btcD1',               // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線），供記分卡持續驗證
+  'entryLs', 'h4Adx', 'btcD1', 'btProb',     // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
   'tp1FracPlan', 'tp1LockRPlan',             // 突破單專用出場計畫（止盈一減倉比例／鎖利 R），封存剝掉＝重放算錯
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
@@ -25020,6 +25037,7 @@ async function checkAndSendAlerts(data) {
           entryPrice: _mainPx(coin.symbol, parseFloat(coin.price) || 0),
           priceSrc: notifSetup.priceSrc || 'okx', entryMode: notifSetup.entryMode || 'limit',
           tp1FracPlan: isFinite(parseFloat(notifSetup.tp1FracPlan)) ? parseFloat(notifSetup.tp1FracPlan) : null,
+          btProb: isFinite(parseFloat(notifSetup.btProb)) ? parseFloat(notifSetup.btProb) : null,
           tp1LockRPlan: isFinite(parseFloat(notifSetup.tp1LockRPlan)) ? parseFloat(notifSetup.tp1LockRPlan) : null,
           entry: notifSetup.entry, sl: notifSetup.sl,
           tp1: notifSetup.tp1, tp2: notifSetup.tp2,
@@ -25248,6 +25266,35 @@ function tradeBlendRR(o) {
   if (!(r2 > 0)) { const e = parseFloat(o?.entry), s = parseFloat(o?.sl), t2 = parseFloat(o?.tp2);
     if (e > 0 && s > 0 && t2 > 0 && Math.abs(e - s) > 0) r2 = Math.abs(t2 - e) / Math.abs(e - s); }
   return r2 > 0 ? +(f * r1 + (1 - f) * r2).toFixed(2) : r1;
+}
+/* ── 回測機率模型（2026-10-04）──────────────────────────────────
+   OKX 永續 19 幣、45 天、1,971 筆 15m 突破單（真實成交模型）訓練的邏輯迴歸，
+   7 個特徵全部轉成「對這筆方向而言的順向量」。前半訓練→後半驗證 AUC 0.60、
+   後半訓練→前半 0.55；樣本外最高四分之一 勝率 73%／+0.37R，最低四分之一 50%／−0.09R。
+   用途：① 候選排序（每輪 3 筆名額先給預測勝率高的）② 倉位係數（p<0.5 ×0.6、<0.56 ×0.8）
+   ③ 訊息顯示。不當硬擋——現行硬擋（順 BTC 日線＋4H ADX≥20）已涵蓋它會擋的那群。
+   係數是全樣本重訓；每筆單記 btProb，記分卡可對照實倉勝率做校準。 */
+const BT_PROB_MODEL = {
+  w: { btcD: 0.098, adx4: 0.255, rsiAl: 0.335, rs: 0.093, ls: 0.222, vol: 0.476, brAl: -0.006 },
+  b: 0.050,
+  note: '7 因子邏輯迴歸，樣本外 AUC 0.60（2026-08-18～10-02）',
+};
+function btWinProb(coin, isLong) {
+  try {
+    const price = parseFloat(coin.price) || 0;
+    const bd = (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : 'neutral';
+    const btcD = bd === 'neutral' ? 0.5 : ((isLong ? bd === 'bull' : bd === 'bear') ? 1 : 0);
+    const a4 = parseFloat(coin.h4Adx); const adx4 = Math.min(60, isFinite(a4) ? a4 : 20) / 60;
+    const r1 = parseFloat(coin.h1Rsi); const rsiAl = isFinite(r1) ? ((isLong ? r1 : 100 - r1) - 50) / 50 : 0;
+    const rsv = (typeof _rsRank !== 'undefined') ? parseFloat(_rsRank[coin.symbol]) : NaN; const rs = isFinite(rsv) ? ((isLong ? rsv : 100 - rsv) - 50) / 50 : 0;
+    const lsr = parseFloat(coin.derivData?.lsRatio); const ls = isFinite(lsr) && lsr > 0 ? Math.max(-1, Math.min(1, isLong ? lsr - 1 : 1 - lsr)) : 0;
+    const atrV = parseFloat(coin.atr); const vol = (price > 0 && isFinite(atrV)) ? Math.min(1, (atrV / price) / 0.02) : 0.5;
+    const br = (typeof _marketBreadth !== 'undefined') ? _marketBreadth : 0.5; const brAl = isLong ? br - 0.5 : 0.5 - br;
+    const f = { btcD, adx4, rsiAl, rs, ls, vol, brAl };
+    let z = BT_PROB_MODEL.b; for (const k of Object.keys(BT_PROB_MODEL.w)) z += BT_PROB_MODEL.w[k] * f[k];
+    const p = 1 / (1 + Math.exp(-z));
+    return { p: +p.toFixed(3), f };
+  } catch(_e) { return { p: null, f: null }; }
 }
 function computeFullRisk(coin, params, isLong) {
   const conf               = params.conf               ?? 60;
@@ -25603,6 +25650,23 @@ function computeSimpleSetup(coin, isLong) {
         _cands.push({ v: +_stopPx.toFixed(8), tag: 'stopbreak', score: 3 + (_trig ? Math.min(2, _trig.w) : 0), ev: _stopEv, stop: true });
       }
     }
+    /* ── 1H 突破（2026-10-04 回測，最強的進場模型）─────────────────────
+       1H 已收盤棒收盤穿過前 20 根高/低點、4H 同向 → 停損單掛在該高/低點外 0.05×1H ATR，
+       止損 max(1×1H ATR, 1%)，出場 1R 出 50%／鎖 0.3R／2.5R。90 天 1,049 筆：勝率 64%、
+       +0.24R、最大回撤 17R，三個 30 天段分別 +0.19／+0.25／+0.27R；順 BTC 日線 66%／+0.28R。
+       基礎分 5：同時有 15m 停損候選時，優先用更大的 1H 結構。價格已越過觸發位（crossed）
+       代表停損單早已成交，不再追。 */
+    {
+      const _hb = coin.h1Brk;
+      if (_hb && !_hb.crossed && _hb.lvl > 0 && _hb.atr > 0 && _h4Aligned
+          && (isLong ? _hb.dir === 'bull' : _hb.dir === 'bear')) {
+        const _hTrig = isLong ? _hb.lvl + 0.05 * _hb.atr : _hb.lvl - 0.05 * _hb.atr;
+        const _hDist = Math.abs(_hTrig - price) / price;
+        const _inner = isLong ? price < _hTrig : price > _hTrig;   // 仍在觸發位內側才是「等突破」
+        if (_inner && _hDist <= 0.03)
+          _cands.push({ v: +_hTrig.toFixed(8), tag: 'h1break', score: 5, ev: [`1H 收盤突破 20 根${isLong ? '高點' : '低點'} $${(+_hb.lvl).toPrecision(5).replace(/\.?0+$/, '')}（4H 同向）`], stop: true, h1: true });
+      }
+    }
     /* ── ICT 進階候選（2026-09-02）────────────────────────────────
        OTE：推動腿 0.62–0.79 回撤的甜蜜點 0.705，只在折價側（多）／溢價側（空）
        才算；已在帶內基礎分 3、只在折價側 2。IFVG：反轉缺口重測 2.5。
@@ -25651,6 +25715,7 @@ function computeSimpleSetup(coin, isLong) {
       _entryScore = 0;   // 後備進場＝零佐證
     }
     var _entryIsStop = !!(_best && _best.stop);   // 停損買進：進場在現價外側，成交＝突破
+    var _entryIsH1   = !!(_best && _best.h1);     // 1H 突破：止損改用 1H ATR 口徑
   }
 
   /* ── 掛單深度封頂（2026-08-23 勝率調查）────────────────────────
@@ -25807,11 +25872,20 @@ function computeSimpleSetup(coin, isLong) {
     // 與掃描的止損波動地板同一口徑（0.8% 與 0.9×掃描 ATR 較大者，乘秒損學習倍數），再留 5% 餘裕
     let _floorAbs = Math.max(price * 0.008, 0.9 * (parseFloat(coin.atr) || 0));
     try { if (typeof mainSlFloorMult === 'function') _floorAbs *= mainSlFloorMult(); } catch(_e) {}
-    const _brkDist = Math.max(atr * 0.9, _floorAbs * 1.05);
+    let _brkDist = Math.max(atr * 0.9, _floorAbs * 1.05);
+    let _brkDesc = '突破止損 0.9×ATR（觸發位下方，壓力轉支撐失守即出）';
+    if (typeof _entryIsH1 !== 'undefined' && _entryIsH1) {
+      // 1H 突破：止損 max(1×1H ATR, 1%)——回測中 0.8～1.5×ATR 結果幾乎相同，1× 回撤最小
+      const _h1A = parseFloat(coin.h1Brk?.atr) || parseFloat(coin.h1Atr) || 0;
+      _brkDist = Math.max(_brkDist, _h1A * 1.0, price * 0.01);
+      _brkDesc = '1H 突破止損 1×1H ATR（下限 1%，突破位失守即出）';
+    }
     const _brkSl = isLong ? entry - _brkDist : entry + _brkDist;
-    if (isLong ? (sl < _brkSl) : (sl > _brkSl)) {
-      sl = _brkSl; _slTag = 'breakout';
-      _slStructure = '突破止損 0.9×ATR（觸發位下方，壓力轉支撐失守即出）';
+    // 突破單一律用突破幾何（1H 突破連更遠的結構止損也不用：止損該釘在被突破的位置外側）
+    const _useBrk = (typeof _entryIsH1 !== 'undefined' && _entryIsH1) ? true : (isLong ? (sl < _brkSl) : (sl > _brkSl));
+    if (_useBrk) {
+      sl = _brkSl; _slTag = (typeof _entryIsH1 !== 'undefined' && _entryIsH1) ? 'h1break' : 'breakout';
+      _slStructure = _brkDesc;
     }
   }
   // ── 止損最小安全距離：至少 0.5%（自適應加寬時同步撐開）且不超過 3% ──
@@ -26403,6 +26477,7 @@ function computeSimpleSetup(coin, isLong) {
     entryMode: (typeof _entryIsStop !== 'undefined' && _entryIsStop) ? 'stop' : 'limit',   // stop＝突破觸發才成交（停損買進），limit＝回踩限價
     tp1FracPlan:  _stopPlan ? _stopPlan.tp1Frac  : null,   // 突破單：止盈一減倉 50%（回踩單 null＝沿用出場實驗室參數）
     tp1LockRPlan: _stopPlan ? _stopPlan.tp1LockR : null,   // 突破單：止盈一後鎖 +0.3R
+    btProb: (() => { try { return btWinProb(coin, isLong).p; } catch(_e) { return null; } })(),   // 回測機率模型預測勝率（排序／倉位／顯示）
     entryScore: +(_entryScore || 0).toFixed(1),   // 進場點合流佐證分（弱佐證抬標用）
     addLevel: _ladderOpp[0] != null
       ? +(isLong ? _ladderOpp[0] + atr * _atrBuf : _ladderOpp[0] - atr * _atrBuf).toFixed(8) : null,
@@ -32629,10 +32704,16 @@ function computeRsRank(data) {
     return out;
   } catch(_e) { return {}; }
 }
+let _marketBreadth = 0.5;   // 市場寬度：掃描池中 1H 偏多的幣佔比（0~1；回測機率模型的特徵之一）
 function updateMarketContext(data) {
   const r = computeMarketRegime(data);
   if (r) _regimeCache = r;
   _rsRank = computeRsRank(data);
+  try {
+    let up = 0, n = 0;
+    for (const c of (data || [])) { const s = String(c?.h1Signal || ''); if (!s || s === 'neutral') continue; n++; if (s.includes('bull')) up++; }
+    _marketBreadth = n >= 5 ? up / n : 0.5;
+  } catch(_e) { _marketBreadth = 0.5; }
 }
 function currentRegimeKey() {
   // 15 分鐘內的判定才可信；過期寧可回空（不擋單、不貼標籤）
