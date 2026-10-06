@@ -14160,6 +14160,7 @@ async function _maybeFetchPionex() {
 }
 const MAIN_DAILY_R_CAP = 3;
 const MAIN_ROUND_CAP   = 3;     // 每輪掃描最多建單數（依機會品質排序先到先得）
+const MAIN_PULLBACK_ENTRIES = false;   // 回踩限價單（2026-10-06 回測負期望，停用；只做突破停損單）
 const SOFT_MULT_MIN    = 0.5;   // 軟門預算：倉位係數低於此不建（弱點疊加不是機會，只是便宜）
 let _dailyRCache = null, _dailyRCacheTs = 0;
 function dailyRGuard() {
@@ -14399,7 +14400,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821n';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821o';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15000,8 +15001,8 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
       if (_sqIsLong ? _btcH4Dir === 'bull' : _btcH4Dir === 'bear') _sqRC += 1; else _sqRC -= 1;
     }
 
-    // ㉘ 動能過熱懲罰（與建單評分一致）
-    _sqRC += momentumHeatPenalty(_sqCoin, _sqIsLong);
+    // ㉘ 動能過熱懲罰（與建單評分一致）；突破單不扣（見掃描評分的說明）
+    if (trade.entryMode !== 'stop') _sqRC += momentumHeatPenalty(_sqCoin, _sqIsLong);
 
     // ㉙ 嚴格趨勢確認（純加分，與建單一致）
     {
@@ -15510,6 +15511,10 @@ async function recordSignalsFromScan(data) {
     // 影子追蹤的上下文：此後任何 _no() 都會順手記一筆被擋下的紙上單
     _shCtx = { coin, dir: direction, setup };
     if (setup.hardBlocked && _no('進場結構硬性封鎖')) continue;
+    /* 回踩限價單停用（2026-10-06 回測）：2,441 筆成交勝率 42%、−0.06R；套上順 BTC 日線＋ADX≥20 閘門後
+       1,150 筆仍 −0.02R、最大回撤 95R；唯一為正的「1H RSI 過熱」切片前半 +0.33R、後半 +0.03R，不穩。
+       43% 的回踩訊號根本不回踩直接飛走。一般單只做突破（15m 停損單、1H 突破）。 */
+    if (!MAIN_PULLBACK_ENTRIES && setup.entryMode !== 'stop' && _no('回踩限價單已停用（回測：閘門後期望 −0.02R）')) continue;
     // 回測機率模型（2026-10-04）：樣本外最低四分之一（p<0.5）期望 −0.09R → 倉位 ×0.6；0.5～0.56 ×0.8
     if (isFinite(parseFloat(setup.btProb))) {
       const _bp = parseFloat(setup.btProb);
@@ -15856,8 +15861,9 @@ async function recordSignalsFromScan(data) {
       else { _scanSqScore -= 1; _scanSqFactors.push(`❌ ㉗BTC 4H 逆向 -1`); }
     }
 
-    // ㉘ 動能過熱懲罰（與建單/監控一致）
-    {
+    // ㉘ 動能過熱懲罰（與建單/監控一致）。突破單不扣：回測（閘門後）1H RSI 順向過熱的突破單
+    //    15m +0.46R vs 未過熱 +0.20R、1H +0.45R vs +0.07R——突破靠的就是動能，過熱是訊號不是風險。
+    if (setup.entryMode !== 'stop') {
       const _ssHeat = momentumHeatPenalty(coin, isLong);
       if (_ssHeat < 0) { _scanSqScore += _ssHeat; _scanSqFactors.push(`⚠️ ㉘動能過熱 ${_ssHeat}`); }
     }
@@ -16273,6 +16279,7 @@ async function recordSignalsFromScan(data) {
       btProb:  isFinite(parseFloat(setup.btProb)) ? parseFloat(setup.btProb) : null,   // 回測機率模型預測勝率（校準對照用）
       tp1FracPlan:  isFinite(parseFloat(setup.tp1FracPlan))  ? parseFloat(setup.tp1FracPlan)  : null,   // 突破單專用出場：止盈一減倉比例
       tp1LockRPlan: isFinite(parseFloat(setup.tp1LockRPlan)) ? parseFloat(setup.tp1LockRPlan) : null,   // 突破單專用出場：止盈一後鎖利 R
+      trailGiveRPlan: isFinite(parseFloat(setup.trailGiveRPlan)) ? parseFloat(setup.trailGiveRPlan) : null,   // 突破單專用出場：移動停利回吐 R
       entryTBias: tBias, entryWBias: wBias,   // 建單當下的今日／本週大盤預測：
       // 監控重評時用來分辨「這檔幣變差了」還是「大盤預測翻面了」——後者不該取消單
       conviction: _convScan,           // 方向確信度（多空證據融合淨值，供研究所學習）
@@ -17188,8 +17195,8 @@ function updateOpenTrades(data) {
     const isLong = direction === 'long';
     let outcome = null;
     // 突破單帶自己的出場計畫（止盈一減倉 50%、鎖 +0.3R；2026-10 回測），其餘沿用出場實驗室生效值
-    const _xc = (() => { const b = exitEffective(); const f = parseFloat(trade.tp1FracPlan), l = parseFloat(trade.tp1LockRPlan);
-      return (isFinite(f) || isFinite(l)) ? { ...b, tp1ExitFrac: isFinite(f) ? f : b.tp1ExitFrac, tp1LockR: isFinite(l) ? l : b.tp1LockR } : b; })();
+    const _xc = (() => { const b = exitEffective(); const f = parseFloat(trade.tp1FracPlan), l = parseFloat(trade.tp1LockRPlan), g = parseFloat(trade.trailGiveRPlan);
+      return (isFinite(f) || isFinite(l) || isFinite(g)) ? { ...b, tp1ExitFrac: isFinite(f) ? f : b.tp1ExitFrac, tp1LockR: isFinite(l) ? l : b.tp1LockR, trailGiveR: isFinite(g) ? g : b.trailGiveR } : b; })();
 
     // ── MAE／MFE 追蹤（最大逆走／最大順走，R 為單位）────────────────
     // 沒有這兩個數字，「止損該放寬還是收緊」「止盈該近還是遠」永遠只能用猜的。
@@ -22942,7 +22949,7 @@ const LEARN_KEEP_FIELDS = [
   'probeTag',                                // 探路單標記（封鎖決策的驗證樣本，封存剝掉＝驗證斷糧）
   'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
   'entryLs', 'h4Adx', 'btcD1', 'btProb',     // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
-  'tp1FracPlan', 'tp1LockRPlan',             // 突破單專用出場計畫（止盈一減倉比例／鎖利 R），封存剝掉＝重放算錯
+  'tp1FracPlan', 'tp1LockRPlan', 'trailGiveRPlan',   // 突破單專用出場計畫（止盈一減倉比例／鎖利 R／追蹤回吐 R），封存剝掉＝重放算錯
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
   'dirSource',                               // 方向由誰決定（score/conviction）——方向融合的驗證樣本
@@ -25007,7 +25014,9 @@ async function checkAndSendAlerts(data) {
       const _alertLsgPass = !lossStreakGuard().blocked;
       // 建單前終審：與 SQ 監控共用 computeSqMonitorScore（根本解法，杜絕建了又取消）
       let _alertAuditPass = true;
-      if (!_alreadyIn && !_alertDirGuard && _alertLsgPass) {
+      const _alertPullbackOff = !MAIN_PULLBACK_ENTRIES && notifSetup.entryMode !== 'stop';   // 回踩限價單停用（與掃描同標準）
+      if (_alertPullbackOff) _alertAuditPass = false;
+      if (!_alreadyIn && !_alertDirGuard && _alertLsgPass && !_alertPullbackOff) {
         try {
           let _aCtx = { wBias: 'neutral', tBias: 'neutral', btcChg24: NaN };
           try {
@@ -25038,6 +25047,7 @@ async function checkAndSendAlerts(data) {
           priceSrc: notifSetup.priceSrc || 'okx', entryMode: notifSetup.entryMode || 'limit',
           tp1FracPlan: isFinite(parseFloat(notifSetup.tp1FracPlan)) ? parseFloat(notifSetup.tp1FracPlan) : null,
           btProb: isFinite(parseFloat(notifSetup.btProb)) ? parseFloat(notifSetup.btProb) : null,
+          trailGiveRPlan: isFinite(parseFloat(notifSetup.trailGiveRPlan)) ? parseFloat(notifSetup.trailGiveRPlan) : null,
           tp1LockRPlan: isFinite(parseFloat(notifSetup.tp1LockRPlan)) ? parseFloat(notifSetup.tp1LockRPlan) : null,
           entry: notifSetup.entry, sl: notifSetup.sl,
           tp1: notifSetup.tp1, tp2: notifSetup.tp2,
@@ -26027,8 +26037,10 @@ function computeSimpleSetup(coin, isLong) {
   let _stopPlan = null;
   if (typeof _entryIsStop !== 'undefined' && _entryIsStop && risk > 0) {
     tp1 = isLong ? entry + risk * 1.0 : entry - risk * 1.0; _tp1Tag = 'rr';
-    tp2 = isLong ? entry + risk * 2.5 : entry - risk * 2.5; _tp2Tag = 'rr';
-    _stopPlan = { tp1Frac: 0.5, tp1LockR: 0.3 };
+    /* 2026-10-06 追加回測（閘門後 962 筆 15m、516 筆 1H 突破，前後半都成立）：TP1 後追蹤回吐 0.5R（原 0.8R）
+       ＋尾倉目標 4R：15m 期望 0.31→0.35R、1H 0.36→0.44R，回撤持平或更低。 */
+    tp2 = isLong ? entry + risk * 4.0 : entry - risk * 4.0; _tp2Tag = 'rr';
+    _stopPlan = { tp1Frac: 0.5, tp1LockR: 0.3, trailGiveR: 0.5 };
   }
 
   // 長線單（_isLongTerm）：估算 8:1 RR 目標並驗證 >= 7:1
@@ -26448,7 +26460,7 @@ function computeSimpleSetup(coin, isLong) {
                   : _mtfContraH4 ? '（4H逆向）'
                   : _mtfContraDay ? '（日線逆向）' : '';
   const tp1Reason = _stopPlan
-    ? `突破單固定 1R 止盈一${_mtfLabel}，到達後減倉 50%、止損鎖 +0.3R，尾倉追 2.5R`
+    ? `突破單固定 1R 止盈一${_mtfLabel}，到達後減倉 50%、止損鎖 +0.3R，尾倉追蹤（回吐 0.5R）至 4R`
     : `${_tp1DescMap[_tp1Tag] || `短線目標 R/R ${_rr1}:1`}${_mtfLabel}，到達後減倉 60%`;
   const tp2Reason = `${_tp2DescMap[_tp2Tag] || `波段目標 R/R ${_rr2}:1`}，剩餘倉位移至成本`;
 
@@ -26477,6 +26489,7 @@ function computeSimpleSetup(coin, isLong) {
     entryMode: (typeof _entryIsStop !== 'undefined' && _entryIsStop) ? 'stop' : 'limit',   // stop＝突破觸發才成交（停損買進），limit＝回踩限價
     tp1FracPlan:  _stopPlan ? _stopPlan.tp1Frac  : null,   // 突破單：止盈一減倉 50%（回踩單 null＝沿用出場實驗室參數）
     tp1LockRPlan: _stopPlan ? _stopPlan.tp1LockR : null,   // 突破單：止盈一後鎖 +0.3R
+    trailGiveRPlan: _stopPlan ? _stopPlan.trailGiveR : null,   // 突破單：止盈一後移動停利回吐 0.5R
     btProb: (() => { try { return btWinProb(coin, isLong).p; } catch(_e) { return null; } })(),   // 回測機率模型預測勝率（排序／倉位／顯示）
     entryScore: +(_entryScore || 0).toFixed(1),   // 進場點合流佐證分（弱佐證抬標用）
     addLevel: _ladderOpp[0] != null

@@ -41,6 +41,25 @@ if (!gate.lsAgainst.built || gate.lsAgainst.softMult !== 0.7 || !gate.lsAgainst.
 if (!gate.lsWith.built || gate.lsWith.softMult !== 1 || gate.lsWith.entryLs !== 1.4) throw new Error('多空人數比同向應全額：' + JSON.stringify(gate.lsWith));
 console.log(`✓ 回測閘門：逆 BTC 日線 → 不建；4H ADX 15 → 不建、27 → 建單；多空比 0.8 做多 ×${gate.lsAgainst.softMult}、1.4 → ×${gate.lsWith.softMult}；紀錄含 entryLs/h4Adx/btcD1`);
 
+// ══ ①b 回踩限價單停用：非突破 setup 不建單，漏斗記「回踩限價單已停用」 ══
+const pb = await p.evaluate(async (mk) => {
+  const mkCoin = (0, eval)('(' + mk + ')'); const now = Date.now();
+  isSignalMaster = () => true; computeKillZone = () => ({ quality: 'high', zone: 'x', label: 'x' });
+  getAdaptiveGates = () => ({ minConf: 65, minSq: 12, minRR: minRequiredRR(), relaxed: false, label: '' });
+  getUpcomingEconEvents = () => []; getTodayEconEvents = () => []; _evBlkCache = null; _evBlkCacheTs = 0; condBlockCheck = () => null;
+  _macroCache = { fg: { value: '58' }, btcDominance: 50, marketCapChange: 1.5 }; _macroCacheAt = now;
+  localStorage.setItem(TRADE_LOG_KEY, '[]'); localStorage.removeItem('csp_scan_funnel'); _tlogRaw = null; _tlogArr = null;
+  const btc = mkCoin('BTC/USDT', 62); _btcD1Dir = 'bull'; const al = mkCoin('PK/USDT', 74); al.change24h = 4.5; al.adx = 22; al.signal15m = 'neutral'; al.h4Adx = 30;
+  state.data = [btc, al]; for (const c of state.data) _scanFetchCache[c.symbol] = { ts: now, deriv: c.derivData, whale: null };
+  updateMarketContext(state.data); _rsRank = { 'PK/USDT': 70 }; _regimeCache = { at: Date.now(), key: 'bull_hv', dir: 'bull', vol: 'hv', label: '趨勢多/高波動' };
+  delete _tradeSetupCache['PK/USDT']; const mode = computeSimpleSetup(_coinForMain(al), true).entryMode;
+  await recordSignalsFromScan(state.data);
+  const f = JSON.parse(localStorage.getItem('csp_scan_funnel') || '{}'); const t = loadTradeLog().find(x => x.symbol === 'PK/USDT' && x.status === 'pending');
+  return { mode, built: !!t, keys: Object.keys(f.rejects || {}).filter(k => k.includes('回踩限價單')), flag: MAIN_PULLBACK_ENTRIES };
+}, MK);
+if (pb.mode !== 'limit' || pb.built || !pb.keys.length || pb.flag) throw new Error('回踩限價單應停用：' + JSON.stringify(pb));
+console.log(`✓ 回踩限價單停用：setup=${pb.mode} → 不建單，漏斗記「${pb.keys[0]}」`);
+
 // ══ ② 突破單幾何：止盈一 1R、止盈二 2.5R、出場計畫 50%／+0.3R；回踩單不帶計畫 ══
 const geo = await p.evaluate((mk) => {
   const mkCoin = (0, eval)('(' + mk + ')');
@@ -49,29 +68,35 @@ const geo = await p.evaluate((mk) => {
   const r = Math.abs(s.entry - s.sl);
   const c2 = mkCoin('GL/USDT', 74); c2.adx = 14; c2.price = '100'; c2.ema20 = '99.2'; c2.signal15m = 'neutral'; delete _tradeSetupCache[c2.symbol];
   const s2 = computeSimpleSetup(c2, true);
-  return { mode: s.entryMode, tp1R: +((s.tp1 - s.entry) / r).toFixed(2), tp2R: +((s.tp2 - s.entry) / r).toFixed(2), frac: s.tp1FracPlan, lock: s.tp1LockRPlan, rrBlocked: s.rrBlocked, reason: s.tp1Reason, mode2: s2.entryMode, frac2: s2.tp1FracPlan };
+  return { mode: s.entryMode, tp1R: +((s.tp1 - s.entry) / r).toFixed(2), tp2R: +((s.tp2 - s.entry) / r).toFixed(2), frac: s.tp1FracPlan, lock: s.tp1LockRPlan, trail: s.trailGiveRPlan, rrBlocked: s.rrBlocked, reason: s.tp1Reason, mode2: s2.entryMode, frac2: s2.tp1FracPlan };
 }, MK);
 if (geo.mode !== 'stop') throw new Error('夾具應走突破單：' + JSON.stringify(geo));
-if (geo.tp1R !== 1 || geo.tp2R !== 2.5 || geo.frac !== 0.5 || geo.lock !== 0.3 || geo.rrBlocked || !geo.reason.includes('減倉 50%')) throw new Error('突破單出場幾何錯誤：' + JSON.stringify(geo));
+if (geo.tp1R !== 1 || geo.tp2R !== 4 || geo.frac !== 0.5 || geo.lock !== 0.3 || geo.trail !== 0.5 || geo.rrBlocked || !geo.reason.includes('減倉 50%')) throw new Error('突破單出場幾何錯誤：' + JSON.stringify(geo));
 if (geo.mode2 === 'stop' || geo.frac2 != null) throw new Error('回踩單不應帶突破出場計畫：' + JSON.stringify(geo));
-console.log(`✓ 突破單：止盈一 ${geo.tp1R}R、止盈二 ${geo.tp2R}R、減倉 ${geo.frac * 100}%、鎖 +${geo.lock}R，R/R 門檻不擋；回踩單（${geo.mode2}）不帶計畫`);
+console.log(`✓ 突破單：止盈一 ${geo.tp1R}R、止盈二 ${geo.tp2R}R、減倉 ${geo.frac * 100}%、鎖 +${geo.lock}R、追蹤回吐 ${geo.trail}R，R/R 門檻不擋；回踩單（${geo.mode2}）不帶計畫`);
 
 // ══ ③ 監控：帶計畫的持倉觸及止盈一 → 止損鎖 +0.3R、tp1Frac=0.5；不帶計畫 → 出場實驗室預設 ══
 const hit = await p.evaluate(async () => {
   isSignalMaster = () => true; const sent = []; sendSLChangeNotification = (t, a, b2, why) => { sent.push(why); };
   const now = Date.now();
   localStorage.setItem(TRADE_LOG_KEY, JSON.stringify([
-    { id: 'plan', symbol: 'PL/USDT', direction: 'long', status: 'open', entry: 100, baseSl: 98, sl: 98, tp1: 102, tp2: 105, timestamp: now - 3e5, entryTime: now - 3e5, telegramSent: true, conf: 70, entryMode: 'stop', tp1FracPlan: 0.5, tp1LockRPlan: 0.3 },
+    { id: 'plan', symbol: 'PL/USDT', direction: 'long', status: 'open', entry: 100, baseSl: 98, sl: 98, tp1: 102, tp2: 105, timestamp: now - 3e5, entryTime: now - 3e5, telegramSent: true, conf: 70, entryMode: 'stop', tp1FracPlan: 0.5, tp1LockRPlan: 0.3, trailGiveRPlan: 0.5 },
     { id: 'def', symbol: 'DF/USDT', direction: 'long', status: 'open', entry: 100, baseSl: 98, sl: 98, tp1: 103, tp2: 106, timestamp: now - 3e5, entryTime: now - 3e5, telegramSent: true, conf: 70 },
   ])); _tlogRaw = null; _tlogArr = null;
   updateOpenTrades([{ symbol: 'PL/USDT', price: '102.1', score: 70, trend: '看漲' }, { symbol: 'DF/USDT', price: '103.1', score: 70, trend: '看漲' }]);
   const a = loadTradeLog().find(t => t.id === 'plan'), d = loadTradeLog().find(t => t.id === 'def'); const eff = exitEffective();
-  return { aSl: a.sl, aFrac: a.tp1Frac, aHit: !!a.tp1Hit, dSl: d.sl, dFrac: d.tp1Frac, effFrac: eff.tp1ExitFrac, effLock: eff.tp1LockR, sent };
+  const aSl1 = a.sl, dSl1 = d.sl, dFrac1 = d.tp1Frac, aFrac1 = a.tp1Frac, aHit1 = !!a.tp1Hit;
+  // 追蹤：峰值 103.5（+1.75R）→ 突破單止損應推到 峰值 − 0.5R ＝ 102.5；一般單用出場實驗室回吐值
+  updateOpenTrades([{ symbol: 'PL/USDT', price: '103.5', score: 70, trend: '看漲' }, { symbol: 'DF/USDT', price: '104.5', score: 70, trend: '看漲' }]);
+  const a2 = loadTradeLog().find(t => t.id === 'plan'), d2 = loadTradeLog().find(t => t.id === 'def');
+  return { aSl: aSl1, aFrac: aFrac1, aHit: aHit1, dSl: dSl1, dFrac: dFrac1, effFrac: eff.tp1ExitFrac, effLock: eff.tp1LockR, effGive: eff.trailGiveR, aTrail: a2.sl, dTrail: d2.sl, sent };
 });
 if (!hit.aHit || Math.abs(hit.aSl - 100.6) > 1e-6 || hit.aFrac !== 0.5) throw new Error('突破單止盈一應鎖 +0.3R、減倉 50%：' + JSON.stringify(hit));
 if (Math.abs(hit.dSl - (100 + 2 * hit.effLock)) > 1e-6 || hit.dFrac !== hit.effFrac) throw new Error('一般單應沿用出場實驗室參數：' + JSON.stringify(hit));
 if (!hit.sent.some(s => s.includes('減倉 50%') && s.includes('+0.3R'))) throw new Error('止盈一通知文字應反映計畫：' + JSON.stringify(hit.sent));
-console.log(`✓ 監控：突破單止盈一 → 止損 ${hit.aSl}（+0.3R）、減倉 50%；一般單 → +${hit.effLock}R、減倉 ${hit.effFrac * 100}%`);
+if (Math.abs(hit.aTrail - 102.5) > 1e-6) throw new Error('突破單追蹤應鎖 峰值−0.5R＝102.5：' + JSON.stringify(hit));
+if (Math.abs(hit.dTrail - Math.max(100 + 2 * hit.effLock, 104.5 - 2 * hit.effGive)) > 1e-6) throw new Error('一般單追蹤應用出場實驗室回吐值：' + JSON.stringify(hit));
+console.log(`✓ 監控：突破單止盈一 → 止損 ${hit.aSl}（+0.3R）、減倉 50%，峰值 103.5 後追蹤到 ${hit.aTrail}（回吐 0.5R）；一般單 → +${hit.effLock}R、減倉 ${hit.effFrac * 100}%，追蹤回吐 ${hit.effGive}R → ${hit.dTrail}`);
 
 // ══ ④ 快速單設定：A/B 動能模式停用、費用門 8%、學習止損下限 0.7 ══
 const sc = await p.evaluate(() => ({ a: SCALP_CFG.enableBreakout, b: SCALP_CFG.enableMomentum, fee: SCALP_CFG.maxFeeR, slMin: SCALP_CFG.slMultMin, c: SCALP_CFG.enableRetest, rev: SCALP_CFG.enableRange }));
