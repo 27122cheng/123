@@ -14084,6 +14084,27 @@ function sendEntryFilledNotification(trade, cur) {
    監控現價改用 Pionex 報價：把整組價位依「Pionex 現價 ÷ OKX 現價」等比對齊，
    結構幾何不變、絕對數字對上 Pionex。比值超出 ±3% 視為報價異常，退回 OKX。 */
 function mainPriceSrc() { try { const v = loadSettings().mainPriceSrc; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; } catch(_e) { return 'okx'; } }
+/* ── 一般單交易模式（2026-10-10 回測，閘門後 15m 962 筆＋1H 516 筆，前後半皆成立）─────────
+   勝率、回撤、交易量三者只能取二：止盈一越近勝率越高、每筆期望越低；訊號分層越嚴回撤越小、筆數越少。
+     平衡：1R 出 50%／鎖 0.3R／追蹤 0.5R／尾倉 4R，不分層     → 勝率 67%、期望 0.38R、回撤 32R（每筆冒 0.6% ≈ 19%）、每日 33 筆/19 幣
+     高勝率：0.5R 出 60%／鎖 0.1R／追蹤 0.5R／尾倉 4R，只做「預測勝率 ≥65% 或 1H RSI 順向過熱」
+                                                            → 勝率 80～84%、期望 0.32～0.37R、回撤 3～6R（≈2～4%）、每日 15～18 筆/19 幣
+   高勝率模式的筆數少一半、每筆期望略低，但回撤只有平衡模式的五分之一；預設高勝率。 */
+const MAIN_EXIT_PLANS = {
+  high:     { tp1R: 0.5, tp2R: 4.0, tp1Frac: 0.6, tp1LockR: 0.1, trailGiveR: 0.5, pMin: 0.65, label: '高勝率' },
+  balanced: { tp1R: 1.0, tp2R: 4.0, tp1Frac: 0.5, tp1LockR: 0.3, trailGiveR: 0.5, pMin: null, label: '平衡' },
+};
+function mainMode() { try { return loadSettings().mainMode === 'balanced' ? 'balanced' : 'high'; } catch(_e) { return 'high'; } }
+function mainExitPlan() { return MAIN_EXIT_PLANS[mainMode()] || MAIN_EXIT_PLANS.high; }
+/* 高勝率模式的訊號分層：預測勝率 ≥ pMin 或 1H RSI 順向過熱（多 ≥65／空 ≤35）。
+   回測：RSI 過熱的突破單 15m 勝率 84%／+0.35R／回撤 3.4R，p≥0.65 勝率 83%／+0.32R／回撤 5.7R。 */
+function mainTierPass(coin, isLong, btProb) {
+  const plan = mainExitPlan(); if (plan.pMin == null) return { ok: true, why: '' };
+  const r1 = parseFloat(coin?.h1Rsi); const hot = isFinite(r1) && (isLong ? r1 >= 65 : r1 <= 35);
+  const p = parseFloat(btProb);
+  if (hot || (isFinite(p) && p >= plan.pMin)) return { ok: true, why: hot ? 'RSI 順向過熱' : `預測勝率 ${Math.round(p * 100)}%` };
+  return { ok: false, why: `高勝率模式：預測勝率 ${isFinite(p) ? Math.round(p * 100) + '%' : '—'} <${Math.round(plan.pMin * 100)}% 且 1H RSI 未順向過熱` };
+}
 const _pionexFallbackWhy = {};   // 每個幣最近一次沒用到 Pionex 報價的原因（訊息上直接說）
 function _mainPx(symbol, fallback, trade) {
   try {
@@ -14400,7 +14421,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821o';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821p';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14711,7 +14732,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _hdrDefault = canScaleIn ? '💎 <b>加密掃描 Pro — 長線單信號</b>' : '🚨 <b>加密掃描 Pro — 短線單信號</b>';
   const _hdr = (opts && opts.headerOverride) ? opts.headerOverride : _hdrDefault;
   const _modeTag = setup.entryMode === 'stop'
-    ? (setup.entryTag === 'h1break' ? '（1H 突破觸發・停損買進，價格穿過才成交）' : '（突破觸發・停損買進，價格穿過才成交）')
+    ? `（${setup.entryTag === 'h1break' ? '1H 突破' : '突破'}觸發・停損買進，價格穿過才成交｜${mainExitPlan().label}模式）`
     : '（回踩限價）';
   const _srcLine = `💱 價位空間：${_priceSpaceText(setup.priceSrc || 'okx', coin.symbol)}\n`;
   // 回測機率模型預測勝率（7 因子邏輯迴歸，樣本外 AUC 0.60）；<56% 時倉位已自動縮小
@@ -15515,6 +15536,8 @@ async function recordSignalsFromScan(data) {
        1,150 筆仍 −0.02R、最大回撤 95R；唯一為正的「1H RSI 過熱」切片前半 +0.33R、後半 +0.03R，不穩。
        43% 的回踩訊號根本不回踩直接飛走。一般單只做突破（15m 停損單、1H 突破）。 */
     if (!MAIN_PULLBACK_ENTRIES && setup.entryMode !== 'stop' && _no('回踩限價單已停用（回測：閘門後期望 −0.02R）')) continue;
+    // 高勝率模式分層（2026-10-10）：只做預測勝率 ≥65% 或 1H RSI 順向過熱的突破單
+    { const _tier = mainTierPass(coin, isLong, setup.btProb); if (!_tier.ok && _no(_tier.why)) continue; }
     // 回測機率模型（2026-10-04）：樣本外最低四分之一（p<0.5）期望 −0.09R → 倉位 ×0.6；0.5～0.56 ×0.8
     if (isFinite(parseFloat(setup.btProb))) {
       const _bp = parseFloat(setup.btProb);
@@ -22097,6 +22120,7 @@ function renderLabPage() {
       <h1 class="page-title">🧪 AI 機會實驗室</h1>
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
+    ${_btCalibPanel()}
     ${buildPairLabHtml()}
     ${buildForecastHtml()}
     ${buildGateShadowHtml()}
@@ -25014,7 +25038,8 @@ async function checkAndSendAlerts(data) {
       const _alertLsgPass = !lossStreakGuard().blocked;
       // 建單前終審：與 SQ 監控共用 computeSqMonitorScore（根本解法，杜絕建了又取消）
       let _alertAuditPass = true;
-      const _alertPullbackOff = !MAIN_PULLBACK_ENTRIES && notifSetup.entryMode !== 'stop';   // 回踩限價單停用（與掃描同標準）
+      const _alertPullbackOff = (!MAIN_PULLBACK_ENTRIES && notifSetup.entryMode !== 'stop')   // 回踩限價單停用（與掃描同標準）
+        || !mainTierPass(coin, isLong, notifSetup.btProb).ok;                                     // 高勝率模式分層（與掃描同標準）
       if (_alertPullbackOff) _alertAuditPass = false;
       if (!_alreadyIn && !_alertDirGuard && _alertLsgPass && !_alertPullbackOff) {
         try {
@@ -25289,6 +25314,46 @@ const BT_PROB_MODEL = {
   b: 0.050,
   note: '7 因子邏輯迴歸，樣本外 AUC 0.60（2026-08-18～10-02）',
 };
+/* ── 模型校準（止損後的學習）──────────────────────────────────────
+   每筆一般單建單時記下 btProb，平倉後拿「預測平均勝率」對「實倉勝率」比：實倉比預測差，
+   整條機率曲線往下平移（logit 偏移），高勝率模式的 ≥65% 門檻就自動變嚴；比預測好則放寬。
+   偏移量用 n/(n+30) 收縮（樣本少就少動），夾在 ±0.6（≈ ±14 個百分點），≥30 筆已完結才啟用。
+   分桶（<55／55～65／≥65）只顯示供對照，不各自調——樣本量撐不起三條曲線。 */
+let _btCalibCache = null, _btCalibTs = 0;
+function btProbCalib() {
+  const now = Date.now();
+  if (_btCalibCache && now - _btCalibTs < 10 * 60e3) return _btCalibCache;
+  const out = { n: 0, offset: 0, meanP: null, realWr: null, buckets: [] };
+  try {
+    const rows = (typeof learnSamples === 'function' ? learnSamples() : loadTradeLog())
+      .filter(t => t && t.status === 'closed' && isFinite(parseFloat(t.btProb)) && isFinite(parseFloat(t.pnlR)) && Math.abs(parseFloat(t.pnlR)) > 0.02);
+    const bk = [['<55%', 0, 0.55], ['55～65%', 0.55, 0.65], ['≥65%', 0.65, 1.01]];
+    out.buckets = bk.map(([label, lo, hi]) => { const r = rows.filter(t => parseFloat(t.btProb) >= lo && parseFloat(t.btProb) < hi); const w = r.filter(t => parseFloat(t.pnlR) > 0).length;
+      return { label, n: r.length, pred: r.length ? +(r.reduce((a, t) => a + parseFloat(t.btProb), 0) / r.length * 100).toFixed(0) : null, real: r.length ? +(w / r.length * 100).toFixed(0) : null }; });
+    out.n = rows.length;
+    if (rows.length >= 30) {
+      const meanP = rows.reduce((a, t) => a + parseFloat(t.btProb), 0) / rows.length;
+      const wr = rows.filter(t => parseFloat(t.pnlR) > 0).length / rows.length;
+      const lg = x => Math.log(Math.min(0.98, Math.max(0.02, x)) / (1 - Math.min(0.98, Math.max(0.02, x))));
+      out.meanP = +(meanP * 100).toFixed(1); out.realWr = +(wr * 100).toFixed(1);
+      out.offset = +Math.max(-0.6, Math.min(0.6, (rows.length / (rows.length + 30)) * (lg(wr) - lg(meanP)))).toFixed(3);
+    }
+  } catch(_e) {}
+  _btCalibCache = out; _btCalibTs = now; return out;
+}
+function _btCalibPanel() {
+  try {
+    const c = btProbCalib(); const plan = mainExitPlan();
+    const rows = c.buckets.map(b => `<tr><td style="padding:3px 6px">${b.label}</td><td style="padding:3px 6px;text-align:right">${b.n}</td><td style="padding:3px 6px;text-align:right">${b.pred != null ? b.pred + '%' : '—'}</td><td style="padding:3px 6px;text-align:right;color:${b.real == null ? 'var(--text3)' : b.real >= (b.pred || 0) ? 'var(--bull)' : 'var(--bear)'}">${b.real != null ? b.real + '%' : '—'}</td></tr>`).join('');
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:6px">📈 回測機率模型校準（止損後的學習）</div>
+      <div style="font-size:0.78rem;color:var(--text2);line-height:1.6">模式：<b>${plan.label}</b>${plan.pMin != null ? `（只做預測勝率 ≥${Math.round(plan.pMin * 100)}% 或 1H RSI 順向過熱）` : '（不分層）'}；出場 ${plan.tp1R}R 出 ${Math.round(plan.tp1Frac * 100)}%／鎖 +${plan.tp1LockR}R／追蹤回吐 ${plan.trailGiveR}R／尾倉 ${plan.tp2R}R。<br>
+        已完結且有預測值：<b>${c.n}</b> 筆${c.n >= 30 ? `，預測平均 ${c.meanP}% vs 實倉 ${c.realWr}% → 偏移 <b>${c.offset > 0 ? '+' : ''}${c.offset}</b>（logit；正＝實倉比預測好，門檻自動放寬）` : '（≥30 筆才開始校準，之前用回測原始係數）'}</div>
+      <table style="font-size:0.76rem;margin-top:6px;border-collapse:collapse"><thead><tr style="color:var(--text3)"><th style="padding:3px 6px;text-align:left">預測分桶</th><th style="padding:3px 6px">筆數</th><th style="padding:3px 6px">預測</th><th style="padding:3px 6px">實倉</th></tr></thead><tbody>${rows}</tbody></table>
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">模型：7 因子邏輯迴歸（BTC 日線、4H ADX、1H RSI 順向、相對強弱、多空人數比、波動度、市場寬度），OKX 永續 19 幣 45 天 1,971 筆突破單，樣本外 AUC 0.60。校準只平移曲線、不改係數；係數要重訓請跑 backtest/bt3.mjs。</div>
+    </div>`;
+  } catch(_e) { return ''; }
+}
 function btWinProb(coin, isLong) {
   try {
     const price = parseFloat(coin.price) || 0;
@@ -25302,8 +25367,9 @@ function btWinProb(coin, isLong) {
     const br = (typeof _marketBreadth !== 'undefined') ? _marketBreadth : 0.5; const brAl = isLong ? br - 0.5 : 0.5 - br;
     const f = { btcD, adx4, rsiAl, rs, ls, vol, brAl };
     let z = BT_PROB_MODEL.b; for (const k of Object.keys(BT_PROB_MODEL.w)) z += BT_PROB_MODEL.w[k] * f[k];
-    const p = 1 / (1 + Math.exp(-z));
-    return { p: +p.toFixed(3), f };
+    let off = 0; try { off = btProbCalib().offset || 0; } catch(_e) {}
+    const p = 1 / (1 + Math.exp(-(z + off)));
+    return { p: +p.toFixed(3), f, raw: +(1 / (1 + Math.exp(-z))).toFixed(3), offset: off };
   } catch(_e) { return { p: null, f: null }; }
 }
 function computeFullRisk(coin, params, isLong) {
@@ -26036,11 +26102,12 @@ function computeSimpleSetup(coin, isLong) {
      近端結構把止盈一推遠。 */
   let _stopPlan = null;
   if (typeof _entryIsStop !== 'undefined' && _entryIsStop && risk > 0) {
-    tp1 = isLong ? entry + risk * 1.0 : entry - risk * 1.0; _tp1Tag = 'rr';
-    /* 2026-10-06 追加回測（閘門後 962 筆 15m、516 筆 1H 突破，前後半都成立）：TP1 後追蹤回吐 0.5R（原 0.8R）
-       ＋尾倉目標 4R：15m 期望 0.31→0.35R、1H 0.36→0.44R，回撤持平或更低。 */
-    tp2 = isLong ? entry + risk * 4.0 : entry - risk * 4.0; _tp2Tag = 'rr';
-    _stopPlan = { tp1Frac: 0.5, tp1LockR: 0.3, trailGiveR: 0.5 };
+    /* 2026-10-06／10-10 追加回測：TP1 後追蹤回吐 0.5R（原 0.8R）＋尾倉 4R；止盈一距離與減倉比例依交易模式
+       （高勝率 0.5R 出 60%／平衡 1R 出 50%），見 MAIN_EXIT_PLANS 的數據。 */
+    const _mp = mainExitPlan();
+    tp1 = isLong ? entry + risk * _mp.tp1R : entry - risk * _mp.tp1R; _tp1Tag = 'rr';
+    tp2 = isLong ? entry + risk * _mp.tp2R : entry - risk * _mp.tp2R; _tp2Tag = 'rr';
+    _stopPlan = { tp1R: _mp.tp1R, tp2R: _mp.tp2R, tp1Frac: _mp.tp1Frac, tp1LockR: _mp.tp1LockR, trailGiveR: _mp.trailGiveR, mode: mainMode() };
   }
 
   // 長線單（_isLongTerm）：估算 8:1 RR 目標並驗證 >= 7:1
@@ -26056,9 +26123,9 @@ function computeSimpleSetup(coin, isLong) {
   // ═══════════════════════════════════════════════
   // 4. 盈虧比檢查：R:R < 1.3 → 觀望，不開倉
   // ═══════════════════════════════════════════════
-  const _rrCheck  = risk > 0 ? Math.abs(tp1 - entry) / risk : 0;
-  // 突破單的止盈一固定 1R（分批出場靠尾倉 2.5R 補賠率），門檻以止盈二的 2.5R 計；回踩單維持 1.3
-  const _rrMinNeed = _stopPlan ? 0.99 : 1.3;
+  // 突破單以分批加權 R/R 過門檻（高勝率 0.6×0.5+0.4×4＝1.9、平衡 0.5×1+0.5×4＝2.5）；回踩單看止盈一
+  const _rrCheck  = risk > 0 ? (_stopPlan ? _stopPlan.tp1Frac * _stopPlan.tp1R + (1 - _stopPlan.tp1Frac) * _stopPlan.tp2R : Math.abs(tp1 - entry) / risk) : 0;
+  const _rrMinNeed = 1.3;
   const rrBlocked = _rrCheck < _rrMinNeed;
   const rrReason  = rrBlocked ? `R/R ${_rrCheck.toFixed(2)}:1 低於 ${_rrMinNeed}，盈虧比不足，建議觀望` : '';
 
@@ -26460,7 +26527,7 @@ function computeSimpleSetup(coin, isLong) {
                   : _mtfContraH4 ? '（4H逆向）'
                   : _mtfContraDay ? '（日線逆向）' : '';
   const tp1Reason = _stopPlan
-    ? `突破單固定 1R 止盈一${_mtfLabel}，到達後減倉 50%、止損鎖 +0.3R，尾倉追蹤（回吐 0.5R）至 4R`
+    ? `突破單（${_stopPlan.mode === 'high' ? '高勝率' : '平衡'}模式）止盈一 ${_stopPlan.tp1R}R${_mtfLabel}，到達後減倉 ${Math.round(_stopPlan.tp1Frac * 100)}%、止損鎖 +${_stopPlan.tp1LockR}R，尾倉追蹤（回吐 ${_stopPlan.trailGiveR}R）至 ${_stopPlan.tp2R}R`
     : `${_tp1DescMap[_tp1Tag] || `短線目標 R/R ${_rr1}:1`}${_mtfLabel}，到達後減倉 60%`;
   const tp2Reason = `${_tp2DescMap[_tp2Tag] || `波段目標 R/R ${_rr2}:1`}，剩餘倉位移至成本`;
 
@@ -26754,6 +26821,8 @@ function populateSettingsPage() {
   if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
   const mpsSel = document.getElementById('s-main-price-src');
   if (mpsSel) mpsSel.value = (s.mainPriceSrc === 'pionex' || s.mainPriceSrc === 'pionex_perp') ? s.mainPriceSrc : 'okx';
+  const mmSel = document.getElementById('s-main-mode');
+  if (mmSel) mmSel.value = s.mainMode === 'balanced' ? 'balanced' : 'high';
   try { renderPionexStatus(); } catch(_e) {}
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
@@ -26807,6 +26876,7 @@ function saveAllSettings() {
     scalpEnabled:    document.getElementById('s-scalp-toggle')?.checked ?? false,
     scalpBotMode:    document.getElementById('s-scalp-bot')?.checked ?? false,
     mainPriceSrc:    (() => { const v = document.getElementById('s-main-price-src')?.value; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; })(),
+    mainMode:        (() => { const v = document.getElementById('s-main-mode')?.value; return v === 'balanced' ? 'balanced' : 'high'; })(),
     // 學習凍結：勾選 → 沿用尚未到期的舊值，否則從現在起 28 天；取消 → 0（立即解凍）
     learnFreezeUntil: (() => {
       const el = document.getElementById('s-learn-freeze');

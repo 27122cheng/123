@@ -68,12 +68,14 @@ const geo = await p.evaluate((mk) => {
   const r = Math.abs(s.entry - s.sl);
   const c2 = mkCoin('GL/USDT', 74); c2.adx = 14; c2.price = '100'; c2.ema20 = '99.2'; c2.signal15m = 'neutral'; delete _tradeSetupCache[c2.symbol];
   const s2 = computeSimpleSetup(c2, true);
-  return { mode: s.entryMode, tp1R: +((s.tp1 - s.entry) / r).toFixed(2), tp2R: +((s.tp2 - s.entry) / r).toFixed(2), frac: s.tp1FracPlan, lock: s.tp1LockRPlan, trail: s.trailGiveRPlan, rrBlocked: s.rrBlocked, reason: s.tp1Reason, mode2: s2.entryMode, frac2: s2.tp1FracPlan };
+  const plan = mainExitPlan();
+  return { plan, modeName: mainMode(), mode: s.entryMode, tp1R: +((s.tp1 - s.entry) / r).toFixed(2), tp2R: +((s.tp2 - s.entry) / r).toFixed(2), frac: s.tp1FracPlan, lock: s.tp1LockRPlan, trail: s.trailGiveRPlan, rrBlocked: s.rrBlocked, reason: s.tp1Reason, mode2: s2.entryMode, frac2: s2.tp1FracPlan };
 }, MK);
 if (geo.mode !== 'stop') throw new Error('夾具應走突破單：' + JSON.stringify(geo));
-if (geo.tp1R !== 1 || geo.tp2R !== 4 || geo.frac !== 0.5 || geo.lock !== 0.3 || geo.trail !== 0.5 || geo.rrBlocked || !geo.reason.includes('減倉 50%')) throw new Error('突破單出場幾何錯誤：' + JSON.stringify(geo));
+if (geo.modeName !== 'high' || geo.tp1R !== geo.plan.tp1R || geo.tp2R !== geo.plan.tp2R || geo.frac !== geo.plan.tp1Frac || geo.lock !== geo.plan.tp1LockR || geo.trail !== geo.plan.trailGiveR || geo.rrBlocked || !geo.reason.includes(`減倉 ${Math.round(geo.plan.tp1Frac * 100)}%`)) throw new Error('突破單出場幾何錯誤：' + JSON.stringify(geo));
+if (geo.tp1R !== 0.5 || geo.frac !== 0.6 || geo.lock !== 0.1) throw new Error('高勝率模式預設應為 0.5R 出 60% 鎖 0.1R：' + JSON.stringify(geo));
 if (geo.mode2 === 'stop' || geo.frac2 != null) throw new Error('回踩單不應帶突破出場計畫：' + JSON.stringify(geo));
-console.log(`✓ 突破單：止盈一 ${geo.tp1R}R、止盈二 ${geo.tp2R}R、減倉 ${geo.frac * 100}%、鎖 +${geo.lock}R、追蹤回吐 ${geo.trail}R，R/R 門檻不擋；回踩單（${geo.mode2}）不帶計畫`);
+console.log(`✓ 突破單（${geo.modeName} 模式）：止盈一 ${geo.tp1R}R、止盈二 ${geo.tp2R}R、減倉 ${geo.frac * 100}%、鎖 +${geo.lock}R、追蹤回吐 ${geo.trail}R，R/R 門檻不擋；回踩單（${geo.mode2}）不帶計畫`);
 
 // ══ ③ 監控：帶計畫的持倉觸及止盈一 → 止損鎖 +0.3R、tp1Frac=0.5；不帶計畫 → 出場實驗室預設 ══
 const hit = await p.evaluate(async () => {
@@ -104,15 +106,16 @@ if (sc.a || sc.b || sc.fee !== 0.08 || sc.slMin !== 0.7 || !sc.c || !sc.rev) thr
 console.log(`✓ 快速單：突破／動能模式停用，費用門 ${sc.fee * 100}% R（止損 ≥1.25%），學習止損下限 ${sc.slMin}×ATR；回踩確認／回歸家族保留`);
 
 // ══ ⑤ 1H 突破候選：4H 同向＋未越過觸發位 → 停損單掛在 1H 高點外，止損 ≥ max(1×1H ATR, 1%)；越過／反向不採 ══
+const { tp1R: mainExitPlanTp1, tp1Frac: mainExitPlanFrac } = await p.evaluate(() => mainExitPlan());
 const h1 = await p.evaluate((mk) => {
   const mkCoin = (0, eval)('(' + mk + ')');
   const base = () => { const c = mkCoin('HB/USDT', 74); c.price = '100.5'; c.ema20 = '99.5'; c.adx = 22; c.h1Brk = { dir: 'bull', lvl: 101.5, atr: 1.2, age: 0 }; c.h1Atr = 1.2; return c; };
   const run = (mut) => { const c = base(); mut && mut(c); delete _tradeSetupCache[c.symbol]; const s = computeSimpleSetup(c, true); return { tag: s.entryTag, mode: s.entryMode, entry: +(+s.entry).toFixed(4), risk: +Math.abs(s.entry - s.sl).toFixed(4), slTag: s.slTag, tp1R: +((s.tp1 - s.entry) / Math.abs(s.entry - s.sl)).toFixed(2), frac: s.tp1FracPlan }; };
   return { ok: run(), crossed: run(c => { c.h1Brk.crossed = true; }), above: run(c => { c.price = '102'; }), h4Rev: run(c => { c.h4Signal = 'bear'; }) };
 }, MK);
-if (h1.ok.tag !== 'h1break' || h1.ok.mode !== 'stop' || Math.abs(h1.ok.entry - 101.56) > 0.01 || h1.ok.risk < 1.2 || h1.ok.risk < 1.0156 || h1.ok.slTag !== 'h1break' || h1.ok.tp1R !== 1 || h1.ok.frac !== 0.5) throw new Error('1H 突破候選錯誤：' + JSON.stringify(h1.ok));
+if (h1.ok.tag !== 'h1break' || h1.ok.mode !== 'stop' || Math.abs(h1.ok.entry - 101.56) > 0.01 || h1.ok.risk < 1.2 || h1.ok.risk < 1.0156 || h1.ok.slTag !== 'h1break' || h1.ok.tp1R !== mainExitPlanTp1 || h1.ok.frac !== mainExitPlanFrac) throw new Error('1H 突破候選錯誤：' + JSON.stringify(h1.ok));
 if (h1.crossed.tag === 'h1break' || h1.above.tag === 'h1break' || h1.h4Rev.tag === 'h1break') throw new Error('已越過／價格在外側／4H 反向不應採 1H 突破：' + JSON.stringify(h1));
-console.log(`✓ 1H 突破：進場 ${h1.ok.entry}（1H 高點 101.5＋0.05×ATR）、止損距離 ${h1.ok.risk}（≥1×1H ATR 1.2、≥1%）、止盈一 1R、減倉 50%；越過觸發位→${h1.crossed.tag}、價格已在外側→${h1.above.tag}、4H 反向→${h1.h4Rev.tag}`);
+console.log(`✓ 1H 突破：進場 ${h1.ok.entry}（1H 高點 101.5＋0.05×ATR）、止損距離 ${h1.ok.risk}（≥1×1H ATR 1.2、≥1%）、止盈一 ${h1.ok.tp1R}R、減倉 ${h1.ok.frac * 100}%；越過觸發位→${h1.crossed.tag}、價格已在外側→${h1.above.tag}、4H 反向→${h1.h4Rev.tag}`);
 
 // ══ ⑥ 回測機率模型：順向特徵 p 較高；掃描時 p<56% → ×0.8 並記 btProb；Telegram 含預測勝率 ══
 const bp = await p.evaluate(async (mk) => {
@@ -131,6 +134,7 @@ const bp = await p.evaluate(async (mk) => {
   _macroCache = { fg: { value: '58' }, btcDominance: 50, marketCapChange: 1.5 }; _macroCacheAt = now;
   localStorage.setItem(TRADE_LOG_KEY, '[]'); localStorage.removeItem('csp_scan_funnel'); localStorage.removeItem(SIGNAL_LEDGER_KEY); localStorage.removeItem(CANCEL_COOLDOWN_KEY);
   _tlogRaw = null; _tlogArr = null; invalidateLearnCache?.(); _sigEvCache = {}; _sigEvCacheTs = 0; _condCache = null; _condCacheTs = 0;
+  { const st = loadSettings(); st.mainMode = 'balanced'; saveSettings(st); }   // 平衡模式：不分層，才看得到軟門 ×0.8
   const btc = mkCoin('BTC/USDT', 62); btc.dailySignal = 'neutral'; const al = mkCoin('PB/USDT', 74); al.change24h = 4.5; al.h4Adx = 21; al.h1Rsi = 25; al.atr = 0.8;
   state.data = [btc, al]; for (const c of state.data) _scanFetchCache[c.symbol] = { ts: now, deriv: c.derivData, whale: null };
   updateMarketContext(state.data); _btcD1Dir = 'neutral'; _rsRank = { 'PB/USDT': 0 }; _marketBreadth = 0.5; _regimeCache = { at: Date.now(), key: 'bull_hv', dir: 'bull', vol: 'hv', label: '趨勢多/高波動' };
@@ -138,13 +142,58 @@ const bp = await p.evaluate(async (mk) => {
   const t = loadTradeLog().find(x => x.symbol === 'PB/USDT' && x.status === 'pending');
   delete _tradeSetupCache['PB/USDT']; const su = computeSimpleSetup(al, true); su.conf = 70;
   const tg = buildTelegramText(al, 'long', { ...su }, _macroCache, '');
-  return { pg: pg.p, pgS: pgS.p, pw: pw.p, built: !!t, softMult: t?.softMult, gates: (t?.softGates || []).map(g => g.reason || g), btProb: t?.btProb, tg: String(tg).includes('回測模型預測勝率') };
+  const tgHasMode = String(tg).includes('平衡模式');
+  { const st = loadSettings(); st.mainMode = 'high'; saveSettings(st); }
+  return { pg: pg.p, pgS: pgS.p, pw: pw.p, built: !!t, softMult: t?.softMult, gates: (t?.softGates || []).map(g => g.reason || g), btProb: t?.btProb, tg: String(tg).includes('回測模型預測勝率'), tgHasMode, planAfter: mainExitPlan().label };
 }, MK);
+if (!bp.tgHasMode || bp.planAfter !== '高勝率') throw new Error('模式切換未反映：' + JSON.stringify({ tgHasMode: bp.tgHasMode, planAfter: bp.planAfter }));
 if (!(bp.pg > 0.6) || !(bp.pgS < bp.pg) || !(bp.pw < 0.56 && bp.pw >= 0.5)) throw new Error('機率模型數值不合預期：' + JSON.stringify(bp));
 if (!bp.built || bp.softMult !== 0.8 || !bp.gates.some(g => g.includes('回測模型預測勝率')) || !(bp.btProb >= 0.5 && bp.btProb < 0.56)) throw new Error('弱特徵應 ×0.8 並記 btProb：' + JSON.stringify(bp));
 console.log(`✓ 機率模型：順向強特徵 p=${bp.pg}（反向 ${bp.pgS}）、弱特徵 p=${bp.pw} → 建單 ×${bp.softMult}、紀錄 btProb=${bp.btProb}；Telegram 含預測勝率：${bp.tg}`);
 
-await p.evaluate(() => { const s = loadSettings(); s.mainPriceSrc = 'okx'; saveSettings(s); });
+// ══ ⑦ 高勝率模式分層：p<65% 且 RSI 未過熱 → 不建；p<65% 但 RSI 順向過熱 → 建；p≥65% → 建 ══
+const tier = await p.evaluate(async (mk) => {
+  const mkCoin = (0, eval)('(' + mk + ')');
+  const run = async ({ h1Rsi, atr = 1.6, btcD = 'bull', rs = 70 }) => {
+    const now = Date.now();
+    isSignalMaster = () => true; computeKillZone = () => ({ quality: 'high', zone: 'x', label: 'x' });
+    getAdaptiveGates = () => ({ minConf: 65, minSq: 12, minRR: minRequiredRR(), relaxed: false, label: '' });
+    getUpcomingEconEvents = () => []; getTodayEconEvents = () => []; _evBlkCache = null; _evBlkCacheTs = 0; condBlockCheck = () => null;
+    _macroCache = { fg: { value: '58' }, btcDominance: 50, marketCapChange: 1.5 }; _macroCacheAt = now;
+    localStorage.setItem(TRADE_LOG_KEY, '[]'); localStorage.removeItem('csp_scan_funnel'); localStorage.removeItem(SIGNAL_LEDGER_KEY); localStorage.removeItem(CANCEL_COOLDOWN_KEY);
+    _tlogRaw = null; _tlogArr = null; invalidateLearnCache?.(); _sigEvCache = {}; _sigEvCacheTs = 0; _condCache = null; _condCacheTs = 0; _btCalibCache = null;
+    const btc = mkCoin('BTC/USDT', 62); btc.dailySignal = btcD; const al = mkCoin('TR/USDT', 74); al.change24h = 4.5; al.h4Adx = 21; al.h1Rsi = h1Rsi; al.atr = atr;
+    state.data = [btc, al]; for (const c of state.data) _scanFetchCache[c.symbol] = { ts: now, deriv: c.derivData, whale: null };
+    updateMarketContext(state.data); _btcD1Dir = btcD; _rsRank = { 'TR/USDT': rs }; _marketBreadth = 0.5; _regimeCache = { at: Date.now(), key: 'bull_hv', dir: 'bull', vol: 'hv', label: '趨勢多/高波動' };
+    delete _tradeSetupCache['TR/USDT']; const pr = computeSimpleSetup(_coinForMain(al), true).btProb;
+    await recordSignalsFromScan(state.data);
+    const f = JSON.parse(localStorage.getItem('csp_scan_funnel') || '{}'); const t = loadTradeLog().find(x => x.symbol === 'TR/USDT' && x.status === 'pending');
+    return { p: pr, built: !!t, keys: Object.keys(f.rejects || {}).filter(k => k.includes('高勝率模式')) };
+  };
+  return { weak: await run({ h1Rsi: 50, atr: 0.8, btcD: 'neutral', rs: 0 }), hot: await run({ h1Rsi: 70, atr: 0.8, btcD: 'neutral', rs: 0 }), strong: await run({ h1Rsi: 60, atr: 1.6, btcD: 'bull', rs: 80 }) };
+}, MK);
+if (tier.weak.built || tier.weak.p >= 0.65 || !tier.weak.keys.length) throw new Error('高勝率模式：弱 p 且未過熱應不建：' + JSON.stringify(tier.weak));
+if (!tier.hot.built || tier.hot.p >= 0.65) throw new Error('高勝率模式：RSI 順向過熱應建單：' + JSON.stringify(tier.hot));
+if (!tier.strong.built || tier.strong.p < 0.65) throw new Error('高勝率模式：p≥65% 應建單：' + JSON.stringify(tier.strong));
+console.log(`✓ 高勝率分層：p=${tier.weak.p} 未過熱 → 不建（${tier.weak.keys[0]}）；p=${tier.hot.p} 但 RSI 70 → 建；p=${tier.strong.p} → 建`);
+
+// ══ ⑧ 校準學習：已完結單預測 70% 但實倉只 40% → 偏移為負、預測值下修；<30 筆不校準 ══
+const cal = await p.evaluate((mk) => {
+  const mkCoin = (0, eval)('(' + mk + ')'); const now = Date.now();
+  const mkT = (i, win) => ({ id: 'c' + i, symbol: 'CA/USDT', direction: 'long', status: 'closed', entry: 100, sl: 98, tp1: 101, tp2: 108, timestamp: now - 86400e3, exitTime: now - 3600e3, btProb: 0.7, pnlR: win ? 0.6 : -1, outcome: win ? 'tp1' : 'sl', conf: 70 });
+  const seed = n => { localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(Array.from({ length: n }, (_, i) => mkT(i, i % 5 < 2)))); _tlogRaw = null; _tlogArr = null; invalidateLearnCache?.(); _btCalibCache = null; };
+  _btcD1Dir = 'bull'; _rsRank = { 'CB/USDT': 80 }; _marketBreadth = 0.6; const c = mkCoin('CB/USDT', 74); c.h4Adx = 40; c.h1Rsi = 68;
+  seed(10); const small = btProbCalib(); const p0 = btWinProb(c, true);
+  seed(50); const big = btProbCalib(); const p1 = btWinProb(c, true);
+  const html = _btCalibPanel();   // 50 筆時面板應顯示偏移
+  localStorage.setItem(TRADE_LOG_KEY, '[]'); _tlogRaw = null; _tlogArr = null; invalidateLearnCache?.(); _btCalibCache = null;
+  return { smallN: small.n, smallOff: small.offset, p0: p0.p, bigN: big.n, bigOff: big.offset, realWr: big.realWr, meanP: big.meanP, p1: p1.p, raw: p1.raw, panel: html.includes('回測機率模型校準') && html.includes('偏移') };
+}, MK);
+if (cal.smallN !== 10 || cal.smallOff !== 0 || cal.p0 !== cal.raw) throw new Error('<30 筆不應校準：' + JSON.stringify(cal));
+if (cal.bigN !== 50 || !(cal.bigOff < -0.3) || !(cal.p1 < cal.raw - 0.05) || cal.realWr !== 40 || !cal.panel) throw new Error('50 筆（實倉 40% vs 預測 70%）應下修：' + JSON.stringify(cal));
+console.log(`✓ 校準學習：10 筆不校準（p=${cal.p0}）；50 筆預測 ${cal.meanP}% vs 實倉 ${cal.realWr}% → 偏移 ${cal.bigOff}，同一幣預測 ${cal.raw}→${cal.p1}；實驗室面板有校準區塊`);
+
+await p.evaluate(() => { const s = loadSettings(); s.mainPriceSrc = 'okx'; s.mainMode = 'high'; saveSettings(s); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_bt');
 await b.close();

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260821o" />
+  <link rel="stylesheet" href="css/styles.css?v=20260821p" />
 </head>
 <body>
 
@@ -654,6 +654,16 @@
 
           <div class="setting-row">
             <div class="setting-info">
+              <div class="setting-name">一般單交易模式</div>
+              <div class="setting-desc">回測（OKX 永續 19 幣，閘門後 1,478 筆突破單）：<b>高勝率</b>＝只做「預測勝率 ≥65% 或 1H RSI 順向過熱」的突破單，止盈一 0.5R 出 60%、鎖 +0.1R、追蹤回吐 0.5R、尾倉 4R → 勝率 80～84%、每筆 +0.32～0.37R、最大回撤 ≈2～4%（每筆冒 0.6%），筆數約為平衡模式一半。<b>平衡</b>＝不分層，止盈一 1R 出 50%、鎖 +0.3R → 勝率 67%、每筆 +0.38R、回撤 ≈19%。改模式只影響之後的新單。</div>
+            </div>
+            <select class="setting-select" id="s-main-mode" onchange="try{saveAllSettings()}catch(e){}">
+              <option value="high" selected>高勝率（預設）：勝率 80%+、回撤最小、筆數較少</option>
+              <option value="balanced">平衡：筆數多一倍、每筆期望略高、回撤大五倍</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
               <div class="setting-name">一般單價格來源</div>
               <div class="setting-desc">一般單（長線／短線）的進場、止損、止盈與監控現價改用哪個交易所的報價。快速單一律 OKX 不受影響。選 Pionex 後結構仍由 OKX K 線判定，價位等比對齊 Pionex 現貨；Pionex 報價取不到時自動退回 OKX。</div>
             </div>
@@ -1063,8 +1073,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260821o"></script>
-  <script src="js/api.js?v=20260821o"></script>
-  <script src="js/app.js?v=20260821o"></script>
+  <script src="js/indicators.js?v=20260821p"></script>
+  <script src="js/api.js?v=20260821p"></script>
+  <script src="js/app.js?v=20260821p"></script>
 </body>
 </html>
