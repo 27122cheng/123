@@ -14090,10 +14090,43 @@ function mainPriceSrc() { try { const v = loadSettings().mainPriceSrc; return (v
      高勝率：0.5R 出 60%／鎖 0.1R／追蹤 0.5R／尾倉 4R，只做「預測勝率 ≥65% 或 1H RSI 順向過熱」
                                                             → 勝率 80～84%、期望 0.32～0.37R、回撤 3～6R（≈2～4%）、每日 15～18 筆/19 幣
    高勝率模式的筆數少一半、每筆期望略低，但回撤只有平衡模式的五分之一；預設高勝率。 */
+/* 2026-10-11 使用者定案：所有模式止盈一都在 1R（不用 0.5R 換勝率）。兩個模式只差訊號分層：
+     高勝率（p≥0.65 或 RSI 順向過熱）＋1R 出 50%：15m 勝率 70～73%、+0.45～0.52R、回撤 9～12R（≈5～7%）；1H 70%、+0.51R、8R
+     平衡（不分層）＋1R 出 50%：勝率 67%、+0.38R、回撤 32R（≈19%）
+   勝率天花板在 1R 止盈一下約 70～73%；要 80% 得把止盈一拉到 0.5R（每筆少 0.1R），使用者選擇不要。 */
 const MAIN_EXIT_PLANS = {
-  high:     { tp1R: 0.5, tp2R: 4.0, tp1Frac: 0.6, tp1LockR: 0.1, trailGiveR: 0.5, pMin: 0.65, label: '高勝率' },
+  high:     { tp1R: 1.0, tp2R: 4.0, tp1Frac: 0.5, tp1LockR: 0.3, trailGiveR: 0.5, pMin: 0.65, label: '高勝率' },
   balanced: { tp1R: 1.0, tp2R: 4.0, tp1Frac: 0.5, tp1LockR: 0.3, trailGiveR: 0.5, pMin: null, label: '平衡' },
 };
+/* ── 移動止損的結構錨定（2026-10-11 使用者要求）──────────────────────────
+   「移動止損時儘量移到下一道結構／籌碼支撐壓力的外側，不然移完就直接被掃。」
+   做法：R 追蹤算出目標位 T 後，找現價與 T 之間（或 T 之下）最近一道支撐（多）／壓力（空）：
+   影線支撐壓力叢、EMA20／EMA50、布林中軌／外軌、4H 擺動點、VWAP／POC、爆倉牆、已收復的合流區，
+   止損放在它外側 0.25×ATR；T 比結構外側更激進時以結構為準（min），地板為止盈一鎖利位、且只往獲利方向棘輪；
+   現價與舊止損之間完全沒有結構時不動。
+   回測（用 EMA20／10 根擺動點近似結構，閘門後 15m 962 筆、1H 515 筆）：純 R 追蹤 0.353／0.437R，
+   結構錨定 0.311／0.334R——每筆少 0.04～0.10R，勝率不變（TP1 後被掃都是贏單）。結構錨定讓止損少被回踩掃到，
+   但趨勢真的反轉時回吐更多，淨效果為負。設定頁可切回純 R；預設照使用者要求用結構錨定。 */
+function trailMode() { try { return loadSettings().trailMode === 'r' ? 'r' : 'struct'; } catch(_e) { return 'struct'; } }
+function _trailStructLevel(cm, trade, isLong, cur, atrV) {
+  try {
+    const r = parseFloat(cm?._pxRatio) || 1;   // 籌碼快取是 OKX 空間，Pionex 單要等比換算
+    const minGap = 0.15 * atrV;
+    const cands = [];
+    const add = (v, label) => { const n = parseFloat(v); if (!isFinite(n) || n <= 0) return; if (isLong ? n < cur - minGap : n > cur + minGap) cands.push({ level: n, label }); };
+    for (const z of (isLong ? (cm?.wickSupports || []) : (cm?.wickResistances || [])).slice(0, 6)) add(z.level, `${isLong ? '影線支撐' : '影線壓力'}×${z.wicks || 1}`);
+    add(cm?.ema20, 'EMA20'); add(cm?.ema50, 'EMA50');
+    add(cm?.bb?.mid, '布林中軌'); add(isLong ? cm?.bb?.lower : cm?.bb?.upper, isLong ? '布林下軌' : '布林上軌');
+    add(isLong ? cm?.h4SwingLow : cm?.h4SwingHigh, isLong ? '4H 擺動低點' : '4H 擺動高點');
+    const fp = _footprintCache?.[trade.symbol]; if (fp) { add(fp.vwap * r, 'VWAP'); add(fp.poc * r, '成交量 POC'); }
+    const lq = _liquidationCache?.[trade.symbol];
+    if (lq && lq.source && lq.source !== 'estimated') for (const l of ((isLong ? lq.longLiqs : lq.shortLiqs) || []).slice(0, 3)) add(l.price * r, isLong ? '多單爆倉牆' : '空單爆倉牆');
+    if (Array.isArray(trade.tpZones)) for (const z of trade.tpZones) { const farP = parseFloat(z.far ?? z.p); if (isFinite(farP) && (isLong ? cur >= farP + 0.25 * atrV : cur <= farP - 0.25 * atrV)) add(farP, `已收復結構區${(z.ev || []).slice(0, 1).map(x => '（' + x + '）').join('')}`); }
+    if (!cands.length) return null;
+    cands.sort((a, b) => isLong ? b.level - a.level : a.level - b.level);   // 最靠近現價的一道
+    return cands[0];
+  } catch(_e) { return null; }
+}
 function mainMode() { try { return loadSettings().mainMode === 'balanced' ? 'balanced' : 'high'; } catch(_e) { return 'high'; } }
 function mainExitPlan() { return MAIN_EXIT_PLANS[mainMode()] || MAIN_EXIT_PLANS.high; }
 /* 高勝率模式的訊號分層：預測勝率 ≥ pMin 或 1H RSI 順向過熱（多 ≥65／空 ≤35）。
@@ -14421,7 +14454,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821p';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821q';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -17315,11 +17348,31 @@ function updateOpenTrades(data) {
           }
         }
       } catch(_e) {}
+      // ── 結構錨定（2026-10-11）：止損躲在最近一道支撐／壓力外側 0.25×ATR，地板為止盈一鎖利位；無結構不動 ──
+      if (trailMode() === 'struct') {
+        try {
+          const _cmT = String(trade.priceSrc || 'okx').startsWith('pionex') ? _coinForMain(coin) : coin;
+          const _atrT = parseFloat(_cmT.atr) > 0 ? parseFloat(_cmT.atr) : baseRisk;
+          const _lv = _trailStructLevel(_cmT, trade, isLong, cur, _atrT);
+          const _floorSL = isLong ? entry + _xc.tp1LockR * baseRisk : entry - _xc.tp1LockR * baseRisk;
+          if (_lv) {
+            const _beh = isLong ? _lv.level - 0.25 * _atrT : _lv.level + 0.25 * _atrT;
+            let _anch = isLong ? Math.min(_trailSL, _beh) : Math.max(_trailSL, _beh);
+            _anch = isLong ? Math.max(_anch, _floorSL) : Math.min(_anch, _floorSL);
+            if (isLong ? _anch < _trailSL : _anch > _trailSL) {
+              _trailSL = _anch;
+              _structNote = `；躲在 ${_lv.label} $${(+_lv.level).toPrecision(5).replace(/\.?0+$/, '')} 外側 0.25×ATR`;
+            }
+          } else if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) {
+            _trailSL = trade.sl;   // 現價與止損之間沒有任何結構 → 不移動
+          }
+        } catch(_e) {}
+      }
       if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) {
         const _oldSL = trade.sl;
         trade.sl = _trailSL; changed = true;
         // 止損調整 → 立即通知（移動停利往獲利方向推進，實盤需同步改單）
-        sendSLChangeNotification(trade, _oldSL, _trailSL, `移動停利推進（峰值 ${_peakR.toFixed(2)}R，鎖住 ${_lockR.toFixed(2)}R${_structNote}）`);
+        sendSLChangeNotification(trade, _oldSL, _trailSL, `移動停利推進（峰值 ${_peakR.toFixed(2)}R，鎖住 ${(((isLong ? _trailSL - entry : entry - _trailSL)) / baseRisk).toFixed(2)}R${_structNote}）`);
       }
     }
 
@@ -26823,6 +26876,8 @@ function populateSettingsPage() {
   if (mpsSel) mpsSel.value = (s.mainPriceSrc === 'pionex' || s.mainPriceSrc === 'pionex_perp') ? s.mainPriceSrc : 'okx';
   const mmSel = document.getElementById('s-main-mode');
   if (mmSel) mmSel.value = s.mainMode === 'balanced' ? 'balanced' : 'high';
+  const tmSel = document.getElementById('s-trail-mode');
+  if (tmSel) tmSel.value = s.trailMode === 'r' ? 'r' : 'struct';
   try { renderPionexStatus(); } catch(_e) {}
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
@@ -26877,6 +26932,7 @@ function saveAllSettings() {
     scalpBotMode:    document.getElementById('s-scalp-bot')?.checked ?? false,
     mainPriceSrc:    (() => { const v = document.getElementById('s-main-price-src')?.value; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; })(),
     mainMode:        (() => { const v = document.getElementById('s-main-mode')?.value; return v === 'balanced' ? 'balanced' : 'high'; })(),
+    trailMode:       (() => { const v = document.getElementById('s-trail-mode')?.value; return v === 'r' ? 'r' : 'struct'; })(),
     // 學習凍結：勾選 → 沿用尚未到期的舊值，否則從現在起 28 天；取消 → 0（立即解凍）
     learnFreezeUntil: (() => {
       const el = document.getElementById('s-learn-freeze');
@@ -29305,7 +29361,19 @@ function updateScalpTrades(data) {
         t.peakPrice = isLong ? Math.max(t.peakPrice ?? cur, cur) : Math.min(t.peakPrice ?? cur, cur);
         const peakR = (isLong ? (t.peakPrice - t.entry) : (t.entry - t.peakPrice)) / baseRisk;
         const lockR = Math.max(0.5, peakR - SCALP_CFG.trailGiveR);
-        const trail = isLong ? t.entry + lockR * baseRisk : t.entry - lockR * baseRisk;
+        let trail = isLong ? t.entry + lockR * baseRisk : t.entry - lockR * baseRisk;
+        // 結構錨定（與一般單同規則）：5m 近 10 根擺動點／15m EMA20 外側 0.25×ATR，地板 +0.5R；無結構不動
+        if (trailMode() === 'struct') {
+          try {
+            const atrS = t.atrAtEntry > 0 ? t.atrAtEntry : baseRisk; const bars = _scalpKlineCache[t.symbol]; const cands = [];
+            if (Array.isArray(bars) && bars.length >= 10) { const last = bars.slice(-11, -1); const sw = isLong ? Math.min(...last.map(b => parseFloat(b[3]))) : Math.max(...last.map(b => parseFloat(b[2]))); if (isFinite(sw)) cands.push(sw); }
+            const e20 = parseFloat(coin.ema20); if (isFinite(e20)) cands.push(e20);
+            const ok = cands.filter(v => isLong ? v < cur - 0.15 * atrS : v > cur + 0.15 * atrS);
+            const floorS = isLong ? t.entry + 0.5 * baseRisk : t.entry - 0.5 * baseRisk;
+            if (ok.length) { const L = isLong ? Math.max(...ok) : Math.min(...ok); const beh = isLong ? L - 0.25 * atrS : L + 0.25 * atrS; trail = isLong ? Math.max(Math.min(trail, beh), floorS) : Math.min(Math.max(trail, beh), floorS); }
+            else trail = t.sl;
+          } catch(_e) {}
+        }
         if (isLong ? trail > t.sl : trail < t.sl) { t.sl = trail; changed = true; }
       }
       // ④ 止盈／止損判定

@@ -73,13 +73,14 @@ const geo = await p.evaluate((mk) => {
 }, MK);
 if (geo.mode !== 'stop') throw new Error('夾具應走突破單：' + JSON.stringify(geo));
 if (geo.modeName !== 'high' || geo.tp1R !== geo.plan.tp1R || geo.tp2R !== geo.plan.tp2R || geo.frac !== geo.plan.tp1Frac || geo.lock !== geo.plan.tp1LockR || geo.trail !== geo.plan.trailGiveR || geo.rrBlocked || !geo.reason.includes(`減倉 ${Math.round(geo.plan.tp1Frac * 100)}%`)) throw new Error('突破單出場幾何錯誤：' + JSON.stringify(geo));
-if (geo.tp1R !== 0.5 || geo.frac !== 0.6 || geo.lock !== 0.1) throw new Error('高勝率模式預設應為 0.5R 出 60% 鎖 0.1R：' + JSON.stringify(geo));
+if (geo.tp1R !== 1 || geo.frac !== 0.5 || geo.lock !== 0.3) throw new Error('所有模式止盈一應在 1R 出 50% 鎖 0.3R：' + JSON.stringify(geo));
 if (geo.mode2 === 'stop' || geo.frac2 != null) throw new Error('回踩單不應帶突破出場計畫：' + JSON.stringify(geo));
 console.log(`✓ 突破單（${geo.modeName} 模式）：止盈一 ${geo.tp1R}R、止盈二 ${geo.tp2R}R、減倉 ${geo.frac * 100}%、鎖 +${geo.lock}R、追蹤回吐 ${geo.trail}R，R/R 門檻不擋；回踩單（${geo.mode2}）不帶計畫`);
 
 // ══ ③ 監控：帶計畫的持倉觸及止盈一 → 止損鎖 +0.3R、tp1Frac=0.5；不帶計畫 → 出場實驗室預設 ══
 const hit = await p.evaluate(async () => {
   isSignalMaster = () => true; const sent = []; sendSLChangeNotification = (t, a, b2, why) => { sent.push(why); };
+  { const st = loadSettings(); st.trailMode = 'r'; saveSettings(st); }   // 純 R 追蹤：驗證回吐參數
   const now = Date.now();
   localStorage.setItem(TRADE_LOG_KEY, JSON.stringify([
     { id: 'plan', symbol: 'PL/USDT', direction: 'long', status: 'open', entry: 100, baseSl: 98, sl: 98, tp1: 102, tp2: 105, timestamp: now - 3e5, entryTime: now - 3e5, telegramSent: true, conf: 70, entryMode: 'stop', tp1FracPlan: 0.5, tp1LockRPlan: 0.3, trailGiveRPlan: 0.5 },
@@ -98,7 +99,30 @@ if (Math.abs(hit.dSl - (100 + 2 * hit.effLock)) > 1e-6 || hit.dFrac !== hit.effF
 if (!hit.sent.some(s => s.includes('減倉 50%') && s.includes('+0.3R'))) throw new Error('止盈一通知文字應反映計畫：' + JSON.stringify(hit.sent));
 if (Math.abs(hit.aTrail - 102.5) > 1e-6) throw new Error('突破單追蹤應鎖 峰值−0.5R＝102.5：' + JSON.stringify(hit));
 if (Math.abs(hit.dTrail - Math.max(100 + 2 * hit.effLock, 104.5 - 2 * hit.effGive)) > 1e-6) throw new Error('一般單追蹤應用出場實驗室回吐值：' + JSON.stringify(hit));
-console.log(`✓ 監控：突破單止盈一 → 止損 ${hit.aSl}（+0.3R）、減倉 50%，峰值 103.5 後追蹤到 ${hit.aTrail}（回吐 0.5R）；一般單 → +${hit.effLock}R、減倉 ${hit.effFrac * 100}%，追蹤回吐 ${hit.effGive}R → ${hit.dTrail}`);
+console.log(`✓ 監控（純 R）：突破單止盈一 → 止損 ${hit.aSl}（+0.3R）、減倉 50%，峰值 103.5 後追蹤到 ${hit.aTrail}（回吐 0.5R）；一般單 → +${hit.effLock}R、減倉 ${hit.effFrac * 100}%，追蹤回吐 ${hit.effGive}R → ${hit.dTrail}`);
+
+// ══ ③b 結構錨定（預設）：止損躲在最近支撐外側 0.25×ATR；沒有結構 → 不動；地板止盈一鎖利位 ══
+const anc = await p.evaluate(async () => {
+  isSignalMaster = () => true; const sent = []; sendSLChangeNotification = (t, a, b2, why) => { sent.push(why); };
+  { const st = loadSettings(); st.trailMode = 'struct'; saveSettings(st); }
+  const now = Date.now();
+  const mk = (id, sym) => ({ id, symbol: sym, direction: 'long', status: 'open', entry: 100, baseSl: 98, sl: 98, tp1: 102, tp2: 108, timestamp: now - 3e5, entryTime: now - 3e5, telegramSent: true, conf: 70, entryMode: 'stop', tp1FracPlan: 0.5, tp1LockRPlan: 0.3, trailGiveRPlan: 0.5 });
+  localStorage.setItem(TRADE_LOG_KEY, JSON.stringify([mk('st', 'SA/USDT'), mk('no', 'NB/USDT'), mk('fl', 'FL/USDT')])); _tlogRaw = null; _tlogArr = null;
+  const base = { score: 70, trend: '看漲', atr: 1 };
+  updateOpenTrades([{ symbol: 'SA/USDT', price: '102.1', ...base }, { symbol: 'NB/USDT', price: '102.1', ...base }, { symbol: 'FL/USDT', price: '102.1', ...base }]);   // 止盈一 → 鎖 +0.3R＝100.6
+  updateOpenTrades([
+    { symbol: 'SA/USDT', price: '103.5', ...base, wickSupports: [{ level: 102, wicks: 3 }], ema20: '101.5' },   // 結構 102 → 101.75（R 追蹤 102.5 更激進，取結構）
+    { symbol: 'NB/USDT', price: '103.5', ...base },                                                            // 無結構 → 不動
+    { symbol: 'FL/USDT', price: '103.5', ...base, wickSupports: [{ level: 100.5, wicks: 2 }] },                 // 結構 100.5 → 100.25 < 地板 100.6 → 地板
+  ]);
+  const g = id => loadTradeLog().find(t => t.id === id).sl;
+  return { st: g('st'), no: g('no'), fl: g('fl'), sent };
+});
+if (Math.abs(anc.st - 101.75) > 1e-6) throw new Error('結構錨定應放在影線支撐 102 外側 0.25ATR＝101.75：' + JSON.stringify(anc));
+if (Math.abs(anc.no - 100.6) > 1e-6) throw new Error('無結構應不動（維持 100.6）：' + JSON.stringify(anc));
+if (Math.abs(anc.fl - 100.6) > 1e-6) throw new Error('結構外側低於鎖利位應取地板 100.6：' + JSON.stringify(anc));
+if (!anc.sent.some(x => x.includes('躲在 影線支撐×3'))) throw new Error('止損調整通知應註明結構：' + JSON.stringify(anc.sent));
+console.log(`✓ 結構錨定：峰值 103.5、R 追蹤 102.5，有影線支撐 102 → 止損 ${anc.st}；無結構 → ${anc.no}（不動）；結構太低 → 地板 ${anc.fl}`);
 
 // ══ ④ 快速單設定：A/B 動能模式停用、費用門 8%、學習止損下限 0.7 ══
 const sc = await p.evaluate(() => ({ a: SCALP_CFG.enableBreakout, b: SCALP_CFG.enableMomentum, fee: SCALP_CFG.maxFeeR, slMin: SCALP_CFG.slMultMin, c: SCALP_CFG.enableRetest, rev: SCALP_CFG.enableRange }));
@@ -193,7 +217,7 @@ if (cal.smallN !== 10 || cal.smallOff !== 0 || cal.p0 !== cal.raw) throw new Err
 if (cal.bigN !== 50 || !(cal.bigOff < -0.3) || !(cal.p1 < cal.raw - 0.05) || cal.realWr !== 40 || !cal.panel) throw new Error('50 筆（實倉 40% vs 預測 70%）應下修：' + JSON.stringify(cal));
 console.log(`✓ 校準學習：10 筆不校準（p=${cal.p0}）；50 筆預測 ${cal.meanP}% vs 實倉 ${cal.realWr}% → 偏移 ${cal.bigOff}，同一幣預測 ${cal.raw}→${cal.p1}；實驗室面板有校準區塊`);
 
-await p.evaluate(() => { const s = loadSettings(); s.mainPriceSrc = 'okx'; s.mainMode = 'high'; saveSettings(s); });
+await p.evaluate(() => { const s = loadSettings(); s.mainPriceSrc = 'okx'; s.mainMode = 'high'; s.trailMode = 'struct'; saveSettings(s); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_bt');
 await b.close();

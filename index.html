@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260821p" />
+  <link rel="stylesheet" href="css/styles.css?v=20260821q" />
 </head>
 <body>
 
@@ -655,11 +655,21 @@
           <div class="setting-row">
             <div class="setting-info">
               <div class="setting-name">一般單交易模式</div>
-              <div class="setting-desc">回測（OKX 永續 19 幣，閘門後 1,478 筆突破單）：<b>高勝率</b>＝只做「預測勝率 ≥65% 或 1H RSI 順向過熱」的突破單，止盈一 0.5R 出 60%、鎖 +0.1R、追蹤回吐 0.5R、尾倉 4R → 勝率 80～84%、每筆 +0.32～0.37R、最大回撤 ≈2～4%（每筆冒 0.6%），筆數約為平衡模式一半。<b>平衡</b>＝不分層，止盈一 1R 出 50%、鎖 +0.3R → 勝率 67%、每筆 +0.38R、回撤 ≈19%。改模式只影響之後的新單。</div>
+              <div class="setting-desc">兩個模式止盈一都在 1R 出 50%、鎖 +0.3R、追蹤回吐 0.5R、尾倉 4R，只差訊號分層。回測（OKX 永續 19 幣，閘門後 1,478 筆突破單）：<b>高勝率</b>＝只做「預測勝率 ≥65% 或 1H RSI 順向過熱」的突破單 → 勝率 70～73%、每筆 +0.45～0.52R、最大回撤 ≈5～7%（每筆冒 0.6%），筆數約為平衡的一半。<b>平衡</b>＝不分層 → 勝率 67%、每筆 +0.38R、回撤 ≈19%。改模式只影響之後的新單。</div>
             </div>
             <select class="setting-select" id="s-main-mode" onchange="try{saveAllSettings()}catch(e){}">
-              <option value="high" selected>高勝率（預設）：勝率 80%+、回撤最小、筆數較少</option>
-              <option value="balanced">平衡：筆數多一倍、每筆期望略高、回撤大五倍</option>
+              <option value="high" selected>高勝率（預設）：只做高分層訊號，回撤最小、筆數較少</option>
+              <option value="balanced">平衡：不分層，筆數多一倍、回撤大三倍</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div class="setting-info">
+              <div class="setting-name">移動止損方式</div>
+              <div class="setting-desc"><b>結構錨定</b>＝止盈一後每次推進止損，都放在最近一道支撐／壓力（影線叢、EMA20/50、布林、4H 擺動點、VWAP/POC、爆倉牆、已收復結構區）外側 0.25×ATR，沒有結構就不動，避免移完直接被回踩掃掉；地板仍是止盈一鎖利位。<b>純 R 追蹤</b>＝鎖住「峰值 − 0.5R」。回測（用 EMA20／擺動點近似結構）：純 R 每筆多 0.04～0.10R、勝率相同——結構錨定少被洗，但反轉時回吐較多。一般單與快速單共用。</div>
+            </div>
+            <select class="setting-select" id="s-trail-mode" onchange="try{saveAllSettings()}catch(e){}">
+              <option value="struct" selected>結構錨定（預設）：止損躲在支撐／壓力外側</option>
+              <option value="r">純 R 追蹤：峰值 − 0.5R（回測期望較高）</option>
             </select>
           </div>
           <div class="setting-row">
@@ -1073,8 +1083,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260821p"></script>
-  <script src="js/api.js?v=20260821p"></script>
-  <script src="js/app.js?v=20260821p"></script>
+  <script src="js/indicators.js?v=20260821q"></script>
+  <script src="js/api.js?v=20260821q"></script>
+  <script src="js/app.js?v=20260821q"></script>
 </body>
 </html>
