@@ -303,6 +303,7 @@ async function init() {
   try { updateOpenTrades(state.data); } catch(e) { console.error('[init] updateOpenTrades 錯誤:', e); }
 
   hideLoading();
+  try { startHealthMonitor(); } catch(_e) {}
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
   _bootMark('渲染');
@@ -523,9 +524,25 @@ function startRefreshCycle() {
     updateCountdown();
   }, 1000);
 
-  state.refreshTimer = setInterval(async () => {
-    if (state.scanning) return; // 上次掃描還沒結束，跳過
-    state.scanning = true;
+  state.refreshTimer = setInterval(() => { _runRefreshTick(secs).catch(e => console.error('[refresh] tick', e)); }, secs * 1000);
+}
+/* ── 自動刷新的單輪（2026-10-14 頁面「跑一段時間後失靈要重整」的根治之一）──────────
+   原本整輪是一個匿名 async 回呼：任何一段沒被 try 包住的例外（或永遠不回來的 await）都會讓
+   state.scanning 卡在 true，之後每一輪都「上次掃描還沒結束，跳過」——倒數歸零、資料不再更新、
+   訊號停發，看起來就是頁面死了。改為 try／finally 必定歸零，另加「卡住看門狗」：scanning 超過
+   max(5 分鐘, 3×間隔) 就強制歸零並釋放建單鎖與插針驗證旗標。 */
+let _refreshStartedAt = 0, _lastRefreshDone = 0, _refreshTickN = 0;
+async function _runRefreshTick(secs) {
+  if (state.scanning) {
+    const stuckMs = Date.now() - (_refreshStartedAt || Date.now());
+    if (stuckMs > Math.max(5 * 60e3, 3 * secs * 1000)) {
+      console.error(`[refresh] 上一輪卡住 ${Math.round(stuckMs / 1000)} 秒，強制歸零（看門狗）`);
+      try { _healthNote('scan-stuck', `掃描卡住 ${Math.round(stuckMs / 1000)}s 於「${_cspStepMem || '?'}」，看門狗強制歸零`); } catch(_e) {}
+      state.scanning = false; try { for (const k of Object.keys(_createLocks)) _createLocks[k] = false; } catch(_e) {} try { _wickCheckBusy = false; } catch(_e) {}
+    } else return; // 上次掃描還沒結束，跳過
+  }
+  state.scanning = true; _refreshStartedAt = Date.now(); _refreshTickN++;
+  try {
     state.countdown = secs;
     updateScanProgress(0);
     let data, source;
@@ -651,13 +668,103 @@ function startRefreshCycle() {
     } catch(e) { console.error('[refresh] 頁面渲染錯誤:', e); }
     const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
     showToast(`市場數據已刷新（${srcLabel}）`, 'info');
-    state.scanning = false;
-  }, secs * 1000);
+  } catch(e) {
+    console.error('[refresh] 本輪未包住的例外：', e);
+    try { _healthNote('tick-error', String(e && e.message || e).slice(0, 120)); } catch(_e) {}
+  } finally {
+    state.scanning = false; _lastRefreshDone = Date.now();
+    try { hideScanBar(); } catch(_e) {}
+  }
 }
 
 function updateCountdown() {
   const el = document.getElementById('refresh-countdown');
   if (el) el.textContent = state.countdown + '秒';
+}
+
+/* ═══ 頁面健康監視與自我修復（2026-10-14）═════════════════════════════════════
+   使用者回報「網頁跑一段時間後會自動崩潰，要重新整理」。沙箱裡用真實刷新迴圈跑 4 分鐘
+   （相當於實機 80 輪）heap 穩定在 6～9MB、DOM／監聽器不累積，找不到記憶體洩漏；能確定的
+   失靈路徑是「刷新迴圈某輪拋出未包住的例外 → scanning 卡住 → 之後每輪跳過」（已用 try/finally
+   與看門狗堵住）。其餘在實機才會發生的情況（手機記憶體被系統回收、長時間運行累積、
+   localStorage 滿）無法在這裡重現，改為監視＋自我修復：
+     · 每 30 秒檢查：heap（Chrome 才有）、距上次完整刷新的時間、運行時間、localStorage 用量
+     · 刷新停擺 >10 分鐘／heap >900MB → 在安靜時刻自動重整；運行 >20 小時 → 等頁面切到背景再重整（最遲 30 小時）
+     · localStorage >3.5MB → 裁剪沙盒／實驗室封存等非核心紀錄（交易紀錄與學習封存不動）
+     · 自動重整前把原因寫進 csp_selfheal，重整後用提示條告訴使用者「為什麼」；10 分鐘內不重複重整 */
+const HEALTH_CFG = { heapMB: 900, stallMin: 10, uptimeSoftH: 20, uptimeHardH: 30, lsSoftKB: 3584, healCooldownMin: 10 };
+const _healthLog = [];
+function _healthNote(kind, text) {
+  _healthLog.push({ t: Date.now(), kind, text }); if (_healthLog.length > 30) _healthLog.shift();
+  try { localStorage.setItem('csp_health_log', JSON.stringify(_healthLog.slice(-12))); } catch(_e) {}
+  console.warn(`[health] ${kind}: ${text}`);
+}
+function _lsUsageKB() {
+  try { let n = 0; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); n += (localStorage.getItem(k) || '').length + k.length; } return Math.round(n / 1024); }
+  catch(_e) { return 0; }
+}
+/* 超量時只裁非核心紀錄（沙盒、實驗室、量化實驗室封存、暫存快取），交易紀錄與學習封存不碰 */
+function _lsQuotaGuard(force) {
+  const kb = _lsUsageKB();
+  if (!force && kb < HEALTH_CFG.lsSoftKB) return { kb, trimmed: [] };
+  const trimmed = [];
+  const trimArr = (key, max) => { try { const a = JSON.parse(localStorage.getItem(key) || 'null'); if (Array.isArray(a) && a.length > max) { localStorage.setItem(key, JSON.stringify(a.slice(0, max))); trimmed.push(`${key} ${a.length}→${max}`); } } catch(_e) {} };
+  trimArr('csp_sbx_log', 400); trimArr('csp_lab_archive', 300); trimArr('csp_qlab_archive', 600); trimArr('csp_ai_lab', 100); trimArr('csp_forecast_log', 200);
+  for (const k of ['csp_scan_profile', 'csp_longtask', 'csp_boot_trace_prev', 'csp_cancel_tg_dedup', 'csp_sl_adjust_alert']) { try { if (localStorage.getItem(k) != null) { localStorage.removeItem(k); trimmed.push(k + ' 移除'); } } catch(_e) {} }
+  if (trimmed.length) _healthNote('ls-trim', `localStorage ${kb}KB → ${_lsUsageKB()}KB：${trimmed.join('、')}`);
+  return { kb: _lsUsageKB(), trimmed };
+}
+function _healthSnapshot() {
+  let heapMB = null; try { heapMB = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null; } catch(_e) {}
+  const now = Date.now();
+  const interval = (state.settings && state.settings.refreshInterval) || 60;
+  const sinceDone = _lastRefreshDone ? now - _lastRefreshDone : (performance.now());
+  return { heapMB, uptimeMin: Math.round(performance.now() / 60000), sinceDoneMin: +(sinceDone / 60000).toFixed(1), scanning: !!state.scanning, scanningMin: state.scanning ? +((now - _refreshStartedAt) / 60000).toFixed(1) : 0, lsKB: _lsUsageKB(), interval, ticks: _refreshTickN };
+}
+/* 決策：回傳 { reason, urgent } 或 null。urgent＝立刻重整（安靜時刻）；非 urgent＝等頁面在背景時 */
+function _healthDecide(h, cfg = HEALTH_CFG) {
+  if (h.heapMB != null && h.heapMB > cfg.heapMB) return { reason: `記憶體 ${h.heapMB}MB 超過 ${cfg.heapMB}MB`, urgent: true };
+  const stallMin = Math.max(cfg.stallMin, 5 * h.interval / 60);
+  if (h.sinceDoneMin > stallMin && h.uptimeMin > stallMin) return { reason: `自動刷新停擺 ${Math.round(h.sinceDoneMin)} 分鐘`, urgent: true };
+  if (h.uptimeMin > cfg.uptimeHardH * 60) return { reason: `已連續運行 ${Math.round(h.uptimeMin / 60)} 小時（預防性重整）`, urgent: true };
+  if (h.uptimeMin > cfg.uptimeSoftH * 60) return { reason: `已連續運行 ${Math.round(h.uptimeMin / 60)} 小時（預防性重整）`, urgent: false };
+  return null;
+}
+function _selfHealReload(reason, h) {
+  try { localStorage.setItem('csp_selfheal', JSON.stringify({ reason, at: Date.now(), heapMB: h.heapMB, uptimeMin: h.uptimeMin, step: (typeof _cspStepMem !== 'undefined' ? _cspStepMem : ''), v: APP_VERSION })); } catch(_e) {}
+  _healthNote('reload', reason);
+  try { location.reload(); } catch(_e) {}
+}
+let _healthTimer = null, _healthReloadArmed = false;
+function _healthTick() {
+  try {
+    const h = _healthSnapshot();
+    if (h.lsKB >= HEALTH_CFG.lsSoftKB) _lsQuotaGuard();
+    const d = _healthDecide(h);
+    if (!d) return;
+    let last = 0; try { last = JSON.parse(localStorage.getItem('csp_selfheal') || 'null')?.at || 0; } catch(_e) {}
+    if (Date.now() - last < HEALTH_CFG.healCooldownMin * 60e3) { if (!_healthReloadArmed) _healthNote('reload-skip', `${d.reason}，但 ${HEALTH_CFG.healCooldownMin} 分鐘內已自動重整過，不重複`); _healthReloadArmed = true; return; }
+    const quiet = !state.scanning && !document.querySelector('.modal-overlay, .trade-modal-overlay');
+    if (d.urgent) {
+      if (!quiet && !document.hidden) { if (!_healthReloadArmed) { _healthReloadArmed = true; try { showToast(`⚕️ ${d.reason}，將在安靜時刻自動重整頁面`, 'warning'); } catch(_e) {} } return; }
+      _selfHealReload(d.reason, h);
+    } else {
+      if (document.hidden) _selfHealReload(d.reason, h);
+      else if (!_healthReloadArmed) { _healthReloadArmed = true; try { showToast(`⚕️ ${d.reason}：頁面切到背景時會自動重整`, 'info'); } catch(_e) {} }
+    }
+  } catch(_e) {}
+}
+function startHealthMonitor() {
+  if (_healthTimer) clearInterval(_healthTimer);
+  _healthTimer = setInterval(_healthTick, 30000);
+  // 上次是自我修復重整的 → 告訴使用者為什麼
+  try {
+    const sh = JSON.parse(localStorage.getItem('csp_selfheal') || 'null');
+    if (sh && Date.now() - sh.at < 5 * 60e3 && !sh.shown) {
+      sh.shown = true; localStorage.setItem('csp_selfheal', JSON.stringify(sh));
+      setTimeout(() => { try { showToast(`⚕️ 頁面已自動修復重整：${sh.reason}${sh.heapMB ? `（記憶體 ${sh.heapMB}MB）` : ''}`, 'warning'); } catch(_e) {} }, 3000);
+    }
+  } catch(_e) {}
 }
 
 async function manualRefresh() {
@@ -683,7 +790,8 @@ async function manualRefresh() {
     return;
   }
 
-  // 資料取得成功，後續渲染步驟各自保護
+  // 資料取得成功，後續渲染步驟各自保護；整段再用 try／finally 包住，確保 scanning 歸零、自動刷新一定重啟
+  try {
   state.data       = data;
   state.dataSource = source;
   try { updateMarketContext(data); } catch(e) {}   // regime/RS 與自動掃描同步更新
@@ -717,8 +825,8 @@ async function manualRefresh() {
   } catch(e) { console.error('[manualRefresh] 頁面渲染錯誤:', e); }
   const srcLabel = source === 'api' ? '本地 API 實時' : source === 'binance' ? '幣安 K 線實時' : '離線演示數據';
   showToast(`手動刷新完成（${srcLabel}）`, 'success');
-  state.scanning = false;
-  startRefreshCycle();
+  } catch(e) { console.error('[manualRefresh] 未包住的例外：', e); }
+  finally { state.scanning = false; _lastRefreshDone = Date.now(); startRefreshCycle(); }
 }
 
 function computeLongTermBias(mtfData) {
@@ -14454,7 +14562,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821q';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821r';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次

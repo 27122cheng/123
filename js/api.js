@@ -478,8 +478,14 @@ function _klineCacheGet(key, interval) {
 }
 function _klineCacheSet(key, rows) {
   if (!rows || !rows.length) return;
-  // 上限保護：避免長時間執行後 Map 無限增長（100 幣 × 13 週期 ≈ 1300）
-  if (_klineCache.size > 2000) _klineCache.clear();
+  /* 上限保護（2026-10-14 收緊）：每筆 220 根 K 棒約 40KB，舊上限 2000 筆＝80MB 才清；
+     且過期項目只在被讀到時才刪，不常用的週期會一直占著。改為：超過 600 筆先掃掉過期項，
+     仍超過就刪最舊的一半（Map 保留插入順序）。 */
+  if (_klineCache.size > 600) {
+    const now = Date.now();
+    for (const [k, v] of _klineCache) { const iv = k.split('|')[1]; if (now - v.ts > (_KLINE_TTL[iv] || 3e4)) _klineCache.delete(k); }
+    if (_klineCache.size > 600) { let n = Math.floor(_klineCache.size / 2); for (const k of _klineCache.keys()) { if (n-- <= 0) break; _klineCache.delete(k); } }
+  }
   _klineCache.set(key, { ts: Date.now(), rows });
 }
 
