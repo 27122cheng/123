@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260821r" />
+  <link rel="stylesheet" href="css/styles.css?v=20260821s" />
 </head>
 <body>
 
@@ -806,7 +806,7 @@
         <div class="setting-row" style="margin-top:6px">
           <div>
             <div class="setting-name">📡 本裝置為訊號主機</div>
-            <div class="setting-desc">只有主機會建單與發送 Telegram 通知。<b>多台裝置（手機／電腦）同時開啟時，請只在一台開啟，其餘關閉</b>——各裝置的去重紀錄互相看不到，兩台都開就會收到兩則相同訊號。此開關優先於下方的分頁主機設定。</div>
+            <div class="setting-desc"><b>無人值守主機（2026-10-19）</b>：閒置自動停發預設已改為關閉；本裝置是主機時會持有瀏覽器保活鎖並保持螢幕喚醒。另外請在 Chrome「設定 → 效能 → 記憶體節省」把本站加入「永遠保持啟用」、不要把視窗最小化（放在旁邊或另一個桌面即可）、作業系統電源設定關閉自動睡眠。只有主機會建單與發送 Telegram 通知。<b>多台裝置（手機／電腦）同時開啟時，請只在一台開啟，其餘關閉</b>——各裝置的去重紀錄互相看不到，兩台都開就會收到兩則相同訊號。此開關優先於下方的分頁主機設定。</div>
           </div>
           <label class="toggle-wrap">
             <input type="checkbox" id="s-master-toggle" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
@@ -864,13 +864,24 @@
         <div class="setting-row" style="margin-top:6px">
           <div>
             <div class="setting-name">😴 閒置自動停發</div>
-            <div class="setting-desc">超過設定時數無操作即自動停止建單與發送，避免在別台電腦忘記關的分頁持續發重複訊號。回到該分頁點一下即立即恢復。設為 0 表示不自動停止（無人值守的專用機器適用）</div>
+            <div class="setting-desc">預設 0（關閉）。<b>當主機的電腦請保持 0</b>：設了小時數，沒人碰滑鼠鍵盤超過該時數就會停止建單、停發訊號並停送雲端心跳（別台裝置 10 分鐘後接手）——這就是「一段時間沒看就跳掉」。跨裝置重複訊號已由雲端單一主機仲裁處理。設為 0 表示不自動停止（無人值守的專用機器適用）</div>
           </div>
           <div style="display:flex;align-items:center;gap:6px">
             <input type="number" id="s-idle-stop" class="setting-input" min="0" max="72" step="1"
               style="width:70px;text-align:center" onchange="try{saveAllSettings()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
             <span style="color:var(--text3);font-size:0.82rem">小時</span>
           </div>
+        </div>
+
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">💡 主機保持喚醒</div>
+            <div class="setting-desc">本裝置為主機時：持有瀏覽器 Web Lock（Chrome 記憶體節省不會釋放此分頁）並申請螢幕喚醒鎖（頁面可見時螢幕不休眠；切回前景自動重新申請）。筆電請同時接電源。</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-keep-awake" onchange="try{saveAllSettings()}catch(e){};try{startMasterKeepAlive()}catch(e){};try{renderSignalMasterStatus()}catch(e){}" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
         </div>
 
         <!-- 資料源即時性 -->
@@ -1083,8 +1094,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260821r"></script>
-  <script src="js/api.js?v=20260821r"></script>
-  <script src="js/app.js?v=20260821r"></script>
+  <script src="js/indicators.js?v=20260821s"></script>
+  <script src="js/api.js?v=20260821s"></script>
+  <script src="js/app.js?v=20260821s"></script>
 </body>
 </html>

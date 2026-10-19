@@ -127,6 +127,8 @@ function _bootErrHook() {
     const bye = () => { try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'unload', t: Date.now() })); } catch(_e) {} };
     window.addEventListener('pagehide', bye);
     window.addEventListener('beforeunload', bye);
+    document.addEventListener('freeze', bye);   // 背景分頁被凍結／釋放前會收到 freeze，不算卡死
+    if (document.wasDiscarded) log('釋放線索', '上次分頁是被瀏覽器「記憶體節省」釋放後重新載入的（不是程式崩潰）。主機電腦請把本站加入 Chrome 設定→效能→「永遠保持啟用」，並避免最小化視窗。');
   } catch(_e) {}
   // ── 長任務記錄：主執行緒被單一工作占住 ≥300ms 就記下當時步驟；≥2 秒上看板 ──
   try {
@@ -193,7 +195,9 @@ let SAFE_MODE = /[?&]safe=1/.test(location.search);
 let AUTO_SAFE = false;
 try {
   const _prevTrace = JSON.parse(localStorage.getItem('csp_boot_trace') || '[]');
-  if (_prevTrace.length && !_prevTrace.some(x => String(x).indexOf('done') === 0)) {
+  /* 瀏覽器「記憶體節省」把背景分頁釋放（document.wasDiscarded）不是我們的程式卡住——
+     不進安全模式，否則主機每被釋放一次就以安全模式醒來（資訊卡與背景模組停一輪）。 */
+  if (_prevTrace.length && !_prevTrace.some(x => String(x).indexOf('done') === 0) && !document.wasDiscarded) {
     AUTO_SAFE = true; SAFE_MODE = true;
     localStorage.setItem('csp_boot_trace_prev', JSON.stringify(_prevTrace));   // 留存上次卡住的位置供診斷
   }
@@ -304,6 +308,7 @@ async function init() {
 
   hideLoading();
   try { startHealthMonitor(); } catch(_e) {}
+  try { startMasterKeepAlive(); } catch(_e) {}
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
   _bootMark('渲染');
@@ -588,7 +593,7 @@ async function _runRefreshTick(secs) {
        切開之後每步之間瀏覽器都能喘一口氣（繪製、GC、輸入），同樣的總工作量
        就不再是同一塊巨石。 */
     const _pt = async (name, fn) => {
-      await new Promise(r => setTimeout(r, 0));
+      await _yieldMain();
       _stepMark('掃描後段 ' + name);
       const t = performance.now();
       try { fn(); } catch(e) { console.warn('[post-scan ' + name + ']', e); }
@@ -677,6 +682,14 @@ async function _runRefreshTick(secs) {
   }
 }
 
+/* 讓出主執行緒（2026-10-19）：原本用 setTimeout(0)。Chrome 對背景分頁有「密集節流」——分頁在背景
+   5 分鐘後，計時器鏈最多每分鐘跑一次；掃描後段十幾個 setTimeout(0) 讓步會讓一輪刷新拖到十幾分鐘，
+   主機放在背景就等於停擺。MessageChannel 的訊息不受計時器節流，前景行為相同。 */
+const _yieldCh = (typeof MessageChannel !== 'undefined') ? new MessageChannel() : null;
+function _yieldMain() {
+  if (!_yieldCh) return new Promise(r => setTimeout(r, 0));
+  return new Promise(r => { const h = () => { _yieldCh.port1.removeEventListener('message', h); r(); }; _yieldCh.port1.addEventListener('message', h); _yieldCh.port1.start(); _yieldCh.port2.postMessage(0); });
+}
 function updateCountdown() {
   const el = document.getElementById('refresh-countdown');
   if (el) el.textContent = state.countdown + '秒';
@@ -719,12 +732,13 @@ function _healthSnapshot() {
   const now = Date.now();
   const interval = (state.settings && state.settings.refreshInterval) || 60;
   const sinceDone = _lastRefreshDone ? now - _lastRefreshDone : (performance.now());
-  return { heapMB, uptimeMin: Math.round(performance.now() / 60000), sinceDoneMin: +(sinceDone / 60000).toFixed(1), scanning: !!state.scanning, scanningMin: state.scanning ? +((now - _refreshStartedAt) / 60000).toFixed(1) : 0, lsKB: _lsUsageKB(), interval, ticks: _refreshTickN };
+  return { heapMB, uptimeMin: Math.round(performance.now() / 60000), sinceDoneMin: +(sinceDone / 60000).toFixed(1), scanning: !!state.scanning, scanningMin: state.scanning ? +((now - _refreshStartedAt) / 60000).toFixed(1) : 0, lsKB: _lsUsageKB(), interval, ticks: _refreshTickN, hidden: !!document.hidden };
 }
 /* 決策：回傳 { reason, urgent } 或 null。urgent＝立刻重整（安靜時刻）；非 urgent＝等頁面在背景時 */
 function _healthDecide(h, cfg = HEALTH_CFG) {
   if (h.heapMB != null && h.heapMB > cfg.heapMB) return { reason: `記憶體 ${h.heapMB}MB 超過 ${cfg.heapMB}MB`, urgent: true };
-  const stallMin = Math.max(cfg.stallMin, 5 * h.interval / 60);
+  // 背景分頁被 Chrome 節流（計時器每分鐘一次），一輪刷新本來就會變慢：門檻放寬三倍，不把節流當停擺
+  const stallMin = Math.max(cfg.stallMin, 5 * h.interval / 60) * (h.hidden ? 3 : 1);
   if (h.sinceDoneMin > stallMin && h.uptimeMin > stallMin) return { reason: `自動刷新停擺 ${Math.round(h.sinceDoneMin)} 分鐘`, urgent: true };
   if (h.uptimeMin > cfg.uptimeHardH * 60) return { reason: `已連續運行 ${Math.round(h.uptimeMin / 60)} 小時（預防性重整）`, urgent: true };
   if (h.uptimeMin > cfg.uptimeSoftH * 60) return { reason: `已連續運行 ${Math.round(h.uptimeMin / 60)} 小時（預防性重整）`, urgent: false };
@@ -752,6 +766,31 @@ function _healthTick() {
       if (document.hidden) _selfHealReload(d.reason, h);
       else if (!_healthReloadArmed) { _healthReloadArmed = true; try { showToast(`⚕️ ${d.reason}：頁面切到背景時會自動重整`, 'info'); } catch(_e) {} }
     }
+  } catch(_e) {}
+}
+/* ── 主機保持喚醒（2026-10-19）─────────────────────────────────────────────
+   ① Web Lock：持有一把共享鎖。Chrome 的主動分頁釋放（記憶體節省）不會釋放持有 Web Lock 的分頁。
+   ② Screen Wake Lock：頁面可見時防止螢幕休眠（螢幕一關很多電腦接著整機睡眠、網路斷線）；
+      切回前景自動重新申請。設定頁可關。這兩項都只在本裝置是訊號主機時啟用。 */
+let _keepAlive = { lock: false, wake: false, why: '' };
+async function startMasterKeepAlive() {
+  try {
+    const s = loadSettings();
+    if (s.signalMaster === false || s.keepAwake === false) { _keepAlive = { lock: false, wake: false, why: s.signalMaster === false ? '非主機' : '設定關閉' }; return; }
+    if (!_keepAlive.lock && navigator.locks && navigator.locks.request) {
+      navigator.locks.request('csp-master-keepalive', { mode: 'shared' }, () => new Promise(() => {})).catch(() => {});
+      _keepAlive.lock = true;
+    }
+    const acquire = async () => {
+      try {
+        if (document.hidden || !navigator.wakeLock) return;
+        const wl = await navigator.wakeLock.request('screen');
+        _keepAlive.wake = true; _keepAlive.why = '';
+        wl.addEventListener('release', () => { _keepAlive.wake = false; });
+      } catch(e) { _keepAlive.wake = false; _keepAlive.why = String(e && e.message || e).slice(0, 60); }
+    };
+    await acquire();
+    if (!_keepAlive._bound) { _keepAlive._bound = true; document.addEventListener('visibilitychange', () => { if (!document.hidden) acquire(); }); }
   } catch(_e) {}
 }
 function startHealthMonitor() {
@@ -13420,7 +13459,10 @@ function _rerenderPositionsAfter(promises) {
    超過設定時數未互動即停止建單與發送；使用者一回到該分頁（切回、點擊、
    按鍵）立即自動恢復，不需任何手動操作。
    設定 idleStopHours=0 可關閉此保護（供長期無人值守的專用機器使用）。 */
-const IDLE_STOP_DEFAULT_H = 6;
+/* 2026-10-19 使用者實案：「當主機的電腦一段時間沒看就跳掉」——根因就是這個保護：預設 6 小時沒碰滑鼠鍵盤，
+   主機就停止建單、停發訊號、停送雲端心跳（10 分鐘後別台裝置自動接手）。無人值守的主機本來就不會有人操作。
+   預設改為 0（關閉）；跨裝置重複訊號由雲端仲裁（單一主機心跳）處理，不再靠「有沒有人在動滑鼠」。 */
+const IDLE_STOP_DEFAULT_H = 0;
 let _lastInteractAt = Date.now();
 function _markInteract() { _lastInteractAt = Date.now(); }
 try {
@@ -13491,6 +13533,15 @@ function isSignalMaster() {
 }
 /* 設定頁狀態列：顯示目前主機、開啟（宣告）時間，以及本分頁是否為主機 */
 function renderSignalMasterStatus() {
+  _renderSignalMasterStatusCore();
+  try {
+    const el = document.getElementById('signal-master-status'); if (!el) return;
+    const idle = deviceIdleState();
+    const ka = `${_keepAlive.lock ? '🔒 已持有保活鎖（Chrome 不會釋放此分頁）' : '鎖未持有'}；${_keepAlive.wake ? '💡 螢幕保持喚醒中' : '螢幕喚醒未啟用' + (_keepAlive.why ? `（${_keepAlive.why}）` : '')}`;
+    el.insertAdjacentHTML('beforeend', `<br><span style="color:var(--text3);font-size:0.78rem">無人值守：閒置停發 ${idle.hours > 0 ? idle.hours + ' 小時（主機建議設 0）' : '已關閉 ✓'}；${ka}；運行 ${Math.round(performance.now() / 60000)} 分鐘${document.wasDiscarded ? '；⚠️ 本次是瀏覽器釋放後重載' : ''}</span>`);
+  } catch(_e) {}
+}
+function _renderSignalMasterStatusCore() {
   const el = document.getElementById('signal-master-status');
   if (!el) return;
   // 本裝置開關關閉時，其餘狀態一律無意義——直接標示不發送
@@ -14562,7 +14613,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821r';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821s';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15559,7 +15610,7 @@ async function recordSignalsFromScan(data) {
     /* 2026-09-06：每 3 個候選讓出一次主執行緒（macrotask）。迴圈裡的 await 只在
        真的打網路時才會讓瀏覽器喘氣，快取命中時整輪掃描是一塊同步巨石——
        軟門上線後進入重運算段的候選變多，弱機器就出現「倒數到 58 秒卡住」。 */
-    if (_cand % 3 === 0) await new Promise(r => setTimeout(r, 0));
+    if (_cand % 3 === 0) await _yieldMain();
     _stepMark('掃描候選 ' + coin.symbol);
     /* 2026-09-18：每輪最多建 MAIN_ROUND_CAP 筆。候選已依機會品質排序，迴圈先到先得＝
        只讓排名最前、且通過所有硬條件的候選建單，其餘留到下一輪（機會還在就還會建）。 */
@@ -22281,6 +22332,7 @@ function renderLabPage() {
       <h1 class="page-title">🧪 AI 機會實驗室</h1>
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
+    ${_perfDiagPanel()}
     ${_btCalibPanel()}
     ${buildPairLabHtml()}
     ${buildForecastHtml()}
@@ -25502,6 +25554,79 @@ function btProbCalib() {
   } catch(_e) {}
   _btCalibCache = out; _btCalibTs = now; return out;
 }
+/* ── 成效診斷（2026-10-19）：從實倉紀錄自動找出「成效不好的原因」────────────────
+   拿已完結的一般單與快速單，按規則版本（2026-10-06 之前＝舊規則：含回踩限價、1.5R 出場、無閘門）、
+   進場方式、預測勝率分層、BTC 日線方向、掛單命運分組，列出勝率／期望／回撤，並把每一組
+   「拖累整體」的事實寫成可讀的發現。這是給使用者看「為什麼帳面不好」的，不是再一層模型。 */
+const RULE_CUTOVER_TS = Date.UTC(2026, 9, 6);   // 2026-10-06：回踩停用、1R 出場、閘門齊備
+function _grp(rows) {
+  const n = rows.length; if (!n) return { n: 0, wr: null, avg: null, dd: null, net: null };
+  const w = rows.filter(t => parseFloat(t.pnlR) > 0).length; const sum = rows.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0);
+  let eq = 0, pk = 0, dd = 0; for (const t of [...rows].sort((a, b) => (a.exitTime || a.timestamp || 0) - (b.exitTime || b.timestamp || 0))) { eq += parseFloat(t.pnlR) || 0; pk = Math.max(pk, eq); dd = Math.max(dd, pk - eq); }
+  return { n, wr: +(w / n * 100).toFixed(0), avg: +(sum / n).toFixed(2), dd: +dd.toFixed(1), net: +sum.toFixed(1) };
+}
+function perfDiagnose() {
+  const out = { main: [], scalp: [], findings: [], nMain: 0, nScalp: 0, pending: {} };
+  try {
+    const all = (typeof learnSamples === 'function' ? learnSamples() : loadTradeLog()).filter(t => t && t.tradeType !== 'range');
+    const closed = all.filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)));
+    out.nMain = closed.length;
+    const row = (label, f) => { const g = _grp(closed.filter(f)); if (g.n) out.main.push({ label, ...g }); return g; };
+    const tot = row('全部一般單', () => true);
+    const oldR = row('舊規則（10/06 前：含回踩、1.5R、無閘門）', t => (t.timestamp || 0) < RULE_CUTOVER_TS);
+    const newR = row('新規則（10/06 起）', t => (t.timestamp || 0) >= RULE_CUTOVER_TS);
+    const lim = row('回踩限價單', t => t.entryMode !== 'stop');
+    const stp = row('突破停損單', t => t.entryMode === 'stop');
+    const h1 = row('　其中 1H 突破', t => t.entryTag === 'h1break');
+    const pHi = row('預測勝率 ≥65%', t => parseFloat(t.btProb) >= 0.65);
+    const pLo = row('預測勝率 <65%', t => isFinite(parseFloat(t.btProb)) && parseFloat(t.btProb) < 0.65);
+    const bAl = row('順 BTC 日線', t => t.btcD1 && ((t.direction === 'long') === (t.btcD1 === 'bull')) && t.btcD1 !== 'neutral');
+    const bAg = row('逆 BTC 日線', t => t.btcD1 && t.btcD1 !== 'neutral' && ((t.direction === 'long') !== (t.btcD1 === 'bull')));
+    const soft = row('倉位係數 <1（軟門縮倉）', t => isFinite(parseFloat(t.softMult)) && parseFloat(t.softMult) < 1);
+    // 掛單命運
+    const pendAll = all.filter(t => ['closed', 'cancelled', 'expired'].includes(t.status) && (t.timestamp || 0) >= RULE_CUTOVER_TS);
+    const fills = pendAll.filter(t => t.status === 'closed').length, canc = pendAll.filter(t => t.status !== 'closed').length;
+    out.pending = { n: pendAll.length, fills, canc, fillPct: pendAll.length ? Math.round(fills / pendAll.length * 100) : null };
+    // 發現
+    if (tot.n >= 10 && oldR.n && newR.n && (newR.avg - oldR.avg) > 0.1) out.findings.push(`整體期望 ${tot.avg}R 被舊規則樣本拖累：舊規則 ${oldR.n} 筆 ${oldR.wr}%／${oldR.avg}R，新規則 ${newR.n} 筆 ${newR.wr}%／${newR.avg}R。看成效請只看新規則那一段。`);
+    if (lim.n >= 5 && (lim.avg < 0.05)) out.findings.push(`回踩限價單 ${lim.n} 筆勝率 ${lim.wr}%、期望 ${lim.avg}R（回撤 ${lim.dd}R）——已於 10/06 停用，這些是歷史包袱。`);
+    if (bAg.n >= 5 && bAl.n >= 5 && bAg.avg < bAl.avg - 0.1) out.findings.push(`逆 BTC 日線 ${bAg.n} 筆 ${bAg.wr}%／${bAg.avg}R vs 順向 ${bAl.n} 筆 ${bAl.wr}%／${bAl.avg}R——逆向單現已硬擋。`);
+    if (pLo.n >= 5 && pHi.n >= 5 && pLo.avg < pHi.avg - 0.1) out.findings.push(`預測勝率 <65% 的單 ${pLo.n} 筆 ${pLo.wr}%／${pLo.avg}R vs ≥65% ${pHi.n} 筆 ${pHi.wr}%／${pHi.avg}R——高勝率模式只做後者。`);
+    if (pHi.n >= 20 && pHi.wr < 55) out.findings.push(`⚠️ 預測 ≥65% 的單實倉只有 ${pHi.wr}%（${pHi.n} 筆）：模型在這段行情失準，校準偏移會自動下修門檻；若持續，應以 backtest/bt3.mjs 用近期資料重訓係數。`);
+    if (out.pending.n >= 10 && out.pending.fillPct != null && out.pending.fillPct < 40) out.findings.push(`新規則掛單只有 ${out.pending.fillPct}% 成交（${canc} 筆取消／逾時）：突破單等不到突破是正常的，但若多數是「飛越取消」代表觸發位掛太遠。`);
+    if (newR.n >= 20 && newR.dd > 8) out.findings.push(`新規則段最大回撤 ${newR.dd}R（${newR.n} 筆）：高於回測的 9～12R 比例時，先看同向持倉是否集中在同一波。`);
+    if (newR.n && newR.n < 20) out.findings.push(`新規則樣本只有 ${newR.n} 筆，勝率還沒有統計意義（±20 個百分點都正常）；至少 30 筆再下結論。`);
+    // 快速單
+    const sl = (typeof loadScalpLog === 'function' ? loadScalpLog() : []).filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)));
+    out.nScalp = sl.length;
+    const srow = (label, f) => { const g = _grp(sl.filter(f)); if (g.n) out.scalp.push({ label, ...g }); return g; };
+    const st = srow('全部快速單', () => true);
+    const sOld = srow('舊規則（10/02 前：動能模式、止損 0.7ATR）', t => (t.timestamp || 0) < Date.UTC(2026, 9, 2));
+    const sNew = srow('新規則（10/02 起）', t => (t.timestamp || 0) >= Date.UTC(2026, 9, 2));
+    const sMom = srow('動能／突破模式', t => t.mode === 'breakout' || t.mode === 'momentum');
+    const sRev = srow('回歸家族', t => t.family === 'revert');
+    const sTight = srow('止損距離 <1.25%', t => isFinite(parseFloat(t.slDistPct)) && parseFloat(t.slDistPct) < 1.25);
+    const sWide = srow('止損距離 ≥1.25%', t => isFinite(parseFloat(t.slDistPct)) && parseFloat(t.slDistPct) >= 1.25);
+    if (sMom.n >= 5 && sMom.avg < 0) out.findings.push(`快速單動能／突破模式 ${sMom.n} 筆 ${sMom.wr}%／${sMom.avg}R——回測全切片皆負，已停用。`);
+    if (sTight.n >= 5 && sWide.n >= 5 && sTight.avg < sWide.avg) out.findings.push(`快速單止損 <1.25% 的 ${sTight.n} 筆 ${sTight.avg}R vs ≥1.25% 的 ${sWide.n} 筆 ${sWide.avg}R：手續費吃掉太緊的止損，下限已提高到 1.25%。`);
+    if (st.n && sNew.n < 20) out.findings.push(`快速單新規則樣本 ${sNew.n} 筆，仍不足以評估；回測顯示 5 分鐘級只有回歸家族約打平，期待值本來就不高。`);
+  } catch(_e) {}
+  return out;
+}
+function _perfDiagPanel() {
+  try {
+    const d = perfDiagnose();
+    const tbl = rows => rows.length ? `<table style="font-size:0.76rem;border-collapse:collapse;margin-top:6px"><thead><tr style="color:var(--text3)"><th style="padding:3px 6px;text-align:left">分組</th><th style="padding:3px 6px">筆數</th><th style="padding:3px 6px">勝率</th><th style="padding:3px 6px">期望R</th><th style="padding:3px 6px">淨R</th><th style="padding:3px 6px">回撤R</th></tr></thead><tbody>${rows.map(r => `<tr><td style="padding:3px 6px">${r.label}</td><td style="padding:3px 6px;text-align:right">${r.n}</td><td style="padding:3px 6px;text-align:right;color:${r.wr >= 60 ? 'var(--bull)' : r.wr >= 45 ? '#f59e0b' : 'var(--bear)'}">${r.wr}%</td><td style="padding:3px 6px;text-align:right;color:${r.avg > 0 ? 'var(--bull)' : 'var(--bear)'}">${r.avg > 0 ? '+' : ''}${r.avg}</td><td style="padding:3px 6px;text-align:right">${r.net > 0 ? '+' : ''}${r.net}</td><td style="padding:3px 6px;text-align:right">${r.dd}</td></tr>`).join('')}</tbody></table>` : '<div style="color:var(--text3);font-size:0.78rem">尚無已完結樣本</div>';
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px">
+      <div style="font-size:0.85rem;font-weight:700;color:var(--text1);margin-bottom:6px">🩺 成效診斷（實倉紀錄：一般單 ${d.nMain} 筆、快速單 ${d.nScalp} 筆已完結）</div>
+      ${d.findings.length ? `<div style="font-size:0.78rem;line-height:1.6;color:var(--text2)">${d.findings.map(f => `<div>• ${f}</div>`).join('')}</div>` : '<div style="font-size:0.78rem;color:var(--text3)">樣本不足或沒有明顯拖累項。</div>'}
+      <div style="font-size:0.78rem;font-weight:600;margin-top:8px">一般單</div>${tbl(d.main)}
+      ${d.pending.n ? `<div style="font-size:0.74rem;color:var(--text3);margin-top:4px">新規則掛單：${d.pending.n} 筆中成交 ${d.pending.fills}（${d.pending.fillPct}%）、取消／逾時 ${d.pending.canc}</div>` : ''}
+      <div style="font-size:0.78rem;font-weight:600;margin-top:8px">快速單</div>${tbl(d.scalp)}
+      <div style="font-size:0.72rem;color:var(--text3);margin-top:6px">回撤以 R 計、依平倉時間排序；「舊規則」樣本已不代表現行系統，評估成效請看新規則那一列。</div>
+    </div>`;
+  } catch(_e) { return ''; }
+}
 function _btCalibPanel() {
   try {
     const c = btProbCalib(); const plan = mainExitPlan();
@@ -26986,6 +27111,8 @@ function populateSettingsPage() {
   if (mmSel) mmSel.value = s.mainMode === 'balanced' ? 'balanced' : 'high';
   const tmSel = document.getElementById('s-trail-mode');
   if (tmSel) tmSel.value = s.trailMode === 'r' ? 'r' : 'struct';
+  const kaTgl = document.getElementById('s-keep-awake');
+  if (kaTgl) kaTgl.checked = s.keepAwake !== false;
   try { renderPionexStatus(); } catch(_e) {}
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
@@ -27041,6 +27168,7 @@ function saveAllSettings() {
     mainPriceSrc:    (() => { const v = document.getElementById('s-main-price-src')?.value; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; })(),
     mainMode:        (() => { const v = document.getElementById('s-main-mode')?.value; return v === 'balanced' ? 'balanced' : 'high'; })(),
     trailMode:       (() => { const v = document.getElementById('s-trail-mode')?.value; return v === 'r' ? 'r' : 'struct'; })(),
+    keepAwake:       document.getElementById('s-keep-awake')?.checked ?? true,
     // 學習凍結：勾選 → 沿用尚未到期的舊值，否則從現在起 28 天；取消 → 0（立即解凍）
     learnFreezeUntil: (() => {
       const el = document.getElementById('s-learn-freeze');
@@ -33162,7 +33290,7 @@ async function btRunSymbol(symbol, params) {
   let wickCache = null, wickCacheAt = -99;
   for (let i = BT_CFG.warmup; i < n; i++) {
     if (_btState.cancel) break;
-    if (i % 200 === 0) await new Promise(r => setTimeout(r, 0));
+    if (i % 200 === 0) await _yieldMain();
     const price = closes[i], barT = +k15[i][6];
     // ① 成交上一棒的訊號（下一棒開盤價=本棒開盤）
     while (pending.length) {

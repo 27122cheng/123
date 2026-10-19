@@ -70,6 +70,44 @@ const kc = await p.evaluate(() => {
 if (kc.max > 700 || kc.after700 > 601) throw new Error('K 線快取未受控：' + JSON.stringify(kc));
 console.log(`✓ K 線快取：700 筆寫入後維持 ${kc.after700} 筆（上限 600＋1）`);
 
+// ══ ⑥ 無人值守：閒置停發預設關閉 → 7 小時沒操作主機仍在發；設 2 小時才停 ══
+const idle = await p.evaluate(() => {
+  const s0 = loadSettings(); delete s0.idleStopHours; s0.signalMaster = true; s0.cloudSync = false; saveSettings(s0);
+  _lastInteractAt = Date.now() - 7 * 3600e3;
+  const def = { hours: deviceIdleState().hours, idle: deviceIdleState().idle, master: isSignalMaster() };
+  const s1 = loadSettings(); s1.idleStopHours = 2; saveSettings(s1);
+  const two = { idle: deviceIdleState().idle, master: isSignalMaster() };
+  const s2 = loadSettings(); s2.idleStopHours = 0; saveSettings(s2); _lastInteractAt = Date.now();
+  return { def, two, keep: typeof _keepAlive, hasLock: !!(navigator.locks && navigator.locks.request) };
+});
+if (idle.def.hours !== 0 || idle.def.idle || !idle.def.master || !idle.two.idle || idle.two.master) throw new Error('閒置停發預設應關閉：' + JSON.stringify(idle));
+console.log(`✓ 無人值守：預設閒置停發 ${idle.def.hours}h → 7 小時沒操作仍是主機；設 2h 才停發`);
+
+// ══ ⑦ 讓步不走計時器（MessageChannel）；背景分頁停擺門檻放寬三倍 ══
+const yl = await p.evaluate(async () => {
+  const t0 = performance.now(); for (let i = 0; i < 50; i++) await _yieldMain(); const ms = performance.now() - t0;
+  const base = { heapMB: 200, uptimeMin: 120, sinceDoneMin: 12, scanning: false, scanningMin: 0, lsKB: 500, interval: 60, ticks: 100 };
+  return { ms: +ms.toFixed(1), fg: _healthDecide({ ...base, hidden: false }), bg: _healthDecide({ ...base, hidden: true }), bg35: _healthDecide({ ...base, hidden: true, sinceDoneMin: 35 }) };
+});
+if (yl.ms > 500 || !yl.fg || yl.bg !== null || !yl.bg35) throw new Error('讓步／背景停擺規則錯誤：' + JSON.stringify(yl));
+console.log(`✓ 讓步 50 次 ${yl.ms}ms；前景停擺 12 分 → 重整，背景 12 分 → 不動、35 分 → 重整`);
+
+// ══ ⑧ 成效診斷：舊規則／回踩／逆 BTC 日線拖累會被點名；面板可渲染 ══
+const diag = await p.evaluate(() => {
+  const now = Date.now(); const old = Date.UTC(2026, 9, 1), nw = Date.UTC(2026, 9, 10);
+  const mk = (i, ts, mode, pnl, extra) => ({ id: 'd' + i, symbol: 'DG/USDT', direction: 'long', status: 'closed', entry: 100, sl: 98, tp1: 102, tp2: 108, timestamp: ts + i * 60e3, exitTime: ts + i * 60e3 + 3600e3, entryMode: mode, pnlR: pnl, outcome: pnl > 0 ? 'tp1' : 'sl', conf: 70, ...extra });
+  const rows = [];
+  for (let i = 0; i < 20; i++) rows.push(mk(i, old, 'limit', i % 3 === 0 ? 1 : -1, {}));                                   // 舊規則回踩：33%
+  for (let i = 20; i < 45; i++) rows.push(mk(i, nw, 'stop', i % 4 === 0 ? -1 : 0.8, { btProb: 0.7, btcD1: 'bull' }));         // 新規則順向：75%
+  for (let i = 45; i < 52; i++) rows.push(mk(i, nw, 'stop', i % 2 ? -1 : 0.5, { btProb: 0.5, btcD1: 'bear' }));              // 逆 BTC 日線
+  localStorage.setItem(TRADE_LOG_KEY, JSON.stringify(rows)); _tlogRaw = null; _tlogArr = null; invalidateLearnCache?.();
+  const d = perfDiagnose(); const html = _perfDiagPanel();
+  localStorage.setItem(TRADE_LOG_KEY, '[]'); _tlogRaw = null; _tlogArr = null; invalidateLearnCache?.();
+  return { nMain: d.nMain, labels: d.main.map(r => r.label), findings: d.findings, html: html.includes('成效診斷') && html.includes('新規則') };
+});
+if (diag.nMain !== 52 || !diag.findings.some(f => f.includes('舊規則')) || !diag.findings.some(f => f.includes('回踩限價單')) || !diag.findings.some(f => f.includes('逆 BTC 日線')) || !diag.html) throw new Error('成效診斷未點名拖累項：' + JSON.stringify(diag));
+console.log(`✓ 成效診斷：52 筆 → 分組 ${diag.labels.length} 列；發現 ${diag.findings.length} 項（舊規則／回踩／逆 BTC 日線）`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');
