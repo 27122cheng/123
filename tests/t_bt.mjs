@@ -217,6 +217,31 @@ if (cal.smallN !== 10 || cal.smallOff !== 0 || cal.p0 !== cal.raw) throw new Err
 if (cal.bigN !== 50 || !(cal.bigOff < -0.3) || !(cal.p1 < cal.raw - 0.05) || cal.realWr !== 40 || !cal.panel) throw new Error('50 筆（實倉 40% vs 預測 70%）應下修：' + JSON.stringify(cal));
 console.log(`✓ 校準學習：10 筆不校準（p=${cal.p0}）；50 筆預測 ${cal.meanP}% vs 實倉 ${cal.realWr}% → 偏移 ${cal.bigOff}，同一幣預測 ${cal.raw}→${cal.p1}；實驗室面板有校準區塊`);
 
+// ══ ⑨ 移動止損「值得移」門檻：<0.1R 不動；0.1～0.25R 要隔 15 分鐘；≥0.25R 立刻；未平倉量異動不推播 ══
+const mv = await p.evaluate(async () => {
+  isSignalMaster = () => true; const sent = []; sendSLChangeNotification = (t, a, b2, why) => { sent.push(why); };
+  { const st = loadSettings(); st.trailMode = 'r'; saveSettings(st); }
+  const now = Date.now();
+  const mk = (id, sym) => ({ id, symbol: sym, direction: 'long', status: 'open', entry: 100, baseSl: 98, sl: 98, tp1: 102, tp2: 108, timestamp: now - 3e5, entryTime: now - 3e5, telegramSent: true, conf: 70, entryMode: 'stop', tp1FracPlan: 0.5, tp1LockRPlan: 0.3, trailGiveRPlan: 0.5 });
+  localStorage.setItem(TRADE_LOG_KEY, JSON.stringify([mk('a', 'MA/USDT'), mk('b', 'MB/USDT'), mk('c', 'MC/USDT')])); _tlogRaw = null; _tlogArr = null;
+  const px = (a, b2, c) => [{ symbol: 'MA/USDT', price: String(a), score: 70, trend: '看漲' }, { symbol: 'MB/USDT', price: String(b2), score: 70, trend: '看漲' }, { symbol: 'MC/USDT', price: String(c), score: 70, trend: '看漲' }];
+  updateOpenTrades(px(102.1, 102.1, 102.1));                      // 止盈一 → 鎖 +0.3R＝100.6（事件型，照移）
+  updateOpenTrades(px(102.1, 102.1, 102.1));                      // 峰值 102.1 → R 追蹤 101.1（+0.5R，立刻移）
+  const sl0 = loadTradeLog().map(t => t.sl);
+  // a：峰值 102.2 → 101.2（+0.05R）→ 不動；b：峰值 102.5 → 101.5（+0.2R）但剛移過 → 不動；c：峰值 102.9 → 101.9（+0.4R）→ 立刻
+  updateOpenTrades(px(102.2, 102.5, 102.9));
+  const sl1 = loadTradeLog().map(t => t.sl);
+  // b 距上次移動 16 分鐘 → +0.2R 可以移
+  const log = loadTradeLog(); log[1].slMovedAt = Date.now() - 16 * 60e3; saveTradeLog(log);
+  updateOpenTrades(px(102.2, 102.5, 102.9));
+  const sl2 = loadTradeLog().map(t => t.sl);
+  { const st = loadSettings(); st.trailMode = 'struct'; saveSettings(st); }
+  return { sl0, sl1, sl2, oiTg: OI_WATCH_TELEGRAM, notes: sent.length };
+});
+const near = (a, b2) => Math.abs(a - b2) < 1e-6;
+if (!near(mv.sl0[0], 101.1) || !near(mv.sl1[0], 101.1) || !near(mv.sl1[1], 101.1) || !near(mv.sl1[2], 101.9) || !near(mv.sl2[1], 101.5) || mv.oiTg !== false) throw new Error('移動止損門檻錯誤：' + JSON.stringify(mv));
+console.log(`✓ 移動止損門檻：+0.05R 不動（${mv.sl1[0]}）、+0.2R 剛移過不動（${mv.sl1[1]}）→ 16 分鐘後移到 ${mv.sl2[1]}、+0.4R 立刻移到 ${mv.sl1[2]}；未平倉量異動不推播`);
+
 await p.evaluate(() => { const s = loadSettings(); s.mainPriceSrc = 'okx'; s.mainMode = 'high'; s.trailMode = 'struct'; saveSettings(s); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_bt');

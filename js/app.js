@@ -14624,7 +14624,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821t';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821u';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -17558,9 +17558,9 @@ function updateOpenTrades(data) {
           }
         } catch(_e) {}
       }
-      if (isLong ? _trailSL > trade.sl : _trailSL < trade.sl) {
+      if ((isLong ? _trailSL > trade.sl : _trailSL < trade.sl) && _slMoveWorth(trade, _trailSL, baseRisk, isLong)) {
         const _oldSL = trade.sl;
-        trade.sl = _trailSL; changed = true;
+        trade.sl = _trailSL; trade.slMovedAt = Date.now(); changed = true;
         // 止損調整 → 立即通知（移動停利往獲利方向推進，實盤需同步改單）
         sendSLChangeNotification(trade, _oldSL, _trailSL, `移動停利推進（峰值 ${_peakR.toFixed(2)}R，鎖住 ${(((isLong ? _trailSL - entry : entry - _trailSL)) / baseRisk).toFixed(2)}R${_structNote}）`);
       }
@@ -18136,6 +18136,23 @@ function _markCancelTgSent(symbol, direction) {
    對使用者而言那是同一件事的三個中間狀態——真正要知道的只有「最後止損
    在哪」。這裡把短時間內同一筆單的多次變動合併成一則：起點取第一次的
    原止損、終點取最後一次的新止損、原因逐條列出。 */
+/* ── 移動止損的「值得移」門檻（2026-10-22）────────────────────────────────
+   使用者：止損一兩分鐘就調一次、每次只動一點點，訊息太多。原因：結構錨定用了 EMA20 這種每根
+   K 都在動的動態位，每輪掃描都往上挪一點就通知一次。規則：
+     · 推進幅度 ≥ 0.25R → 立刻移（真正有意義的推進）
+     · 0.1～0.25R → 距上次實際移動 ≥ 15 分鐘才移（小步累積到一定程度再一次移）
+     · < 0.1R → 不移
+   止盈一鎖利、浮盈縮損這類事件型移動不受此限（它們本來就只發生一次）。快速單同規則、時間 10 分鐘。 */
+const SL_MOVE_CFG = { bigR: 0.25, smallR: 0.10, waitMin: 15, scalpWaitMin: 10 };
+function _slMoveWorth(trade, newSL, baseRisk, isLong, waitMin = SL_MOVE_CFG.waitMin) {
+  const cur = parseFloat(trade.sl), nxt = parseFloat(newSL), br = Math.abs(baseRisk) || 1;
+  if (!isFinite(cur) || !isFinite(nxt)) return false;
+  const gainR = ((isLong ? nxt - cur : cur - nxt)) / br;
+  if (gainR < SL_MOVE_CFG.smallR) return false;
+  if (gainR >= SL_MOVE_CFG.bigR) return true;
+  const last = parseFloat(trade.slMovedAt) || parseFloat(trade.entryTime) || parseFloat(trade.timestamp) || 0;
+  return Date.now() - last >= waitMin * 60e3;
+}
 const SL_NOTIF_MERGE_MS = 2500;
 const _slNotifBuf = new Map();     // trade.id → { trade, oldSL, newSL, reasons[], timer }
 const _slMovedAt  = new Map();     // trade.id → 上次「實際移動止損」的時間（建議路徑用來避免重複打擾）
@@ -23218,6 +23235,7 @@ const LEARN_KEEP_FIELDS = [
   'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
   'entryLs', 'h4Adx', 'btcD1', 'btProb',     // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
   'tp1FracPlan', 'tp1LockRPlan', 'trailGiveRPlan',   // 突破單專用出場計畫（止盈一減倉比例／鎖利 R／追蹤回吐 R），封存剝掉＝重放算錯
+  'slMovedAt',                               // 上次實際移動止損的時間（移動止損「值得移」門檻用）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
   'convSplit', 'convOppStruct',              // 證據分歧度與結構級反向數（配對研究所要用它量期望值）
   'dirSource',                               // 方向由誰決定（score/conviction）——方向融合的驗證樣本
@@ -29641,7 +29659,7 @@ function updateScalpTrades(data) {
             else trail = t.sl;
           } catch(_e) {}
         }
-        if (isLong ? trail > t.sl : trail < t.sl) { t.sl = trail; changed = true; }
+        if ((isLong ? trail > t.sl : trail < t.sl) && _slMoveWorth(t, trail, baseRisk, isLong, SL_MOVE_CFG.scalpWaitMin)) { t.sl = trail; t.slMovedAt = Date.now(); changed = true; }
       }
       // ④ 止盈／止損判定
       if (!outcome) {
@@ -31935,6 +31953,7 @@ function _oiClassify(chgPct, priceChgPct, fr) {
   return { cls, trap, note };
 }
 
+const OI_WATCH_TELEGRAM = false;   // 未平倉量異動：只分析不推播（2026-10-22）
 async function oiWatchScan(data) {
   if (!isSignalMaster()) return;
   if (!Array.isArray(data) || !data.length) return;
@@ -32022,7 +32041,8 @@ async function oiWatchScan(data) {
         `⏰ ${new Date().toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`,
         `#${sym.toLowerCase()} #oi ${trap ? '#trap' : ''}`,
       ].filter(Boolean).join('\n');
-      sendTelegramMessage(s.tgToken, s.tgChatId, text);
+      // 2026-10-22 使用者定案：未平倉量異動只供分析（判讀進快取、分析標籤、訊號訊息的 OI 語境），不再單獨推播
+      if (OI_WATCH_TELEGRAM) sendTelegramMessage(s.tgToken, s.tgChatId, text);
       _oiTgAt[symbol] = now;
       _oiLastAlert[symbol] = { cls, at: now };
     } catch(_e) { _oiWatchCache[symbol] = { at: now, ok: false }; }
