@@ -113,7 +113,14 @@ function _bootErrHook() {
     const prev = JSON.parse(localStorage.getItem('csp_last_step') || 'null');
     if (prev && prev.n && prev.n !== 'unload' && prev.n !== 'idle') {
       const when = new Date(prev.t || 0).toLocaleString('zh-TW', { hour12: false });
-      log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}）——若當時畫面卡住，卡點就在這一步`);
+      let _extra = '';
+      try {
+        const sc = JSON.parse(localStorage.getItem('csp_slow_cands') || '[]').slice(0, 3);
+        if (sc.length) _extra += `　最慢候選：${sc.map(x => `${String(x.sym).replace('/USDT', '')} ${x.ms}ms@${x.sub}`).join('、')}`;
+        const lt = JSON.parse(localStorage.getItem('csp_longtask') || '[]').slice(0, 2);
+        if (lt.length) _extra += `　長任務：${lt.map(x => `${x.ms}ms@${x.step}`).join('、')}`;
+      } catch(_e) {}
+      log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}）${_extra}——若當時畫面卡住，卡點就在這一步`);
     }
   } catch(_e) {}
   // ── 上次載入卡在哪？（開頁軌跡沒走到 done → 本次自動安全模式，並把停住的位置顯示出來）──
@@ -536,7 +543,8 @@ function startRefreshCycle() {
    state.scanning 卡在 true，之後每一輪都「上次掃描還沒結束，跳過」——倒數歸零、資料不再更新、
    訊號停發，看起來就是頁面死了。改為 try／finally 必定歸零，另加「卡住看門狗」：scanning 超過
    max(5 分鐘, 3×間隔) 就強制歸零並釋放建單鎖與插針驗證旗標。 */
-let _refreshStartedAt = 0, _lastRefreshDone = 0, _refreshTickN = 0;
+let _refreshStartedAt = 0, _lastRefreshDone = 0, _refreshTickN = 0, _renderPendingHidden = false;
+try { document.addEventListener('visibilitychange', () => { if (!document.hidden && _renderPendingHidden) { _renderPendingHidden = false; try { applyFilters(); renderAll(); if (state.currentPage === 'positions') renderPositionsPage(); } catch(_e) {} } }); } catch(_e) {}
 async function _runRefreshTick(secs) {
   if (state.scanning) {
     const stuckMs = Date.now() - (_refreshStartedAt || Date.now());
@@ -567,9 +575,12 @@ async function _runRefreshTick(secs) {
     await _maybeFetchPionex();   // 一般單價格來源＝Pionex 時，先拿到報價再建單／監控
     refreshOkxPrices().catch(() => {});
     hideScanBar();
-    try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); }
+    /* 背景分頁不畫畫面（2026-10-22）：沒人在看時每輪重建幾千個 DOM 節點是純浪費，也是主機長時間運行
+       的記憶體與主執行緒負擔；切回前景時補畫一次。資料處理（建單、監控、通知）照常。 */
+    if (document.hidden) { _renderPendingHidden = true; }
+    else { try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); } }
     // 先渲染持倉頁面（使用更新前的資料），避免 updateOpenTrades 刪除後顯示空白
-    try { if (state.currentPage === 'positions') renderPositionsPage(); } catch(e) {}
+    try { if (!document.hidden && state.currentPage === 'positions') renderPositionsPage(); } catch(e) {}
     let _cancelled1 = new Set();
     const _pAlerts = withCreateLock("alerts", () => checkAndSendAlerts(data));
     try { _cancelled1 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[refresh] updateOpenTrades 錯誤:', e); }
@@ -14613,7 +14624,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821s';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821t';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15399,8 +15410,23 @@ function computeSqMonitorScore(trade, _sqCoin, _sqIsLong, _ctx) {
 const SCAN_PROF_KEY = 'csp_scan_profile';
 let _scanProf = null;
 function _profStart() { _scanProf = { t0: performance.now(), last: performance.now(), phases: {}, counts: {} }; }
+/* 2026-10-22 使用者截圖：主機在「掃描候選 BCH/USDT」之後沒有正常關閉（記憶體只有 45MB，不是記憶體問題，
+   是主執行緒在某個候選的處理中卡死或被瀏覽器判定無回應）。「掃描候選 X」這顆麵包屑太粗——一個候選裡
+   有門檻、建單結構、風控、SQ、終審、條件封鎖好幾段，不知道卡在哪一段。改為每個剖析階段都寫一次麵包屑
+   （掃描候選 X/階段），並記錄「最慢候選」（單一候選 >800ms）供下次開頁的凍結線索引用。 */
+let _candSym = '', _candT0 = 0, _candSub = '';
+function _candDone(sym, ms) {
+  try {
+    if (!(ms > 800)) return;
+    const arr = JSON.parse(localStorage.getItem('csp_slow_cands') || '[]');
+    arr.unshift({ t: Date.now(), sym, ms: Math.round(ms), sub: _candSub || '?' });
+    localStorage.setItem('csp_slow_cands', JSON.stringify(arr.slice(0, 10)));
+    console.warn(`[scan] 候選 ${sym} 處理 ${Math.round(ms)}ms（最後階段 ${_candSub || '?'}）`);
+  } catch(_e) {}
+}
 function _profMark(name) {
   if (!_scanProf) return;
+  if (_candSym) { _candSub = name; try { _stepMark('掃描候選 ' + _candSym + '/' + name); } catch(_e) {} }
   const now = performance.now();
   _scanProf.phases[name] = +((_scanProf.phases[name] || 0) + (now - _scanProf.last)).toFixed(1);
   _scanProf.counts[name] = (_scanProf.counts[name] || 0) + 1;
@@ -15611,7 +15637,11 @@ async function recordSignalsFromScan(data) {
        真的打網路時才會讓瀏覽器喘氣，快取命中時整輪掃描是一塊同步巨石——
        軟門上線後進入重運算段的候選變多，弱機器就出現「倒數到 58 秒卡住」。 */
     if (_cand % 3 === 0) await _yieldMain();
+    if (_candSym) _candDone(_candSym, performance.now() - _candT0);
+    _candSym = coin.symbol; _candT0 = performance.now(); _candSub = '';
     _stepMark('掃描候選 ' + coin.symbol);
+    // 本輪牆鐘上限：候選迴圈超過 40 秒就把剩下的留到下輪（避免一輪拖成數分鐘的長任務鏈，被瀏覽器判定無回應）
+    if (_scanProf && performance.now() - _scanProf.t0 > 40000 && _no('本輪掃描逾時 40 秒，其餘候選下輪')) continue;
     /* 2026-09-18：每輪最多建 MAIN_ROUND_CAP 筆。候選已依機會品質排序，迴圈先到先得＝
        只讓排名最前、且通過所有硬條件的候選建單，其餘留到下一輪（機會還在就還會建）。 */
     if (_roundBuilt >= MAIN_ROUND_CAP && _no(`本輪建單上限 ${MAIN_ROUND_CAP} 筆（依機會排序，其餘下輪）`)) continue;
@@ -16783,6 +16813,7 @@ async function recordSignalsFromScan(data) {
     if (tlog.length > 500) tlog.splice(500);
     saveTradeLog(tlog);
   }
+  if (_candSym) { _candDone(_candSym, performance.now() - _candT0); _candSym = ''; }
   _profMark('掃描迴圈尾段');
   try { _profEnd({ coins: _cand, built: _roundBuilt }); } catch(_e) {}
   // 淘汰漏斗存檔：實驗室據此顯示「這輪掃了幾個候選、各被什麼擋掉」

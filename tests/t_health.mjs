@@ -108,6 +108,27 @@ const diag = await p.evaluate(() => {
 if (diag.nMain !== 52 || !diag.findings.some(f => f.includes('舊規則')) || !diag.findings.some(f => f.includes('回踩限價單')) || !diag.findings.some(f => f.includes('逆 BTC 日線')) || !diag.html) throw new Error('成效診斷未點名拖累項：' + JSON.stringify(diag));
 console.log(`✓ 成效診斷：52 筆 → 分組 ${diag.labels.length} 列；發現 ${diag.findings.length} 項（舊規則／回踩／逆 BTC 日線）`);
 
+// ══ ⑨ 候選階段麵包屑與最慢候選；背景分頁不畫畫面、切回前景補畫 ══
+const cand = await p.evaluate(async () => {
+  localStorage.removeItem('csp_slow_cands'); _scanProf = { t0: performance.now(), last: performance.now(), phases: {}, counts: {} };
+  _candSym = 'ZZ/USDT'; _candT0 = performance.now() - 1500; _profMark('SQ評分');
+  const crumb = JSON.parse(localStorage.getItem('csp_last_step') || '{}').n;
+  _candDone(_candSym, performance.now() - _candT0); _candSym = '';
+  const slow = JSON.parse(localStorage.getItem('csp_slow_cands') || '[]');
+  // 背景：renderAll 不該被呼叫；切回前景補畫一次
+  let renders = 0; const orig = renderAll; renderAll = () => { renders++; }; const origAF = applyFilters; applyFilters = () => {};
+  state.data = [{ symbol: 'BTC/USDT', price: '100', score: 60, trend: '看漲' }]; fetchMarketData = async () => ({ data: state.data, source: 'binance' }); state.scanning = false;
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+  await _runRefreshTick(60); const hiddenRenders = renders;
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+  document.dispatchEvent(new Event('visibilitychange')); const afterVisible = renders;
+  renderAll = orig; applyFilters = origAF; localStorage.removeItem('csp_slow_cands');
+  return { crumb, slow: slow[0], hiddenRenders, afterVisible };
+});
+if (cand.crumb !== '掃描候選 ZZ/USDT/SQ評分' || !cand.slow || cand.slow.sym !== 'ZZ/USDT' || cand.slow.sub !== 'SQ評分' || cand.slow.ms < 1400) throw new Error('候選階段麵包屑／最慢候選錯誤：' + JSON.stringify(cand));
+if (cand.hiddenRenders !== 0 || cand.afterVisible !== 1) throw new Error('背景不畫、前景補畫錯誤：' + JSON.stringify(cand));
+console.log(`✓ 候選麵包屑「${cand.crumb}」；最慢候選 ${cand.slow.sym} ${cand.slow.ms}ms@${cand.slow.sub}；背景刷新 renderAll ${cand.hiddenRenders} 次、切回前景補畫 ${cand.afterVisible} 次`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');
