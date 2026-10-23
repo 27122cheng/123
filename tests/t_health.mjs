@@ -192,6 +192,22 @@ const wh = await p.evaluate(async () => {
 if (!wh.a || !wh.b2 || !(wh.b2.n > wh.a.n) || !wh.hang.includes('卡死') || !wh.kill.includes('程序被結束')) throw new Error('工作執行緒心跳／最終判定錯誤：' + JSON.stringify(wh));
 console.log(`✓ 工作執行緒心跳：n ${wh.a.n}→${wh.b2.n}；最終判定：多活 5 分 → 「${wh.hang.slice(5, 40)}…」；同時停 → 「${wh.kill.slice(5, 40)}…」`);
 
+// ══ ⑮ 主機精簡模式：介面隱藏、狀態卡渲染、刷新迴圈不畫畫面；?host=0 可回完整介面 ══
+const hm = await p.evaluate(async () => {
+  const st = loadSettings(); st.hostMode = true; saveSettings(st);
+  startHostMode();
+  const on = hostModeOn(), cls = document.body.classList.contains('hostmode'), panel = !!document.getElementById('host-panel'), txt = document.getElementById('host-panel')?.textContent || '';
+  const appHidden = getComputedStyle(document.getElementById('app')).display === 'none';
+  let renders = 0; const orig = renderAll; renderAll = () => { renders++; }; const oAF = applyFilters; applyFilters = () => {};
+  state.data = [{ symbol: 'BTC/USDT', price: '100', score: 60, trend: '看漲' }]; fetchMarketData = async () => ({ data: state.data, source: 'binance' }); state.scanning = false;
+  await _runRefreshTick(60);
+  renderAll = orig; applyFilters = oAF;
+  st.hostMode = false; saveSettings(st); document.body.classList.remove('hostmode'); clearInterval(_hostPanelTimer); document.getElementById('host-panel')?.remove();
+  return { on, cls, panel, appHidden, renders, hasStatus: txt.includes('主機精簡模式') && txt.includes('運行') && txt.includes('複製診斷'), off: hostModeOn() };
+});
+if (!hm.on || !hm.cls || !hm.panel || !hm.appHidden || hm.renders !== 0 || !hm.hasStatus || hm.off) throw new Error('主機精簡模式錯誤：' + JSON.stringify(hm));
+console.log(`✓ 主機精簡模式：介面隱藏=${hm.appHidden}、狀態卡有內容、刷新迴圈 renderAll ${hm.renders} 次；關閉後恢復`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');

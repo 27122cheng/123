@@ -335,7 +335,7 @@ async function init() {
   applySettingsToUI();
   animateLoadingBar();
   _bootMark('設定');
-  if (!SAFE_MODE) registerSW();   // 後台通知 Service Worker
+  if (!SAFE_MODE && !hostModeOn()) registerSW();   // 後台通知 Service Worker（精簡模式不需要）
   _bootMark('SW');
   restoreReconcile();  // 剛還原備份 → 對帳並回報差額（見函式說明）
   fullDataResetV2();   // 一次性：依使用者要求刪除全部歷史紀錄（設定/幣種/備份保留）
@@ -388,11 +388,12 @@ async function init() {
   try { startHealthMonitor(); } catch(_e) {}
   try { startMasterKeepAlive(); } catch(_e) {}
   try { applyLiteMode(); } catch(_e) {}
+  try { startHostMode(); } catch(_e) {}
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
   _bootMark('渲染');
   // 資訊卡已於 init 前段與掃描並行載入（見上方），此處不再重複
-  try { if (!SAFE_MODE) liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連）
+  try { if (!SAFE_MODE && !hostModeOn()) liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連；精簡模式不開）
   try { if (!SAFE_MODE) extMacroTick(); } catch(e) {}    // 場外風險溫度：首次取得（失敗降級）
   // init 尾段逐步防護：任何一步失敗都不准拖垮後面的（事件綁定死掉＝整頁不能操作）
   const _step = (name, fn) => { try { fn(); } catch(e) { console.error(`[init:${name}]`, e); } };
@@ -651,10 +652,10 @@ async function _runRefreshTick(secs) {
     hideScanBar();
     /* 背景分頁不畫畫面（2026-10-22）：沒人在看時每輪重建幾千個 DOM 節點是純浪費，也是主機長時間運行
        的記憶體與主執行緒負擔；切回前景時補畫一次。資料處理（建單、監控、通知）照常。 */
-    if (document.hidden) { _renderPendingHidden = true; }
+    if (document.hidden || hostModeOn()) { _renderPendingHidden = !hostModeOn(); }
     else { try { applyFilters(); renderAll(); } catch(e) { console.error('[refresh] renderAll 錯誤:', e); } }
     // 先渲染持倉頁面（使用更新前的資料），避免 updateOpenTrades 刪除後顯示空白
-    try { if (!document.hidden && state.currentPage === 'positions') renderPositionsPage(); } catch(e) {}
+    try { if (!document.hidden && !hostModeOn() && state.currentPage === 'positions') renderPositionsPage(); } catch(e) {}
     let _cancelled1 = new Set();
     const _pAlerts = withCreateLock("alerts", () => checkAndSendAlerts(data));
     try { _cancelled1 = updateOpenTrades(data) || new Set(); } catch(e) { console.error('[refresh] updateOpenTrades 錯誤:', e); }
@@ -901,6 +902,48 @@ async function startMasterKeepAlive() {
 function liteModeDefault() { try { return (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2); } catch(_e) { return false; } }
 function liteModeOn() { try { const v = loadSettings().liteMode; return v == null ? !!liteModeDefault() : v === true; } catch(_e) { return false; } }
 function applyLiteMode() { try { document.body.classList.toggle('lite', liteModeOn()); } catch(_e) {} }
+/* ── 主機精簡模式（2026-10-24）────────────────────────────────────────────
+   使用者的主機筆電反覆「直接崩潰」，JS 記憶體只有 40～50MB、長任務不到 1 秒，找不到程式面的洩漏或卡死。
+   剩下的可能來源都在「畫面」這一側：整個儀表板（上百列表格、卡片、毛玻璃）每分鐘重建一次、GPU 持續合成，
+   或是這台機器本身。精簡模式把整個介面拿掉，只留一張純文字狀態卡；掃描、建單、監控、Telegram、雲端主機、
+   健康監視照常。若在精簡模式下仍崩潰，問題就不在畫面，而在資料路徑或那台機器。
+   開法：網址加 ?host=1，或設定頁開關（?host=0 可暫時回完整介面）。 */
+function hostModeOn() {
+  try {
+    if (/[?&]host=0/.test(location.search)) return false;
+    if (/[?&]host=1/.test(location.search)) return true;
+    return loadSettings().hostMode === true;
+  } catch(_e) { return false; }
+}
+let _hostPanelTimer = null;
+function renderHostPanel() {
+  try {
+    let el = document.getElementById('host-panel');
+    if (!el) { el = document.createElement('div'); el.id = 'host-panel'; document.body.appendChild(el); }
+    const h = (typeof _healthSnapshot === 'function') ? _healthSnapshot() : {};
+    const tl = loadTradeLog(); const open = tl.filter(t => t.status === 'open').length, pend = tl.filter(t => t.status === 'pending').length;
+    const d0 = new Date(); d0.setHours(0, 0, 0, 0); const today = tl.filter(t => (t.timestamp || 0) >= d0.getTime()).length;
+    let sc = 0; try { sc = loadScalpLog().filter(t => t.status === 'open').length; } catch(_e) {}
+    let f = null; try { f = JSON.parse(localStorage.getItem('csp_scan_funnel') || 'null'); } catch(_e) {}
+    const master = (() => { try { return isSignalMaster() ? '✅ 本裝置是訊號主機' : '⛔ 本裝置未在發送（' + ((typeof signalMasterBlockReason === 'function' && signalMasterBlockReason()?.why) || '非主機') + '）'; } catch(_e) { return '?'; } })();
+    const notes = (_healthLog || []).slice(-4).reverse().map(x => `<div>${new Date(x.t).toLocaleTimeString('zh-TW', { hour12: false })} ${x.kind}：${String(x.text).slice(0, 110)}</div>`).join('');
+    const rs = (typeof relayStatus === 'function') ? relayStatus() : null;
+    el.innerHTML = `<div class="hp-title">🖥 主機精簡模式 <span class="hp-v">v${APP_VERSION}</span></div>
+      <div class="hp-row">${master}</div>
+      <div class="hp-row">運行 ${h.uptimeMin || 0} 分鐘｜上次完整刷新 ${h.sinceDoneMin != null ? h.sinceDoneMin + ' 分鐘前' : '—'}｜第 ${h.ticks || 0} 輪${h.scanning ? '（掃描中）' : ''}｜JS 記憶體 ${h.heapMB != null ? h.heapMB + 'MB' : '—'}｜localStorage ${h.lsKB || 0}KB</div>
+      <div class="hp-row">最近一輪：${f ? `${f.candidates ?? f.cand ?? '—'} 個候選、建 ${f.built ?? 0} 筆` : '—'}｜今日一般單 ${today} 筆｜持倉 ${open}／掛單 ${pend}｜快速單持倉 ${sc}</div>
+      <div class="hp-row">同源轉發：${rs && rs.uses ? `已用 ${rs.uses} 次（代理優先：${rs.hosts.join('、') || '無'}）` : '未使用'}｜保活：${_keepAlive.lock ? '鎖✓' : '鎖✗'} ${_keepAlive.wake ? '螢幕✓' : '螢幕✗'}｜低效能模式 ${(typeof liteModeOn === 'function' && liteModeOn()) ? '開' : '關'}</div>
+      <div class="hp-notes">${notes || '<div>健康日誌：無</div>'}</div>
+      <div class="hp-btns"><button onclick="try{manualRefresh()}catch(e){}">立即掃描</button><button onclick="try{copyDiagBundle()}catch(e){}">📋 複製診斷</button><button onclick="location.href=location.pathname+'?host=0'">開啟完整介面</button></div>`;
+  } catch(_e) {}
+}
+function startHostMode() {
+  if (!hostModeOn()) return;
+  try { document.body.classList.add('hostmode'); } catch(_e) {}
+  renderHostPanel();
+  if (_hostPanelTimer) clearInterval(_hostPanelTimer);
+  _hostPanelTimer = setInterval(renderHostPanel, 15000);
+}
 function startHealthMonitor() {
   if (_healthTimer) clearInterval(_healthTimer);
   _healthTimer = setInterval(_healthTick, 30000);
@@ -14722,7 +14765,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821z';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -27270,6 +27313,8 @@ function populateSettingsPage() {
   if (kaTgl) kaTgl.checked = s.keepAwake !== false;
   const liteTgl = document.getElementById('s-lite-mode');
   if (liteTgl) liteTgl.checked = liteModeOn();
+  const hostTgl = document.getElementById('s-host-mode');
+  if (hostTgl) hostTgl.checked = s.hostMode === true;
   try { renderPionexStatus(); } catch(_e) {}
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
@@ -27327,6 +27372,7 @@ function saveAllSettings() {
     trailMode:       (() => { const v = document.getElementById('s-trail-mode')?.value; return v === 'r' ? 'r' : 'struct'; })(),
     keepAwake:       document.getElementById('s-keep-awake')?.checked ?? true,
     liteMode:        (() => { const el = document.getElementById('s-lite-mode'); return el ? el.checked === true : loadSettings().liteMode; })(),
+    hostMode:        document.getElementById('s-host-mode')?.checked ?? (loadSettings().hostMode === true),
     // 學習凍結：勾選 → 沿用尚未到期的舊值，否則從現在起 28 天；取消 → 0（立即解凍）
     learnFreezeUntil: (() => {
       const el = document.getElementById('s-learn-freeze');

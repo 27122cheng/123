@@ -1967,3 +1967,15 @@ body.lite *, body.lite *::before, body.lite *::after {
   box-shadow: none !important; text-shadow: none !important; filter: none !important;
 }
 body.lite .card, body.lite .stat-card, body.lite .modal, body.lite .page-header { background: var(--bg2, #0f172a) !important; }
+
+
+/* ── 主機精簡模式（body.hostmode）：拿掉整個介面，只留純文字狀態卡 ── */
+body.hostmode #top-nav, body.hostmode #app, body.hostmode #mobile-drawer, body.hostmode #drawer-overlay, body.hostmode #scan-bar { display: none !important; }
+body.hostmode { background: #0b1220 !important; }
+#host-panel { position: fixed; inset: 16px; max-width: 760px; margin: 0 auto; background: #111827; color: #cbd5e1; border: 1px solid #334155; border-radius: 10px; padding: 16px 18px; font: 13px/1.7 system-ui, sans-serif; overflow: auto; z-index: 50; }
+#host-panel .hp-title { font-size: 16px; font-weight: 700; color: #e2e8f0; margin-bottom: 6px; }
+#host-panel .hp-v { font-size: 11px; color: #64748b; font-family: monospace; margin-left: 6px; }
+#host-panel .hp-row { border-top: 1px solid #1f2937; padding: 5px 0; }
+#host-panel .hp-notes { margin-top: 8px; font-size: 12px; color: #94a3b8; font-family: monospace; }
+#host-panel .hp-btns { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+#host-panel button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 12px; }
