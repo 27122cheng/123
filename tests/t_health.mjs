@@ -138,7 +138,7 @@ const hb = await p.evaluate(async () => {
   const step = JSON.parse(localStorage.getItem('csp_last_step') || '{}');
   return { a, b2, hbFresh: !!(w && Date.now() - w.t < 10000), hbRaw: w, keys: Object.keys(localStorage).length, hasHid: typeof step.hid === 'boolean' || step.n === undefined };
 });
-if (!hb.a.includes('外部關閉') || !hb.b2.includes('卡住') || !hb.hbFresh) throw new Error('心跳判定錯誤：' + JSON.stringify(hb));
+if (!hb.a.includes('不是卡死') || !hb.b2.includes('同時停止') || !hb.hbFresh) throw new Error('心跳判定錯誤：' + JSON.stringify(hb));
 console.log(`✓ 心跳判定：晚 8 分鐘 → 「${hb.a.slice(0, 22)}…」；同時停 → 「${hb.b2.slice(0, 20)}…」；心跳正在寫`);
 
 // ══ ⑪ 診斷包：含最後步驟／心跳／最慢候選／設定，可序列化；凍結線索判定排最前 ══
@@ -181,6 +181,16 @@ const rl = await p.evaluate(async () => {
 });
 if (!rl.r1.relayed || rl.proxyFirst.length !== 1 || !rl.proxyFirst[0].startsWith('/api/relay') || !rl.r2.direct || !(rl.st.uses >= 4) || !rl.st.hosts.includes('fapi.binance.com')) throw new Error('relayFetch 行為錯誤：' + JSON.stringify(rl));
 console.log(`✓ relayFetch：直連失敗 → 轉發（${JSON.stringify(rl.r1)}）；3 次後代理優先（第 4 次只打 ${rl.proxyFirst[0]}）；非白名單主機維持直連；狀態 ${JSON.stringify(rl.st.hosts)}`);
+
+// ══ ⑭ 工作執行緒心跳：IndexedDB 內有值且持續更新；最終判定：工作執行緒多活 ≥60 秒 → 卡死；同時停 → 程序被結束 ══
+const wh = await p.evaluate(async () => {
+  _startWorkerHeartbeat(); await new Promise(r => setTimeout(r, 1500));
+  const a = await _readWorkerHb(); await new Promise(r => setTimeout(r, 5500)); const b2 = await _readWorkerHb();
+  const t = Date.now();
+  return { a, b2, hang: _freezeVerdict2({ n: 'x', t: t - 600e3 }, { t: t - 600e3 + 5000 }, { t: t - 600e3 + 300e3 }), kill: _freezeVerdict2({ n: 'x', t: t - 600e3 }, { t: t - 600e3 + 5000 }, { t: t - 600e3 + 8000 }) };
+});
+if (!wh.a || !wh.b2 || !(wh.b2.n > wh.a.n) || !wh.hang.includes('卡死') || !wh.kill.includes('程序被結束')) throw new Error('工作執行緒心跳／最終判定錯誤：' + JSON.stringify(wh));
+console.log(`✓ 工作執行緒心跳：n ${wh.a.n}→${wh.b2.n}；最終判定：多活 5 分 → 「${wh.hang.slice(5, 40)}…」；同時停 → 「${wh.kill.slice(5, 40)}…」`);
 
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));

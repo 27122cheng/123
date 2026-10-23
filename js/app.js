@@ -76,12 +76,34 @@ async function copyDiagBundle() {
   try { await navigator.clipboard.writeText(text); try { showToast('📋 診斷資料已複製，貼給開發者即可', 'success'); } catch(_e) {} return true; }
   catch(_e) { try { window.prompt('剪貼簿不可用，請手動全選複製：', text); } catch(_e2) {} return false; }
 }
-/* 心跳 vs 最後步驟 → 判定上次是「卡死」還是「被外部關閉」 */
+/* 心跳 vs 最後步驟（主執行緒）：只能說「步驟之後主執行緒還活了多久」 */
 function _freezeVerdict(step, hb) {
   if (!step || !hb || !hb.t || !step.t) return '';
   const gapMin = (hb.t - step.t) / 60000;
-  if (gapMin >= 1) return `判定：心跳在該步驟之後仍持續 ${Math.round(gapMin)} 分鐘（最後 ${new Date(hb.t).toLocaleTimeString('zh-TW', { hour12: false })}${hb.hid ? '，背景' : ''}）→ 頁面當時沒有卡死，是被外部關閉（瀏覽器／系統結束了分頁）`;
-  return `判定：心跳與該步驟同時停止（差 ${Math.round(Math.max(0, gapMin) * 60)} 秒）→ 主執行緒當時卡住在這一步`;
+  if (gapMin >= 1) return `主執行緒在該步驟之後仍跑了 ${Math.round(gapMin)} 分鐘（最後心跳 ${new Date(hb.t).toLocaleTimeString('zh-TW', { hour12: false })}${hb.hid ? '，背景' : ''}）→ 掃描在等東西，不是卡死`;
+  return `主執行緒心跳與該步驟幾乎同時停止（差 ${Math.round(Math.max(0, gapMin) * 60)} 秒）`;
+}
+/* 工作執行緒心跳 vs 主執行緒心跳：主執行緒卡住時工作執行緒照跑；整個分頁程序被結束時兩者同時停。 */
+function _freezeVerdict2(step, hb, wh) {
+  if (!step || !hb || !hb.t || !wh || !wh.t) return '';
+  const gapS = (wh.t - hb.t) / 1000;
+  if (gapS >= 60) return `最終判定：工作執行緒在主執行緒停止後還活了 ${Math.round(gapS / 60)} 分鐘 → 主執行緒卡死在「${step.n}」（是頁面同步工作的問題）`;
+  return `最終判定：主執行緒與工作執行緒同時停止（差 ${Math.round(Math.abs(gapS))} 秒）→ 整個分頁程序被結束（瀏覽器崩潰／系統或記憶體保護砍掉）`;
+}
+/* 工作執行緒心跳：Blob Worker 每 5 秒寫 IndexedDB；主執行緒開頁時先讀前一次的值再啟動新的 */
+let _hbWorker = null;
+function _openHbDb() { return new Promise((res, rej) => { try { const r = indexedDB.open('csp_hb', 1); r.onupgradeneeded = () => { try { r.result.createObjectStore('kv'); } catch(_e) {} }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch(e) { rej(e); } }); }
+function _readWorkerHb() {
+  return new Promise(resolve => { let done = false; const fin = v => { if (!done) { done = true; resolve(v); } }; setTimeout(() => fin(null), 4000);
+    _openHbDb().then(db => { try { const tx = db.transaction('kv', 'readonly'); const rq = tx.objectStore('kv').get('worker'); rq.onsuccess = () => fin(rq.result || null); rq.onerror = () => fin(null); } catch(_e) { fin(null); } }).catch(() => fin(null)); });
+}
+function _startWorkerHeartbeat() {
+  try {
+    if (_hbWorker || typeof Worker === 'undefined' || typeof indexedDB === 'undefined') return;
+    const code = `let n=0;function open(){return new Promise((res,rej)=>{const r=indexedDB.open('csp_hb',1);r.onupgradeneeded=()=>{try{r.result.createObjectStore('kv')}catch(e){}};r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+open().then(db=>{const w=()=>{try{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put({t:Date.now(),n:++n},'worker');}catch(e){}};w();setInterval(w,5000);}).catch(()=>{});`;
+    _hbWorker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+  } catch(_e) {}
 }
 function _bootErrHook() {
   const NOISY = /fetch|network|load failed|abort|timeout|websocket/i;
@@ -141,6 +163,10 @@ function _bootErrHook() {
   /* ── 心跳（2026-10-23）：每 5 秒寫一次時間。下次開頁拿「心跳最後時間」對「最後步驟時間」：
        心跳在步驟之後仍持續好幾分鐘 → 頁面當時沒有卡死，是被外部關閉（瀏覽器崩潰／系統重開／被結束）；
        心跳與步驟同時停 → 主執行緒當時真的卡住。這是分辨「我們的 bug」與「機器的事」的唯一證據。 */
+  /* 2026-10-24 修正：上一版先寫新心跳再讀舊心跳，讀到的是「現在」，判定永遠是「心跳持續到重整那一刻」——
+     前一次的「被外部關閉」判定是這個順序錯誤造成的假象。改為先讀前一次的（主執行緒＋工作執行緒），再啟動新的。 */
+  let prevHb = null; try { prevHb = JSON.parse(localStorage.getItem('csp_hb') || 'null'); } catch(_e) {}
+  const prevWorkerHbP = _readWorkerHb();   // 非同步（IndexedDB）；工作執行緒不受主執行緒卡住影響，是真正的鑑別器
   try {
     const _hb = () => { try { localStorage.setItem('csp_hb', JSON.stringify({ t: Date.now(), hid: !!document.hidden, on: navigator.onLine !== false, scanning: !!(typeof state !== 'undefined' && state && state.scanning) })); } catch(_e) {} };
     setInterval(_hb, 5000); _hb();
@@ -148,7 +174,6 @@ function _bootErrHook() {
   // ── 上次是不是卡死？（麵包屑不是 unload/idle → 上次在那一步被強制關掉）──
   try {
     const prev = JSON.parse(localStorage.getItem('csp_last_step') || 'null');
-    const prevHb = JSON.parse(localStorage.getItem('csp_hb') || 'null');
     if (prev && prev.n && prev.n !== 'unload' && prev.n !== 'idle') {
       const when = new Date(prev.t || 0).toLocaleString('zh-TW', { hour12: false });
       let _extra = '';
@@ -160,6 +185,8 @@ function _bootErrHook() {
       } catch(_e) {}
       let _verdict = ''; try { _verdict = _freezeVerdict(prev, prevHb); } catch(_e) {}
       try { if (_verdict) _healthNote('freeze', `${_verdict}｜步驟 ${prev.n}｜${when}`); } catch(_e) {}
+      // 工作執行緒心跳回來後補上「卡死 vs 程序結束」的最終判定（讀 IndexedDB 是非同步的）
+      try { prevWorkerHbP.then(wh => { const v2 = _freezeVerdict2(prev, prevHb, wh); if (v2) { _healthNote('freeze-final', v2); log('最終判定', v2); } }).catch(() => {}); } catch(_e) {}
       log('凍結線索', `${_verdict ? _verdict + '　｜　' : ''}上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}${prev.hid ? '，背景分頁' : ''}${prev.on === false ? '，離線' : ''}）${_extra}——若當時畫面卡住，卡點就在這一步`);
     }
   } catch(_e) {}
@@ -272,6 +299,7 @@ function _bootMark(name) {
 
 async function init() {
   _bootErrHook();      // 最先掛：之後任何一步爆掉都看得見
+  setTimeout(() => { try { _startWorkerHeartbeat(); } catch(_e) {} }, 4500);   // 先讓開頁讀完上一次的工作執行緒心跳，再啟動新的
   _bootMark(AUTO_SAFE ? 'start(自動安全模式:上次未完成)' : SAFE_MODE ? 'start(安全模式)' : 'start');
   if (AUTO_SAFE) { try { showToast('⚠️ 上次載入未完成，本次以安全模式啟動（資訊卡與背景模組暫停一輪）', 'warning'); } catch(_e) {} }
   // 版本徽章：固定顯示在右下角——任何截圖都能立刻判斷裝置實際跑的版本，
@@ -327,6 +355,9 @@ async function init() {
   // 12 秒後強制收掉載入畫面讓使用者進得來——空畫面也比永遠的轉圈好，
   // 背景排程會自己把資料補上。
   setTimeout(() => { try { hideLoading(); hideScanBar(); } catch(_e) {} }, 12000);
+  // 載入畫面 6 秒後出現「跳過」鈕；90 秒還沒 done → 記進健康日誌（下次開頁的載入線索會顯示停在哪一步）
+  setTimeout(() => { try { const el = document.getElementById('loading-overlay'); if (el && !el.classList.contains('hide') && !document.getElementById('loading-skip')) { const b = document.createElement('button'); b.id = 'loading-skip'; b.textContent = '跳過載入畫面'; b.style.cssText = 'margin-top:14px;padding:6px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.3);background:transparent;color:#cbd5e1;cursor:pointer;font-size:12px'; b.onclick = () => { try { hideLoading(); hideScanBar(); } catch(_e) {} }; (el.querySelector('.loading-content') || el).appendChild(b); } } catch(_e) {} }, 6000);
+  setTimeout(() => { try { if (!_bootTraceArr.some(x => String(x).indexOf('done') === 0)) _healthNote('boot-slow', `開頁 90 秒仍未完成，停在「${_bootTraceArr.slice(-1)[0] || '?'}」`); } catch(_e) {} }, 90000);
   // 四張資訊卡「與市場掃描並行」載入：原本排在整輪掃描之後才開始，
   // 行動網路上掃描要 20~40 秒，等於每次打開前一分鐘四張卡必然在轉圈——
   // 它們用的 API 與掃描完全獨立，沒有理由排隊。
@@ -14691,7 +14722,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821y';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821z';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15942,13 +15973,15 @@ async function recordSignalsFromScan(data) {
       try {
         const _sfT0 = performance.now();
         // 20 秒期限：任一個補充請求掛住（網路黑洞）不能把整輪掃描掛住；逾時就當本輪沒補到，照常往下走
+        // 低效能模式：只抓合約籌碼與多週期 K 線（SQ 的硬資料），巨鯨／足跡／爆倉圖／訂單簿這四項輔助投票略過（每幣少 6 個請求與 1m K 線重算）
+        const _liteSf = (typeof liteModeOn === 'function') && liteModeOn();
         const _sfAll = await _withTimeout(Promise.all([
           fetchDerivativesData(coin.symbol),
-          fetchWhaleTrades(coin.symbol),
-          fetchFootprintData(coin.symbol),
-          fetchLiquidationMap(coin.symbol),
+          _liteSf ? Promise.resolve(null) : fetchWhaleTrades(coin.symbol),
+          _liteSf ? Promise.resolve(null) : fetchFootprintData(coin.symbol),
+          _liteSf ? Promise.resolve(null) : fetchLiquidationMap(coin.symbol),
           fetchMTFKlines(coin.symbol),
-          fetchOrderBookImbalance(coin.symbol),
+          _liteSf ? Promise.resolve(null) : fetchOrderBookImbalance(coin.symbol),
         ]), 20000, null);
         _candAwaitMs += performance.now() - _sfT0;
         if (!_sfAll) { try { _healthNote('fetch-timeout', `${coin.symbol} 補充抓取逾時 20 秒，本輪略過`); } catch(_e) {} _scanFetchCache[coin.symbol] = { ts: _sfNow - 8 * 60 * 1000, deriv: _sfCached?.deriv || null, whale: _sfCached?.whale || null }; }
