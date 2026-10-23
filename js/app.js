@@ -56,8 +56,15 @@ function _stepMark(name) {
   _cspStepMem = name; _cspStepAt = Date.now();
   try {
     let mem = null; try { mem = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null; } catch(_m) {}
-    localStorage.setItem('csp_last_step', JSON.stringify({ n: name, t: _cspStepAt, v: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?', mem }));
+    localStorage.setItem('csp_last_step', JSON.stringify({ n: name, t: _cspStepAt, v: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?', mem, hid: !!document.hidden, on: navigator.onLine !== false }));
   } catch(_e) {}
+}
+/* 心跳 vs 最後步驟 → 判定上次是「卡死」還是「被外部關閉」 */
+function _freezeVerdict(step, hb) {
+  if (!step || !hb || !hb.t || !step.t) return '';
+  const gapMin = (hb.t - step.t) / 60000;
+  if (gapMin >= 1) return `判定：心跳在該步驟之後仍持續 ${Math.round(gapMin)} 分鐘（最後 ${new Date(hb.t).toLocaleTimeString('zh-TW', { hour12: false })}${hb.hid ? '，背景' : ''}）→ 頁面當時沒有卡死，是被外部關閉（瀏覽器／系統結束了分頁）`;
+  return `判定：心跳與該步驟同時停止（差 ${Math.round(Math.max(0, gapMin) * 60)} 秒）→ 主執行緒當時卡住在這一步`;
 }
 function _bootErrHook() {
   const NOISY = /fetch|network|load failed|abort|timeout|websocket/i;
@@ -108,19 +115,28 @@ function _bootErrHook() {
     window.addEventListener('unhandledrejection', e =>
       log('promise', e.reason && (e.reason.message || e.reason)));
   } catch(_e) {}
+  /* ── 心跳（2026-10-23）：每 5 秒寫一次時間。下次開頁拿「心跳最後時間」對「最後步驟時間」：
+       心跳在步驟之後仍持續好幾分鐘 → 頁面當時沒有卡死，是被外部關閉（瀏覽器崩潰／系統重開／被結束）；
+       心跳與步驟同時停 → 主執行緒當時真的卡住。這是分辨「我們的 bug」與「機器的事」的唯一證據。 */
+  try {
+    const _hb = () => { try { localStorage.setItem('csp_hb', JSON.stringify({ t: Date.now(), hid: !!document.hidden, on: navigator.onLine !== false, scanning: !!(typeof state !== 'undefined' && state && state.scanning) })); } catch(_e) {} };
+    setInterval(_hb, 5000); _hb();
+  } catch(_e) {}
   // ── 上次是不是卡死？（麵包屑不是 unload/idle → 上次在那一步被強制關掉）──
   try {
     const prev = JSON.parse(localStorage.getItem('csp_last_step') || 'null');
+    const prevHb = JSON.parse(localStorage.getItem('csp_hb') || 'null');
     if (prev && prev.n && prev.n !== 'unload' && prev.n !== 'idle') {
       const when = new Date(prev.t || 0).toLocaleString('zh-TW', { hour12: false });
       let _extra = '';
       try {
         const sc = JSON.parse(localStorage.getItem('csp_slow_cands') || '[]').slice(0, 3);
-        if (sc.length) _extra += `　最慢候選：${sc.map(x => `${String(x.sym).replace('/USDT', '')} ${x.ms}ms@${x.sub}`).join('、')}`;
+        if (sc.length) _extra += `　最慢候選：${sc.map(x => `${String(x.sym).replace('/USDT', '')} ${x.ms}ms${x.net ? `（網路 ${x.net}）` : ''}@${x.sub}`).join('、')}`;
         const lt = JSON.parse(localStorage.getItem('csp_longtask') || '[]').slice(0, 2);
         if (lt.length) _extra += `　長任務：${lt.map(x => `${x.ms}ms@${x.step}`).join('、')}`;
       } catch(_e) {}
-      log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}）${_extra}——若當時畫面卡住，卡點就在這一步`);
+      try { _extra += '　' + _freezeVerdict(prev, prevHb); } catch(_e) {}
+      log('凍結線索', `上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}${prev.hid ? '，背景分頁' : ''}${prev.on === false ? '，離線' : ''}）${_extra}——若當時畫面卡住，卡點就在這一步`);
     }
   } catch(_e) {}
   // ── 上次載入卡在哪？（開頁軌跡沒走到 done → 本次自動安全模式，並把停住的位置顯示出來）──
@@ -14624,7 +14640,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821u';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821v';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15414,14 +15430,14 @@ function _profStart() { _scanProf = { t0: performance.now(), last: performance.n
    是主執行緒在某個候選的處理中卡死或被瀏覽器判定無回應）。「掃描候選 X」這顆麵包屑太粗——一個候選裡
    有門檻、建單結構、風控、SQ、終審、條件封鎖好幾段，不知道卡在哪一段。改為每個剖析階段都寫一次麵包屑
    （掃描候選 X/階段），並記錄「最慢候選」（單一候選 >800ms）供下次開頁的凍結線索引用。 */
-let _candSym = '', _candT0 = 0, _candSub = '';
+let _candSym = '', _candT0 = 0, _candSub = '', _candAwaitMs = 0;
 function _candDone(sym, ms) {
   try {
     if (!(ms > 800)) return;
     const arr = JSON.parse(localStorage.getItem('csp_slow_cands') || '[]');
-    arr.unshift({ t: Date.now(), sym, ms: Math.round(ms), sub: _candSub || '?' });
+    arr.unshift({ t: Date.now(), sym, ms: Math.round(ms), sub: _candSub || '?', net: Math.round(_candAwaitMs) });
     localStorage.setItem('csp_slow_cands', JSON.stringify(arr.slice(0, 10)));
-    console.warn(`[scan] 候選 ${sym} 處理 ${Math.round(ms)}ms（最後階段 ${_candSub || '?'}）`);
+    console.warn(`[scan] 候選 ${sym} 處理 ${Math.round(ms)}ms（其中等網路 ${Math.round(_candAwaitMs)}ms，最後階段 ${_candSub || '?'}）`);
   } catch(_e) {}
 }
 function _profMark(name) {
@@ -15638,7 +15654,7 @@ async function recordSignalsFromScan(data) {
        軟門上線後進入重運算段的候選變多，弱機器就出現「倒數到 58 秒卡住」。 */
     if (_cand % 3 === 0) await _yieldMain();
     if (_candSym) _candDone(_candSym, performance.now() - _candT0);
-    _candSym = coin.symbol; _candT0 = performance.now(); _candSub = '';
+    _candSym = coin.symbol; _candT0 = performance.now(); _candSub = ''; _candAwaitMs = 0;
     _stepMark('掃描候選 ' + coin.symbol);
     // 本輪牆鐘上限：候選迴圈超過 40 秒就把剩下的留到下輪（避免一輪拖成數分鐘的長任務鏈，被瀏覽器判定無回應）
     if (_scanProf && performance.now() - _scanProf.t0 > 40000 && _no('本輪掃描逾時 40 秒，其餘候選下輪')) continue;
@@ -15870,8 +15886,10 @@ async function recordSignalsFromScan(data) {
     // 使用 5 分鐘快取避免每 15s 輪掃時重複請求
     const _sfNow = Date.now();
     const _sfCached = _scanFetchCache[coin.symbol];
-    if (!_sfCached || (_sfNow - _sfCached.ts) > 5 * 60 * 1000) {
+    // 補充抓取每幣 11 個請求＋ICT 重算：TTL 5→10 分鐘（2026-10-23，主機筆電負載減半；SQ 用到的資料 10 分鐘內不會變出新意義）
+    if (!_sfCached || (_sfNow - _sfCached.ts) > 10 * 60 * 1000) {
       try {
+        const _sfT0 = performance.now();
         const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF, _sfOB] = await Promise.all([
           fetchDerivativesData(coin.symbol),
           fetchWhaleTrades(coin.symbol),
@@ -15880,6 +15898,7 @@ async function recordSignalsFromScan(data) {
           fetchMTFKlines(coin.symbol),
           fetchOrderBookImbalance(coin.symbol),
         ]);
+        _candAwaitMs += performance.now() - _sfT0;
         if (_sfDeriv) coin.derivData = _sfDeriv;
         if (_sfWhale) coin.whaleData = _sfWhale;
         if (_sfFP)    _footprintCache[coin.symbol] = _sfFP;

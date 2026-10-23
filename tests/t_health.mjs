@@ -129,6 +129,18 @@ if (cand.crumb !== '掃描候選 ZZ/USDT/SQ評分' || !cand.slow || cand.slow.sy
 if (cand.hiddenRenders !== 0 || cand.afterVisible !== 1) throw new Error('背景不畫、前景補畫錯誤：' + JSON.stringify(cand));
 console.log(`✓ 候選麵包屑「${cand.crumb}」；最慢候選 ${cand.slow.sym} ${cand.slow.ms}ms@${cand.slow.sub}；背景刷新 renderAll ${cand.hiddenRenders} 次、切回前景補畫 ${cand.afterVisible} 次`);
 
+// ══ ⑩ 心跳判定：心跳比步驟晚 ≥1 分鐘 → 外部關閉；同時停 → 卡死；心跳有在寫 ══
+const hb = await p.evaluate(async () => {
+  const t = Date.now();
+  const a = _freezeVerdict({ n: 'x', t: t - 10 * 60e3 }, { t: t - 2 * 60e3 }), b2 = _freezeVerdict({ n: 'x', t: t - 10 * 60e3 }, { t: t - 10 * 60e3 + 3000 });
+  await new Promise(r => setTimeout(r, 5500));   // 心跳每 5 秒寫一次
+  const w = JSON.parse(localStorage.getItem('csp_hb') || 'null');
+  const step = JSON.parse(localStorage.getItem('csp_last_step') || '{}');
+  return { a, b2, hbFresh: !!(w && Date.now() - w.t < 10000), hbRaw: w, keys: Object.keys(localStorage).length, hasHid: typeof step.hid === 'boolean' || step.n === undefined };
+});
+if (!hb.a.includes('外部關閉') || !hb.b2.includes('卡住') || !hb.hbFresh) throw new Error('心跳判定錯誤：' + JSON.stringify(hb));
+console.log(`✓ 心跳判定：晚 8 分鐘 → 「${hb.a.slice(0, 22)}…」；同時停 → 「${hb.b2.slice(0, 20)}…」；心跳正在寫`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');
