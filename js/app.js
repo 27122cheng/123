@@ -14691,7 +14691,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821x';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821y';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -30889,7 +30889,7 @@ async function sbxEnsureFunding() {
   try {
     const ctrl = new AbortController();
     const tm = setTimeout(() => ctrl.abort(), 8000);
-    const r = await fetch('https://fapi.binance.com/fapi/v1/premiumIndex', { signal: ctrl.signal });
+    const r = await relayFetch('https://fapi.binance.com/fapi/v1/premiumIndex', { signal: ctrl.signal });
     clearTimeout(tm);
     if (!r.ok) return;
     const arr = await r.json();
@@ -32055,7 +32055,7 @@ async function oiWatchScan(data) {
       const sym = symbol.replace('/', '');
       const ctrl = new AbortController();
       const tm = setTimeout(() => ctrl.abort(), 8000);
-      const r = await _fetchT(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=7`,
+      const r = await relayFetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=7`,
         { signal: ctrl.signal });
       clearTimeout(tm);
       if (!r.ok) { _oiWatchCache[symbol] = { at: now, ok: false }; return; }
@@ -33369,7 +33369,7 @@ async function btFetchAll(symbol) {
     f('15m', BT_CFG.bars15m), f('1h', 300), f('4h', 120), f('1d', 60), f('1w', 40),
     (async () => {
       try {
-        const r = await _fetchT(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${sym}&limit=100`, {}, 8000);
+        const r = await relayFetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${sym}&limit=100`, {});
         return r.ok ? await r.json() : [];
       } catch(_e) { return []; }
     })(),

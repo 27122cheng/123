@@ -168,6 +168,20 @@ const tmo = await p.evaluate(async () => {
 if (tmo.ms > 5000 || tmo.scanning || tmo.ran !== 1 || !tmo.note || tmo.softWhileScanning !== 0 || tmo.hardWhileScanning !== 1 || !tmo.liteOn || !tmo.liteOff) throw new Error('await 期限／硬重整／低效能模式錯誤：' + JSON.stringify(tmo));
 console.log(`✓ await 期限：掛住的行情請求 ${tmo.ms}ms 內結束本輪、scanning=${tmo.scanning}、健康日誌有 fetch-timeout；停擺 12 分掃描中不重整、25 分硬重整；低效能模式開關正常`);
 
+// ══ ⑬ relayFetch：直連失敗 → 改打 /api/relay；連續 3 次失敗後代理優先；非白名單主機直接直連 ══
+const rl = await p.evaluate(async () => {
+  const log = []; const orig = window.fetch;
+  window.fetch = async (u, o) => { const s = String(u); log.push(s.slice(0, 40)); if (s.startsWith('/api/relay')) return new Response('{"relayed":true}', { status: 200, headers: { 'Content-Type': 'application/json' } }); if (/binance\.com/.test(s)) throw new TypeError('Failed to fetch'); return new Response('{"direct":true}', { status: 200 }); };
+  const r1 = await (await relayFetch('https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT')).json();
+  await relayFetch('https://fapi.binance.com/fapi/v1/openInterest?symbol=ETHUSDT'); await relayFetch('https://fapi.binance.com/fapi/v1/openInterest?symbol=SOLUSDT');
+  const before = log.length; await relayFetch('https://fapi.binance.com/fapi/v1/openInterest?symbol=XRPUSDT'); const proxyFirst = log.slice(before);
+  const r2 = await (await relayFetch('https://www.okx.com/api/v5/market/tickers')).json();
+  window.fetch = orig;
+  return { r1, proxyFirst, r2, st: relayStatus() };
+});
+if (!rl.r1.relayed || rl.proxyFirst.length !== 1 || !rl.proxyFirst[0].startsWith('/api/relay') || !rl.r2.direct || !(rl.st.uses >= 4) || !rl.st.hosts.includes('fapi.binance.com')) throw new Error('relayFetch 行為錯誤：' + JSON.stringify(rl));
+console.log(`✓ relayFetch：直連失敗 → 轉發（${JSON.stringify(rl.r1)}）；3 次後代理優先（第 4 次只打 ${rl.proxyFirst[0]}）；非白名單主機維持直連；狀態 ${JSON.stringify(rl.st.hosts)}`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');

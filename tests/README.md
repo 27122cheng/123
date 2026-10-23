@@ -7,6 +7,7 @@
 - `t_pionex.mjs`：一般單 Pionex 價位對齊（等比、±3% 退回、監控依單的價位空間、Telegram 文字）
 - `t_bt.mjs`：2026-10 回測驗證閘門（逆 BTC 日線／4H ADX／多空人數比）、突破單 1R/2.5R 出場計畫、快速單設定
 - `t_health.mjs`：刷新迴圈例外歸零、卡住看門狗、自我修復決策與冷卻、localStorage 裁剪、K 線快取上限
+- `t_relay.mjs`：api/relay.js 白名單／轉發／快取（Node 直接呼叫 handler）
 - `soak.mjs <分鐘>`：長時間運行壓力測試（真實刷新迴圈 3 秒一輪），輸出 heap／DOM／監聽器／timer／快取／localStorage 成長
 
 執行：`node tests/t_smoke4.mjs`

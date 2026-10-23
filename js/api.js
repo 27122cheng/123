@@ -139,6 +139,7 @@ const FEED_SPEC = {
   news:    { label: '新聞情緒',                     fresh: 25 * 60e3, stale: 90 * 60e3,  how: '25 分鐘快取；新聞本質是事件流，過度頻繁抓取沒有意義' },
   ext:     { label: '場外行情（期指／DXY／VIX）',    fresh: 5 * 60e3, stale: 30 * 60e3,  how: '/api/macro 代理 Yahoo／Stooq，前後端各 5 分鐘快取' },
   funding: { label: '全市場資金費率',               fresh: 16 * 60e3, stale: 45 * 60e3,  how: '幣安 premiumIndex 一個請求拿全市場，15 分鐘快取；方向確信度／快速單門檻／記分卡共用' },
+  relay:   { label: '同源轉發（直連幣安／mempool 失敗時）', fresh: 10 * 60e3, stale: 6 * 3600e3, how: '瀏覽器直連幣安或 mempool 失敗時改由 /api/relay 伺服器端轉發；有「即時」代表這個網路擋直連、正在靠轉發' },
   halving: { label: '減半資訊',                     fresh: 6 * 3600e3, stale: 24 * 3600e3, how: 'mempool.space 區塊高度，日級資訊' },
   orderbook: { label: '訂單簿深度失衡',              fresh: 7 * 60e3, stale: 25 * 60e3,  how: 'OKX 前 20 檔掛單快照：開啟詳情即時請求，掃描時對候選幣 5 分鐘快取；只餵確信度投票，不進止損止盈釘點' },
 };
@@ -234,6 +235,36 @@ const BINANCE_HOSTS = [
   'https://api2.binance.com',
   'https://api3.binance.com',
 ];
+
+/* ── 直連失敗自動改走同源轉發（2026-10-24）──────────────────────────────
+   使用者主機所在網路擋掉瀏覽器直連幣安／mempool（資料鮮度頁 8 項「尚未取得」全是直連那幾個，
+   走同源代理的全部正常）。這裡把每個直連 fetch 換成：先直連；失敗（網路錯誤、403/451/5xx）就打
+   /api/relay?u=<網址>。同一主機連續 3 次直連失敗 → 10 分鐘內代理優先，不再每次先等直連逾時。
+   400／404 視為正常回應（幣不存在），不觸發轉發。WebSocket 無法轉發（清算流在這類網路取不到，非必要）。 */
+const RELAY_HOSTS = /^https:\/\/(fapi\.binance\.com|api[1-3]?\.binance\.com|data-api\.binance\.vision|mempool\.space|open-api\.coinglass\.com)\//;
+const _relayPref = {};          // host → { fails, until }
+let _relayLastUsed = 0, _relayUses = 0;
+function relayStatus() { return { lastUsed: _relayLastUsed, uses: _relayUses, hosts: Object.keys(_relayPref).filter(h => _relayPref[h].until > Date.now()) }; }
+async function relayFetch(url, opts = {}) {
+  const m = RELAY_HOSTS.exec(url);
+  if (!m) return fetch(url, opts);
+  const host = m[1]; const pref = _relayPref[host] || (_relayPref[host] = { fails: 0, until: 0 });
+  const viaRelay = async () => {
+    const ctrl = new AbortController(); const tm = setTimeout(() => ctrl.abort(), 9500);
+    try { const r = await fetch('/api/relay?u=' + encodeURIComponent(url), { cache: 'no-store', signal: ctrl.signal }); _relayLastUsed = Date.now(); _relayUses++; try { feedStamp('relay', r.ok, host); } catch(_e) {} return r; }
+    finally { clearTimeout(tm); }
+  };
+  const now = Date.now();
+  if (pref.until > now) { try { const r = await viaRelay(); if (r.ok || r.status === 400 || r.status === 404) return r; } catch(_e) {} }
+  try {
+    const r = await fetch(url, opts);
+    if (r.ok || r.status === 400 || r.status === 404) { pref.fails = 0; return r; }
+    throw new Error('HTTP ' + r.status);
+  } catch (e) {
+    pref.fails++; if (pref.fails >= 3) pref.until = Date.now() + 10 * 60e3;
+    return viaRelay();
+  }
+}
 
 /* ---------- 認證請求頭 ---------- */
 function buildHeaders(apiKey) {
@@ -609,7 +640,7 @@ async function fetchKlines(symbol, interval, limit = 220) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await relayFetch(url, { signal: controller.signal });
       clearTimeout(timer);
       if (res.status === 400) return null; // 交易對不存在，不再重試
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -628,7 +659,7 @@ async function fetchAllSpotPrices() {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(
+      const res = await relayFetch(
         `${host}/api/v3/ticker/price?symbols=${encodeURIComponent(syms)}`,
         { signal: controller.signal }
       );
@@ -652,7 +683,7 @@ async function fetchAll24hQuoteVols() {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(
+      const res = await relayFetch(
         `${host}/api/v3/ticker/24hr?symbols=${encodeURIComponent(syms)}&type=MINI`,
         { signal: ctrl.signal }
       );
@@ -936,11 +967,11 @@ async function fetchDerivativesData(symbol) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
     const [frR, oiR, lsR, topR, tkR] = await Promise.allSettled([
-      fetch(`${base}/fapi/v1/fundingRate?symbol=${sym}&limit=1`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
-      fetch(`${base}/fapi/v1/openInterest?symbol=${sym}`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
-      fetch(`${base}/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
-      fetch(`${base}/futures/data/topLongShortAccountRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
-      fetch(`${base}/futures/data/takerlongshortRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      relayFetch(`${base}/fapi/v1/fundingRate?symbol=${sym}&limit=1`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      relayFetch(`${base}/fapi/v1/openInterest?symbol=${sym}`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      relayFetch(`${base}/futures/data/globalLongShortAccountRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      relayFetch(`${base}/futures/data/topLongShortAccountRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
+      relayFetch(`${base}/futures/data/takerlongshortRatio?symbol=${sym}&period=5m&limit=2`, { signal: ctrl.signal }).then(r => r.ok ? r.json() : null),
     ]);
     clearTimeout(t);
 
@@ -1094,7 +1125,7 @@ async function fetchHalvingInfo() {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 5000);
-    const res = await fetch('https://mempool.space/api/blocks/tip/height', { signal: ctrl.signal });
+    const res = await relayFetch('https://mempool.space/api/blocks/tip/height', { signal: ctrl.signal });
     clearTimeout(t);
     if (!res.ok) return null;
     const height = await res.json();
@@ -1215,7 +1246,7 @@ async function _fetchSpotWhaleTrades(sym) {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 7000);
-      const res = await fetch(`${host}/api/v3/aggTrades?symbol=${sym}&limit=1000`, { signal: ctrl.signal });
+      const res = await relayFetch(`${host}/api/v3/aggTrades?symbol=${sym}&limit=1000`, { signal: ctrl.signal });
       clearTimeout(t);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const trades = await res.json();
@@ -1267,8 +1298,8 @@ async function _fetchFuturesWhaleData(sym) {
     const t = setTimeout(() => ctrl.abort(), 8000);
     // 使用 allSettled 確保任一端點失敗不影響另一個
     const [takerSettled, oiSettled] = await Promise.allSettled([
-      fetch(`https://fapi.binance.com/futures/data/takerBuySellVol?symbol=${sym}&period=5m&limit=24`, { signal: ctrl.signal }),
-      fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=24`, { signal: ctrl.signal }),
+      relayFetch(`https://fapi.binance.com/futures/data/takerBuySellVol?symbol=${sym}&period=5m&limit=24`, { signal: ctrl.signal }),
+      relayFetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=24`, { signal: ctrl.signal }),
     ]);
     clearTimeout(t);
 
@@ -1465,7 +1496,7 @@ async function fetchLiquidationMap(symbol) {
     const url = `https://open-api.coinglass.com/public/v2/liquidation_chart?symbol=${base}&time_type=m5`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4000);
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await relayFetch(url, { signal: controller.signal });
     clearTimeout(timer);
     if (res.ok) {
       const json = await res.json();
