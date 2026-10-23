@@ -1958,3 +1958,12 @@ input:checked + .toggle-track .toggle-thumb { left: 20px; background: var(--bull
   font-size: 0.82rem;
 }
 .rpt-month-tbl tr:hover td { background: rgba(255,255,255,0.025); }
+
+
+/* ── 低效能模式（body.lite）：關掉毛玻璃、動畫、陰影、濾鏡；版面與功能不變 ── */
+body.lite *, body.lite *::before, body.lite *::after {
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  animation: none !important; transition: none !important;
+  box-shadow: none !important; text-shadow: none !important; filter: none !important;
+}
+body.lite .card, body.lite .stat-card, body.lite .modal, body.lite .page-header { background: var(--bg2, #0f172a) !important; }

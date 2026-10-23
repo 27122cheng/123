@@ -356,6 +356,7 @@ async function init() {
   hideLoading();
   try { startHealthMonitor(); } catch(_e) {}
   try { startMasterKeepAlive(); } catch(_e) {}
+  try { applyLiteMode(); } catch(_e) {}
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
   _bootMark('渲染');
@@ -600,11 +601,13 @@ async function _runRefreshTick(secs) {
     updateScanProgress(0);
     let data, source;
     try {
-      const result = await fetchMarketData(state.timeframe);
+      const result = await _withTimeout(fetchMarketData(state.timeframe), 90000, null);
+      if (!result) throw new Error('fetchMarketData 逾時 90 秒（網路無回應）');
       data   = result.data;
       source = result.source;
     } catch(e) {
       console.error('[refresh] 自動刷新失敗:', e);
+      try { _healthNote('fetch-timeout', String(e && e.message || e).slice(0, 100)); } catch(_e) {}
       hideScanBar();
       state.scanning = false;
       return;
@@ -741,6 +744,20 @@ function _yieldMain() {
   if (!_yieldCh) return new Promise(r => setTimeout(r, 0));
   return new Promise(r => { const h = () => { _yieldCh.port1.removeEventListener('message', h); r(); }; _yieldCh.port1.addEventListener('message', h); _yieldCh.port1.start(); _yieldCh.port2.postMessage(0); });
 }
+/* ── 任何 await 都要有期限（2026-10-23）──────────────────────────────────────
+   實機證據：最後步驟 22:38 停在「掃描候選 SOL」，心跳卻持續到 23:03——主執行緒活著，但掃描迴圈與
+   刷新迴圈都在等一個永遠不回來的 fetch（Wi-Fi 斷線／睡眠後的 TCP 黑洞不會回錯誤，只會無限等）。
+   沒有期限的 await 會讓整站靜默停擺 25 分鐘以上。所有等網路的地方一律包期限。 */
+function _withTimeout(promise, ms, fallback) {
+  return new Promise(resolve => {
+    let done = false; const t = setTimeout(() => { if (!done) { done = true; resolve(fallback); } }, ms);
+    Promise.resolve(promise).then(v => { if (!done) { done = true; clearTimeout(t); resolve(v); } }, () => { if (!done) { done = true; clearTimeout(t); resolve(fallback); } });
+  });
+}
+function _fetchT(url, opts, ms = 10000) {
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, Object.assign({}, opts || {}, { signal: ctrl.signal })).finally(() => clearTimeout(t));
+}
 function updateCountdown() {
   const el = document.getElementById('refresh-countdown');
   if (el) el.textContent = state.countdown + '秒';
@@ -810,8 +827,10 @@ function _healthTick() {
     let last = 0; try { last = JSON.parse(localStorage.getItem('csp_selfheal') || 'null')?.at || 0; } catch(_e) {}
     if (Date.now() - last < HEALTH_CFG.healCooldownMin * 60e3) { if (!_healthReloadArmed) _healthNote('reload-skip', `${d.reason}，但 ${HEALTH_CFG.healCooldownMin} 分鐘內已自動重整過，不重複`); _healthReloadArmed = true; return; }
     const quiet = !state.scanning && !document.querySelector('.modal-overlay, .trade-modal-overlay');
+    // 停擺已達門檻兩倍：掃描旗標本身可能就是卡住的那個，不再等「安靜時刻」
+    const hard = h.sinceDoneMin > 2 * Math.max(HEALTH_CFG.stallMin, 5 * h.interval / 60) * (h.hidden ? 3 : 1) || (h.heapMB != null && h.heapMB > HEALTH_CFG.heapMB * 1.3);
     if (d.urgent) {
-      if (!quiet && !document.hidden) { if (!_healthReloadArmed) { _healthReloadArmed = true; try { showToast(`⚕️ ${d.reason}，將在安靜時刻自動重整頁面`, 'warning'); } catch(_e) {} } return; }
+      if (!quiet && !document.hidden && !hard) { if (!_healthReloadArmed) { _healthReloadArmed = true; try { showToast(`⚕️ ${d.reason}，將在安靜時刻自動重整頁面`, 'warning'); } catch(_e) {} } return; }
       _selfHealReload(d.reason, h);
     } else {
       if (document.hidden) _selfHealReload(d.reason, h);
@@ -844,6 +863,13 @@ async function startMasterKeepAlive() {
     if (!_keepAlive._bound) { _keepAlive._bound = true; document.addEventListener('visibilitychange', () => { if (!document.hidden) acquire(); }); }
   } catch(_e) {}
 }
+/* ── 低效能模式（2026-10-23）────────────────────────────────────────────────
+   使用者的主機是入門筆電：頁面有十幾層 backdrop-filter 毛玻璃＋多個無限動畫，內顯 GPU 24 小時持續合成，
+   是「只有這個分頁會崩、其他分頁沒事」最常見的來源之一（GPU／渲染程序被系統砍）。低效能模式關掉所有
+   毛玻璃、動畫、陰影與濾鏡，內容與功能完全不變。記憶體 ≤4GB 或核心數 ≤2 的機器預設開啟（使用者可改）。 */
+function liteModeDefault() { try { return (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2); } catch(_e) { return false; } }
+function liteModeOn() { try { const v = loadSettings().liteMode; return v == null ? !!liteModeDefault() : v === true; } catch(_e) { return false; } }
+function applyLiteMode() { try { document.body.classList.toggle('lite', liteModeOn()); } catch(_e) {} }
 function startHealthMonitor() {
   if (_healthTimer) clearInterval(_healthTimer);
   _healthTimer = setInterval(_healthTick, 30000);
@@ -868,7 +894,8 @@ async function manualRefresh() {
 
   let data, source;
   try {
-    const result = await fetchMarketData(state.timeframe);
+    const result = await _withTimeout(fetchMarketData(state.timeframe), 90000, null);
+    if (!result) throw new Error('fetchMarketData 逾時 90 秒（網路無回應）');
     data   = result.data;
     source = result.source;
   } catch(e) {
@@ -13371,7 +13398,7 @@ async function clearCloudMasterData() {
   saveSettings(s);
   _cloudOk = false; _cloudMaster = null; _cloudReason = '雲端同步已由使用者關閉';
   try {
-    const r = await fetch('/api/master', { method: 'DELETE', cache: 'no-store' });
+    const r = await _fetchT('/api/master', { method: 'DELETE', cache: 'no-store' }, 8000);
     const j = await r.json().catch(() => null);
     if (j && j.ok) return { ok: true, deleted: j.deleted, key: j.key };
     return { ok: false, reason: (j && (j.hint || j.reason)) || `HTTP ${r.status}` };
@@ -13404,7 +13431,7 @@ async function refreshCloudMaster() {
     return;
   }
   try {
-    const r = await fetch('/api/master', { cache: 'no-store' });
+    const r = await _fetchT('/api/master', { cache: 'no-store' }, 8000);
     const j = await r.json().catch(() => null);
     _cloudCheckedAt = Date.now();
     if (!j || j.ok !== true) {
@@ -13431,7 +13458,7 @@ async function refreshCloudMaster() {
         if (_stale || (_isMe && _now - _masterBeatAt > 2 * 60 * 1000)) {
           _masterBeatAt = _now;
           const info = { id: _TAB_ID, ts: _now, ua: _deviceLabel() };
-          const pr = await fetch('/api/master', {
+          const pr = await _fetchT('/api/master', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: _TAB_ID, ua: info.ua }),
           });
@@ -13455,7 +13482,7 @@ async function claimSignalMaster() {
   // 先寫本機，確保雲端不可用時仍有單機層級的主機指定
   try { localStorage.setItem(SIGNAL_MASTER_KEY, JSON.stringify(info)); } catch(_e) {}
   try {
-    const r = await fetch('/api/master', {
+    const r = await _fetchT('/api/master', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: _TAB_ID, ua: info.ua }),
@@ -14664,7 +14691,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260821w';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260821x';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -14672,7 +14699,7 @@ let _verNotified = '';
    舊版跑到現在。5 分鐘檢查一次（原 30 分鐘，對「修了 bug 等生效」太慢）。 */
 setInterval(async () => {
   try {
-    const html = await fetch(window.location.pathname + '?_vchk=' + Date.now(), { cache: 'no-store' }).then(r => r.text());
+    const html = await _fetchT(window.location.pathname + '?_vchk=' + Date.now(), { cache: 'no-store' }, 10000).then(r => r.text());
     const m = html.match(/app\.js\?v=([\w-]+)/);
     if (m && m[1] !== APP_VERSION && m[1] !== _verNotified) {
       _verNotified = m[1];
@@ -15914,15 +15941,18 @@ async function recordSignalsFromScan(data) {
     if (!_sfCached || (_sfNow - _sfCached.ts) > 10 * 60 * 1000) {
       try {
         const _sfT0 = performance.now();
-        const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF, _sfOB] = await Promise.all([
+        // 20 秒期限：任一個補充請求掛住（網路黑洞）不能把整輪掃描掛住；逾時就當本輪沒補到，照常往下走
+        const _sfAll = await _withTimeout(Promise.all([
           fetchDerivativesData(coin.symbol),
           fetchWhaleTrades(coin.symbol),
           fetchFootprintData(coin.symbol),
           fetchLiquidationMap(coin.symbol),
           fetchMTFKlines(coin.symbol),
           fetchOrderBookImbalance(coin.symbol),
-        ]);
+        ]), 20000, null);
         _candAwaitMs += performance.now() - _sfT0;
+        if (!_sfAll) { try { _healthNote('fetch-timeout', `${coin.symbol} 補充抓取逾時 20 秒，本輪略過`); } catch(_e) {} _scanFetchCache[coin.symbol] = { ts: _sfNow - 8 * 60 * 1000, deriv: _sfCached?.deriv || null, whale: _sfCached?.whale || null }; }
+        const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF, _sfOB] = _sfAll || [null, null, null, null, null, null];
         if (_sfDeriv) coin.derivData = _sfDeriv;
         if (_sfWhale) coin.whaleData = _sfWhale;
         if (_sfFP)    _footprintCache[coin.symbol] = _sfFP;
@@ -27205,6 +27235,8 @@ function populateSettingsPage() {
   if (tmSel) tmSel.value = s.trailMode === 'r' ? 'r' : 'struct';
   const kaTgl = document.getElementById('s-keep-awake');
   if (kaTgl) kaTgl.checked = s.keepAwake !== false;
+  const liteTgl = document.getElementById('s-lite-mode');
+  if (liteTgl) liteTgl.checked = liteModeOn();
   try { renderPionexStatus(); } catch(_e) {}
   const scalpBotTgl = document.getElementById('s-scalp-bot');
   if (scalpBotTgl) scalpBotTgl.checked = s.scalpBotMode === true;    // 預設關閉（人工模擬）
@@ -27261,6 +27293,7 @@ function saveAllSettings() {
     mainMode:        (() => { const v = document.getElementById('s-main-mode')?.value; return v === 'balanced' ? 'balanced' : 'high'; })(),
     trailMode:       (() => { const v = document.getElementById('s-trail-mode')?.value; return v === 'r' ? 'r' : 'struct'; })(),
     keepAwake:       document.getElementById('s-keep-awake')?.checked ?? true,
+    liteMode:        (() => { const el = document.getElementById('s-lite-mode'); return el ? el.checked === true : loadSettings().liteMode; })(),
     // 學習凍結：勾選 → 沿用尚未到期的舊值，否則從現在起 28 天；取消 → 0（立即解凍）
     learnFreezeUntil: (() => {
       const el = document.getElementById('s-learn-freeze');
@@ -32022,7 +32055,7 @@ async function oiWatchScan(data) {
       const sym = symbol.replace('/', '');
       const ctrl = new AbortController();
       const tm = setTimeout(() => ctrl.abort(), 8000);
-      const r = await fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=7`,
+      const r = await _fetchT(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${sym}&period=5m&limit=7`,
         { signal: ctrl.signal });
       clearTimeout(tm);
       if (!r.ok) { _oiWatchCache[symbol] = { at: now, ok: false }; return; }
@@ -33336,7 +33369,7 @@ async function btFetchAll(symbol) {
     f('15m', BT_CFG.bars15m), f('1h', 300), f('4h', 120), f('1d', 60), f('1w', 40),
     (async () => {
       try {
-        const r = await fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${sym}&limit=100`);
+        const r = await _fetchT(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${sym}&limit=100`, {}, 8000);
         return r.ok ? await r.json() : [];
       } catch(_e) { return []; }
     })(),

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260821w" />
+  <link rel="stylesheet" href="css/styles.css?v=20260821x" />
 </head>
 <body>
 
@@ -884,6 +884,17 @@
           </label>
         </div>
 
+        <div class="setting-row">
+          <div>
+            <div class="setting-name">🪶 低效能模式</div>
+            <div class="setting-desc">關掉毛玻璃、動畫、陰影與濾鏡（內容與功能不變）。入門筆電當主機時請開：頁面十幾層毛玻璃加無限動畫會讓內顯 GPU 24 小時持續合成，是「只有這個分頁會崩、其他分頁沒事」最常見的來源之一。記憶體 ≤4GB 或雙核機器預設開啟。</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-lite-mode" onchange="try{saveAllSettings()}catch(e){};try{applyLiteMode()}catch(e){}" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+
         <!-- 資料源即時性 -->
         <div class="setting-row vertical" style="gap:8px;margin-top:6px">
           <div>
@@ -1094,8 +1105,8 @@
 
   <!-- 脚本 -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260821w"></script>
-  <script src="js/api.js?v=20260821w"></script>
-  <script src="js/app.js?v=20260821w"></script>
+  <script src="js/indicators.js?v=20260821x"></script>
+  <script src="js/api.js?v=20260821x"></script>
+  <script src="js/app.js?v=20260821x"></script>
 </body>
 </html>

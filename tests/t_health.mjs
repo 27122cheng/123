@@ -146,6 +146,28 @@ const dg = await p.evaluate(() => { const t = _diagBundle(); const j = JSON.pars
 if (!dg.ok) throw new Error('診斷包缺欄位：' + JSON.stringify(dg));
 console.log(`✓ 診斷包：${dg.len} 字元，含版本／最後步驟／心跳／最慢候選／設定`);
 
+// ══ ⑫ await 期限：掛住的 fetchMarketData 90 秒內（測試縮成 300ms）結束本輪、scanning 歸零；補充抓取逾時不卡住；停擺兩倍門檻即使掃描中也重整；低效能模式切換 ══
+const tmo = await p.evaluate(async () => {
+  const origWT = _withTimeout; _withTimeout = (pr, ms, fb) => origWT(pr, Math.min(ms, 300), fb);
+  fetchMarketData = () => new Promise(() => {});   // 永遠不回來
+  state.scanning = false; const n0 = _refreshTickN; const t0 = performance.now();
+  await _runRefreshTick(60);
+  const r = { ms: Math.round(performance.now() - t0), scanning: state.scanning, ran: _refreshTickN - n0, note: (JSON.parse(localStorage.getItem('csp_health_log') || '[]')).some(x => x.kind === 'fetch-timeout') };
+  _withTimeout = origWT;
+  // 停擺兩倍門檻：掃描中也要重整
+  const reloads = []; const o = _selfHealReload; _selfHealReload = x => reloads.push(x); const oS = _healthSnapshot;
+  localStorage.removeItem('csp_selfheal'); state.scanning = true; _healthReloadArmed = false;
+  _healthSnapshot = () => ({ heapMB: 200, uptimeMin: 120, sinceDoneMin: 12, scanning: true, scanningMin: 12, lsKB: 500, interval: 60, ticks: 100, hidden: false }); _healthTick(); r.softWhileScanning = reloads.length;
+  _healthSnapshot = () => ({ heapMB: 200, uptimeMin: 120, sinceDoneMin: 25, scanning: true, scanningMin: 25, lsKB: 500, interval: 60, ticks: 100, hidden: false }); _healthReloadArmed = false; _healthTick(); r.hardWhileScanning = reloads.length;
+  _selfHealReload = o; _healthSnapshot = oS; state.scanning = false; localStorage.removeItem('csp_selfheal');
+  // 低效能模式
+  const st = loadSettings(); st.liteMode = true; saveSettings(st); applyLiteMode(); r.liteOn = document.body.classList.contains('lite');
+  st.liteMode = false; saveSettings(st); applyLiteMode(); r.liteOff = !document.body.classList.contains('lite'); delete st.liteMode; saveSettings(st);
+  return r;
+});
+if (tmo.ms > 5000 || tmo.scanning || tmo.ran !== 1 || !tmo.note || tmo.softWhileScanning !== 0 || tmo.hardWhileScanning !== 1 || !tmo.liteOn || !tmo.liteOff) throw new Error('await 期限／硬重整／低效能模式錯誤：' + JSON.stringify(tmo));
+console.log(`✓ await 期限：掛住的行情請求 ${tmo.ms}ms 內結束本輪、scanning=${tmo.scanning}、健康日誌有 fetch-timeout；停擺 12 分掃描中不重整、25 分硬重整；低效能模式開關正常`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');

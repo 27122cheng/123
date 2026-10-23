@@ -1127,11 +1127,13 @@ async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   let body = String(text ?? '');
   if (body.length > TG_MAX_LEN) body = body.slice(0, TG_MAX_LEN) + '\n…（訊息過長已截斷）';
-  const post = (payload) => fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(Object.assign({ chat_id: chatId, disable_web_page_preview: true }, payload)),
-  });
+  const post = (payload) => { const ctrl = new AbortController(); const tm = setTimeout(() => ctrl.abort(), 15000);   // 15 秒期限：Telegram 掛住不能拖住呼叫端
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ chat_id: chatId, disable_web_page_preview: true }, payload)),
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(tm)); };
   try {
     const res = await post({ text: body, parse_mode: 'HTML' });
     if (res.ok) return true;
