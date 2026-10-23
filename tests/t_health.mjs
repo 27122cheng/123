@@ -141,6 +141,11 @@ const hb = await p.evaluate(async () => {
 if (!hb.a.includes('外部關閉') || !hb.b2.includes('卡住') || !hb.hbFresh) throw new Error('心跳判定錯誤：' + JSON.stringify(hb));
 console.log(`✓ 心跳判定：晚 8 分鐘 → 「${hb.a.slice(0, 22)}…」；同時停 → 「${hb.b2.slice(0, 20)}…」；心跳正在寫`);
 
+// ══ ⑪ 診斷包：含最後步驟／心跳／最慢候選／設定，可序列化；凍結線索判定排最前 ══
+const dg = await p.evaluate(() => { const t = _diagBundle(); const j = JSON.parse(t.replace(/^```json\n|\n```$/g, '')); return { ok: !!(j.v && j.heartbeat && 'lastStep' in j && 'slowCands' in j && j.settings), len: t.length }; });
+if (!dg.ok) throw new Error('診斷包缺欄位：' + JSON.stringify(dg));
+console.log(`✓ 診斷包：${dg.len} 字元，含版本／最後步驟／心跳／最慢候選／設定`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');
