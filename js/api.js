@@ -699,15 +699,23 @@ async function fetchAll24hQuoteVols() {
 }
 
 /* 並行批次獲取所有交易對 K 線，並即時計算技術指標 */
+/* 開頁期間的細粒度軌跡（只在開頁軌跡尚未走到 done 時寫；app.js 未載入時靜默） */
+function _bootStep(name) {
+  try { if (typeof _bootMark === 'function' && typeof _bootActive === 'function' && _bootActive()) _bootMark(name); } catch(_e) {}
+}
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
-  const batchSize = 20;
+  /* 弱機器（低效能模式）或自動安全模式：每批 10 個幣（50 個併發請求）而不是 20 個（100 個）——
+     一批的回應 JSON 全部同時留在記憶體裡等解析；主機筆電的開頁崩潰點正好在最後一批的抓取／分析期間 */
+  let _weak = false; try { _weak = (typeof liteModeOn === 'function' && liteModeOn()) || (typeof AUTO_SAFE !== 'undefined' && AUTO_SAFE); } catch(_e) {}
+  const batchSize = _weak ? 10 : 20;
   _klineSrcCount = { okx: 0, binance: 0, cache: 0 };
   _okxSkipped = 0;
 
   /* 先批量獲取所有現貨即時價格，作為 kline 失敗時的精確備用；
      同時更新 OKX 上架幣種表（未上架的幣直接走幣安，價格精度對齊 OKX） */
   if (typeof updateScanProgress === 'function') updateScanProgress(0);
+  _bootStep('現貨價/幣種表');
   const [spotPrices, quoteVols24] = await Promise.all([
     fetchAllSpotPrices(), fetchAll24hQuoteVols(), fetchOkxSymbolSet().catch(() => null),
   ]);
@@ -740,6 +748,7 @@ async function fetchAllFromBinance(timeframe) {
 
   for (let i = 0; i < pairs.length; i += batchSize) {
     const batch = pairs.slice(i, i + batchSize);
+    _bootStep(`抓取 ${i + 1}-${Math.min(i + batchSize, pairs.length)}/${pairs.length}`);
 
     const batchResults = await Promise.allSettled(
       batch.map(pair => {
@@ -755,6 +764,7 @@ async function fetchAllFromBinance(timeframe) {
         ]);
       })
     );
+    _bootStep(`分析 ${i + 1}-${Math.min(i + batchSize, pairs.length)}`);
 
     batchResults.forEach((r, j) => {
       const idx  = i + j;

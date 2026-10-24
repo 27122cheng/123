@@ -202,11 +202,28 @@ const hm = await p.evaluate(async () => {
   state.data = [{ symbol: 'BTC/USDT', price: '100', score: 60, trend: '看漲' }]; fetchMarketData = async () => ({ data: state.data, source: 'binance' }); state.scanning = false;
   await _runRefreshTick(60);
   renderAll = orig; applyFilters = oAF;
-  st.hostMode = false; saveSettings(st); document.body.classList.remove('hostmode'); clearInterval(_hostPanelTimer); document.getElementById('host-panel')?.remove();
-  return { on, cls, panel, appHidden, renders, hasStatus: txt.includes('主機精簡模式') && txt.includes('運行') && txt.includes('複製診斷'), off: hostModeOn() };
+  const htmlCls = document.documentElement.classList.contains('hostmode');
+  st.hostMode = false; saveSettings(st); document.body.classList.remove('hostmode'); document.documentElement.classList.remove('hostmode'); clearInterval(_hostPanelTimer); document.getElementById('host-panel')?.remove();
+  return { on, cls, htmlCls, panel, appHidden, renders, hasStatus: txt.includes('主機精簡模式') && txt.includes('運行') && txt.includes('複製診斷'), off: hostModeOn() };
 });
-if (!hm.on || !hm.cls || !hm.panel || !hm.appHidden || hm.renders !== 0 || !hm.hasStatus || hm.off) throw new Error('主機精簡模式錯誤：' + JSON.stringify(hm));
-console.log(`✓ 主機精簡模式：介面隱藏=${hm.appHidden}、狀態卡有內容、刷新迴圈 renderAll ${hm.renders} 次；關閉後恢復`);
+if (!hm.on || !hm.cls || !hm.htmlCls || !hm.panel || !hm.appHidden || hm.renders !== 0 || !hm.hasStatus || hm.off) throw new Error('主機精簡模式錯誤：' + JSON.stringify(hm));
+console.log(`✓ 主機精簡模式：介面隱藏=${hm.appHidden}、html/body 都掛 class、狀態卡有內容、刷新迴圈 renderAll ${hm.renders} 次；關閉後恢復`);
+
+// ══ ⑯ 開頁順序：背景模組等 done 之後才啟動且只啟動一次；開頁軌跡走完後 api.js 的細粒度標記不再寫；崩在開頁初期的最終判定＝無法判定 ══
+await p.waitForFunction(() => _postBootStarted === true, { timeout: 20000 });   // done +8 秒才啟動
+const bo = await p.evaluate(async () => {
+  const r = { bootActive: _bootActive(), started: _postBootStarted, hasHealth: !!_healthTimer };
+  const n0 = _bootTraceArr.length; _bootStep('不該出現'); r.noLateMark = _bootTraceArr.length === n0;
+  let hm = 0; const o = startHealthMonitor; startHealthMonitor = () => { hm++; };
+  _postBootStarted = false; _startPostBootModules('t'); _startPostBootModules('t'); startHealthMonitor = o; r.once = hm;
+  const t = Date.now();
+  r.early = _freezeVerdict2({ n: '掃描 80%', t: t - 600e3 }, { t: t - 600e3 + 5000 }, { t: t - 600e3 - 3600e3 });
+  r.liteHtml = (() => { const st = loadSettings(); st.liteMode = true; saveSettings(st); applyLiteMode(); const a = document.documentElement.classList.contains('lite'); st.liteMode = false; saveSettings(st); applyLiteMode(); const b = !document.documentElement.classList.contains('lite'); delete st.liteMode; saveSettings(st); return a && b; })();
+  r.loadingTimerCleared = _loadingAnimTimer === null;
+  return r;
+});
+if (bo.bootActive || !bo.started || !bo.hasHealth || !bo.noLateMark || bo.once !== 1 || !bo.early.includes('無法判定') || !bo.liteHtml || !bo.loadingTimerCleared) throw new Error('開頁順序錯誤：' + JSON.stringify(bo));
+console.log(`✓ 開頁順序：done 後背景模組啟動（健康監視=${bo.hasHealth}）且只一次；done 後細粒度標記不寫；開頁初期崩潰 → 「${bo.early.slice(0, 30)}…」；html.lite 同步；載入動畫計時器已停`);
 
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));

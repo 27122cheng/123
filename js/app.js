@@ -87,6 +87,8 @@ function _freezeVerdict(step, hb) {
 function _freezeVerdict2(step, hb, wh) {
   if (!step || !hb || !hb.t || !wh || !wh.t) return '';
   const gapS = (wh.t - hb.t) / 1000;
+  // 工作執行緒心跳比主執行緒心跳舊超過 60 秒 → 那次開頁它根本還沒啟動（開頁完成 +8 秒才開），留下的是更早一次的值
+  if (gapS <= -60) return `最終判定：無法判定——崩在開頁初期，工作執行緒心跳尚未啟動（主執行緒最後心跳在「${step.n}」附近）`;
   if (gapS >= 60) return `最終判定：工作執行緒在主執行緒停止後還活了 ${Math.round(gapS / 60)} 分鐘 → 主執行緒卡死在「${step.n}」（是頁面同步工作的問題）`;
   return `最終判定：主執行緒與工作執行緒同時停止（差 ${Math.round(Math.abs(gapS))} 秒）→ 整個分頁程序被結束（瀏覽器崩潰／系統或記憶體保護砍掉）`;
 }
@@ -194,7 +196,12 @@ function _bootErrHook() {
   try {
     if (AUTO_SAFE) {
       const pt = JSON.parse(localStorage.getItem('csp_boot_trace_prev') || '[]');
-      if (Array.isArray(pt) && pt.length) log('載入線索', `上次載入停在「${pt.slice(-2).join(' → ')}」之後沒有走完——卡點就在最後一步之後（本次以安全模式啟動）`);
+      if (Array.isArray(pt) && pt.length) {
+        log('載入線索', `上次載入停在「${pt.slice(-2).join(' → ')}」之後沒有走完——卡點就在最後一步之後（本次以安全模式啟動）`);
+        // 連續幾次開頁沒走完也記進健康日誌（診斷包看得到）；走到 done 時歸零
+        let n = 0; try { n = (parseInt(localStorage.getItem('csp_boot_fail_n')) || 0) + 1; localStorage.setItem('csp_boot_fail_n', String(n)); } catch(_e) {}
+        try { _healthNote('boot-fail', `第 ${n} 次連續開頁未完成，停在「${pt.slice(-2).join(' → ')}」`); } catch(_e) {}
+      }
     }
   } catch(_e) {}
   try {
@@ -277,6 +284,18 @@ try {
   }
 } catch(_e) {}
 const _bootTraceArr = [];
+function _bootActive() { try { return !_bootTraceArr.some(x => String(x).indexOf('done') === 0); } catch(_e) { return false; } }
+/* 開頁第一刻就把低效能／精簡模式的 class 掛到 <html>（2026-10-24）：
+   先前 applyLiteMode／startHostMode 排在掃描完成之後才跑，等於整個開頁期間（載入畫面＋背後整頁首次繪製）
+   都還是完整特效——主機筆電最近一次就是在「掃描 80%」之後、尚未到「掃描完成」時整個分頁被結束。
+   自動安全模式（上次沒走完）一律先以低效能呈現。CSS 同時認 html.lite／body.lite。 */
+let _bootLiteForced = false;
+try {
+  const _lite = AUTO_SAFE || liteModeOn();
+  _bootLiteForced = AUTO_SAFE && !liteModeOn();
+  if (_lite) document.documentElement.classList.add('lite');
+  if (hostModeOn()) document.documentElement.classList.add('hostmode');
+} catch(_e) {}
 function _bootMark(name) {
   try {
     _bootTraceArr.push(name + '@' + (performance.now() / 1000).toFixed(1) + 's');
@@ -291,17 +310,30 @@ function _bootMark(name) {
     }
     el.textContent = _bootTraceArr.slice(-4).join(' → ');
     if (name === 'done') {
-      try { localStorage.removeItem('csp_boot_trace'); } catch(_e2) {}   // 走完＝下次正常模式
+      try { localStorage.removeItem('csp_boot_trace'); localStorage.removeItem('csp_boot_fail_n'); } catch(_e2) {}   // 走完＝下次正常模式
       setTimeout(() => { try { el.remove(); } catch(_e2) {} }, 5000);
     }
   } catch(_e) {}
 }
 
+/* 開頁後才啟動的背景模組（2026-10-24）：健康監視、保活鎖、工作執行緒心跳。
+   先前它們在掃描中途（心跳 4.5 秒）或掃描剛結束就啟動，與開頁抓取／分析疊在一起；現在一律等
+   開頁軌跡走到 done 再過 8 秒才啟動——開頁期間只剩「抓 K 線→分析→渲染」一條路，崩了就能確定是這條路。
+   init 中途炸掉沒走到 done 時，60 秒後備計時器照樣啟動（健康監視不能缺席）。
+   自動安全模式（上次沒走完）這一輪不開保活鎖與工作執行緒心跳：若安全模式不崩、正常模式崩，兇手就在這幾個模組裡。 */
+let _postBootStarted = false;
+function _startPostBootModules(why) {
+  if (_postBootStarted) return; _postBootStarted = true;
+  try { startHealthMonitor(); } catch(_e) {}
+  if (AUTO_SAFE) { try { _healthNote('boot-safe', `自動安全模式：本輪略過保活鎖、工作執行緒心跳、資訊卡、清算流（${why}）`); } catch(_e) {} return; }
+  try { startMasterKeepAlive(); } catch(_e) {}
+  try { _startWorkerHeartbeat(); } catch(_e) {}
+}
 async function init() {
   _bootErrHook();      // 最先掛：之後任何一步爆掉都看得見
-  setTimeout(() => { try { _startWorkerHeartbeat(); } catch(_e) {} }, 4500);   // 先讓開頁讀完上一次的工作執行緒心跳，再啟動新的
+  setTimeout(() => { try { _startPostBootModules('60 秒後備'); } catch(_e) {} }, 60000);
   _bootMark(AUTO_SAFE ? 'start(自動安全模式:上次未完成)' : SAFE_MODE ? 'start(安全模式)' : 'start');
-  if (AUTO_SAFE) { try { showToast('⚠️ 上次載入未完成，本次以安全模式啟動（資訊卡與背景模組暫停一輪）', 'warning'); } catch(_e) {} }
+  if (AUTO_SAFE) { try { showToast('⚠️ 上次載入未完成，本次以安全模式啟動（資訊卡與背景模組暫停一輪' + (_bootLiteForced ? '、暫以低效能模式呈現' : '') + '）', 'warning'); } catch(_e) {} }
   // 版本徽章：固定顯示在右下角——任何截圖都能立刻判斷裝置實際跑的版本，
   // 「雲端沒部署」與「裝置快取舊版」從此一眼可分
   try {
@@ -372,7 +404,9 @@ async function init() {
     const { data, source } = await fetchMarketData(state.timeframe);
     state.data       = data;
     state.dataSource = source;
+    _bootMark('K線完成' + (data && data.length ? `(${data.length}幣/${source})` : ''));
     await _maybeFetchPionex();   // 一般單價格來源＝Pionex 時，先拿到報價再建單／監控
+    _bootMark('Pionex報價');
     state.filtered   = [...data];
     refreshOkxPrices().catch(() => {});
   } catch (e) {
@@ -383,10 +417,9 @@ async function init() {
   _bootMark('掃描完成' + ((state.data || []).length ? `(${state.data.length}幣)` : '(無資料)'));
   // 後續處理獨立保護，不影響 state.data
   try { updateOpenTrades(state.data); } catch(e) { console.error('[init] updateOpenTrades 錯誤:', e); }
+  _bootMark('持倉更新');
 
   hideLoading();
-  try { startHealthMonitor(); } catch(_e) {}
-  try { startMasterKeepAlive(); } catch(_e) {}
   try { applyLiteMode(); } catch(_e) {}
   try { startHostMode(); } catch(_e) {}
   hideScanBar();
@@ -407,6 +440,7 @@ async function init() {
   // 預載宏觀快取（背景計時器每 15 秒會自動掃描，不需在 init 立即呼叫 recordSignalsFromScan）
   if (!SAFE_MODE) _prefetchMacroCache();
   _bootMark('done');
+  setTimeout(() => { try { _startPostBootModules('開頁完成 +8s'); } catch(_e) {} }, 8000);
 }
 
 /* 宏觀快取持久化：CoinGecko 免費端點限速兇，429 的空窗期一般單會整輪停擺。
@@ -500,12 +534,13 @@ function animateLoadingBar() {
   const bar   = document.getElementById('loading-bar');
   const texts = ['正在連接幣安行情...', '正在獲取 K 線數據...', '正在計算 RSI / ADX / EMA...', '正在分析趨勢信號...'];
   let p = 0, t = 0;
-  setInterval(() => {
+  _loadingAnimTimer = setInterval(() => {
     p = Math.min(p + randBetween(4, 10), 90);
     bar.style.width = p + '%';
     if (t < texts.length) document.getElementById('loading-text').textContent = texts[t++];
   }, 500);
 }
+let _loadingAnimTimer = null;   // 載入畫面收掉後停掉這個計時器（先前一直跑到關頁）
 function randBetween(a, b) { return a + Math.random() * (b - a); }
 
 /* ── 掃描進度條（K線批次加載時顯示）─────────────────────────── */
@@ -532,6 +567,7 @@ function hideScanBar() {
 
 function hideLoading() {
   document.getElementById('loading-bar').style.width = '100%';
+  if (_loadingAnimTimer) { clearInterval(_loadingAnimTimer); _loadingAnimTimer = null; }
   setTimeout(() => document.getElementById('loading-overlay').classList.add('hide'), 400);
 }
 
@@ -901,7 +937,7 @@ async function startMasterKeepAlive() {
    毛玻璃、動畫、陰影與濾鏡，內容與功能完全不變。記憶體 ≤4GB 或核心數 ≤2 的機器預設開啟（使用者可改）。 */
 function liteModeDefault() { try { return (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2); } catch(_e) { return false; } }
 function liteModeOn() { try { const v = loadSettings().liteMode; return v == null ? !!liteModeDefault() : v === true; } catch(_e) { return false; } }
-function applyLiteMode() { try { document.body.classList.toggle('lite', liteModeOn()); } catch(_e) {} }
+function applyLiteMode() { try { const on = liteModeOn() || (AUTO_SAFE && _bootActive()); document.body.classList.toggle('lite', on); document.documentElement.classList.toggle('lite', on); } catch(_e) {} }
 /* ── 主機精簡模式（2026-10-24）────────────────────────────────────────────
    使用者的主機筆電反覆「直接崩潰」，JS 記憶體只有 40～50MB、長任務不到 1 秒，找不到程式面的洩漏或卡死。
    剩下的可能來源都在「畫面」這一側：整個儀表板（上百列表格、卡片、毛玻璃）每分鐘重建一次、GPU 持續合成，
@@ -939,7 +975,7 @@ function renderHostPanel() {
 }
 function startHostMode() {
   if (!hostModeOn()) return;
-  try { document.body.classList.add('hostmode'); } catch(_e) {}
+  try { document.body.classList.add('hostmode'); document.documentElement.classList.add('hostmode'); } catch(_e) {}
   renderHostPanel();
   if (_hostPanelTimer) clearInterval(_hostPanelTimer);
   _hostPanelTimer = setInterval(renderHostPanel, 15000);
@@ -14765,7 +14801,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
