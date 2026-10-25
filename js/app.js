@@ -325,7 +325,17 @@ let _postBootStarted = false;
 function _startPostBootModules(why) {
   if (_postBootStarted) return; _postBootStarted = true;
   try { startHealthMonitor(); } catch(_e) {}
-  if (AUTO_SAFE) { try { _healthNote('boot-safe', `自動安全模式：本輪略過保活鎖、工作執行緒心跳、資訊卡、清算流（${why}）`); } catch(_e) {} return; }
+  if (AUTO_SAFE) {
+    /* 資訊卡在自動安全模式下不是「不載」，而是「等開頁走完再載」（2026-10-25 使用者回報「儀表板反轉下面的部分都不見了」：
+       主機每崩一次下一輪就是自動安全模式，大方向／新聞／資金流動三張卡整輪停在「載入…」；反轉卡有背景輪掃自己會補，所以只有它在）。 */
+    if (!hostModeOn()) {
+      try { loadDashboardMacro().catch(e => console.warn('[loadDashboardMacro:safe]', e)); } catch(_e) {}
+      try { _dashWidgetWatchdog(); } catch(_e) {}
+      try { extMacroTick(); } catch(_e) {}
+    }
+    try { _healthNote('boot-safe', `自動安全模式：本輪略過保活鎖、工作執行緒心跳、清算流；資訊卡延後至開頁完成後載入（${why}）`); } catch(_e) {}
+    return;
+  }
   try { startMasterKeepAlive(); } catch(_e) {}
   try { _startWorkerHeartbeat(); } catch(_e) {}
 }
@@ -333,7 +343,7 @@ async function init() {
   _bootErrHook();      // 最先掛：之後任何一步爆掉都看得見
   setTimeout(() => { try { _startPostBootModules('60 秒後備'); } catch(_e) {} }, 60000);
   _bootMark(AUTO_SAFE ? 'start(自動安全模式:上次未完成)' : SAFE_MODE ? 'start(安全模式)' : 'start');
-  if (AUTO_SAFE) { try { showToast('⚠️ 上次載入未完成，本次以安全模式啟動（資訊卡與背景模組暫停一輪' + (_bootLiteForced ? '、暫以低效能模式呈現' : '') + '）', 'warning'); } catch(_e) {} }
+  if (AUTO_SAFE) { try { showToast('⚠️ 上次載入未完成，本次以安全模式啟動（背景模組暫停一輪、資訊卡延後載入' + (_bootLiteForced ? '、暫以低效能模式呈現' : '') + '）', 'warning'); } catch(_e) {} }
   // 版本徽章：固定顯示在右下角——任何截圖都能立刻判斷裝置實際跑的版本，
   // 「雲端沒部署」與「裝置快取舊版」從此一眼可分
   try {
@@ -14801,7 +14811,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次

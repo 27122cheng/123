@@ -21,6 +21,10 @@ if (!early.auto || !early.htmlLite || early.started) throw new Error('自動安�
 if (early.failN !== '1') throw new Error('boot-fail 計數應為 1');
 if (late.failN !== null) throw new Error('done 後 boot-fail 計數應清除');
 if (late.worker || late.keep || !late.health) throw new Error('安全模式下不該啟動工作執行緒／保活，但健康監視要在');
+// 自動安全模式：資訊卡延後到 done 之後載入（不是整輪停在「載入…」）
+await p.waitForFunction(() => !document.querySelector('#market-outlook-body .adv-loading') && !document.querySelector('#capital-flow-body .adv-loading'), { timeout: 40000 });
+const cards = await p.evaluate(() => ['market-outlook-body', 'news-body', 'capital-flow-body'].map(id => document.getElementById(id).textContent.trim().slice(0, 14)));
+console.log('safe cards', JSON.stringify(cards));
 if (!trace.some(x => x.startsWith('現貨價/幣種表')) || !trace.some(x => x.startsWith('持倉更新'))) throw new Error('細粒度標記缺失');
 if (!chip.includes('載入線索') || !hl.includes('boot-fail') || !hl.includes('boot-safe')) throw new Error('線索／健康日誌缺失');
 // 第二次（正常模式）：模組在 done 後啟動，含工作執行緒與保活
