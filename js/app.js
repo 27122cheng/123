@@ -2,6 +2,8 @@
    app.js — 主應用邏輯（繁體中文 + 幣安實時K線版）
    ============================================================ */
 
+try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'app.js 頂層執行', t: Date.now(), v: 'js' })); } catch(_e) {}   // 頂層執行卡死也留得下線索（上次的值已由 index.html 行內腳本先留住）
+
 /* ── 交易設置緩存（供 Telegram 通知使用）────────────────────── */
 const _tradeSetupCache  = {};
 const _footprintCache   = {};  // 足跡圖數據緩存（幣種詳情頁抓取後寫入）
@@ -175,7 +177,8 @@ function _bootErrHook() {
   } catch(_e) {}
   // ── 上次是不是卡死？（麵包屑不是 unload/idle → 上次在那一步被強制關掉）──
   try {
-    const prev = JSON.parse(localStorage.getItem('csp_last_step') || 'null');
+    // index.html 的行內腳本在所有外部腳本之前就把上次的最後步驟留住（之後各腳本頂層執行也會寫步驟）；舊版 HTML 沒有時退回直接讀
+    const prev = (typeof window._cspPrevStep !== 'undefined') ? window._cspPrevStep : JSON.parse(localStorage.getItem('csp_last_step') || 'null');
     if (prev && prev.n && prev.n !== 'unload' && prev.n !== 'idle') {
       const when = new Date(prev.t || 0).toLocaleString('zh-TW', { hour12: false });
       let _extra = '';
@@ -297,6 +300,7 @@ try {
   if (hostModeOn()) document.documentElement.classList.add('hostmode');
 } catch(_e) {}
 function _bootMark(name) {
+  try { _stepMark(name === 'done' ? 'idle' : '開頁 ' + name); } catch(_e) {}   // 開頁每一步也進凍結麵包屑（主執行緒卡死時下次開頁看得到）
   try {
     _bootTraceArr.push(name + '@' + (performance.now() / 1000).toFixed(1) + 's');
     try { localStorage.setItem('csp_boot_trace', JSON.stringify(_bootTraceArr.slice(-30))); } catch(_e) {}
@@ -14811,7 +14815,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260822c" />
+  <link rel="stylesheet" href="css/styles.css?v=20260822d" />
 </head>
 <body>
 
@@ -1115,9 +1115,14 @@
   <div class="toast-container" id="toast-container"></div>
 
   <!-- 脚本 -->
-  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script src="js/indicators.js?v=20260822c"></script>
-  <script src="js/api.js?v=20260822c"></script>
-  <script src="js/app.js?v=20260822c"></script>
+  <!-- 2026-10-25：主機筆電出現 Chrome「網頁無回應」且整頁黑屏＝主執行緒在任何東西畫出來之前就卡死。
+       ① 這段行內腳本在所有外部腳本之前先把上次的最後步驟留住（供 app.js 顯示凍結線索），再寫下「載入腳本」——
+          之後任何腳本的頂層執行卡死，下次開頁都看得到。
+       ② 三支主腳本改 defer、TradingView 改 async：載入畫面先畫出來再執行 JS，卡死時至少看得到開頁軌跡。 -->
+  <script>try{var _s=localStorage.getItem('csp_last_step');window._cspPrevStep=_s?JSON.parse(_s):null;localStorage.setItem('csp_last_step',JSON.stringify({n:'載入腳本',t:Date.now(),v:'html'}));}catch(e){window._cspPrevStep=null;}</script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js" async></script>
+  <script src="js/indicators.js?v=20260822d" defer></script>
+  <script src="js/api.js?v=20260822d" defer></script>
+  <script src="js/app.js?v=20260822d" defer></script>
 </body>
 </html>

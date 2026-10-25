@@ -36,5 +36,15 @@ console.log('normal', JSON.stringify(n2), JSON.stringify(n2late));
 if (n2.auto || n2.started || !n2late.worker || !n2late.health) throw new Error('正常模式啟動順序錯誤');
 const realErrs = errs.filter(e => !/fetch|network|Failed to load/i.test(e));
 if (realErrs.length) throw new Error('頁面錯誤：' + realErrs.join(' | '));
+// 主執行緒卡死線索：index.html 行內腳本先留住上次最後步驟 → 下次開頁紅條顯示凍結線索；腳本 defer；done 後麵包屑歸 idle
+const idle = await p.evaluate(() => JSON.parse(localStorage.getItem('csp_last_step') || '{}').n);
+// 模擬被強制結束：正常離開會寫 unload，所以在 pagehide 之後再覆寫成「卡在 K 線分析」
+await p.evaluate(() => window.addEventListener('pagehide', () => localStorage.setItem('csp_last_step', JSON.stringify({ n: 'K線分析 ZZ/USDT', t: Date.now() - 120e3, v: 'x' }))));
+await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+await p.waitForFunction(() => typeof _bootErrHook === 'function' && !!document.getElementById('err-chip-body'), { timeout: 30000 });
+const hang = await p.evaluate(() => ({ prev: window._cspPrevStep && window._cspPrevStep.n, chip: (JSON.parse(localStorage.getItem('csp_err_log') || '[]').find(x => x.kind === '凍結線索') || {}).msg || '', deferred: !!document.querySelector('script[src*="app.js"]').defer, tvAsync: !!document.querySelector('script[src*="tv.js"]').async }));
+console.log('idle', idle, 'hang', JSON.stringify(hang).slice(0, 200));
+if (idle.startsWith('開頁 ') || hang.prev !== 'K線分析 ZZ/USDT' ||  !hang.chip.includes('K線分析 ZZ/USDT') || !hang.deferred || !hang.tvAsync) throw new Error('卡死線索錯誤');
+await p.waitForFunction(() => _bootTraceArr.some(x => x.startsWith('done')), { timeout: 60000 });
 console.log('ALL PASS t_boot');
 await b.close();

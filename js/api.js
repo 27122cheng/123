@@ -770,6 +770,8 @@ async function fetchAllFromBinance(timeframe) {
       const idx  = i + j;
       const pair = pairs[idx];
       const sym  = pair.s.replace('/', '');
+      // 逐幣凍結麵包屑：分析途中主執行緒卡死（Chrome「網頁無回應」），下次開頁就知道是哪個幣的哪批資料
+      try { if (typeof _stepMark === 'function') _stepMark('K線分析 ' + pair.s); } catch(_e) {}
       // r.value 是三個 SettledResult；r.status 永遠 'fulfilled'（allSettled 不 reject）
       const settled  = r.status === 'fulfilled' ? r.value : [];
       const mainRaw  = settled[0]?.status === 'fulfilled' ? settled[0].value : null;
@@ -867,6 +869,7 @@ async function fetchAllFromBinance(timeframe) {
     if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
   }
 
+  try { if (typeof _stepMark === 'function') _stepMark('K線分析完成'); } catch(_e) {}
   if (_okxSkipped > 0) {
     console.warn(`[OKX] 本輪 ${_okxSkipped} 筆因限速隊列已滿（>${OKX_MAX_QUEUE_MS / 1000}s）改走幣安；`
       + `幣種數過多時屬正常，可於設定頁減少幣種以提高 OKX 覆蓋率`);
