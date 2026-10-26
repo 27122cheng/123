@@ -10,7 +10,11 @@
    網址 ?nocards=1／?nocards=0 可手動開關、?nonews=1 只停新聞卡。② 畫面繪製也進麵包屑（_paintMark）：
    「繪製中」之後沒有「已繪製」＝卡在版面計算。計數在頁面存活 3 分鐘後歸零。 */
 if (typeof window._cspPrevStep === 'undefined') { try { const _s = localStorage.getItem('csp_last_step'); window._cspPrevStep = _s ? JSON.parse(_s) : null; } catch(_e) { window._cspPrevStep = null; } }
+const NO_LS = /[?&]nols=1/.test(location.search);   // 診斷寫入不走 localStorage（記憶體＋cookie）
+let _prevPend = null; try { _prevPend = _readPendCookie(); } catch(_e) {}   // 上次最後一次「準備寫入」的步驟（cookie），要在本次任何寫入之前讀
 let AUTO_NOCARDS = /[?&]nocards=1/.test(location.search);
+const _cardsAllow = (m => m ? m[1].split(',') : null)(/[?&]cards=([a-z,]+)/.exec(location.search));   // ?cards=env,er,outlook,news,flow 只畫指定的卡
+function _cardOn(k) { return !_cardsAllow || _cardsAllow.includes(k); }
 const NO_NEWS = /[?&]nonews=1/.test(location.search);
 let _freezeN = 0, _autoNoCards = false;
 try {
@@ -21,7 +25,7 @@ try {
   if (_freezeN >= 2 && !/[?&]nocards=0/.test(location.search) && !AUTO_NOCARDS) { AUTO_NOCARDS = true; _autoNoCards = true; }
   setTimeout(() => { try { localStorage.removeItem('csp_freeze_n'); } catch(_e) {} }, 180000);   // 活過 3 分鐘＝這次沒卡，歸零
 } catch(_e) {}
-try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'app.js 頂層執行', t: Date.now(), v: 'js' })); } catch(_e) {}   // 頂層執行卡死也留得下線索（上次的值已由 index.html 行內腳本先留住）
+try { if (!NO_LS) localStorage.setItem('csp_last_step', JSON.stringify({ n: 'app.js 頂層執行', t: Date.now(), v: 'js' })); } catch(_e) {}   // 頂層執行卡死也留得下線索（上次的值已由 index.html 行內腳本先留住）
 /* 畫面繪製麵包屑：requestAnimationFrame 回呼在該畫格的樣式／版面計算之前執行，之後的 setTimeout(0) 在畫格提交之後——
    「X 繪製中」是最後一步而沒有「X 已繪製」→ 主執行緒卡在那一格的版面／繪製，不是 JavaScript。 */
 function _paintMark(name) {
@@ -86,11 +90,22 @@ var _cspStepAt = 0;
    localStorage（一次 setItem，成本可忽略），正常關閉時改寫成 unload、閒置時
    改寫成 idle。下次開頁若看到的既不是 unload 也不是 idle，就代表上次是卡在
    那一步被強制關掉的——直接顯示在錯誤看板，截圖就能定位。 */
+/* 2026-10-27 新假設：卡住的不是步驟本身，而是「下一次 localStorage 寫入」。證據：卡死後麵包屑停在「新聞元件」，
+   但緊接著排定的 requestAnimationFrame 麵包屑「資訊卡 繪製中」從未寫成——rAF 回呼在版面計算之前執行，若是版面卡住
+   它早該寫入了；它沒寫成，最合理的解釋是那次 localStorage.setItem 本身沒有回來（Chrome 155/156 Windows 兩台機器皆然，
+   而且診斷寫入越密集崩得越快）。做法：每次寫入前先用 cookie 記下「序號｜步驟」（走另一條 IPC），再寫 localStorage。
+   下次開頁若 cookie 序號 > localStorage 序號，就證明是那次寫入卡住。網址 ?nols=1 可把所有診斷寫入改走記憶體＋cookie。 */
+let _stepSeq = 0;
+function _pendCookie(seq, name) { try { document.cookie = 'csp_pend=' + encodeURIComponent(seq + '|' + String(name).slice(0, 60)) + ';path=/;max-age=172800;SameSite=Lax'; } catch(_e) {} }
+function _readPendCookie() { try { const m = /(?:^|;\s*)csp_pend=([^;]*)/.exec(document.cookie); if (!m) return null; const s = decodeURIComponent(m[1]); const i = s.indexOf('|'); return { seq: parseInt(s.slice(0, i)) || 0, n: s.slice(i + 1) }; } catch(_e) { return null; } }
 function _stepMark(name) {
   _cspStepMem = name; _cspStepAt = Date.now();
+  const seq = ++_stepSeq;
+  _pendCookie(seq, name);
+  if (NO_LS) return;
   try {
     let mem = null; try { mem = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null; } catch(_m) {}
-    localStorage.setItem('csp_last_step', JSON.stringify({ n: name, t: _cspStepAt, v: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?', mem, hid: !!document.hidden, on: navigator.onLine !== false }));
+    localStorage.setItem('csp_last_step', JSON.stringify({ n: name, t: _cspStepAt, v: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : '?', mem, hid: !!document.hidden, on: navigator.onLine !== false, seq }));
   } catch(_e) {}
 }
 /* 診斷包：把所有與凍結／崩潰有關的紀錄打包成文字，複製到剪貼簿（剪貼簿不可用時開視窗讓使用者手動複製） */
@@ -101,6 +116,7 @@ function _diagBundle() {
     uptimeMin: Math.round(performance.now() / 60000), mem, cores: navigator.hardwareConcurrency || null, devMem: navigator.deviceMemory || null,
     lastStep: get('csp_last_step'), heartbeat: get('csp_hb'), selfheal: get('csp_selfheal'), healthLog: get('csp_health_log'), slowCands: get('csp_slow_cands'), longTasks: get('csp_longtask'),
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
+    prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
@@ -149,7 +165,7 @@ function _bootErrHook() {
     try {
       const arr = JSON.parse(localStorage.getItem('csp_err_log') || '[]');
       arr.unshift({ t: Date.now(), kind, msg: text });
-      localStorage.setItem('csp_err_log', JSON.stringify(arr.slice(0, 20)));
+      if (!NO_LS) localStorage.setItem('csp_err_log', JSON.stringify(arr.slice(0, 20)));
     } catch(_e) {}
     if (NOISY.test(text)) return;   // 網路雜訊不上畫面
     try {
@@ -204,7 +220,7 @@ function _bootErrHook() {
   let prevHb = null; try { prevHb = JSON.parse(localStorage.getItem('csp_hb') || 'null'); } catch(_e) {}
   const prevWorkerHbP = _readWorkerHb();   // 非同步（IndexedDB）；工作執行緒不受主執行緒卡住影響，是真正的鑑別器
   try {
-    const _hb = () => { try { localStorage.setItem('csp_hb', JSON.stringify({ t: Date.now(), hid: !!document.hidden, on: navigator.onLine !== false, scanning: !!(typeof state !== 'undefined' && state && state.scanning) })); } catch(_e) {} };
+    const _hb = () => { if (NO_LS) return; try { localStorage.setItem('csp_hb', JSON.stringify({ t: Date.now(), hid: !!document.hidden, on: navigator.onLine !== false, scanning: !!(typeof state !== 'undefined' && state && state.scanning) })); } catch(_e) {} };
     setInterval(_hb, 5000); _hb();
   } catch(_e) {}
   // ── 上次是不是卡死？（麵包屑不是 unload/idle → 上次在那一步被強制關掉）──
@@ -227,6 +243,15 @@ function _bootErrHook() {
       const _auto = _autoNoCards ? `　｜　連續 ${_freezeN} 次卡死 → 本次自動停用四張資訊卡（若這次不再卡，兇手就是資訊卡的畫面繪製；網址加 ?nocards=0 可取消）` : (_freezeN ? `　｜　連續第 ${_freezeN} 次` : '');
       try { if (_autoNoCards) _healthNote('auto-nocards', `連續 ${_freezeN} 次卡死，本次自動停用資訊卡`); } catch(_e) {}
       log('凍結線索', `${_verdict ? _verdict + '　｜　' : ''}上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}${prev.hid ? '，背景分頁' : ''}${prev.on === false ? '，離線' : ''}）${_extra}——若當時畫面卡住，卡點就在這一步${_auto}`);
+      // cookie 序號比 localStorage 序號大 → 上次最後一次 localStorage 寫入（那個步驟）根本沒完成：卡在寫入本身
+      try {
+        if (_prevPend && _prevPend.n !== 'unload' && _prevPend.seq > (prev.seq || 0)) {
+          const m = `上次最後一次準備寫入的步驟是「${_prevPend.n}」（序號 ${_prevPend.seq}），但 localStorage 只留到「${prev.n}」（序號 ${prev.seq || 0}）→ 那一次 localStorage 寫入本身沒有回來。主機請改用網址 ?nols=1 開啟（診斷寫入改走記憶體）驗證。`;
+          _healthNote('ls-hang', m); log('寫入卡住線索', m);
+        } else if (_prevPend && prev.seq && _prevPend.seq === prev.seq) {
+          _healthNote('ls-ok', `上次最後寫入已完成（序號 ${prev.seq}「${prev.n}」）→ 卡點在寫入之後（版面／其他）`);
+        }
+      } catch(_e) {}
     }
   } catch(_e) {}
   // ── 上次載入卡在哪？（開頁軌跡沒走到 done → 本次自動安全模式，並把停住的位置顯示出來）──
@@ -242,7 +267,7 @@ function _bootErrHook() {
     }
   } catch(_e) {}
   try {
-    const bye = () => { try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'unload', t: Date.now() })); } catch(_e) {} };
+    const bye = () => { _pendCookie(++_stepSeq, 'unload'); try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'unload', t: Date.now(), seq: _stepSeq })); } catch(_e) {} };
     window.addEventListener('pagehide', bye);
     window.addEventListener('beforeunload', bye);
     document.addEventListener('freeze', bye);   // 背景分頁被凍結／釋放前會收到 freeze，不算卡死
@@ -258,7 +283,7 @@ function _bootErrHook() {
           try {
             const arr = JSON.parse(localStorage.getItem('csp_longtask') || '[]');
             arr.unshift({ t: Date.now(), ms, step: _cspStepMem || '?' });
-            localStorage.setItem('csp_longtask', JSON.stringify(arr.slice(0, 20)));
+            if (!NO_LS) localStorage.setItem('csp_longtask', JSON.stringify(arr.slice(0, 20)));
           } catch(_e) {}
           if (ms >= 2000) log('主執行緒卡住', `${(ms / 1000).toFixed(1)} 秒　步驟：${_cspStepMem || '?'}`);
         }
@@ -337,7 +362,7 @@ function _bootMark(name) {
   try { _stepMark(name === 'done' ? 'idle' : '開頁 ' + name); } catch(_e) {}   // 開頁每一步也進凍結麵包屑（主執行緒卡死時下次開頁看得到）
   try {
     _bootTraceArr.push(name + '@' + (performance.now() / 1000).toFixed(1) + 's');
-    try { localStorage.setItem('csp_boot_trace', JSON.stringify(_bootTraceArr.slice(-30))); } catch(_e) {}
+    try { if (!NO_LS) localStorage.setItem('csp_boot_trace', JSON.stringify(_bootTraceArr.slice(-30))); } catch(_e) {}
     let el = document.getElementById('boot-trace');
     if (!el) {
       el = document.createElement('div');
@@ -894,7 +919,7 @@ const HEALTH_CFG = { heapMB: 900, stallMin: 10, uptimeSoftH: 20, uptimeHardH: 30
 const _healthLog = [];
 function _healthNote(kind, text) {
   _healthLog.push({ t: Date.now(), kind, text }); if (_healthLog.length > 30) _healthLog.shift();
-  try { localStorage.setItem('csp_health_log', JSON.stringify(_healthLog.slice(-12))); } catch(_e) {}
+  try { if (!NO_LS) localStorage.setItem('csp_health_log', JSON.stringify(_healthLog.slice(-12))); } catch(_e) {}
   console.warn(`[health] ${kind}: ${text}`);
 }
 function _lsUsageKB() {
@@ -9022,14 +9047,17 @@ async function loadDashboardMacro() {
   let fg = null, global = null;
   try {
     [fg, global] = await Promise.all([fetchFearGreed(), fetchGlobalMarket()]);
-    if (el) el.innerHTML = buildMarketOutlook(fg, global);
+    _stepMark('大方向卡 寫入');
+    if (el) el.innerHTML = _cardOn('outlook') ? buildMarketOutlook(fg, global) : '<div style="padding:10px;color:var(--text3);font-size:0.8rem">此卡已由 ?cards= 停用</div>';
   } catch {
     if (el) el.innerHTML = '<div style="color:var(--text3);padding:12px;font-size:0.82rem">宏觀數據暫時無法獲取</div>';
   }
   // 各卡互相獨立：一張炸掉不准拖死另一張
-  try { renderTradeEnvCard(); } catch(e) { console.warn('[trade-env]', e); }
-  try { renderErDashboardWidget(); } catch(e) { console.warn('[er-widget]', e); }
-  try { loadDashboardNews(); } catch(e) { console.warn('[news-widget]', e); }
+  _stepMark('操作環境卡 寫入');
+  try { if (_cardOn('env')) renderTradeEnvCard(); } catch(e) { console.warn('[trade-env]', e); }
+  _stepMark('反轉卡 寫入');
+  try { if (_cardOn('er')) renderErDashboardWidget(); } catch(e) { console.warn('[er-widget]', e); }
+  try { if (_cardOn('news') || _cardOn('flow')) loadDashboardNews(); } catch(e) { console.warn('[news-widget]', e); }
 }
 
 function renderDailyBriefCard(fg, mkt) {
@@ -9166,8 +9194,9 @@ const NEWS_IN_SCORING = false;   // 新聞情緒是否進入任何評分／條�
 async function loadDashboardNews() {
   _stepMark('新聞元件');
   const el = document.getElementById('news-body');
-  if (NO_NEWS) { if (el) el.innerHTML = '<div style="padding:10px;color:var(--text3);font-size:0.8rem">新聞卡已停用（網址 nonews=1）</div>'; _paintMark('資訊卡'); return; }
+  if (NO_NEWS || !_cardOn('news')) { if (el) el.innerHTML = '<div style="padding:10px;color:var(--text3);font-size:0.8rem">新聞卡已停用（網址 nonews=1／cards=）</div>'; _paintMark('資訊卡'); if (_cardOn('flow')) { const cf = document.getElementById('capital-flow-body'); if (cf) cf.innerHTML = buildCapitalFlowEventsWidget(); } return; }
   _paintMark('資訊卡');   // 到這裡為止：操作環境、反轉、大方向三張卡的 HTML 都已寫入——下一格就是它們的版面計算
+  _stepMark('新聞元件 AI寫入');
   /* 2026-09-05 恢復顯示（使用者要求）：新聞只做「看」，不進任何建單／預測條件
      （NEWS_IN_SCORING=false）。來源改走同源代理 /api/news 直抓 RSS，每則附發布
      時間、面板附更新時間，一眼看得出是不是即時。 */
@@ -9205,7 +9234,7 @@ async function loadDashboardNews() {
   }
   _stepMark('資金流動事件卡');
   const cfEl = document.getElementById('capital-flow-body');
-  if (cfEl) cfEl.innerHTML = buildCapitalFlowEventsWidget();
+  if (cfEl && _cardOn('flow')) cfEl.innerHTML = buildCapitalFlowEventsWidget();
   _stepMark('新聞元件 完成');
   _paintMark('新聞卡');
 }
@@ -14862,7 +14891,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次

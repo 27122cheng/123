@@ -72,5 +72,16 @@ await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded'
 const f3 = await p.evaluate(() => ({ n: localStorage.getItem('csp_freeze_n'), auto: _autoNoCards }));
 if (f3.n !== null || f3.auto) throw new Error('正常關閉後計數應歸零：' + JSON.stringify(f3));
 await p.waitForFunction(() => _bootTraceArr.some(x => x.startsWith('done')), { timeout: 60000 });
+// 寫入序號：cookie 的「準備寫入」序號與 localStorage 的序號同步；?nols=1 時不寫 csp_hb／csp_last_step
+const sq = await p.evaluate(() => { _stepMark('序號測試'); const pend = _readPendCookie(); const ls = JSON.parse(localStorage.getItem('csp_last_step') || '{}'); return { pend, ls: { n: ls.n, seq: ls.seq } }; });
+if (!sq.pend || sq.pend.n !== '序號測試' || sq.pend.seq !== sq.ls.seq || sq.ls.n !== '序號測試') throw new Error('寫入序號錯誤：' + JSON.stringify(sq));
+// 模擬「寫入卡住」：cookie 序號比 localStorage 大 → 下次開頁有「寫入卡住線索」
+await p.evaluate(() => window.addEventListener('pagehide', () => { const t = Date.now() - 120e3; localStorage.setItem('csp_last_step', JSON.stringify({ n: '新聞元件', t, v: 'x', seq: 40 })); localStorage.setItem('csp_hb', JSON.stringify({ t: t + 2000 })); document.cookie = 'csp_pend=' + encodeURIComponent('41|資訊卡 繪製中') + ';path=/;max-age=600;SameSite=Lax'; }));
+await p.goto('http://127.0.0.1:8765/index.html?nols=1', { waitUntil: 'domcontentloaded' });
+await p.waitForFunction(() => !!document.getElementById('err-chip-body'), { timeout: 30000 });
+const lh = await p.evaluate(async () => { await new Promise(r => setTimeout(r, 6000)); return { hang: (JSON.parse(localStorage.getItem('csp_health_log') || '[]')).some(x => x.kind === 'ls-hang') || _healthLog.some(x => x.kind === 'ls-hang'), noLs: NO_LS, hbT: JSON.parse(localStorage.getItem('csp_hb') || '{}').t, ls: JSON.parse(localStorage.getItem('csp_last_step') || '{}').n }; });
+console.log('ls-hang', JSON.stringify(lh));
+if (!lh.hang || !lh.noLs || !(Date.now() - lh.hbT > 60000) || lh.ls !== '載入腳本') throw new Error('寫入卡住線索／nols 錯誤：' + JSON.stringify(lh));
+await p.evaluate(() => { localStorage.removeItem('csp_freeze_n'); document.cookie = 'csp_pend=;path=/;max-age=0'; });
 console.log('ALL PASS t_boot');
 await b.close();
