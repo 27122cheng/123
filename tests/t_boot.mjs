@@ -102,5 +102,21 @@ await p.goto('http://127.0.0.1:8765/index.html?bisect=0', { waitUntil: 'domconte
 const b4 = await p.evaluate(() => ({ b: localStorage.getItem('csp_bisect'), nocards: AUTO_NOCARDS }));
 if (b4.b !== null || b4.nocards) throw new Error('?bisect=0 應清除：' + JSON.stringify(b4));
 await p.evaluate(() => { localStorage.removeItem('csp_freeze_n'); document.cookie = 'csp_pend=;path=/;max-age=0'; });
+// 真兇回歸測試：已公布的 BLS 事件有快取但沒有實際值 → 舊版會在 buildTodayEconWidget 的 .then 鏈裡無限重建（主執行緒卡死）
+await p.goto('http://127.0.0.1:8765/index.html?safe=1', { waitUntil: 'domcontentloaded' });
+await p.waitForFunction(() => typeof buildTodayEconWidget === 'function' && typeof getMonthEconEvents === 'function', { timeout: 30000 });
+const econ = await Promise.race([p.evaluate(async () => {
+  const now = new Date(); const evs = getMonthEconEvents(now.getFullYear(), now.getMonth()).filter(ev => BLS_SERIES_MAP[ev.name] && ev.eventTime.getTime() < Date.now());
+  if (!evs.length) return { skip: true };
+  const ev = evs[0]; const dateKey = `${ev.eventTime.getFullYear()}-${ev.eventTime.getMonth()}-${ev.eventTime.getDate()}`;
+  localStorage.removeItem(`econ_actual_${ev.name}_${dateKey}`); localStorage.setItem(`econ_bls_cache_${ev.name}_${dateKey}`, '+2.9%'); _econFetchFailed.delete(`${ev.name}_${dateKey}`); _econRebuildN = 0;
+  const host = document.getElementById('market-outlook-body'); host.innerHTML = buildTodayEconWidget();
+  await new Promise(r => setTimeout(r, 800));
+  const r = { name: ev.name, rebuilds: _econRebuildN, actual: getEconActualValue(ev.name, dateKey), hasWidget: !!document.getElementById('econMonthWidget'), inflight: _econFetchInflight.size };
+  localStorage.removeItem(`econ_actual_${ev.name}_${dateKey}`); localStorage.removeItem(`econ_bls_cache_${ev.name}_${dateKey}`);
+  return r;
+}), new Promise((_, rej) => setTimeout(() => rej(new Error('頁面在月曆元件重建中卡死（真兇未修）')), 20000))]);
+console.log('econ', JSON.stringify(econ));
+if (!econ.skip && (econ.rebuilds > 1 || econ.actual !== '+2.9%' || econ.inflight !== 0)) throw new Error('月曆元件重建迴圈未修好：' + JSON.stringify(econ));
 console.log('ALL PASS t_boot');
 await b.close();

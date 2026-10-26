@@ -31,12 +31,18 @@ try {
    記下結果並回到全停模式（頁面可用）。「none」也卡 → 兇手不在資訊卡。全部通過 → 間歇性，不是固定某張卡。
    網址 ?bisect=0 清除並停用；?cards=／?nocards= 手動指定時不做自動二分。 */
 const _BISECT_STAGES = ['none', 'env', 'er', 'outlook', 'news', 'flow', 'all'];
+// 頂層不能碰 APP_VERSION（const 尚未初始化，typeof 也會丟 ReferenceError）：版本從自己的 <script src=…?v=> 取
+let _bootV = ''; try { _bootV = new URL(document.currentScript.src, location.href).searchParams.get('v') || ''; } catch(_e) {}
 let _bisect = null;   // { i, ok, done?, label }
 try {
   const _manual = /[?&](cards=|nocards=)/.test(location.search);
   if (/[?&]bisect=0/.test(location.search)) localStorage.removeItem('csp_bisect');
   let bs = null; try { bs = JSON.parse(localStorage.getItem('csp_bisect') || 'null'); } catch(_e) {}
   if (!_manual && !/[?&]bisect=0/.test(location.search)) {
+    if (bs && bs.done && bs.doneV !== _bootV) {
+      // 新版本＝已針對結論修正 → 結論作廢，恢復全部資訊卡（再卡會重新二分）
+      localStorage.removeItem('csp_bisect'); localStorage.removeItem('csp_freeze_n'); bs = null; _freezeN = 0;
+    }
     if (bs && bs.done) {
       _bisect = bs;   // 已有結論：維持全停，紅條顯示結論
       if (bs.done !== 'none' && bs.done !== 'intermittent') { AUTO_NOCARDS = true; _autoNoCards = true; }
@@ -44,8 +50,8 @@ try {
       let _fresh = false;
       if (!bs && _freezeN >= 2) { bs = { i: 0, ok: false, at: Date.now() }; _fresh = true; }   // 觸發二分的那次卡死不算第 1 組的結果
       if (bs) {
-        if (_killedWhileRunning && !_fresh) { bs.done = _BISECT_STAGES[bs.i]; bs.doneAt = Date.now(); _bisect = bs; if (bs.done !== 'none') { AUTO_NOCARDS = true; _autoNoCards = true; } }
-        else { if (bs.ok) bs.i++; if (bs.i >= _BISECT_STAGES.length) { bs.done = 'intermittent'; bs.doneAt = Date.now(); } bs.ok = false; bs.at = Date.now(); _bisect = bs; }
+        if (_killedWhileRunning && !_fresh) { bs.done = _BISECT_STAGES[bs.i]; bs.doneAt = Date.now(); bs.doneV = _bootV; _bisect = bs; if (bs.done !== 'none') { AUTO_NOCARDS = true; _autoNoCards = true; } }
+        else { if (bs.ok) bs.i++; if (bs.i >= _BISECT_STAGES.length) { bs.done = 'intermittent'; bs.doneAt = Date.now(); bs.doneV = _bootV; } bs.ok = false; bs.at = Date.now(); _bisect = bs; }
         localStorage.setItem('csp_bisect', JSON.stringify(bs));
         if (!bs.done) {
           const st = _BISECT_STAGES[bs.i];
@@ -8298,6 +8304,7 @@ const BLS_SERIES_MAP = {
 };
 
 const _econFetchFailed = new Set(); // 追蹤 BLS 抓取失敗的事件，避免無限 Loading
+let _econRebuildN = 0;              // 本次載入月曆元件因抓到實際值而重建的次數（上限 12）
 
 function analyzeFOMCText(text) {
   const lc = text.toLowerCase();
@@ -8356,8 +8363,25 @@ function analyzeFOMCText(text) {
   return out.trim();
 }
 
+/* ── 2026-10-27 主機「網頁無回應」的真兇 ──────────────────────────────────────────
+   buildTodayEconWidget 對「已公布但沒有實際值」的事件呼叫 autoFetchEconActual().then(重建整個月曆元件)。
+   舊版的「本地快取」與「BLS 抓到值」兩條路只回傳值、沒有寫進 econ_actual_*，重建後 getEconActualValue 仍是空的 →
+   再呼叫 → 快取立刻回傳（async 函式＝下一個微任務）→ 再重建 → …… 無限的 promise 工作鏈，主執行緒永遠回不到事件迴圈：
+   沒有畫格、沒有 rAF、沒有計時器、心跳停、Chrome 跳「網頁無回應」／RESULT_CODE_HUNG。觸發條件＝本月有已公布的 BLS 事件
+   （CPI／PPI／NFP）且 BLS 代理抓成功過一次（快取寫進 localStorage 後每次開頁都立刻中招）。
+   修法：每條回傳路徑都寫入實際值（或標記失敗）；同一事件同時只抓一次；重建改走 setTimeout 且只在真的拿到值時做一次。 */
+const _econFetchInflight = new Map();   // lookupKey → Promise（同一事件同時只抓一次）
 async function autoFetchEconActual(eventName, dateKey) {
   const lookupKey = `${eventName}_${dateKey}`;
+  if (_econFetchInflight.has(lookupKey)) return _econFetchInflight.get(lookupKey);
+  const p = _autoFetchEconActualInner(eventName, dateKey, lookupKey).then(v => {
+    try { if (v) setEconActualValue(eventName, dateKey, v); else _econFetchFailed.add(lookupKey); } catch(_e) {}
+    return v;
+  }).catch(() => { _econFetchFailed.add(lookupKey); return null; }).finally(() => { _econFetchInflight.delete(lookupKey); });
+  _econFetchInflight.set(lookupKey, p);
+  return p;
+}
+async function _autoFetchEconActualInner(eventName, dateKey, lookupKey) {
 
   // 1. 優先使用已知實際值（最可靠，無需網路）
   if (KNOWN_ACTUALS[lookupKey]) {
@@ -8366,10 +8390,10 @@ async function autoFetchEconActual(eventName, dateKey) {
     return v;
   }
 
-  // 2. 本地快取
+  // 2. 本地快取（必須同時寫進實際值，否則重建後又會再抓一次 → 無限迴圈）
   const cacheKey = `econ_bls_cache_${lookupKey}`;
   const cached = localStorage.getItem(cacheKey);
-  if (cached) return cached;
+  if (cached) { setEconActualValue(eventName, dateKey, cached); return cached; }
 
   // 3. BLS API（嘗試多個 CORS 代理，任一成功即用）
   const mapping = BLS_SERIES_MAP[eventName];
@@ -8403,6 +8427,7 @@ async function autoFetchEconActual(eventName, dateKey) {
       }
       localStorage.setItem(cacheKey, display);
       setTimeout(() => localStorage.removeItem(cacheKey), 6 * 3600 * 1000);
+      setEconActualValue(eventName, dateKey, display);
       return display;
     } catch(e) { /* try next proxy */ }
   }
@@ -8598,11 +8623,13 @@ function buildTodayEconWidget() {
     const actualVal = published ? getEconActualValue(ev.name, dateKey) : '';
     const hasBLS = !!BLS_SERIES_MAP[ev.name] || ev.name === 'FOMC 紀要' || !!KNOWN_ACTUALS[`${ev.name}_${dateKey}`];
     const fetchFailed = _econFetchFailed.has(`${ev.name}_${dateKey}`);
-    if (published && !actualVal && hasBLS && !fetchFailed) {
+    if (published && !actualVal && hasBLS && !fetchFailed && !_econFetchInflight.has(`${ev.name}_${dateKey}`)) {
+      // 重建只在「真的拿到值且已寫入」時做一次，而且走 setTimeout 回到事件迴圈（不在微任務裡接力）；每次載入最多重建 12 次
       autoFetchEconActual(ev.name, dateKey).then(v => {
-        const _econEl = document.getElementById('econMonthWidget');
-        if (_econEl) _econEl.outerHTML = buildTodayEconWidget();
-      });
+        if (!v || !getEconActualValue(ev.name, dateKey) || _econRebuildN >= 12) return;
+        _econRebuildN++;
+        setTimeout(() => { try { const _econEl = document.getElementById('econMonthWidget'); if (_econEl) _econEl.outerHTML = buildTodayEconWidget(); } catch(_e) {} }, 0);
+      }).catch(() => {});
     }
     const actualSection = published ? `
       <div style="margin-top:8px">
@@ -14939,7 +14966,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822h';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822i';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
