@@ -46,5 +46,31 @@ const hang = await p.evaluate(() => ({ prev: window._cspPrevStep && window._cspP
 console.log('idle', idle, 'hang', JSON.stringify(hang).slice(0, 200));
 if (idle.startsWith('開頁 ') || hang.prev !== 'K線分析 ZZ/USDT' ||  !hang.chip.includes('K線分析 ZZ/USDT') || !hang.deferred || !hang.tvAsync) throw new Error('卡死線索錯誤');
 await p.waitForFunction(() => _bootTraceArr.some(x => x.startsWith('done')), { timeout: 60000 });
+// 繪製麵包屑：開頁後應出現「首頁 繪製中」→「首頁 已繪製」與「資訊卡 繪製中／已繪製」
+await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+await p.evaluate(() => { window.__marks = []; const o = _stepMark; _stepMark = n => { window.__marks.push(n); return o(n); }; });
+await p.waitForFunction(() => window.__marks.includes('首頁 已繪製') && window.__marks.includes('資訊卡 已繪製'), { timeout: 90000 });
+const pm = await p.evaluate(() => ({ a: window.__marks.indexOf('首頁 繪製中') < window.__marks.indexOf('首頁 已繪製'), b: window.__marks.indexOf('資訊卡 繪製中') < window.__marks.indexOf('資訊卡 已繪製'), n: window.__marks.length }));
+if (!pm.a || !pm.b) throw new Error('繪製麵包屑順序錯誤：' + JSON.stringify(pm));
+console.log('繪製麵包屑 OK（' + pm.n + ' 個步驟）');
+// ?nocards=1：四張卡顯示停用說明、loadDashboardMacro 不抓
+await p.goto('http://127.0.0.1:8765/index.html?nocards=1', { waitUntil: 'domcontentloaded' });
+await p.waitForFunction(() => typeof AUTO_NOCARDS !== 'undefined' && (document.getElementById('news-body')?.textContent || '').includes('資訊卡已停用'), { timeout: 60000 });
+// 連續兩次「心跳與步驟同時停」→ 自動停用資訊卡
+const arm = () => p.evaluate(() => window.addEventListener('pagehide', () => { const t = Date.now() - 120e3; localStorage.setItem('csp_last_step', JSON.stringify({ n: '新聞元件', t, v: 'x' })); localStorage.setItem('csp_hb', JSON.stringify({ t: t + 2000 })); }));
+await p.evaluate(() => localStorage.removeItem('csp_freeze_n'));
+await arm(); await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+const f1 = await p.evaluate(() => ({ n: localStorage.getItem('csp_freeze_n'), auto: _autoNoCards }));
+await arm(); await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+await p.waitForFunction(() => !!document.getElementById('err-chip-body'), { timeout: 30000 });
+const f2 = await p.evaluate(() => ({ n: localStorage.getItem('csp_freeze_n'), auto: _autoNoCards, chip: (JSON.parse(localStorage.getItem('csp_err_log') || '[]').find(x => x.kind === '凍結線索') || {}).msg || '', note: document.getElementById('news-body')?.textContent || '' }));
+console.log('freeze', JSON.stringify(f1), JSON.stringify(f2).slice(0, 160));
+if (f1.n !== '1' || f1.auto || f2.n !== '2' || !f2.auto || !f2.chip.includes('自動停用') ) throw new Error('連續卡死自動停用資訊卡錯誤');
+await p.waitForFunction(() => (document.getElementById('news-body')?.textContent || '').includes('資訊卡已停用'), { timeout: 60000 });
+// 正常關閉（unload）→ 計數歸零
+await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+const f3 = await p.evaluate(() => ({ n: localStorage.getItem('csp_freeze_n'), auto: _autoNoCards }));
+if (f3.n !== null || f3.auto) throw new Error('正常關閉後計數應歸零：' + JSON.stringify(f3));
+await p.waitForFunction(() => _bootTraceArr.some(x => x.startsWith('done')), { timeout: 60000 });
 console.log('ALL PASS t_boot');
 await b.close();

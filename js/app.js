@@ -2,7 +2,39 @@
    app.js — 主應用邏輯（繁體中文 + 幣安實時K線版）
    ============================================================ */
 
+/* ── 連續卡死計數與自動停用資訊卡（2026-10-26）────────────────────────────────
+   診斷包證據：主機每次開頁都在「新聞元件」步驟之後、1 秒內主執行緒卡死（Chrome「網頁無回應」），正常模式與
+   安全模式都一樣；而在 GitHub Actions 用同一批真實新聞跑同一批函式，每則 1ms、全部正常。所以兇手不在新聞的
+   JavaScript，而在「四張資訊卡寫進頁面之後的那一格繪製」（版面／樣式計算發生在步驟標記之後的下一個畫格）。
+   做法：① 連續兩次「心跳與步驟同時停」的卡死 → 本次自動停用四張資訊卡（AUTO_NOCARDS），卡片位置顯示說明；
+   網址 ?nocards=1／?nocards=0 可手動開關、?nonews=1 只停新聞卡。② 畫面繪製也進麵包屑（_paintMark）：
+   「繪製中」之後沒有「已繪製」＝卡在版面計算。計數在頁面存活 3 分鐘後歸零。 */
+if (typeof window._cspPrevStep === 'undefined') { try { const _s = localStorage.getItem('csp_last_step'); window._cspPrevStep = _s ? JSON.parse(_s) : null; } catch(_e) { window._cspPrevStep = null; } }
+let AUTO_NOCARDS = /[?&]nocards=1/.test(location.search);
+const NO_NEWS = /[?&]nonews=1/.test(location.search);
+let _freezeN = 0, _autoNoCards = false;
+try {
+  const _p = window._cspPrevStep; let _hb0 = null; try { _hb0 = JSON.parse(localStorage.getItem('csp_hb') || 'null'); } catch(_e) {}
+  const _killedWhileRunning = _p && _p.n && _p.n !== 'unload' && _p.n !== 'idle' && _hb0 && _hb0.t && _p.t && (_hb0.t - _p.t) < 60000;
+  _freezeN = _killedWhileRunning ? (parseInt(localStorage.getItem('csp_freeze_n')) || 0) + 1 : 0;
+  if (_freezeN) localStorage.setItem('csp_freeze_n', String(_freezeN)); else localStorage.removeItem('csp_freeze_n');
+  if (_freezeN >= 2 && !/[?&]nocards=0/.test(location.search) && !AUTO_NOCARDS) { AUTO_NOCARDS = true; _autoNoCards = true; }
+  setTimeout(() => { try { localStorage.removeItem('csp_freeze_n'); } catch(_e) {} }, 180000);   // 活過 3 分鐘＝這次沒卡，歸零
+} catch(_e) {}
 try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'app.js 頂層執行', t: Date.now(), v: 'js' })); } catch(_e) {}   // 頂層執行卡死也留得下線索（上次的值已由 index.html 行內腳本先留住）
+/* 畫面繪製麵包屑：requestAnimationFrame 回呼在該畫格的樣式／版面計算之前執行，之後的 setTimeout(0) 在畫格提交之後——
+   「X 繪製中」是最後一步而沒有「X 已繪製」→ 主執行緒卡在那一格的版面／繪製，不是 JavaScript。 */
+function _paintMark(name) {
+  try { requestAnimationFrame(() => { _stepMark(name + ' 繪製中'); setTimeout(() => _stepMark(name + ' 已繪製'), 0); }); } catch(_e) {}
+}
+function _cardsDisabledNote(why) {
+  try {
+    for (const id of ['trade-env-body', 'er-dashboard-body', 'market-outlook-body', 'news-body', 'capital-flow-body']) {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = `<div style="padding:10px;color:var(--text3);font-size:0.8rem">資訊卡已停用（${why}）——掃描、建單、監控與訊號照常。<span style="margin-left:8px;cursor:pointer;text-decoration:underline" onclick="location.href=location.pathname+'?nocards=0'">重新啟用</span></div>`;
+    }
+  } catch(_e) {}
+}
 
 /* ── 交易設置緩存（供 Telegram 通知使用）────────────────────── */
 const _tradeSetupCache  = {};
@@ -192,7 +224,9 @@ function _bootErrHook() {
       try { if (_verdict) _healthNote('freeze', `${_verdict}｜步驟 ${prev.n}｜${when}`); } catch(_e) {}
       // 工作執行緒心跳回來後補上「卡死 vs 程序結束」的最終判定（讀 IndexedDB 是非同步的）
       try { prevWorkerHbP.then(wh => { const v2 = _freezeVerdict2(prev, prevHb, wh); if (v2) { _healthNote('freeze-final', v2); log('最終判定', v2); } }).catch(() => {}); } catch(_e) {}
-      log('凍結線索', `${_verdict ? _verdict + '　｜　' : ''}上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}${prev.hid ? '，背景分頁' : ''}${prev.on === false ? '，離線' : ''}）${_extra}——若當時畫面卡住，卡點就在這一步`);
+      const _auto = _autoNoCards ? `　｜　連續 ${_freezeN} 次卡死 → 本次自動停用四張資訊卡（若這次不再卡，兇手就是資訊卡的畫面繪製；網址加 ?nocards=0 可取消）` : (_freezeN ? `　｜　連續第 ${_freezeN} 次` : '');
+      try { if (_autoNoCards) _healthNote('auto-nocards', `連續 ${_freezeN} 次卡死，本次自動停用資訊卡`); } catch(_e) {}
+      log('凍結線索', `${_verdict ? _verdict + '　｜　' : ''}上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}${prev.hid ? '，背景分頁' : ''}${prev.on === false ? '，離線' : ''}）${_extra}——若當時畫面卡住，卡點就在這一步${_auto}`);
     }
   } catch(_e) {}
   // ── 上次載入卡在哪？（開頁軌跡沒走到 done → 本次自動安全模式，並把停住的位置顯示出來）──
@@ -439,6 +473,7 @@ async function init() {
   hideScanBar();
   try { renderAll(); } catch(e) { console.error('[init] renderAll 錯誤:', e); }
   _bootMark('渲染');
+  _paintMark('首頁');
   // 資訊卡已於 init 前段與掃描並行載入（見上方），此處不再重複
   try { if (!SAFE_MODE && !hostModeOn()) liqWatchStart(); } catch(e) {}   // 清算流（公開 WS，斷線自動重連；精簡模式不開）
   try { if (!SAFE_MODE) extMacroTick(); } catch(e) {}    // 場外風險溫度：首次取得（失敗降級）
@@ -8772,18 +8807,19 @@ function buildNewsWidget(items) {
       const m = Math.round((Date.now() - ts) / 60000);
       return m < 60 ? `${m} 分鐘前` : m < 1440 ? `${Math.round(m/60)} 小時前` : `${Math.round(m/1440)} 天前`;
     })() : '';
-    const _orig = item.originalTitle || '';
-    const _zhTitle = item.zhTitle || '';
-    const pointsHtml = (item.points || []).map(p => `<div class="news-point">• ${p}</div>`).join('');
-    const tag = item.url ? 'a' : 'div';
-    const tagOpen  = item.url ? `<a class="news-item ${sentClass}" href="${item.url}" target="_blank" rel="noopener">` : `<div class="news-item ${sentClass}">`;
-    const tagClose = item.url ? '</a>' : '</div>';
+    const _esc = (typeof _escNews === 'function') ? _escNews : (s => String(s == null ? '' : s));
+    const _orig = _esc(item.originalTitle || '');
+    const _zhTitle = _esc(item.zhTitle || '');
+    const pointsHtml = (item.points || []).map(p => `<div class="news-point">• ${_esc(p)}</div>`).join('');
+    const _url = /^https?:\/\//i.test(String(item.url || '')) ? _esc(item.url) : '';
+    const tagOpen  = _url ? `<a class="news-item ${sentClass}" href="${_url}" target="_blank" rel="noopener">` : `<div class="news-item ${sentClass}">`;
+    const tagClose = _url ? '</a>' : '</div>';
     return `${tagOpen}
       <div class="news-ai-title">${_orig || _zhTitle}</div>
       ${_orig && _zhTitle && (_zhTitle.match(/[一-鿿]/g) || []).length >= 4 ? `<div style="font-size:0.78rem;color:#a78bfa;margin-top:3px;line-height:1.4">${_zhTitle}</div>` : ''}
       ${pointsHtml ? `<div class="news-keypoints">${pointsHtml}</div>` : ''}
       <div class="news-meta">
-        <span>${item.source || ''}</span>
+        <span>${_esc(item.source || '')}</span>
         ${timeAgo ? `<span>${timeAgo}</span>` : ''}
         <span class="news-sent ${sentClass}" style="margin-left:auto">${label}</span>
       </div>
@@ -8981,6 +9017,7 @@ function renderTradeEnvCard() {
 }
 
 async function loadDashboardMacro() {
+  if (AUTO_NOCARDS) { _cardsDisabledNote(_autoNoCards ? '連續卡死後自動停用' : '網址 nocards=1'); return; }
   const el = document.getElementById('market-outlook-body');
   let fg = null, global = null;
   try {
@@ -9129,6 +9166,8 @@ const NEWS_IN_SCORING = false;   // 新聞情緒是否進入任何評分／條�
 async function loadDashboardNews() {
   _stepMark('新聞元件');
   const el = document.getElementById('news-body');
+  if (NO_NEWS) { if (el) el.innerHTML = '<div style="padding:10px;color:var(--text3);font-size:0.8rem">新聞卡已停用（網址 nonews=1）</div>'; _paintMark('資訊卡'); return; }
+  _paintMark('資訊卡');   // 到這裡為止：操作環境、反轉、大方向三張卡的 HTML 都已寫入——下一格就是它們的版面計算
   /* 2026-09-05 恢復顯示（使用者要求）：新聞只做「看」，不進任何建單／預測條件
      （NEWS_IN_SCORING=false）。來源改走同源代理 /api/news 直抓 RSS，每則附發布
      時間、面板附更新時間，一眼看得出是不是即時。 */
@@ -9140,19 +9179,22 @@ async function loadDashboardNews() {
     if (realItems && realItems.length >= 3) {
       const _3mAgo = Date.now() - 90 * 24 * 60 * 60 * 1000;
       const _filtered = realItems.filter(it => !it.publishedAt || it.publishedAt >= _3mAgo);
-      const _toProcess = _filtered.length >= 3 ? _filtered : realItems;
-      const processed = _toProcess.map(item => {
-        const ai = aiProcessNews(item.title, item.body);
+      const _toProcess = (_filtered.length >= 3 ? _filtered : realItems).slice(0, 20);
+      // 逐則麵包屑（2026-10-26 診斷包：主機每次開頁都在「新聞元件」之後主執行緒卡死）——下次卡住就知道是哪一則
+      const processed = _toProcess.map((item, _i) => {
+        _stepMark(`新聞處理 ${_i + 1}/${_toProcess.length} ${String(item.title || '').slice(0, 40)}`);
+        const ai = aiProcessNews(String(item.title || '').slice(0, 300), String(item.body || '').slice(0, 400));
         return {
           ...ai,
-          originalTitle: item.title,
-          url:           item.url,
-          source:        `📰 ${item.source}`,
+          originalTitle: String(item.title || '').slice(0, 300),
+          url:           /^https?:\/\//i.test(String(item.url || '')) ? String(item.url) : '',
+          source:        `📰 ${String(item.source || '').slice(0, 40)}`,
           publishedAt:   item.publishedAt,
         };
       });
       _newsSentimentCache = processed;
       // 確認容器仍存在（用戶可能已切換頁面）
+      _stepMark('新聞元件 渲染');
       const elNow = document.getElementById('news-body');
       if (elNow) elNow.innerHTML = _newsFreshnessLine(processed) + buildNewsWidget(processed);
     } else if (el) {
@@ -9161,9 +9203,14 @@ async function loadDashboardNews() {
   } catch(e) {
     console.warn('[loadDashboardNews] 真實新聞載入失敗:', e?.message);
   }
+  _stepMark('資金流動事件卡');
   const cfEl = document.getElementById('capital-flow-body');
   if (cfEl) cfEl.innerHTML = buildCapitalFlowEventsWidget();
+  _stepMark('新聞元件 完成');
+  _paintMark('新聞卡');
 }
+/* 新聞文字進 innerHTML 前一律跳脫（RSS 標題經伺服器端去標籤後又還原了 &lt; → 任何標記都會原樣注入頁面） */
+function _escNews(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
 /* 新聞鮮度列：更新時間＋最新一則距今多久。新聞是「看」的，不進條件（見 NEWS_IN_SCORING）。 */
 function _newsFreshnessLine(items) {
@@ -14815,7 +14862,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
