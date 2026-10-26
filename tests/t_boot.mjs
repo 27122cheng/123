@@ -65,9 +65,10 @@ await arm(); await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domc
 await p.waitForFunction(() => !!document.getElementById('err-chip-body'), { timeout: 30000 });
 const f2 = await p.evaluate(() => ({ n: localStorage.getItem('csp_freeze_n'), auto: _autoNoCards, chip: (JSON.parse(localStorage.getItem('csp_err_log') || '[]').find(x => x.kind === '凍結線索') || {}).msg || '', note: document.getElementById('news-body')?.textContent || '' }));
 console.log('freeze', JSON.stringify(f1), JSON.stringify(f2).slice(0, 160));
-if (f1.n !== '1' || f1.auto || f2.n !== '2' || !f2.auto || !f2.chip.includes('自動停用') ) throw new Error('連續卡死自動停用資訊卡錯誤');
+if (f1.n !== '1' || f1.auto || f2.n !== '2' || !f2.auto || !(f2.chip.includes('自動停用') || f2.chip.includes('自動二分')) ) throw new Error('連續卡死自動停用資訊卡錯誤');
 await p.waitForFunction(() => (document.getElementById('news-body')?.textContent || '').includes('資訊卡已停用'), { timeout: 60000 });
-// 正常關閉（unload）→ 計數歸零
+// 正常關閉（unload）→ 計數歸零（先清掉二分狀態，它會持續到有結論）
+await p.evaluate(() => localStorage.removeItem('csp_bisect'));
 await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
 const f3 = await p.evaluate(() => ({ n: localStorage.getItem('csp_freeze_n'), auto: _autoNoCards }));
 if (f3.n !== null || f3.auto) throw new Error('正常關閉後計數應歸零：' + JSON.stringify(f3));
@@ -82,6 +83,24 @@ await p.waitForFunction(() => !!document.getElementById('err-chip-body'), { time
 const lh = await p.evaluate(async () => { await new Promise(r => setTimeout(r, 6000)); return { hang: (JSON.parse(localStorage.getItem('csp_health_log') || '[]')).some(x => x.kind === 'ls-hang') || _healthLog.some(x => x.kind === 'ls-hang'), noLs: NO_LS, hbT: JSON.parse(localStorage.getItem('csp_hb') || '{}').t, ls: JSON.parse(localStorage.getItem('csp_last_step') || '{}').n }; });
 console.log('ls-hang', JSON.stringify(lh));
 if (!lh.hang || !lh.noLs || !(Date.now() - lh.hbT > 60000) || lh.ls !== '載入腳本') throw new Error('寫入卡住線索／nols 錯誤：' + JSON.stringify(lh));
+await p.evaluate(() => { localStorage.removeItem('csp_freeze_n'); localStorage.removeItem('csp_bisect'); document.cookie = 'csp_pend=;path=/;max-age=0'; });
+// 自動二分：連續兩次卡死 → 第 1 組 none；活過（ok）→ env；env 卡死 → 結論 env、全停
+const armFreeze = () => p.evaluate(() => window.addEventListener('pagehide', () => { const t = Date.now() - 120e3; localStorage.setItem('csp_last_step', JSON.stringify({ n: '新聞元件', t, v: 'x', seq: 1 })); localStorage.setItem('csp_hb', JSON.stringify({ t: t + 2000 })); document.cookie = 'csp_pend=' + encodeURIComponent('1|新聞元件') + ';path=/;max-age=600;SameSite=Lax'; }));
+await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+await armFreeze(); await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+await armFreeze(); await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+const b1 = await p.evaluate(() => ({ b: JSON.parse(localStorage.getItem('csp_bisect') || 'null'), nocards: AUTO_NOCARDS, allow: _cardsAllow }));
+await p.evaluate(() => { const b = JSON.parse(localStorage.getItem('csp_bisect')); b.ok = true; localStorage.setItem('csp_bisect', JSON.stringify(b)); });   // 模擬活過 90 秒
+await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+const b2 = await p.evaluate(() => ({ b: JSON.parse(localStorage.getItem('csp_bisect') || 'null'), nocards: AUTO_NOCARDS, allow: _cardsAllow, txt: _bisectText() }));
+await armFreeze(); await p.goto('http://127.0.0.1:8765/index.html', { waitUntil: 'domcontentloaded' });
+await p.waitForFunction(() => !!document.getElementById('err-chip-body'), { timeout: 30000 });
+const b3 = await p.evaluate(() => ({ b: JSON.parse(localStorage.getItem('csp_bisect') || 'null'), nocards: AUTO_NOCARDS, txt: _bisectText(), chip: document.getElementById('err-chip-body').textContent }));
+console.log('bisect', JSON.stringify(b1), JSON.stringify(b2.allow), b3.b.done, b3.txt.slice(0, 40));
+if (!b1.b || b1.b.i !== 0 || !b1.nocards || b2.b.i !== 1 || !Array.isArray(b2.allow) || b2.allow[0] !== 'env' || b2.nocards || b3.b.done !== 'env' || !b3.nocards || !b3.txt.includes('兇手是')) throw new Error('自動二分錯誤：' + JSON.stringify({ b1, b2, b3: { b: b3.b, nocards: b3.nocards } }));
+await p.goto('http://127.0.0.1:8765/index.html?bisect=0', { waitUntil: 'domcontentloaded' });
+const b4 = await p.evaluate(() => ({ b: localStorage.getItem('csp_bisect'), nocards: AUTO_NOCARDS }));
+if (b4.b !== null || b4.nocards) throw new Error('?bisect=0 應清除：' + JSON.stringify(b4));
 await p.evaluate(() => { localStorage.removeItem('csp_freeze_n'); document.cookie = 'csp_pend=;path=/;max-age=0'; });
 console.log('ALL PASS t_boot');
 await b.close();

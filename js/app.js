@@ -13,18 +13,61 @@ if (typeof window._cspPrevStep === 'undefined') { try { const _s = localStorage.
 const NO_LS = /[?&]nols=1/.test(location.search);   // 診斷寫入不走 localStorage（記憶體＋cookie）
 let _prevPend = null; try { _prevPend = _readPendCookie(); } catch(_e) {}   // 上次最後一次「準備寫入」的步驟（cookie），要在本次任何寫入之前讀
 let AUTO_NOCARDS = /[?&]nocards=1/.test(location.search);
-const _cardsAllow = (m => m ? m[1].split(',') : null)(/[?&]cards=([a-z,]+)/.exec(location.search));   // ?cards=env,er,outlook,news,flow 只畫指定的卡
+let _cardsAllow = (m => m ? m[1].split(',') : null)(/[?&]cards=([a-z,]+)/.exec(location.search));   // ?cards=env,er,outlook,news,flow 只畫指定的卡
 function _cardOn(k) { return !_cardsAllow || _cardsAllow.includes(k); }
 const NO_NEWS = /[?&]nonews=1/.test(location.search);
-let _freezeN = 0, _autoNoCards = false;
+let _freezeN = 0, _autoNoCards = false, _killedWhileRunning = false;
 try {
   const _p = window._cspPrevStep; let _hb0 = null; try { _hb0 = JSON.parse(localStorage.getItem('csp_hb') || 'null'); } catch(_e) {}
-  const _killedWhileRunning = _p && _p.n && _p.n !== 'unload' && _p.n !== 'idle' && _hb0 && _hb0.t && _p.t && (_hb0.t - _p.t) < 60000;
+  _killedWhileRunning = !!(_p && _p.n && _p.n !== 'unload' && _p.n !== 'idle' && _hb0 && _hb0.t && _p.t && (_hb0.t - _p.t) < 60000);
   _freezeN = _killedWhileRunning ? (parseInt(localStorage.getItem('csp_freeze_n')) || 0) + 1 : 0;
   if (_freezeN) localStorage.setItem('csp_freeze_n', String(_freezeN)); else localStorage.removeItem('csp_freeze_n');
   if (_freezeN >= 2 && !/[?&]nocards=0/.test(location.search) && !AUTO_NOCARDS) { AUTO_NOCARDS = true; _autoNoCards = true; }
   setTimeout(() => { try { localStorage.removeItem('csp_freeze_n'); } catch(_e) {} }, 180000);   // 活過 3 分鐘＝這次沒卡，歸零
 } catch(_e) {}
+/* ── 自動二分（2026-10-27）：主機每次卡死後都要靠使用者手動改網址測試，太慢。改為頁面自己做：
+   連續兩次卡死 → 進入二分。每次開頁只畫「一組」：none（全停）→ env → er → outlook → news → flow → all，
+   活過 90 秒算該組通過、下次開頁換下一組；某一組卡死（下次開頁偵測到「心跳與步驟同時停」）→ 那一組就是兇手，
+   記下結果並回到全停模式（頁面可用）。「none」也卡 → 兇手不在資訊卡。全部通過 → 間歇性，不是固定某張卡。
+   網址 ?bisect=0 清除並停用；?cards=／?nocards= 手動指定時不做自動二分。 */
+const _BISECT_STAGES = ['none', 'env', 'er', 'outlook', 'news', 'flow', 'all'];
+let _bisect = null;   // { i, ok, done?, label }
+try {
+  const _manual = /[?&](cards=|nocards=)/.test(location.search);
+  if (/[?&]bisect=0/.test(location.search)) localStorage.removeItem('csp_bisect');
+  let bs = null; try { bs = JSON.parse(localStorage.getItem('csp_bisect') || 'null'); } catch(_e) {}
+  if (!_manual && !/[?&]bisect=0/.test(location.search)) {
+    if (bs && bs.done) {
+      _bisect = bs;   // 已有結論：維持全停，紅條顯示結論
+      if (bs.done !== 'none' && bs.done !== 'intermittent') { AUTO_NOCARDS = true; _autoNoCards = true; }
+    } else {
+      let _fresh = false;
+      if (!bs && _freezeN >= 2) { bs = { i: 0, ok: false, at: Date.now() }; _fresh = true; }   // 觸發二分的那次卡死不算第 1 組的結果
+      if (bs) {
+        if (_killedWhileRunning && !_fresh) { bs.done = _BISECT_STAGES[bs.i]; bs.doneAt = Date.now(); _bisect = bs; if (bs.done !== 'none') { AUTO_NOCARDS = true; _autoNoCards = true; } }
+        else { if (bs.ok) bs.i++; if (bs.i >= _BISECT_STAGES.length) { bs.done = 'intermittent'; bs.doneAt = Date.now(); } bs.ok = false; bs.at = Date.now(); _bisect = bs; }
+        localStorage.setItem('csp_bisect', JSON.stringify(bs));
+        if (!bs.done) {
+          const st = _BISECT_STAGES[bs.i];
+          if (st === 'none') { AUTO_NOCARDS = true; _autoNoCards = true; }
+          else if (st !== 'all') { AUTO_NOCARDS = false; _autoNoCards = false; _cardsAllow = [st]; }
+          else { AUTO_NOCARDS = false; _autoNoCards = false; _cardsAllow = null; }
+          setTimeout(() => { try { const b = JSON.parse(localStorage.getItem('csp_bisect') || 'null'); if (b && !b.done && b.i === bs.i) { b.ok = true; localStorage.setItem('csp_bisect', JSON.stringify(b)); } } catch(_e) {} }, 90000);
+        }
+      }
+    }
+  }
+} catch(_e) {}
+const _BISECT_LABEL = { none: '全部資訊卡停用', env: '只畫操作環境卡', er: '只畫反轉卡', outlook: '只畫大方向卡', news: '只畫新聞卡', flow: '只畫資金流動事件卡', all: '全部資訊卡' };
+function _bisectText() {
+  try {
+    if (!_bisect) return '';
+    if (_bisect.done === 'none') return '自動二分結論：資訊卡全部停用時仍卡死 → 兇手不在資訊卡（請把診斷貼給開發者）';
+    if (_bisect.done === 'intermittent') return '自動二分結論：各組單獨都活過 90 秒 → 不是固定某張卡（間歇性）';
+    if (_bisect.done) return `自動二分結論：兇手是「${_BISECT_LABEL[_bisect.done] || _bisect.done}」那一組（已停用全部資訊卡；網址 ?bisect=0 可重來）`;
+    return `自動二分進行中：第 ${_bisect.i + 1}/${_BISECT_STAGES.length} 組「${_BISECT_LABEL[_BISECT_STAGES[_bisect.i]]}」，活過 90 秒自動換下一組；卡死就是它`;
+  } catch(_e) { return ''; }
+}
 try { if (!NO_LS) localStorage.setItem('csp_last_step', JSON.stringify({ n: 'app.js 頂層執行', t: Date.now(), v: 'js' })); } catch(_e) {}   // 頂層執行卡死也留得下線索（上次的值已由 index.html 行內腳本先留住）
 /* 畫面繪製麵包屑：requestAnimationFrame 回呼在該畫格的樣式／版面計算之前執行，之後的 setTimeout(0) 在畫格提交之後——
    「X 繪製中」是最後一步而沒有「X 已繪製」→ 主執行緒卡在那一格的版面／繪製，不是 JavaScript。 */
@@ -116,7 +159,7 @@ function _diagBundle() {
     uptimeMin: Math.round(performance.now() / 60000), mem, cores: navigator.hardwareConcurrency || null, devMem: navigator.deviceMemory || null,
     lastStep: get('csp_last_step'), heartbeat: get('csp_hb'), selfheal: get('csp_selfheal'), healthLog: get('csp_health_log'), slowCands: get('csp_slow_cands'), longTasks: get('csp_longtask'),
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
-    prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
+    bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
@@ -240,7 +283,9 @@ function _bootErrHook() {
       try { if (_verdict) _healthNote('freeze', `${_verdict}｜步驟 ${prev.n}｜${when}`); } catch(_e) {}
       // 工作執行緒心跳回來後補上「卡死 vs 程序結束」的最終判定（讀 IndexedDB 是非同步的）
       try { prevWorkerHbP.then(wh => { const v2 = _freezeVerdict2(prev, prevHb, wh); if (v2) { _healthNote('freeze-final', v2); log('最終判定', v2); } }).catch(() => {}); } catch(_e) {}
-      const _auto = _autoNoCards ? `　｜　連續 ${_freezeN} 次卡死 → 本次自動停用四張資訊卡（若這次不再卡，兇手就是資訊卡的畫面繪製；網址加 ?nocards=0 可取消）` : (_freezeN ? `　｜　連續第 ${_freezeN} 次` : '');
+      const _bt = _bisectText();
+      const _auto = _bt ? `　｜　${_bt}` : (_autoNoCards ? `　｜　連續 ${_freezeN} 次卡死 → 本次自動停用四張資訊卡（網址加 ?nocards=0 可取消）` : (_freezeN ? `　｜　連續第 ${_freezeN} 次` : ''));
+      try { if (_bisect) _healthNote('bisect', _bt); } catch(_e) {}
       try { if (_autoNoCards) _healthNote('auto-nocards', `連續 ${_freezeN} 次卡死，本次自動停用資訊卡`); } catch(_e) {}
       log('凍結線索', `${_verdict ? _verdict + '　｜　' : ''}上次頁面在「${prev.n}」之後沒有正常關閉（${when}，v${prev.v || '?'}${prev.mem ? `，記憶體 ${prev.mem}MB` : ''}${prev.hid ? '，背景分頁' : ''}${prev.on === false ? '，離線' : ''}）${_extra}——若當時畫面卡住，卡點就在這一步${_auto}`);
       // cookie 序號比 localStorage 序號大 → 上次最後一次 localStorage 寫入（那個步驟）根本沒完成：卡在寫入本身
@@ -9042,7 +9087,8 @@ function renderTradeEnvCard() {
 }
 
 async function loadDashboardMacro() {
-  if (AUTO_NOCARDS) { _cardsDisabledNote(_autoNoCards ? '連續卡死後自動停用' : '網址 nocards=1'); return; }
+  if (AUTO_NOCARDS) { _cardsDisabledNote(_autoNoCards ? (_bisectText() || '連續卡死後自動停用') : '網址 nocards=1'); return; }
+  if (_bisect && !_bisect.done) { try { const n = document.getElementById('news-body'); if (n && !_cardOn('news')) n.innerHTML = `<div style="padding:10px;color:var(--text3);font-size:0.8rem">${_bisectText()}</div>`; } catch(_e) {} }
   const el = document.getElementById('market-outlook-body');
   let fg = null, global = null;
   try {
@@ -14891,7 +14937,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822g';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
