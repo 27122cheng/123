@@ -53,6 +53,8 @@ try {
           else if (st !== 'all') { AUTO_NOCARDS = false; _autoNoCards = false; _cardsAllow = [st]; }
           else { AUTO_NOCARDS = false; _autoNoCards = false; _cardsAllow = null; }
           setTimeout(() => { try { const b = JSON.parse(localStorage.getItem('csp_bisect') || 'null'); if (b && !b.done && b.i === bs.i) { b.ok = true; localStorage.setItem('csp_bisect', JSON.stringify(b)); } } catch(_e) {} }, 90000);
+          // 活過 100 秒＝這一組通過 → 自動重新整理進入下一組（不必等使用者動手；最後一組「全部」通過就不再重整）
+          if (st !== 'all') setTimeout(() => { try { const b = JSON.parse(localStorage.getItem('csp_bisect') || 'null'); if (b && !b.done && b.i === bs.i && b.ok) { try { _healthNote('bisect', `第 ${bs.i + 1} 組「${_BISECT_LABEL[st]}」通過，自動重新整理進入下一組`); } catch(_e) {} try { localStorage.setItem('csp_last_step', JSON.stringify({ n: 'unload', t: Date.now(), seq: ++_stepSeq })); } catch(_e) {} location.reload(); } } catch(_e) {} }, 100000);
         }
       }
     }
@@ -65,7 +67,7 @@ function _bisectText() {
     if (_bisect.done === 'none') return '自動二分結論：資訊卡全部停用時仍卡死 → 兇手不在資訊卡（請把診斷貼給開發者）';
     if (_bisect.done === 'intermittent') return '自動二分結論：各組單獨都活過 90 秒 → 不是固定某張卡（間歇性）';
     if (_bisect.done) return `自動二分結論：兇手是「${_BISECT_LABEL[_bisect.done] || _bisect.done}」那一組（已停用全部資訊卡；網址 ?bisect=0 可重來）`;
-    return `自動二分進行中：第 ${_bisect.i + 1}/${_BISECT_STAGES.length} 組「${_BISECT_LABEL[_BISECT_STAGES[_bisect.i]]}」，活過 90 秒自動換下一組；卡死就是它`;
+    return `自動二分進行中：第 ${_bisect.i + 1}/${_BISECT_STAGES.length} 組「${_BISECT_LABEL[_BISECT_STAGES[_bisect.i]]}」，活過 100 秒會自動重新整理換下一組；卡死就是它`;
   } catch(_e) { return ''; }
 }
 try { if (!NO_LS) localStorage.setItem('csp_last_step', JSON.stringify({ n: 'app.js 頂層執行', t: Date.now(), v: 'js' })); } catch(_e) {}   // 頂層執行卡死也留得下線索（上次的值已由 index.html 行內腳本先留住）
@@ -14937,7 +14939,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822g';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822h';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
