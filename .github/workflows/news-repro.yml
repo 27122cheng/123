@@ -1,6 +1,8 @@
 name: news-repro
 on:
   workflow_dispatch:
+  push:
+    branches: [diag-news]
 jobs:
   repro:
     runs-on: ubuntu-latest
