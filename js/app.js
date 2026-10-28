@@ -152,7 +152,8 @@ function _readPendCookie() { try { const m = /(?:^|;\s*)csp_pend=([^;]*)/.exec(d
 function _stepMark(name) {
   _cspStepMem = name; _cspStepAt = Date.now();
   const seq = ++_stepSeq;
-  _pendCookie(seq, name);
+  // cookie 序號只在開頁前 2 分鐘寫（它的任務是分辨「卡在寫入本身」，而主機實測每秒 8 次步驟，長時間跑不該每步都寫 cookie）
+  if (performance.now() < 120000) _pendCookie(seq, name);
   if (NO_LS) return;
   try {
     let mem = null; try { mem = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null; } catch(_m) {}
@@ -14966,7 +14967,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822i';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822j';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
