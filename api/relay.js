@@ -27,9 +27,15 @@ module.exports = async (req, res) => {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 9000);
-    const r = await fetch(u, { signal: ctrl.signal, headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; crypto-scan/1.0)' } });
+    let r = await fetch(u, { signal: ctrl.signal, headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; crypto-scan/1.0)' } });
+    /* 451＝幣安依伺服器所在地區拒絕（Vercel 預設美國區就是這樣；vercel.json 已改 hnd1）。
+       現貨 /api/v3 端點另有官方不分地區的鏡像 data-api.binance.vision，451 時改走它；合約 fapi 沒有鏡像，只能靠區域設定。 */
+    if (r.status === 451 && /^https:\/\/api[1-3]?\.binance\.com\/api\/v3\//.test(u)) {
+      try { r = await fetch(u.replace(/^https:\/\/api[1-3]?\.binance\.com/, 'https://data-api.binance.vision'), { signal: ctrl.signal, headers: { Accept: 'application/json' } }); res.setHeader('x-relay-via', 'binance.vision'); } catch(_e) {}
+    }
     clearTimeout(timer);
     const body = await r.text();
+    if (r.status === 451) { res.status(451).json({ ok: false, err: 'upstream 451: 幣安拒絕此伺服器地區（請在 vercel.json 的 regions 改成非美國區，例如 hnd1／sin1／fra1）' }); return; }
     if (_cache.size > 500) _cache.clear();
     if (r.ok) _cache.set(u, { at: now, status: r.status, body });
     res.status(r.status).setHeader('Content-Type', 'application/json').send(body);

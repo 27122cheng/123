@@ -251,7 +251,7 @@ async function relayFetch(url, opts = {}) {
   const host = m[1]; const pref = _relayPref[host] || (_relayPref[host] = { fails: 0, until: 0 });
   const viaRelay = async () => {
     const ctrl = new AbortController(); const tm = setTimeout(() => ctrl.abort(), 9500);
-    try { const r = await fetch('/api/relay?u=' + encodeURIComponent(url), { cache: 'no-store', signal: ctrl.signal }); _relayLastUsed = Date.now(); _relayUses++; try { feedStamp('relay', r.ok, host); } catch(_e) {} return r; }
+    try { const r = await fetch('/api/relay?u=' + encodeURIComponent(url), { cache: 'no-store', signal: ctrl.signal }); _relayLastUsed = Date.now(); _relayUses++; try { feedStamp('relay', r.ok, r.ok ? host : `${host} HTTP ${r.status}${r.status === 451 ? '（伺服器地區被幣安拒絕）' : ''}`); } catch(_e) {} return r; }
     finally { clearTimeout(tm); }
   };
   const now = Date.now();

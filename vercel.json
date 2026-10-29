@@ -3,20 +3,32 @@
     {
       "source": "/",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store, must-revalidate"
+        }
       ]
     },
     {
       "source": "/index.html",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store, must-revalidate"
+        }
       ]
     },
     {
       "source": "/sw.js",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store, must-revalidate"
+        }
       ]
     }
+  ],
+  "regions": [
+    "hnd1"
   ]
 }
