@@ -168,7 +168,7 @@ function _diagBundle() {
     uptimeMin: Math.round(performance.now() / 60000), mem, cores: navigator.hardwareConcurrency || null, devMem: navigator.deviceMemory || null,
     lastStep: get('csp_last_step'), heartbeat: get('csp_hb'), selfheal: get('csp_selfheal'), healthLog: get('csp_health_log'), slowCands: get('csp_slow_cands'), longTasks: get('csp_longtask'),
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
-    bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
+    keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
@@ -1053,7 +1053,7 @@ async function startMasterKeepAlive() {
         const wl = await navigator.wakeLock.request('screen');
         _keepAlive.wake = true; _keepAlive.why = '';
         wl.addEventListener('release', () => { _keepAlive.wake = false; });
-      } catch(e) { _keepAlive.wake = false; _keepAlive.why = String(e && e.message || e).slice(0, 60); }
+      } catch(e) { _keepAlive.wake = false; _keepAlive.why = String(e && e.message || e).slice(0, 60); try { _healthNote('wakelock', `螢幕保活申請失敗：${_keepAlive.why}——電腦閒置後仍可能睡眠，請把 Windows 電源設定改為接電時螢幕與睡眠「永不」`); } catch(_e) {} }
     };
     await acquire();
     if (!_keepAlive._bound) { _keepAlive._bound = true; document.addEventListener('visibilitychange', () => { if (!document.hidden) acquire(); }); }
@@ -14967,7 +14967,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822j';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822k';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
