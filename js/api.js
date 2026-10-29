@@ -653,8 +653,37 @@ async function fetchKlines(symbol, interval, limit = 220) {
 }
 
 /* 一次性批量獲取所有現貨即時價格（作為 kline 失敗時的備用）*/
+/* ── 幣安現貨幣種表（2026-10-29）──────────────────────────────────────
+   清單裡有 OKX 獨有的代幣化股票（SOXL／SNDK／MU／SKHYNIX…），幣安沒有這些交易對；批量請求
+   ticker/price?symbols=[…] 只要有一個不存在，幣安就整批回 400「Invalid symbol」——鮮度頁的
+   「同源轉發 api3.binance.com HTTP 400」就是它，現貨價與 24h 成交額因此整輪拿不到。
+   做法：先拿一次全市場 ticker/price（不帶 symbols，約 150KB，6 小時快取）建立幣安幣種表，
+   批量請求只帶幣安有的幣；表拿不到時退回「全市場請求 + 本地過濾」。 */
+let _binanceSpotSet = null, _binanceSpotAt = 0;
+async function _binanceSymbolSet() {
+  if (_binanceSpotSet && Date.now() - _binanceSpotAt < 6 * 3600 * 1000) return _binanceSpotSet;
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 8000);
+      const res = await relayFetch(`${host}/api/v3/ticker/price`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!res.ok) continue;
+      const list = await res.json();
+      if (!Array.isArray(list) || list.length < 100) continue;
+      _binanceSpotSet = new Set(list.map(x => x.symbol)); _binanceSpotAt = Date.now();
+      return _binanceSpotSet;
+    } catch(_e) { continue; }
+  }
+  return null;
+}
+function _binanceBatchSyms(set) {
+  const all = loadPairs().map(p => p.s.replace('/', ''));
+  return set ? all.filter(s => set.has(s)) : all;
+}
 async function fetchAllSpotPrices() {
-  const syms = JSON.stringify(loadPairs().map(p => p.s.replace('/', '')));
+  const set = await _binanceSymbolSet();
+  const syms = JSON.stringify(_binanceBatchSyms(set));
+  if (syms === '[]') return {};
   for (const host of BINANCE_HOSTS) {
     try {
       const controller = new AbortController();
@@ -678,7 +707,9 @@ async function fetchAllSpotPrices() {
    OKX 是小所，成交量遠小於幣安；量能分類（高/中/低）與巨鯨門檻
    都以幣安流動性校準，K 線改用 OKX 後，24h 成交額仍取幣安數值 */
 async function fetchAll24hQuoteVols() {
-  const syms = JSON.stringify(loadPairs().map(p => p.s.replace('/', '')));
+  const set = await _binanceSymbolSet();
+  const syms = JSON.stringify(_binanceBatchSyms(set));
+  if (syms === '[]') return {};
   for (const host of BINANCE_HOSTS) {
     try {
       const ctrl = new AbortController();

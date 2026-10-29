@@ -225,6 +225,22 @@ const bo = await p.evaluate(async () => {
 if (bo.bootActive || !bo.started || !bo.hasHealth || !bo.noLateMark || bo.once !== 1 || !bo.early.includes('無法判定') || !bo.liteHtml || !bo.loadingTimerCleared) throw new Error('開頁順序錯誤：' + JSON.stringify(bo));
 console.log(`✓ 開頁順序：done 後背景模組啟動（健康監視=${bo.hasHealth}）且只一次；done 後細粒度標記不寫；開頁初期崩潰 → 「${bo.early.slice(0, 30)}…」；html.lite 同步；載入動畫計時器已停`);
 
+// ══ ⑰ 幣安批量請求只帶幣安有的幣（清單含 OKX 獨有代幣化股票時，舊版整批 400）══
+const bn = await p.evaluate(async () => {
+  const orig = window.fetch; const calls = [];
+  const known = ['BTCUSDT', 'ETHUSDT', ...Array.from({ length: 120 }, (_, i) => 'X' + i + 'USDT')];
+  window.fetch = async (u) => { let s = String(u); if (s.startsWith('/api/relay?u=')) s = decodeURIComponent(s.slice('/api/relay?u='.length)); calls.push(s.slice(0, 80));   // 前一案把幣安設成代理優先，這裡把轉發網址還原
+    if (/ticker\/price\?symbols=/.test(s)) { const syms = JSON.parse(decodeURIComponent(s.split('symbols=')[1])); if (syms.some(x => !known.includes(x))) return new Response('{"code":-1121,"msg":"Invalid symbol."}', { status: 400 }); return new Response(JSON.stringify(syms.map(x => ({ symbol: x, price: '1' }))), { status: 200 }); }
+    if (/ticker\/price$/.test(s)) return new Response(JSON.stringify(known.map(x => ({ symbol: x, price: '2' }))), { status: 200 });
+    return new Response('[]', { status: 200 }); };
+  const oldPairs = localStorage.getItem('csp_pairs'); savePairs([{ s: 'BTC/USDT', p: 1 }, { s: 'SOXL/USDT', p: 1 }, { s: 'ETH/USDT', p: 1 }]); _binanceSpotSet = null;
+  const map = await fetchAllSpotPrices();
+  window.fetch = orig; if (oldPairs) localStorage.setItem('csp_pairs', oldPairs); else localStorage.removeItem('csp_pairs'); _binanceSpotSet = null;
+  return { map, calls, any400: calls.length };
+});
+if (!bn.map.BTCUSDT || bn.map.SOXLUSDT || !bn.map.ETHUSDT) throw new Error('幣安批量過濾錯誤：' + JSON.stringify(bn));
+console.log(`✓ 幣安批量：清單含 SOXL → 只請求幣安有的幣（${Object.keys(bn.map).join('、')}），不再整批 400`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');
