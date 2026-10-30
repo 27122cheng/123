@@ -14967,7 +14967,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822m';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822n';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -31170,20 +31170,24 @@ async function sbxEnsureFunding() {
   try {
     const ctrl = new AbortController();
     const tm = setTimeout(() => ctrl.abort(), 8000);
-    const r = await relayFetch('https://fapi.binance.com/fapi/v1/premiumIndex', { signal: ctrl.signal });
+    let arr = null, src = '幣安';
+    try { const r = await relayFetch('https://fapi.binance.com/fapi/v1/premiumIndex', { signal: ctrl.signal }); if (r.ok) arr = await r.json(); } catch(_e) {}
     clearTimeout(tm);
-    if (!r.ok) return;
-    const arr = await r.json();
-    if (!Array.isArray(arr)) return;
     const map = {};
-    for (const it of arr) {
-      const s = String(it.symbol || '');
-      if (s.slice(-4) !== 'USDT') continue;
-      const fr = parseFloat(it.lastFundingRate);
-      if (isFinite(fr)) map[s.slice(0, -4) + '/USDT'] = fr;
+    if (Array.isArray(arr)) {
+      for (const it of arr) {
+        const s = String(it.symbol || '');
+        if (s.slice(-4) !== 'USDT') continue;
+        const fr = parseFloat(it.lastFundingRate);
+        if (isFinite(fr)) map[s.slice(0, -4) + '/USDT'] = fr;
+      }
+    }
+    if (!Object.keys(map).length) {   // 幣安拿不到 → OKX 逐幣備援（清單前 40 個）
+      try { Object.assign(map, await _okxFundingMap(loadPairs().map(p => p.s))); src = 'OKX'; } catch(_e) {}
+      if (!Object.keys(map).length) { try { feedStamp('funding', false, '幣安與 OKX 皆失敗'); } catch(_fe) {} return; }
     }
     _sbxFunding = map; _sbxFundingTs = now;
-    try { feedStamp('funding', true, Object.keys(map).length + ' 個幣種'); } catch(_fe) {}
+    try { feedStamp('funding', true, Object.keys(map).length + ' 個幣種（' + src + '）'); } catch(_fe) {}
   } catch(_e) { try { feedStamp('funding', false, _e && _e.message); } catch(_fe) {} }
 }
 const _sbxK1h = {};

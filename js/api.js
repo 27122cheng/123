@@ -241,7 +241,7 @@ const BINANCE_HOSTS = [
    走同源代理的全部正常）。這裡把每個直連 fetch 換成：先直連；失敗（網路錯誤、403/451/5xx）就打
    /api/relay?u=<網址>。同一主機連續 3 次直連失敗 → 10 分鐘內代理優先，不再每次先等直連逾時。
    400／404 視為正常回應（幣不存在），不觸發轉發。WebSocket 無法轉發（清算流在這類網路取不到，非必要）。 */
-const RELAY_HOSTS = /^https:\/\/(fapi\.binance\.com|api[1-3]?\.binance\.com|data-api\.binance\.vision|mempool\.space|open-api\.coinglass\.com)\//;
+const RELAY_HOSTS = /^https:\/\/(fapi\.binance\.com|api[1-3]?\.binance\.com|data-api\.binance\.vision|mempool\.space|blockchain\.info|open-api\.coinglass\.com)\//;
 const _relayPref = {};          // host → { fails, until }
 let _relayLastUsed = 0, _relayUses = 0;
 function relayStatus() { return { lastUsed: _relayLastUsed, uses: _relayUses, hosts: Object.keys(_relayPref).filter(h => _relayPref[h].until > Date.now()) }; }
@@ -1026,7 +1026,12 @@ async function fetchDerivativesData(symbol) {
     const top   = topR.status === 'fulfilled' && Array.isArray(topR.value) ? topR.value[0] : null;
     const taker = tkR.status === 'fulfilled' && Array.isArray(tkR.value)  ? tkR.value[0] : null;
 
-    if (fr === null && oi === null) { feedStamp('deriv', false, symbol + ' 無合約數據'); return null; } // 現貨幣種無合約數據
+    if (fr === null && oi === null) {
+      // 幣安拿不到（這個網路擋直連、轉發也失敗，或幣安沒有這個合約）→ 改用 OKX 公開端點（實際成交所，資料同樣公開免金鑰）
+      const okx = await _okxDerivativesData(symbol);
+      if (okx) { feedStamp('deriv', true, symbol + '（OKX）'); return okx; }
+      feedStamp('deriv', false, symbol + ' 無合約數據'); return null;
+    }
 
     feedStamp('deriv', true, symbol);
     return {
@@ -1041,6 +1046,45 @@ async function fetchDerivativesData(symbol) {
       takerBuySell:     taker ? parseFloat(taker.buySellRatio) : null,
     };
   } catch { feedStamp('deriv', false); return null; }
+}
+
+/* ── OKX 公開衍生品端點備援（2026-10-30）──────────────────────────────
+   使用者主機所在網路擋幣安直連，伺服器轉發又受地區與批量限制；OKX 透過 /api/okx 一直正常。
+   OKX 也提供免金鑰的費率、未平倉量、多空人數比、主動買賣量，欄位對齊幣安版的回傳形狀，下游不用改。
+   多空比與主動買賣量是「幣別」口徑（ccy），小幣可能沒有資料，缺的欄位給 null。 */
+function _okxInst(symbol) { const ccy = String(symbol).replace('/USDT', '').replace('USDT', ''); return { ccy, inst: ccy + '-USDT-SWAP' }; }
+async function _okxDerivativesData(symbol) {
+  try {
+    const { ccy, inst } = _okxInst(symbol);
+    const q = (path, params) => okxApiFetch(path, params).then(r => (r && r.json && Array.isArray(r.json.data)) ? r.json.data : null).catch(() => null);
+    const [fr, oi, ls, tk] = await Promise.all([
+      q('public/funding-rate', { instId: inst }),
+      q('public/open-interest', { instType: 'SWAP', instId: inst }),
+      q('rubik/stat/contracts/long-short-account-ratio', { ccy, period: '5m' }),
+      q('rubik/stat/taker-volume', { ccy, instType: 'CONTRACTS', period: '5m' }),
+    ]);
+    const frV = fr && fr[0] ? parseFloat(fr[0].fundingRate) : NaN;
+    const oiV = oi && oi[0] ? parseFloat(oi[0].oiCcy || oi[0].oi) : NaN;
+    if (!isFinite(frV) && !isFinite(oiV)) return null;
+    // 多空人數比：[[ts, ratio]]，ratio = 多方人數／空方人數 → 換算成幣安的 longAccount／shortAccount 比例
+    let lsRatio = null, longRatio = null, shortRatio = null;
+    if (ls && ls[0] && isFinite(parseFloat(ls[0][1]))) { lsRatio = parseFloat(ls[0][1]); longRatio = +(lsRatio / (1 + lsRatio)).toFixed(4); shortRatio = +(1 - longRatio).toFixed(4); }
+    // 主動買賣量：[[ts, sellVol, buyVol]] 取最近 6 筆（30 分鐘）
+    let takerBuySell = null;
+    if (tk && tk.length) { let b = 0, sl = 0; for (const row of tk.slice(0, 6)) { sl += parseFloat(row[1]) || 0; b += parseFloat(row[2]) || 0; } if (sl > 0) takerBuySell = +(b / sl).toFixed(4); }
+    return {
+      fundingRate: isFinite(frV) ? frV : null, openInterest: isFinite(oiV) ? oiV : 0,
+      longRatio, shortRatio, lsRatio, topLongRatio: null, topShortRatio: null, topLSRatio: null, takerBuySell, src: 'okx',
+    };
+  } catch(_e) { return null; }
+}
+/* 全市場費率的 OKX 備援：OKX 沒有一次拿全市場的端點，改抓清單前 40 個幣（限速閘門排隊，約 2.5 秒）；15 分鐘一次成本可忽略 */
+async function _okxFundingMap(symbols) {
+  const map = {};
+  await Promise.all(symbols.slice(0, 40).map(async s => {
+    try { const r = await okxApiFetch('public/funding-rate', { instId: _okxInst(s).inst }); const v = r && r.json && r.json.data && r.json.data[0] ? parseFloat(r.json.data[0].fundingRate) : NaN; if (isFinite(v)) map[s] = v; } catch(_e) {}
+  }));
+  return map;
 }
 
 /* 獲取單幣多時間框架 K 線並分析 */
@@ -1169,10 +1213,12 @@ async function fetchHalvingInfo() {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 5000);
-    const res = await relayFetch('https://mempool.space/api/blocks/tip/height', { signal: ctrl.signal });
+    let res = await relayFetch('https://mempool.space/api/blocks/tip/height', { signal: ctrl.signal });
+    if (!res.ok) res = await relayFetch('https://blockchain.info/q/getblockcount', { signal: ctrl.signal });   // 備援來源（同樣只是區塊高度）
     clearTimeout(t);
-    if (!res.ok) return null;
-    const height = await res.json();
+    if (!res.ok) { feedStamp('halving', false, 'HTTP ' + res.status); return null; }
+    const height = parseInt(await res.text());
+    if (!isFinite(height) || height < 800000) { feedStamp('halving', false, '高度異常'); return null; }
     const nextHalving  = Math.ceil(height / 210000) * 210000;
     const blocksLeft   = nextHalving - height;
     const daysLeft     = Math.round(blocksLeft * 10 / 1440);

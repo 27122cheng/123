@@ -13,6 +13,12 @@ const ALLOW_PATHS = new Set([
   'market/trades',
   'market/books',
   'public/instruments',
+  'public/funding-rate',
+  'public/open-interest',
+  'public/liquidation-orders',
+  'rubik/stat/contracts/long-short-account-ratio',
+  'rubik/stat/taker-volume',
+  'rubik/stat/contracts/open-interest-volume',
 ]);
 
 module.exports = async (req, res) => {

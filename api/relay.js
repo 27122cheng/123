@@ -9,6 +9,7 @@ const ALLOW = [
   /^https:\/\/fapi\.binance\.com\/(fapi\/v1\/(fundingRate|openInterest|premiumIndex|aggTrades|klines|depth|ticker\/24hr)|futures\/data\/(openInterestHist|globalLongShortAccountRatio|topLongShortAccountRatio|takerlongshortRatio|takerBuySellVol))(\?|$)/,
   /^https:\/\/(api[1-3]?\.binance\.com|data-api\.binance\.vision)\/api\/v3\/(klines|aggTrades|ticker\/price|ticker\/24hr|depth|exchangeInfo)(\?|$)/,
   /^https:\/\/mempool\.space\/api\/blocks\/tip\/height$/,
+  /^https:\/\/blockchain\.info\/q\/getblockcount$/,
   /^https:\/\/open-api\.coinglass\.com\/public\/v2\/liquidation_chart\?/,
 ];
 const TTL_MS = 15 * 1000;

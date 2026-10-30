@@ -241,6 +241,25 @@ const bn = await p.evaluate(async () => {
 if (!bn.map.BTCUSDT || bn.map.SOXLUSDT || !bn.map.ETHUSDT) throw new Error('幣安批量過濾錯誤：' + JSON.stringify(bn));
 console.log(`✓ 幣安批量：清單含 SOXL → 只請求幣安有的幣（${Object.keys(bn.map).join('、')}），不再整批 400`);
 
+// ══ ⑱ 幣安拿不到 → OKX 公開端點備援：合約籌碼（費率／OI／多空比／主動買賣）與全市場費率 ══
+const ox = await p.evaluate(async () => {
+  const oR = relayFetch, oO = okxApiFetch;
+  relayFetch = async () => new Response('', { status: 451 });
+  okxApiFetch = async (path, params) => {
+    if (path === 'public/funding-rate') return { status: 200, json: { code: '0', data: [{ instId: params.instId, fundingRate: '0.0003' }] } };
+    if (path === 'public/open-interest') return { status: 200, json: { code: '0', data: [{ oi: '12345', oiCcy: '678.9' }] } };
+    if (path === 'rubik/stat/contracts/long-short-account-ratio') return { status: 200, json: { code: '0', data: [['1', '1.5']] } };
+    if (path === 'rubik/stat/taker-volume') return { status: 200, json: { code: '0', data: [['1', '100', '150'], ['2', '100', '150']] } };
+    return { status: 200, json: null };
+  };
+  const d = await fetchDerivativesData('BTC/USDT');
+  _sbxFunding = null; _sbxFundingTs = 0; await sbxEnsureFunding(); const fm = _sbxFunding;
+  relayFetch = oR; okxApiFetch = oO; _sbxFunding = null; _sbxFundingTs = 0;
+  return { d, fmN: fm ? Object.keys(fm).length : 0, fmBtc: fm ? fm['BTC/USDT'] : null, note: (_feedAt.funding || {}).note };
+});
+if (!ox.d || ox.d.src !== 'okx' || ox.d.fundingRate !== 0.0003 || ox.d.openInterest !== 678.9 || ox.d.lsRatio !== 1.5 || Math.abs(ox.d.longRatio - 0.6) > 1e-3 || ox.d.takerBuySell !== 1.5 || ox.fmN < 1 || ox.fmBtc !== 0.0003 || !/OKX/.test(ox.note)) throw new Error('OKX 備援錯誤：' + JSON.stringify(ox));
+console.log(`✓ OKX 備援：幣安 451 → 費率 ${ox.d.fundingRate}、OI ${ox.d.openInterest}、多空比 ${ox.d.lsRatio}、主動買賣 ${ox.d.takerBuySell}；全市場費率 ${ox.fmN} 個幣（${ox.note}）`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');
