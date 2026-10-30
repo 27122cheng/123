@@ -9,6 +9,7 @@
 - `t_health.mjs`：刷新迴圈例外歸零、卡住看門狗、自我修復決策與冷卻、localStorage 裁剪、K 線快取上限
 - `t_relay.mjs`：api/relay.js 白名單／轉發／快取（Node 直接呼叫 handler）
 - `t_exp.mjs`：實驗整合層——統一特徵抽取、分層績效矩陣、實驗登錄判定、自動套用（快速單攔截／一般單軟門）、樣本充足度
+- `t_report.mjs`：api/report.js Chrome Reporting API 崩潰回報接收（Node 直接呼叫 handler）
 - `t_boot.mjs`：開頁順序——自動安全模式一開頁就 html.lite、連續未完成計數、細粒度開頁軌跡、背景模組等 done 後才啟動
 - `soak.mjs <分鐘>`：長時間運行壓力測試（真實刷新迴圈 3 秒一輪），輸出 heap／DOM／監聽器／timer／快取／localStorage 成長
 

@@ -260,6 +260,16 @@ const ox = await p.evaluate(async () => {
 if (!ox.d || ox.d.src !== 'okx' || ox.d.fundingRate !== 0.0003 || ox.d.openInterest !== 678.9 || ox.d.lsRatio !== 1.5 || Math.abs(ox.d.longRatio - 0.6) > 1e-3 || ox.d.takerBuySell !== 1.5 || ox.fmN < 1 || ox.fmBtc !== 0.0003 || !/OKX/.test(ox.note)) throw new Error('OKX 備援錯誤：' + JSON.stringify(ox));
 console.log(`✓ OKX 備援：幣安 451 → 費率 ${ox.d.fundingRate}、OI ${ox.d.openInterest}、多空比 ${ox.d.lsRatio}、主動買賣 ${ox.d.takerBuySell}；全市場費率 ${ox.fmN} 個幣（${ox.note}）`);
 
+// ══ ⑲ Chrome 崩潰回報：/api/report 有 48 小時內的 crash → 健康日誌 chrome-crash、紅條顯示原因 ══
+const cr = await p.evaluate(async () => {
+  const orig = window.fetch;
+  window.fetch = async (u, o) => String(u).startsWith('/api/report') ? new Response(JSON.stringify({ ok: true, reports: [{ at: Date.now() - 3600e3, type: 'crash', body: { reason: 'oom' } }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }) : orig(u, o);
+  await _fetchCrashReports(); window.fetch = orig;
+  return { note: (_healthLog.find(x => x.kind === 'chrome-crash') || {}).text || '', chip: document.getElementById('err-chip-body')?.textContent || '', n: (_crashReports || []).length };
+});
+if (!cr.note.includes('oom') || !cr.chip.includes('Chrome崩潰回報') || cr.n !== 1) throw new Error('崩潰回報錯誤：' + JSON.stringify(cr));
+console.log(`✓ Chrome 崩潰回報：${cr.note.slice(0, 50)}…`);
+
 await p.evaluate(() => { localStorage.removeItem('csp_selfheal'); localStorage.removeItem('csp_health_log'); });
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_health');

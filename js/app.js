@@ -168,7 +168,7 @@ function _diagBundle() {
     uptimeMin: Math.round(performance.now() / 60000), mem, cores: navigator.hardwareConcurrency || null, devMem: navigator.deviceMemory || null,
     lastStep: get('csp_last_step'), heartbeat: get('csp_hb'), selfheal: get('csp_selfheal'), healthLog: get('csp_health_log'), slowCands: get('csp_slow_cands'), longTasks: get('csp_longtask'),
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
-    keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
+    crashReports: (typeof _crashReports !== 'undefined') ? _crashReports : null, keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
@@ -209,6 +209,7 @@ open().then(db=>{const w=()=>{try{const tx=db.transaction('kv','readwrite');tx.o
     _hbWorker = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
   } catch(_e) {}
 }
+let _bootErrLog = null;   // _bootErrHook 的 log 函式對外暴露（開頁後的崩潰回報也要上紅條）
 function _bootErrHook() {
   const NOISY = /fetch|network|load failed|abort|timeout|websocket/i;
   let _errChipN = 0;
@@ -258,6 +259,7 @@ function _bootErrHook() {
       }
     } catch(_e) {}
   };
+  _bootErrLog = log;
   try {
     window.addEventListener('error', e => log('error',
       (e.message || '') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || '')));
@@ -439,9 +441,28 @@ function _bootMark(name) {
    init 中途炸掉沒走到 done 時，60 秒後備計時器照樣啟動（健康監視不能缺席）。
    自動安全模式（上次沒走完）這一輪不開保活鎖與工作執行緒心跳：若安全模式不崩、正常模式崩，兇手就在這幾個模組裡。 */
 let _postBootStarted = false;
+/* Chrome Reporting API 崩潰回報（2026-10-30）：分頁變黑、程序被結束時頁面自己記不了，瀏覽器會把
+   { type:'crash', body:{ reason:'oom'|'unreachable' } } 送到 /api/report。開頁後取回最近的，顯示在紅條與診斷包。 */
+let _crashReports = null;
+async function _fetchCrashReports() {
+  try {
+    const r = await _fetchT('/api/report?recent=1', { cache: 'no-store' }, 6000);
+    if (!r || !r.ok) return;
+    const j = await r.json(); const list = Array.isArray(j && j.reports) ? j.reports : [];
+    _crashReports = list.slice(0, 10);
+    const recent = list.filter(x => x && x.type === 'crash' && Date.now() - (x.at || 0) < 48 * 3600e3);
+    if (recent.length) {
+      const why = { oom: '記憶體超限被 Chrome 結束（oom）', unreachable: '無回應被 Chrome 結束（unreachable）' };
+      const txt = recent.slice(0, 3).map(x => `${new Date(x.at).toLocaleString('zh-TW', { hour12: false })}：${why[(x.body && x.body.reason) || ''] || JSON.stringify(x.body || {})}`).join('；');
+      _healthNote('chrome-crash', `Chrome 回報分頁程序被結束 ${recent.length} 次（48 小時內）：${txt}`);
+      try { const chip = document.getElementById('err-chip-body'); if (typeof _bootErrLog === 'function') _bootErrLog('Chrome崩潰回報', `48 小時內 ${recent.length} 次：${txt}`); } catch(_e) {}
+    }
+  } catch(_e) {}
+}
 function _startPostBootModules(why) {
   if (_postBootStarted) return; _postBootStarted = true;
   try { startHealthMonitor(); } catch(_e) {}
+  try { _fetchCrashReports(); } catch(_e) {}
   if (AUTO_SAFE) {
     /* 資訊卡在自動安全模式下不是「不載」，而是「等開頁走完再載」（2026-10-25 使用者回報「儀表板反轉下面的部分都不見了」：
        主機每崩一次下一輪就是自動安全模式，大方向／新聞／資金流動三張卡整輪停在「載入…」；反轉卡有背景輪掃自己會補，所以只有它在）。 */
@@ -14967,7 +14988,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822o';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822p';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
