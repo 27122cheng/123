@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260822n" />
+  <link rel="stylesheet" href="css/styles.css?v=20260822o" />
 </head>
 <body>
 
@@ -827,6 +827,16 @@
         </div>
         <div class="setting-row" style="margin-top:6px">
           <div>
+            <div class="setting-name">🔗 實驗結論自動套用</div>
+            <div class="setting-desc">實驗室「實驗整合層」裡結論為「證實」的假設：快速單直接攔截劣勢條件（逆 BTC 日線、逆 1H 突破、多空比反向、止損外側無結構）、一般單劣勢特徵軟門 ×0.7。每條假設至少 30 筆樣本且勝率區間顯著才算證實；關閉時只顯示建議不改單。</div>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="s-exp-auto" onchange="try{saveAllSettings()}catch(e){}" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+        </div>
+        <div class="setting-row" style="margin-top:6px">
+          <div>
             <div class="setting-name">🤖 快速單機器人模式（自動交易連動）</div>
             <div class="setting-desc">給自動交易機器人執行時開啟：訊號一產生就立刻推送（不等 45 秒延遲成交），下一輪掃描直接以結構位計成交、不重複推送；風控扣分、模式閘門改為縮小倉位而非整筆擋掉，ICT 證據（OTE／SMT／誘導）加進排序。關閉時維持人工模擬模式。</div>
           </div>
@@ -1121,8 +1131,8 @@
        ② 三支主腳本改 defer、TradingView 改 async：載入畫面先畫出來再執行 JS，卡死時至少看得到開頁軌跡。 -->
   <script>try{var _s=localStorage.getItem('csp_last_step');window._cspPrevStep=_s?JSON.parse(_s):null;localStorage.setItem('csp_last_step',JSON.stringify({n:'載入腳本',t:Date.now(),v:'html'}));}catch(e){window._cspPrevStep=null;}</script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js" async></script>
-  <script src="js/indicators.js?v=20260822n" defer></script>
-  <script src="js/api.js?v=20260822n" defer></script>
-  <script src="js/app.js?v=20260822n" defer></script>
+  <script src="js/indicators.js?v=20260822o" defer></script>
+  <script src="js/api.js?v=20260822o" defer></script>
+  <script src="js/app.js?v=20260822o" defer></script>
 </body>
 </html>

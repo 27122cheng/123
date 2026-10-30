@@ -1168,7 +1168,7 @@ async function manualRefresh() {
   try { recordLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab record 錯誤:', e); }
   try { updateLabOpportunities(data); } catch(e) { console.error('[manualRefresh] lab update 錯誤:', e); }
   try { updateSLTightnessWatch(data); } catch(e) {}
-  try { recordProvenStrategyTrades(data); } catch(e) {}
+  try { if (PROVEN_AUTO_BUILD) recordProvenStrategyTrades(data); } catch(e) {}
   try { biasTrackUpdate(); } catch(e) {}
   try { if (state.currentPage === 'lab') renderLabPage(); } catch(e) {}
   try { checkPostDataReversal(data); } catch(e) { console.error('[manualRefresh] checkPostDataReversal 錯誤:', e); }
@@ -11907,7 +11907,7 @@ function triggerRescan() {
     try { updateLabOpportunities(data); } catch(e) {}
     try { updateSLTightnessWatch(data); } catch(e) {}
     // 驗證策略晉升：實驗室 ≥50 筆樣本且勝率 ≥75% 的分析方式 → 免風控分建正式單
-    try { recordProvenStrategyTrades(data); } catch(e) {}
+    try { if (PROVEN_AUTO_BUILD) recordProvenStrategyTrades(data); } catch(e) {}
     // 扣分條件有效性審查（每 6 小時，無預測力的風險條件自動豁免）
     try { maybeAuditPenaltyFactors(); } catch(e) {}
     if (state.currentPage === 'lab') { try { renderLabPage(); } catch(e) {} }
@@ -14967,7 +14967,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822n';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822o';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -16090,6 +16090,11 @@ async function recordSignalsFromScan(data) {
       if (isFinite(_a4) && _a4 < 20 && _no(`4H ADX ${_a4.toFixed(0)} <20 無趨勢（回測：期望 +0.02R）`)) continue;
       const _ls = parseFloat(coin.derivData?.lsRatio);
       if (isFinite(_ls) && _ls > 0 && (isLong ? _ls < 1 : _ls > 1)) _soft(`多空人數比反向（${_ls.toFixed(2)}）`, 0.7);
+      // 實驗整合層：已證實為劣勢且設定開啟自動套用的一般單特徵 → 軟門（只用建單當下已知欄位，零請求）
+      try {
+        const _em = expMainSoft(expFeatures({ direction, entryLs: coin.derivData?.lsRatio, entryFr: coin.derivData?.fundingRate, btcD1: (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : null, h4Adx: coin.h4Adx, entryTBias: (typeof tBias !== 'undefined') ? tBias : null }, 'main').map(f => f.k));
+        if (_em.mult < 1) _soft('實驗證實劣勢：' + _em.why.join('、'), _em.mult);
+      } catch(_e) {}
     } catch(_e) {}
 
     // 計算交易設置（與 buildTradeSetup 使用相同的 computeSimpleSetup）
@@ -16926,6 +16931,7 @@ async function recordSignalsFromScan(data) {
       // 進場邏輯別（哪一條分支決定了這筆單的進場／止損／止盈）
       entryTag: setup.entryTag || null, slTag: setup.slTag || null,
       entryMode: setup.entryMode || 'limit',        // stop＝突破觸發（停損買進），limit＝回踩限價
+      planMode: (() => { try { return mainMode(); } catch(_e) { return null; } })(), trailModeAt: (() => { try { return trailMode(); } catch(_e) { return null; } })(),   // 實驗整合層：建單當下的模式與追蹤方式
       priceSrc: setup.priceSrc || 'okx',            // 這筆單的價位空間：pionex／okx（監控用同一來源的現價）
       evStats: signalEvidence(setup.entryTag) || null,   // 建單當下的同型態歷史證據（樣本不足為 null）
       dirSource: _dp.src,   // 方向由誰決定：score（指標評分）／conviction（近中性時證據融合反轉）
@@ -22228,7 +22234,7 @@ function getLabTagWeights() {
   if (_labTagWeightCache && now - _labTagWeightTs < 60 * 1000) return _labTagWeightCache;
   // 近期窗口：只取最近 400 筆已平倉樣本——市場結構會變，
   // 半年前的標籤表現不應該永遠影響今天的加權（regime 衰減）
-  const closedAll = loadAILab().filter(o => o.status === 'closed');
+  const closedAll = labSamples().filter(o => o.status === 'closed');   // 含封存（先前只看現役 400 筆，封存的 800 筆沒用到）
   const closed = closedAll
     .sort((a, b) => (b.closeTime || b.exitTime || b.timestamp || 0) - (a.closeTime || a.exitTime || a.timestamp || 0))
     .slice(0, 400);
@@ -22450,7 +22456,7 @@ function recordLabOpportunities(data) {
       tags,
       riskKeys: _labRiskKeys,
       // 參考記錄（不作門檻）：當時的風控分/風險分，供事後對照
-      refConf: setup.conf ?? null, refLearnPen: setup.learnPenalty ?? null,
+      refConf: setup.conf ?? null, conf: setup.conf ?? null, refLearnPen: setup.learnPenalty ?? null,   // conf 同時寫入：封存欄位 LAB_KEEP_FIELDS 用的是 conf，先前永遠是空的
       status: 'pending', outcome: null, pnlR: null,
       entryTime: null, exitTime: null, peakR: 0,
     });
@@ -22732,6 +22738,7 @@ function renderLabPage() {
       <p class="page-subtitle">收錄 AI 認為不錯的機會（不設風控分門檻），紙上追蹤至止盈/止損，統計哪種分析方式勝率與獲利最高。與正式交易記錄完全隔離。</p>
     </div></div>
     ${_perfDiagPanel()}
+    ${buildExpHtml()}
     ${_btCalibPanel()}
     ${buildPairLabHtml()}
     ${buildForecastHtml()}
@@ -27505,6 +27512,7 @@ function populateSettingsPage() {
   if (cloudSyncTgl) cloudSyncTgl.checked = s.cloudSync !== false;     // 預設開啟
   const scalpTgl = document.getElementById('s-scalp-toggle');
   if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
+  try { const _ea = document.getElementById('s-exp-auto'); if (_ea) _ea.checked = s.expAutoApply === true; } catch(_e) {}
   const mpsSel = document.getElementById('s-main-price-src');
   if (mpsSel) mpsSel.value = (s.mainPriceSrc === 'pionex' || s.mainPriceSrc === 'pionex_perp') ? s.mainPriceSrc : 'okx';
   const mmSel = document.getElementById('s-main-mode');
@@ -27568,6 +27576,7 @@ function saveAllSettings() {
     signalMaster:    document.getElementById('s-master-toggle')?.checked ?? true,
     cloudSync:       document.getElementById('s-cloud-sync')?.checked ?? true,
     scalpEnabled:    document.getElementById('s-scalp-toggle')?.checked ?? false,
+    expAutoApply:    document.getElementById('s-exp-auto')?.checked ?? false,
     scalpBotMode:    document.getElementById('s-scalp-bot')?.checked ?? false,
     mainPriceSrc:    (() => { const v = document.getElementById('s-main-price-src')?.value; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; })(),
     mainMode:        (() => { const v = document.getElementById('s-main-mode')?.value; return v === 'balanced' ? 'balanced' : 'high'; })(),
@@ -29266,7 +29275,18 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   if (_tp1Atr > SCALP_CFG.maxTpAtr) {
     return _sr(`波動不足(止盈一需走 ${_tp1Atr.toFixed(1)}×ATR)`);
   }
+  // 實驗整合層：一般單證實的邊際借給快速單——結論證實且設定開啟時直接攔截；否則只記錄欄位供分層統計
+  const _xDir = isLong ? 'long' : 'short';
+  const _xBtcD1 = (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : null;
+  const _xBtcH4 = (typeof _btcH4Dir !== 'undefined') ? _btcH4Dir : null;
+  const _xH1 = coin.h1Brk && coin.h1Brk.dir && !coin.h1Brk.crossed ? coin.h1Brk.dir : null;
+  const _xLs = parseFloat(coin.derivData?.lsRatio), _xFr = parseFloat(coin.derivData?.fundingRate);
+  try {
+    const _xb = expScalpBlock({ btcD1: _xBtcD1 ? _expAligned(_xDir, _xBtcD1) : 'neutral', h1brk: _xH1 ? _expAligned(_xDir, _xH1) : 'neutral', ls: isFinite(_xLs) ? (_xLs > 1 ? (isLong ? 'aligned' : 'against') : _xLs < 1 ? (isLong ? 'against' : 'aligned') : 'neutral') : 'neutral', outer: _outerLv != null });
+    if (_xb) return _sr(_xb);
+  } catch(_e) {}
   return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi, mode, family,
+           btcD1: _xBtcD1, btcH4: _xBtcH4, h1BrkDir: _xH1, entryLs: isFinite(_xLs) ? _xLs : null, entryFr: isFinite(_xFr) ? _xFr : null,
            macd: parseFloat(coin.macdHist) || 0,
            breakLevel: level, breakExtent: +(Math.max(0, extent) * 100).toFixed(2),
            volRatio: +(curVol / avgVol).toFixed(2), oiState,
@@ -29719,6 +29739,7 @@ async function recordScalpSignals(data) {
         atrAtEntry: setup.atr, slMult: setup.slMult, slMultSrc: setup.slMultSrc,
         slMultWhy: setup.slMultWhy, levelGapAtr: setup.levelGapAtr, slDistAtr: setup.slDistAtr,
         slHuntAvoid: setup.slHuntAvoid || false,   // 掃損位迴避是否觸發（實測值不值得由統計回答）
+        slHasOuter: setup.slHasOuter ?? null, btcD1: setup.btcD1 || null, btcH4: setup.btcH4 || null, h1BrkDir: setup.h1BrkDir || null, entryLs: setup.entryLs ?? null, entryFr: setup.entryFr ?? null,   // 實驗整合層：快速單與一般單共用的切分欄位
         maeAtr: 0, mfeAtr: 0,     // 最大不利／有利偏移（ATR 單位），持倉期間即時更新
         breakLevel: setup.breakLevel, breakExtent: setup.breakExtent,
         volRatio: setup.volRatio, oiState: setup.oiState,
@@ -34628,4 +34649,255 @@ function buildForecastHtml() {
         <td style="padding:4px 6px;color:${vC[r.verdict]}">${vL[r.verdict]}</td>
         <td style="padding:4px 6px;text-align:right">×${forecastWeight(r.k)}</td>
       </tr>`).join('')}</tbody></table></div></div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   實驗整合層（2026-10-30）
+   使用者的問題：「實驗室交易量夠多嗎？有標籤整合、盤形、技術、基本面、籌碼面的實驗分析嗎？
+   快速單與一般單有連動嗎？」老實的答案是：樣本散在三套詞彙（實驗室標籤、風險鍵、確信度證據鍵）、
+   三套分析（標籤權重、扣分審查、確信度校準）各算各的，而且快速單與一般單從不互相借用已證實的邊際。
+   這一層做四件事：
+   ① expFeatures：把一般單／快速單／實驗室樣本統一抽成「面向→特徵」（技術、盤形、籌碼、宏觀基本面、時段、模型／執行），
+      只用建單時已存在單上的欄位，零網路、零 regex（規則②）。
+   ② expMatrix：分層績效矩陣——每個特徵的 n、勝率、Wilson 區間、平均 R，對比基準，給「優勢／劣勢／樣本不足」。
+      按鈕觸發＋10 分鐘快取（規則①），不在掃描路徑上。
+   ③ EXP_REGISTRY：實驗登錄——每條假設對應一個特徵切分與預期方向；一般單證實的邊際（順 BTC 日線、多空比同向、
+      1H 突破方向、4H ADX）同時登錄為快速單的假設，這就是兩邊的連動。結論「證實」且設定開啟自動套用時，
+      快速單直接把劣勢條件當攔截、一般單當軟門（×0.7）。
+   ④ expSampleSufficiency：每個學習／實驗機制目前的樣本數、需要的樣本數、近 14 天累積速度與預估達標天數。 */
+const EXP_CFG = { minN: 30, edgePP: 5, edgeR: 0.05, cacheMs: 10 * 60e3, softMult: 0.7 };
+const EXP_DIM_LABEL = { tech: '技術', pattern: '盤形', chips: '籌碼', macro: '宏觀／基本面', session: '時段', model: '模型／執行', risk: '風控條件' };
+function _expAligned(dir, sig) {   // 'long'/'short' vs 'bull'/'bear'/'neutral' → 'aligned'|'against'|'neutral'
+  const s = String(sig || '');
+  if (s.indexOf('bull') >= 0) return dir === 'long' ? 'aligned' : 'against';
+  if (s.indexOf('bear') >= 0) return dir === 'short' ? 'aligned' : 'against';
+  return 'neutral';
+}
+const _EXP_ALIGN_ZH = { aligned: '順向', against: '逆向', neutral: '中性' };
+function _expTagDim(tag) {
+  const t = String(tag);
+  if (t.startsWith('結構-') || t.startsWith('裸K-') || t.startsWith('圖形-') || t.startsWith('ICT-') || t === '123/2B形態' || t === 'BB走軌') return 'pattern';
+  if (t.startsWith('OI-') || t.startsWith('清算-') || t === '巨鯨同向' || t === '足跡Delta同向' || t === 'VWAP掌控' || t === '資金費率反向擁擠' || t === '爆倉擠壓' || t === '主力吸籌' || t === 'OI新錢同向') return 'chips';
+  if (t.startsWith('宏觀') || t.startsWith('場外-') || t.startsWith('市場-')) return 'macro';
+  if (t.startsWith('時段-') || t === 'KillZone時段') return 'session';
+  if (t.startsWith('RS-') || t === '相對強弱' || t === 'MACD動能' || t === '放量' || t === 'ADX強趨勢' || t === '多時框共振') return 'tech';
+  return 'tech';
+}
+function _expBucket(v, cuts, labels) { const n = parseFloat(v); if (!isFinite(n)) return null; for (let i = 0; i < cuts.length; i++) if (n < cuts[i]) return labels[i]; return labels[cuts.length]; }
+function expFeatures(t, kind) {
+  const f = []; const add = (d, k, l) => { if (k) f.push({ d, k: d + ':' + k, l }); };
+  if (!t) return f;
+  const dir = t.direction === 'short' ? 'short' : 'long';
+  try {
+    if (kind === 'main') {
+      add('model', 'entry:' + (t.entryMode || 'limit'), t.entryMode === 'stop' ? '停損掛單進場' : '限價回踩進場');
+      if (t.entryTag) add('tech', 'tag:' + t.entryTag, '進場觸發 ' + t.entryTag);
+      const adxB = _expBucket(t.h4Adx, [20, 30], ['4H ADX<20', '4H ADX 20–30', '4H ADX≥30']); if (adxB) add('tech', 'adx:' + adxB, adxB);
+      const rsiB = _expBucket(t.rsi, [40, 60], ['RSI<40', 'RSI 40–60', 'RSI>60']); if (rsiB) add('tech', 'rsi:' + rsiB, rsiB);
+      const btc = t.btcD1 ? _expAligned(dir, t.btcD1) : 'neutral'; add('macro', 'btcD1:' + btc, 'BTC 日線' + _EXP_ALIGN_ZH[btc]);
+      if (isFinite(parseFloat(t.entryLs))) { const ls = parseFloat(t.entryLs); const a = ls > 1 ? (dir === 'long' ? 'aligned' : 'against') : ls < 1 ? (dir === 'short' ? 'aligned' : 'against') : 'neutral'; add('chips', 'ls:' + a, '多空比' + _EXP_ALIGN_ZH[a]); }
+      if (isFinite(parseFloat(t.entryFr))) { const fr = parseFloat(t.entryFr); const a = Math.abs(fr) < 0.0002 ? 'neutral' : (fr > 0) === (dir === 'long') ? 'crowded' : 'contra'; add('chips', 'fr:' + a, a === 'crowded' ? '費率同向擁擠' : a === 'contra' ? '費率反向（軋空／殺多機會）' : '費率中性'); }
+      const pB = _expBucket(t.btProb, [0.55, 0.65], ['預測勝率<55%', '預測勝率 55–65%', '預測勝率≥65%']); if (pB) add('model', 'btp:' + pB, pB);
+      const cB = _expBucket(t.conviction, [0, 25], ['確信度<0', '確信度 0–25', '確信度≥25']); if (cB) add('model', 'conv:' + cB, cB);
+      if (isFinite(parseFloat(t.softMult))) add('model', 'soft:' + (parseFloat(t.softMult) < 1 ? 'reduced' : 'full'), parseFloat(t.softMult) < 1 ? '軟門縮倉' : '全額部位');
+      if (t.planMode) add('model', 'mode:' + t.planMode, t.planMode === 'high' ? '高勝率模式' : '平衡模式');
+      if (t.trailModeAt) add('model', 'trail:' + t.trailModeAt, t.trailModeAt === 'r' ? '純 R 追蹤' : '結構錨定追蹤');
+      if (t.kz) add('session', 'kz:' + t.kz, '時段 ' + t.kz);
+      if (t.regime) add('macro', 'regime:' + t.regime, '市場狀態 ' + t.regime);
+      if (t.entryTBias) { const a = _expAligned(dir, t.entryTBias); add('macro', 'tbias:' + a, '今日大盤預測' + _EXP_ALIGN_ZH[a]); }
+      for (const tag of (t.entryTags || [])) add(_expTagDim(tag), 'tag:' + tag, tag);
+      for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
+      if (t.convEv && Array.isArray(t.convEv.a)) for (const k of t.convEv.a) add('model', 'opp:' + k, '反對證據 ' + ((typeof CONV_EV_LABELS !== 'undefined' && CONV_EV_LABELS[k]) || k));
+    } else if (kind === 'scalp') {
+      if (t.mode) add('model', 'mode:' + t.mode, (typeof SCALP_MODE_LABEL !== 'undefined' && SCALP_MODE_LABEL[t.mode]) || t.mode);
+      if (t.family) add('model', 'family:' + t.family, t.family === 'revert' ? '回歸家族' : '順勢家族');
+      if (t.kzQuality) add('session', 'kz:' + t.kzQuality, '時段品質 ' + t.kzQuality);
+      if (t.oiState) add('chips', 'oi:' + t.oiState, 'OI ' + t.oiState);
+      const mB = _expBucket(t.mtfAlign, [2], ['多時框<2', '多時框≥2']); if (mB) add('tech', 'mtf:' + mB, mB);
+      const sB = _expBucket(t.slDistAtr, [0.6, 1.0], ['止損<0.6ATR', '止損 0.6–1ATR', '止損≥1ATR']); if (sB) add('model', 'sl:' + sB, sB);
+      const vB = _expBucket(t.volRatio, [1.5], ['量比<1.5', '量比≥1.5']); if (vB) add('tech', 'vol:' + vB, vB);
+      if (t.regime) add('macro', 'regime:' + t.regime, '市場狀態 ' + t.regime);
+      add('model', 'hunt:' + (t.slHuntAvoid ? 'y' : 'n'), t.slHuntAvoid ? '掃損迴避觸發' : '未觸發掃損迴避');
+      if (t.slHasOuter != null) add('pattern', 'outer:' + (t.slHasOuter ? 'y' : 'n'), t.slHasOuter ? '止損外側有結構' : '止損外側無結構');
+      if (t.slWidened != null) add('model', 'widen:' + (t.slWidened ? 'y' : 'n'), t.slWidened ? '止損因手續費推遠' : '止損未推遠');
+      if (t.btcD1) { const a = _expAligned(dir, t.btcD1); add('macro', 'btcD1:' + a, 'BTC 日線' + _EXP_ALIGN_ZH[a]); }
+      if (t.btcH4) { const a = _expAligned(dir, t.btcH4); add('macro', 'btcH4:' + a, 'BTC 4H' + _EXP_ALIGN_ZH[a]); }
+      if (t.h1BrkDir) { const a = _expAligned(dir, t.h1BrkDir); add('tech', 'h1brk:' + a, '1H 突破方向' + _EXP_ALIGN_ZH[a]); }
+      if (isFinite(parseFloat(t.entryLs))) { const ls = parseFloat(t.entryLs); const a = ls > 1 ? (dir === 'long' ? 'aligned' : 'against') : ls < 1 ? (dir === 'short' ? 'aligned' : 'against') : 'neutral'; add('chips', 'ls:' + a, '多空比' + _EXP_ALIGN_ZH[a]); }
+      if (isFinite(parseFloat(t.entryFr))) { const fr = parseFloat(t.entryFr); const a = Math.abs(fr) < 0.0002 ? 'neutral' : (fr > 0) === (dir === 'long') ? 'crowded' : 'contra'; add('chips', 'fr:' + a, a === 'crowded' ? '費率同向擁擠' : a === 'contra' ? '費率反向' : '費率中性'); }
+      for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
+    } else {   // lab
+      for (const tag of (t.tags || [])) add(_expTagDim(tag), 'tag:' + tag, tag);
+      for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
+      add('model', 'dir:' + dir, dir === 'long' ? '做多' : '做空');
+    }
+  } catch(_e) {}
+  return f;
+}
+function expSamples(kind) {
+  try {
+    if (kind === 'main') return learnSamples().filter(t => t && (t.status === 'closed' || t.status === 'expired') && isFinite(parseFloat(t.pnlR)));
+    if (kind === 'scalp') { const byId = new Map(); for (const t of loadQlabArchive()) if (t && t.id) byId.set(t.id, t); for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') byId.set(t.id, t); return [...byId.values()].filter(t => isFinite(parseFloat(t.pnlR))); }
+    return labSamples().filter(o => o && o.status === 'closed' && isFinite(parseFloat(o.pnlR)));
+  } catch(_e) { return []; }
+}
+const _expCache = {};
+function expMatrix(kind, force) {
+  const c = _expCache[kind];
+  if (!force && c && Date.now() - c.at < EXP_CFG.cacheMs) return c;
+  const samples = expSamples(kind);
+  const n0 = samples.length; let w0 = 0, r0 = 0;
+  const stat = {};
+  for (const t of samples) {
+    const r = parseFloat(t.pnlR) || 0; const win = r > 0; if (win) w0++; r0 += r;
+    const seen = new Set();
+    for (const f of expFeatures(t, kind)) {
+      if (seen.has(f.k)) continue; seen.add(f.k);
+      const s = stat[f.k] || (stat[f.k] = { d: f.d, k: f.k, l: f.l, n: 0, w: 0, r: 0 });
+      s.n++; if (win) s.w++; s.r += r;
+    }
+  }
+  const base = { n: n0, wr: n0 ? w0 / n0 : 0, avgR: n0 ? r0 / n0 : 0 };
+  const rows = Object.values(stat).map(s => {
+    const wr = s.n ? s.w / s.n : 0, lb = wilsonLB(s.w, s.n), ub = 1 - wilsonLB(s.n - s.w, s.n), avgR = s.n ? s.r / s.n : 0;
+    let verdict = 'insufficient';
+    if (s.n >= EXP_CFG.minN && n0 >= EXP_CFG.minN) {
+      if (lb >= base.wr + EXP_CFG.edgePP / 100 && avgR >= base.avgR + EXP_CFG.edgeR) verdict = 'edge';
+      else if (ub <= base.wr - EXP_CFG.edgePP / 100 || avgR <= base.avgR - 2 * EXP_CFG.edgeR && ub <= base.wr) verdict = 'drag';
+      else verdict = 'neutral';
+    }
+    return { ...s, wr, lb, ub, avgR, verdict };
+  }).sort((a, b) => (b.avgR - a.avgR));
+  const out = { at: Date.now(), kind, base, rows };
+  _expCache[kind] = out;
+  return out;
+}
+/* 實驗登錄：一般單已由回測證實的邊際，同時登錄為快速單假設（兩邊連動）。expect：'edge'＝預期此特徵較好、'drag'＝預期較差。
+   apply：'scalpReject'＝證實為劣勢且自動套用開啟時快速單直接攔截；'mainSoft'＝一般單軟門 ×0.7。 */
+const EXP_REGISTRY = [
+  { id: 'm_btcd1_against', scope: 'main',  key: 'macro:btcD1:against', name: '一般單逆 BTC 日線', why: '回測 −0.01R vs 順向 +0.31R（已設硬門，這裡持續驗證）', expect: 'drag' },
+  { id: 'm_ls_against',    scope: 'main',  key: 'chips:ls:against',    name: '一般單多空比反向',   why: '回測同向 +0.36R、反向 −0.10R（軟門 ×0.7 已上線，這裡持續驗證）', expect: 'drag' },
+  { id: 'm_fr_crowded',    scope: 'main',  key: 'chips:fr:crowded',    name: '一般單費率同向擁擠', why: '做多在正費率擁擠環境是否更差（未上線，證實後才套用）', expect: 'drag', apply: 'mainSoft' },
+  { id: 'm_tbias_against', scope: 'main',  key: 'macro:tbias:against', name: '一般單逆今日大盤預測', why: 'AI 大盤預測是否真的有邊際（未上線，證實後才套用）', expect: 'drag', apply: 'mainSoft' },
+  { id: 'm_adx_low',       scope: 'main',  key: 'tech:adx:4H ADX<20',  name: '一般單 4H ADX<20',   why: '回測期望值≈0（已設硬門）', expect: 'drag' },
+  { id: 'm_stop_entry',    scope: 'main',  key: 'model:entry:stop',    name: '一般單停損掛單進場', why: '回測 +0.19R vs 限價 −0.29R', expect: 'edge' },
+  { id: 'm_btp_high',      scope: 'main',  key: 'model:btp:預測勝率≥65%', name: '一般單預測勝率≥65%', why: '高勝率模式的門檻是否真的分得出高低', expect: 'edge' },
+  { id: 'm_trail_struct',  scope: 'main',  key: 'model:trail:struct',  name: '一般單結構錨定追蹤', why: '回測每筆少 0.04～0.10R，使用者選擇保留；實盤驗證', expect: 'drag' },
+  { id: 's_btcd1_against', scope: 'scalp', key: 'macro:btcD1:against', name: '快速單逆 BTC 日線',   why: '一般單證實的邊際借給快速單（回測 5m 動能逆向 −0.20R）', expect: 'drag', apply: 'scalpReject' },
+  { id: 's_h1brk_against', scope: 'scalp', key: 'tech:h1brk:against',  name: '快速單逆 1H 突破方向', why: '1H 突破是最穩的一般單策略；快速單逆著它做是否更差', expect: 'drag', apply: 'scalpReject' },
+  { id: 's_ls_against',    scope: 'scalp', key: 'chips:ls:against',    name: '快速單多空比反向',   why: '一般單 +0.36R／−0.10R 的差距在 5m 是否成立', expect: 'drag', apply: 'scalpReject' },
+  { id: 's_outer_none',    scope: 'scalp', key: 'pattern:outer:n',     name: '快速單止損外側無結構', why: '止損懸在真空中是否更常被掃', expect: 'drag', apply: 'scalpReject' },
+  { id: 's_hunt',          scope: 'scalp', key: 'model:hunt:y',        name: '快速單掃損迴避觸發', why: '推遠 0.35ATR 是否值得', expect: 'edge' },
+  { id: 's_vol_high',      scope: 'scalp', key: 'tech:vol:量比≥1.5',   name: '快速單放量進場',     why: '量比是否分得出勝率', expect: 'edge' },
+];
+function expVerdicts(force) {
+  const out = [];
+  for (const h of EXP_REGISTRY) {
+    const m = expMatrix(h.scope, force);
+    const row = m.rows.find(r => r.k === h.key) || null;
+    let status = 'insufficient', note = '';
+    if (row && row.verdict !== 'insufficient') {
+      if (row.verdict === h.expect) { status = 'proven'; note = '與預期一致'; }
+      else if (row.verdict === 'neutral') { status = 'neutral'; note = '看不出差異'; }
+      else { status = 'refuted'; note = '與預期相反'; }
+    }
+    out.push({ ...h, row, base: m.base, status, note, n: row ? row.n : 0, need: EXP_CFG.minN });
+  }
+  return out;
+}
+function expAutoApplyOn() { try { return loadSettings().expAutoApply === true; } catch(_e) { return false; } }
+/* 快速單攔截：自動套用開啟 → 已證實為劣勢的快速單條件直接擋。ctx 由 scalp 建單路徑提供（零額外請求）。 */
+function expScalpBlock(ctx) {
+  try {
+    if (!expAutoApplyOn()) return null;
+    const proven = expVerdicts(false).filter(v => v.scope === 'scalp' && v.apply === 'scalpReject' && v.status === 'proven');
+    for (const v of proven) {
+      if (v.key === 'macro:btcD1:against' && ctx.btcD1 === 'against') return `實驗證實劣勢：${v.name}（n=${v.n}，勝率 ${(v.row.wr * 100).toFixed(0)}%）`;
+      if (v.key === 'tech:h1brk:against' && ctx.h1brk === 'against') return `實驗證實劣勢：${v.name}（n=${v.n}）`;
+      if (v.key === 'chips:ls:against' && ctx.ls === 'against') return `實驗證實劣勢：${v.name}（n=${v.n}）`;
+      if (v.key === 'pattern:outer:n' && ctx.outer === false) return `實驗證實劣勢：${v.name}（n=${v.n}）`;
+    }
+  } catch(_e) {}
+  return null;
+}
+/* 一般單軟門：自動套用開啟 → 已證實為劣勢且標記 mainSoft 的特徵回傳倍數（呼叫端乘進 _softMult） */
+function expMainSoft(featureKeys) {
+  try {
+    if (!expAutoApplyOn()) return { mult: 1, why: [] };
+    const proven = expVerdicts(false).filter(v => v.scope === 'main' && v.apply === 'mainSoft' && v.status === 'proven');
+    let mult = 1; const why = [];
+    for (const v of proven) if (featureKeys.includes(v.key)) { mult *= EXP_CFG.softMult; why.push(v.name); }
+    return { mult, why };
+  } catch(_e) { return { mult: 1, why: [] }; }
+}
+/* 樣本充足度：每個機制現在有多少、需要多少、近 14 天速度、預估幾天達標 */
+function expSampleSufficiency() {
+  const now = Date.now(), d14 = now - 14 * 86400e3;
+  const rate = arr => { const n = arr.filter(t => (t.exitTime || t.timestamp || 0) >= d14).length; return n / 14; };
+  const main = expSamples('main'), scalp = expSamples('scalp'), lab = expSamples('lab');
+  const mainNew = main.filter(t => (t.timestamp || 0) >= Date.UTC(2026, 9, 6));
+  const rM = rate(main), rS = rate(scalp), rL = rate(lab);
+  let labTagMax = 0; try { const st = {}; for (const o of lab) for (const t of (o.tags || [])) st[t] = (st[t] || 0) + 1; labTagMax = Math.max(0, ...Object.values(st)); } catch(_e) {}
+  const scalpModeMin = (() => { try { const st = {}; for (const t of scalp) if (t.mode) st[t.mode] = (st[t.mode] || 0) + 1; const v = Object.values(st); return v.length ? Math.min(...v) : 0; } catch(_e) { return 0; } })();
+  const rows = [
+    { name: '一般單成效診斷（新規則）', n: mainNew.length, need: 30, rate: rM },
+    { name: '一般單實驗假設（每條）', n: main.length, need: EXP_CFG.minN, rate: rM },
+    { name: '回測機率模型校準', n: main.filter(t => isFinite(parseFloat(t.btProb))).length, need: 30, rate: rM },
+    { name: '確信度權重校準（每個證據鍵）', n: main.length, need: 25, rate: rM },
+    { name: '快速單學習止損（整體／每模式）', n: scalpModeMin, need: 15, rate: rS },
+    { name: '快速單實驗假設（每條）', n: scalp.length, need: EXP_CFG.minN, rate: rS },
+    { name: '量化實驗室自動調參', n: scalp.length, need: 60, rate: rS },
+    { name: '實驗室標籤權重（最多的一個標籤）', n: labTagMax, need: 50, rate: rL },
+    { name: '條件配對研究（每個配對）', n: lab.length, need: 40, rate: rL },
+  ];
+  return rows.map(r => ({ ...r, eta: r.n >= r.need ? 0 : (r.rate > 0 ? Math.ceil((r.need - r.n) / r.rate) : null) }));
+}
+function expRecompute() { try { for (const k of ['main', 'scalp', 'lab']) expMatrix(k, true); } catch(_e) {} try { renderLabPage(); } catch(_e) {} }
+function buildExpHtml() {
+  try {
+    const vC = { edge: 'var(--bull)', drag: 'var(--bear)', neutral: 'var(--text2)', insufficient: 'var(--text3)' };
+    const vL = { edge: '優勢', drag: '劣勢', neutral: '無差異', insufficient: '樣本不足' };
+    const sL = { proven: '✅ 證實', refuted: '❌ 相反', neutral: '➖ 無差異', insufficient: '⏳ 樣本不足' };
+    const pct = v => (v * 100).toFixed(0) + '%';
+    const verdicts = expVerdicts(false);
+    const suff = expSampleSufficiency();
+    const auto = expAutoApplyOn();
+    const regRows = verdicts.map(v => `<tr>
+      <td style="padding:4px 6px">${v.scope === 'main' ? '一般單' : '快速單'}</td>
+      <td style="padding:4px 6px">${v.name}<div style="font-size:0.68rem;color:var(--text3)">${v.why}</div></td>
+      <td style="padding:4px 6px;text-align:right">${v.n}/${v.need}</td>
+      <td style="padding:4px 6px;text-align:right">${v.row ? pct(v.row.wr) + '（' + pct(v.row.lb) + '～' + pct(v.row.ub) + '）' : '—'}</td>
+      <td style="padding:4px 6px;text-align:right">${v.row ? (v.row.avgR >= 0 ? '+' : '') + v.row.avgR.toFixed(2) + 'R' : '—'}</td>
+      <td style="padding:4px 6px;text-align:right;color:var(--text3)">${pct(v.base.wr)} / ${(v.base.avgR >= 0 ? '+' : '') + v.base.avgR.toFixed(2)}R</td>
+      <td style="padding:4px 6px">${sL[v.status]}${v.status === 'proven' && v.apply ? (auto ? '<div style="font-size:0.68rem;color:var(--bull)">已自動套用</div>' : '<div style="font-size:0.68rem;color:#f59e0b">可套用（設定頁開啟）</div>') : ''}</td>
+    </tr>`).join('');
+    const dimTable = kind => {
+      const m = expMatrix(kind, false);
+      if (!m.base.n) return `<div style="padding:8px 0;color:var(--text3);font-size:0.78rem">尚無已完結樣本</div>`;
+      const byDim = {};
+      for (const r of m.rows) (byDim[r.d] = byDim[r.d] || []).push(r);
+      return Object.keys(EXP_DIM_LABEL).filter(d => byDim[d]).map(d => `<div style="margin-top:8px"><div style="font-size:0.74rem;font-weight:700;color:var(--text2)">${EXP_DIM_LABEL[d]}</div>
+        <table style="width:100%;border-collapse:collapse;font-size:0.72rem"><tbody>${byDim[d].slice(0, 14).map(r => `<tr>
+          <td style="padding:2px 6px">${r.l}</td><td style="padding:2px 6px;text-align:right">${r.n}</td>
+          <td style="padding:2px 6px;text-align:right">${pct(r.wr)}</td><td style="padding:2px 6px;text-align:right;color:var(--text3)">${pct(r.lb)}～${pct(r.ub)}</td>
+          <td style="padding:2px 6px;text-align:right">${(r.avgR >= 0 ? '+' : '') + r.avgR.toFixed(2)}R</td>
+          <td style="padding:2px 6px;color:${vC[r.verdict]}">${vL[r.verdict]}</td></tr>`).join('')}</tbody></table></div>`).join('')
+        + `<div style="font-size:0.68rem;color:var(--text3);margin-top:4px">基準：${m.base.n} 筆、勝率 ${pct(m.base.wr)}、平均 ${(m.base.avgR >= 0 ? '+' : '') + m.base.avgR.toFixed(2)}R。優勢＝勝率下界高於基準 ${EXP_CFG.edgePP}pp 且平均 R 高 ${EXP_CFG.edgeR}；劣勢＝勝率上界低於基準 ${EXP_CFG.edgePP}pp；每格至少 ${EXP_CFG.minN} 筆。</div>`;
+    };
+    const suffRows = suff.map(r => `<tr><td style="padding:3px 6px">${r.name}</td><td style="padding:3px 6px;text-align:right;color:${r.n >= r.need ? 'var(--bull)' : 'var(--text2)'}">${r.n}/${r.need}</td><td style="padding:3px 6px;text-align:right">${r.rate.toFixed(2)}/天</td><td style="padding:3px 6px;text-align:right">${r.eta === 0 ? '已達標' : r.eta == null ? '無累積' : '約 ' + r.eta + ' 天'}</td></tr>`).join('');
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="font-size:0.9rem;font-weight:700">🔗 實驗整合層：標籤整合・分層績效・實驗登錄・樣本充足度</div>
+        <button class="btn-ghost" style="font-size:0.74rem" onclick="expRecompute()">↻ 重新計算</button>
+      </div>
+      <div style="font-size:0.74rem;color:var(--text3);margin:4px 0 8px">一般單、快速單、實驗室三種樣本統一抽成「面向→特徵」；每條假設對應一個切分與預期方向，一般單證實的邊際同時登錄為快速單假設（兩邊連動）。結論「證實」且設定頁開啟「實驗結論自動套用」後：快速單直接攔截劣勢條件、一般單軟門 ×${EXP_CFG.softMult}。</div>
+      <div style="font-size:0.78rem;font-weight:700;margin-top:6px">① 實驗登錄（${verdicts.filter(v => v.status === 'proven').length} 證實／${verdicts.filter(v => v.status === 'refuted').length} 相反／${verdicts.filter(v => v.status === 'insufficient').length} 樣本不足）</div>
+      <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:0.73rem"><thead><tr style="color:var(--text3)"><th style="text-align:left;padding:4px 6px">範圍</th><th style="text-align:left;padding:4px 6px">假設</th><th style="text-align:right;padding:4px 6px">樣本</th><th style="text-align:right;padding:4px 6px">勝率（區間）</th><th style="text-align:right;padding:4px 6px">平均R</th><th style="text-align:right;padding:4px 6px">基準</th><th style="text-align:left;padding:4px 6px">結論</th></tr></thead><tbody>${regRows}</tbody></table></div>
+      <div style="font-size:0.78rem;font-weight:700;margin-top:12px">② 樣本充足度</div>
+      <div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:0.73rem"><thead><tr style="color:var(--text3)"><th style="text-align:left;padding:3px 6px">機制</th><th style="text-align:right;padding:3px 6px">現有／需要</th><th style="text-align:right;padding:3px 6px">近 14 天速度</th><th style="text-align:right;padding:3px 6px">預估達標</th></tr></thead><tbody>${suffRows}</tbody></table></div>
+      <details style="margin-top:12px"><summary style="cursor:pointer;font-size:0.78rem;font-weight:700">③ 分層績效矩陣：一般單</summary>${dimTable('main')}</details>
+      <details style="margin-top:6px"><summary style="cursor:pointer;font-size:0.78rem;font-weight:700">③ 分層績效矩陣：快速單</summary>${dimTable('scalp')}</details>
+      <details style="margin-top:6px"><summary style="cursor:pointer;font-size:0.78rem;font-weight:700">③ 分層績效矩陣：實驗室機會</summary>${dimTable('lab')}</details>
+    </div>`;
+  } catch(e) { return `<div style="color:var(--text3);font-size:0.78rem">實驗整合層載入失敗：${e && e.message}</div>`; }
 }
