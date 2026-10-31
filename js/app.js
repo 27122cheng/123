@@ -170,7 +170,7 @@ function _diagBundle() {
     lastStep: get('csp_last_step'), heartbeat: get('csp_hb'), selfheal: get('csp_selfheal'), healthLog: get('csp_health_log'), slowCands: get('csp_slow_cands'), longTasks: get('csp_longtask'),
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
     perf: (() => { try { return _perfSummaryForDiag(); } catch(_e) { return null; } })(), health: (() => { try { return _healthSnapshot(); } catch(_e) { return null; } })(), feeds: (() => { try { return feedHealth().map(f => ({ k: f.key, s: f.state, age: f.ageMs != null ? Math.round(f.ageMs / 60000) : null, fail: f.fail, note: f.note })); } catch(_e) { return null; } })(), relay: (() => { try { return relayStatus(); } catch(_e) { return null; } })(), okxChannel: (typeof _okxChannel !== 'undefined') ? _okxChannel : null, rejects: (() => { try { const o = {}; for (const k of Object.keys(_scalpReject || {})) if (!k.startsWith('_')) o[k] = _scalpReject[k]; return o; } catch(_e) { return null; } })(), funnel: get('csp_scan_funnel'),
-    crashReports: (typeof _crashReports !== 'undefined') ? _crashReports : null, reportingHeader: (typeof _reportingHeader !== 'undefined') ? _reportingHeader : null, visLogPrev: get('csp_vis_log_prev'), visLog: (typeof _visLog !== 'undefined') ? _visLog : null, keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
+    navType: (() => { try { const e = performance.getEntriesByType('navigation')[0]; return e ? e.type : null; } catch(_e) { return null; } })(), crashReports: (typeof _crashReports !== 'undefined') ? _crashReports : null, reportingHeader: (typeof _reportingHeader !== 'undefined') ? _reportingHeader : null, visLogPrev: get('csp_vis_log_prev'), visLog: (typeof _visLog !== 'undefined') ? _visLog : null, keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
@@ -297,7 +297,8 @@ function _bootErrHook() {
       try { if (_verdict) _healthNote('freeze', `${_verdict}｜步驟 ${prev.n}｜${when}`); } catch(_e) {}
       // 工作執行緒心跳回來後補上「卡死 vs 程序結束」的最終判定（讀 IndexedDB 是非同步的）
       try { prevWorkerHbP.then(wh => { const v2 = _freezeVerdict2(prev, prevHb, wh); if (v2) { _healthNote('freeze-final', v2); log('最終判定', v2); } }).catch(() => {}); } catch(_e) {}
-      const _bt = _bisectText();
+      let _nav = ''; try { const e = performance.getEntriesByType('navigation')[0]; if (e && e.type === 'back_forward') _nav = '　｜　本次是瀏覽器「還原分頁」載入（back_forward）——Chrome 曾整個重新啟動或分頁被卸載後還原'; } catch(_e) {}
+      const _bt = _bisectText() + _nav;
       const _auto = _bt ? `　｜　${_bt}` : (_autoNoCards ? `　｜　連續 ${_freezeN} 次卡死 → 本次自動停用四張資訊卡（網址加 ?nocards=0 可取消）` : (_freezeN ? `　｜　連續第 ${_freezeN} 次` : ''));
       try { if (_bisect) _healthNote('bisect', _bt); } catch(_e) {}
       try { if (_autoNoCards) _healthNote('auto-nocards', `連續 ${_freezeN} 次卡死，本次自動停用資訊卡`); } catch(_e) {}
@@ -13775,7 +13776,18 @@ async function refreshCloudMaster() {
           const pj = await pr.json().catch(() => null);
           if (pj && pj.ok === true) {
             _cloudMaster = pj.master || info;
-            if (_stale && !_isMe) console.info(`[master] 雲端無有效主機（${_never ? '從未宣告' : '前主機心跳過期'}），本裝置自動接手訊號主機`);
+            if (_stale && !_isMe) {
+              console.info(`[master] 雲端無有效主機（${_never ? '從未宣告' : '前主機心跳過期'}），本裝置自動接手訊號主機`);
+              // 2026-11-01：主機分頁被結束時沒有任何人知道——接手的裝置用自己的 Telegram 設定發一則通知
+              try {
+                const _ts = loadSettings();
+                if (!_never && typeof sendTelegramMessage === 'function' && _ts.notifTelegram && _ts.tgToken && _ts.tgChatId) {
+                  const _ageMin = Math.round((_now - (_cloudMaster.ts || 0)) / 60000);
+                  const _k = 'csp_takeover_tg'; const _last = parseInt(localStorage.getItem(_k)) || 0;
+                  if (_now - _last > 30 * 60e3) { localStorage.setItem(_k, String(_now)); sendTelegramMessage(_ts.tgToken, _ts.tgChatId, `⚠️ 訊號主機心跳已過期 ${_ageMin} 分鐘，本裝置（${navigator.userAgent.indexOf('Mobile') >= 0 ? '手機' : '電腦'}）已自動接手。原主機分頁可能已被關閉或結束，請檢查。`); }
+                }
+              } catch(_e) {}
+            }
           }
         }
       }
@@ -15001,7 +15013,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822v';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822w';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -16067,8 +16079,11 @@ async function recordSignalsFromScan(data) {
     }
 
     // 強烈宏觀硬封鎖（與 buildTradeSetup macroBlockedForRecord 完全一致）
-    if (isLong  && blockLong && _no('宏觀禁多')) continue;
-    if (!isLong && blockShort && _no('宏觀禁空')) continue;
+    /* 2026-11-01：宏觀「強烈看空／看多」原本是硬封鎖，主機診斷包顯示它一輪擋掉 100 個候選裡的 65 個，是交易量
+       掛零的主因。它來自恐貪／市值／AI 週線研判，沒有回測證據；回測證實的方向門是「BTC 日線」（順向 +0.31R、
+       逆向 −0.01R），那一道仍是硬門。宏觀改為軟門 ×0.7：方向與大盤研判相反時縮倉並記在單上，讓實測決定它值多少。 */
+    if (isLong  && blockLong)  _soft('宏觀強烈看空仍做多', 0.7);
+    if (!isLong && blockShort) _soft('宏觀強烈看多仍做空', 0.7);
 
     // 已有活躍倉位或在冷卻期 → 跳過
     const hasOpen = tlog.some(t => t.symbol === coin.symbol && (t.status === 'open' || t.status === 'pending'));
