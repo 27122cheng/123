@@ -169,7 +169,7 @@ function _diagBundle() {
     uptimeMin: Math.round(performance.now() / 60000), mem, cores: navigator.hardwareConcurrency || null, devMem: navigator.deviceMemory || null,
     lastStep: get('csp_last_step'), heartbeat: get('csp_hb'), selfheal: get('csp_selfheal'), healthLog: get('csp_health_log'), slowCands: get('csp_slow_cands'), longTasks: get('csp_longtask'),
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
-    health: (() => { try { return _healthSnapshot(); } catch(_e) { return null; } })(), feeds: (() => { try { return feedHealth().map(f => ({ k: f.key, s: f.state, age: f.ageMs != null ? Math.round(f.ageMs / 60000) : null, fail: f.fail, note: f.note })); } catch(_e) { return null; } })(), relay: (() => { try { return relayStatus(); } catch(_e) { return null; } })(), okxChannel: (typeof _okxChannel !== 'undefined') ? _okxChannel : null, rejects: (() => { try { const o = {}; for (const k of Object.keys(_scalpReject || {})) if (!k.startsWith('_')) o[k] = _scalpReject[k]; return o; } catch(_e) { return null; } })(), funnel: get('csp_scan_funnel'),
+    perf: (() => { try { return _perfSummaryForDiag(); } catch(_e) { return null; } })(), health: (() => { try { return _healthSnapshot(); } catch(_e) { return null; } })(), feeds: (() => { try { return feedHealth().map(f => ({ k: f.key, s: f.state, age: f.ageMs != null ? Math.round(f.ageMs / 60000) : null, fail: f.fail, note: f.note })); } catch(_e) { return null; } })(), relay: (() => { try { return relayStatus(); } catch(_e) { return null; } })(), okxChannel: (typeof _okxChannel !== 'undefined') ? _okxChannel : null, rejects: (() => { try { const o = {}; for (const k of Object.keys(_scalpReject || {})) if (!k.startsWith('_')) o[k] = _scalpReject[k]; return o; } catch(_e) { return null; } })(), funnel: get('csp_scan_funnel'),
     crashReports: (typeof _crashReports !== 'undefined') ? _crashReports : null, reportingHeader: (typeof _reportingHeader !== 'undefined') ? _reportingHeader : null, visLogPrev: get('csp_vis_log_prev'), visLog: (typeof _visLog !== 'undefined') ? _visLog : null, keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
@@ -15001,7 +15001,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822s';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822t';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -34934,4 +34934,36 @@ function buildExpHtml() {
       <details style="margin-top:6px"><summary style="cursor:pointer;font-size:0.78rem;font-weight:700">③ 分層績效矩陣：實驗室機會</summary>${dimTable('lab')}</details>
     </div>`;
   } catch(e) { return `<div style="color:var(--text3);font-size:0.78rem">實驗整合層載入失敗：${e && e.message}</div>`; }
+}
+
+/* ── 診斷包的績效摘要（2026-10-31）：使用者「月度勝率停在 20% 左右」——一次貼上就能看出是哪一類單在輸 ── */
+function _perfSummaryForDiag() {
+  try {
+    const g = rows => { const n = rows.length; if (!n) return { n: 0 }; let w = 0, s = 0; for (const t of rows) { const r = parseFloat(t.pnlR) || 0; s += r; if (r > 0) w++; } return { n, wr: Math.round(w / n * 100), avgR: +(s / n).toFixed(2), sumR: +s.toFixed(1) }; };
+    const cnt = (rows, f) => { const o = {}; for (const t of rows) { const k = String(f(t) ?? '—'); o[k] = (o[k] || 0) + 1; } return o; };
+    const monthKey = t => { const d = new Date(t.exitTime || t.timestamp || 0); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
+    const all = (typeof learnSamples === 'function' ? learnSamples() : loadTradeLog()).filter(t => t && t.tradeType !== 'range');
+    const closed = all.filter(t => t.status === 'closed' && isFinite(parseFloat(t.pnlR)));
+    const newR = closed.filter(t => (t.timestamp || 0) >= (typeof RULE_CUTOVER_TS !== 'undefined' ? RULE_CUTOVER_TS : 0));
+    const byMonth = {}; for (const t of closed) { const k = monthKey(t); (byMonth[k] = byMonth[k] || []).push(t); }
+    const months = {}; for (const k of Object.keys(byMonth).sort().slice(-3)) months[k] = g(byMonth[k]);
+    const slPct = rows => { const v = rows.map(t => { const e = parseFloat(t.entry), s = parseFloat(t.sl); return (e > 0 && s > 0) ? Math.abs(e - s) / e * 100 : NaN; }).filter(isFinite); return v.length ? +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2) : null; };
+    const holdH = rows => { const v = rows.map(t => (t.exitTime && (t.entryTime || t.timestamp)) ? (t.exitTime - (t.entryTime || t.timestamp)) / 3600e3 : NaN).filter(x => isFinite(x) && x >= 0); return v.length ? +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(1) : null; };
+    const pend = all.filter(t => (t.status === 'cancelled' || t.status === 'expired') && (t.timestamp || 0) >= (typeof RULE_CUTOVER_TS !== 'undefined' ? RULE_CUTOVER_TS : 0));
+    const cancelWhy = cnt(pend, t => String(t.cancelReason || t.status).slice(0, 40));
+    const topWhy = Object.entries(cancelWhy).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    let scalp = null; try { const m = new Map(); for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t); for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t); const rows = [...m.values()].filter(t => isFinite(parseFloat(t.pnlR))); const bm = {}; for (const t of rows) { const k = monthKey(t); (bm[k] = bm[k] || []).push(t); } const sm = {}; for (const k of Object.keys(bm).sort().slice(-3)) sm[k] = g(bm[k]); scalp = { all: g(rows), months: sm, byMode: Object.fromEntries(Object.entries(cnt(rows, t => t.mode)).map(([k]) => [k, g(rows.filter(t => t.mode === k))])), outcome: cnt(rows, t => t.outcome) }; } catch(_e) {}
+    return {
+      mainAll: g(closed), mainNewRule: g(newR), months,
+      outcomeNew: cnt(newR, t => (typeof effectiveOutcome === 'function' ? effectiveOutcome(t) : t.outcome)), outcomeRawNew: cnt(newR, t => t.outcome),
+      byEntryMode: Object.fromEntries(['stop', 'limit'].map(k => [k, g(newR.filter(t => (t.entryMode || 'limit') === k))])),
+      byEntryTag: Object.fromEntries(Object.entries(cnt(newR, t => t.entryTag)).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([k]) => [k, g(newR.filter(t => String(t.entryTag) === k))])),
+      byBtcD1: { aligned: g(newR.filter(t => t.btcD1 && t.btcD1 !== 'neutral' && ((t.direction === 'long') === (t.btcD1 === 'bull')))), against: g(newR.filter(t => t.btcD1 && t.btcD1 !== 'neutral' && ((t.direction === 'long') !== (t.btcD1 === 'bull')))) },
+      byBtProb: { hi: g(newR.filter(t => parseFloat(t.btProb) >= 0.65)), lo: g(newR.filter(t => isFinite(parseFloat(t.btProb)) && parseFloat(t.btProb) < 0.65)), none: g(newR.filter(t => !isFinite(parseFloat(t.btProb)))) },
+      tp1Hit: newR.length ? Math.round(newR.filter(t => t.tp1Hit || t.outcome === 'tp1' || t.outcome === 'tp2').length / newR.length * 100) : null,
+      slDistPctNew: slPct(newR), holdHoursNew: holdH(newR), slDistPctWin: slPct(newR.filter(t => parseFloat(t.pnlR) > 0)), slDistPctLoss: slPct(newR.filter(t => parseFloat(t.pnlR) <= 0)),
+      pendingFate: { n: pend.length, top: topWhy }, openNow: all.filter(t => t.status === 'open').length, pendingNow: all.filter(t => t.status === 'pending').length,
+      scalp,
+    };
+  } catch(e) { return { err: String(e && e.message) }; }
 }
