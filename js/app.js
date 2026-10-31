@@ -15001,7 +15001,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822u';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822v';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -24932,6 +24932,22 @@ function _rptBuildMonthView(yearTrades, year, month) {
 
   const wrColor  = mWR === '--' ? 'var(--text)' : parseFloat(mWR) >= 60 ? 'var(--bull)' : parseFloat(mWR) >= 40 ? 'var(--text)' : 'var(--bear)';
   const mRColor  = mR > 0 ? 'var(--bull)' : mR < 0 ? 'var(--bear)' : 'var(--text)';
+  /* 規則切換分列（2026-10-31）：10 月的 28% 其中 20 筆是 10/06 以前的舊規則單（回踩限價、1.5R、無閘門），
+     新規則只有 5 筆。混在一起看會把已經修掉的問題當成現在的問題——這裡把兩段各自算一次。 */
+  let _ruleSplitHtml = '';
+  try {
+    const _cut = (typeof RULE_CUTOVER_TS !== 'undefined') ? RULE_CUTOVER_TS : 0;
+    const _seg = rows => { const w = rows.filter(isWinTrade).length, l = rows.filter(isLossTrade).length, r = rows.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0); return { n: rows.length, w, l, wr: (w + l) ? Math.round(w / (w + l) * 100) : null, r: +r.toFixed(2) }; };
+    const _old = _seg(mTrades.filter(t => (t.timestamp || 0) < _cut)), _new = _seg(mTrades.filter(t => (t.timestamp || 0) >= _cut));
+    if (_old.n && _new.n) {
+      const line = (lbl, g) => `<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.8rem;padding:4px 0"><span style="min-width:190px;color:var(--text2)">${lbl}</span><span>${g.n} 筆</span><span style="color:${g.wr == null ? 'var(--text)' : g.wr >= 60 ? 'var(--bull)' : g.wr >= 40 ? 'var(--text)' : 'var(--bear)'}">勝率 ${g.wr == null ? '--' : g.wr + '%'}（${g.w}勝 ${g.l}負）</span><span style="color:${g.r > 0 ? 'var(--bull)' : g.r < 0 ? 'var(--bear)' : 'var(--text)'}">${g.r > 0 ? '+' : ''}${g.r} R</span></div>`;
+      _ruleSplitHtml = `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin-bottom:16px">
+        <div style="font-size:0.82rem;font-weight:700;margin-bottom:4px">🔀 本月跨越規則切換（10/06）：兩段分開看</div>
+        ${line('舊規則（回踩限價、1.5R、無閘門）', _old)}${line('新規則（停損掛單、1R 減半、閘門齊備）', _new)}
+        <div style="font-size:0.7rem;color:var(--text3);margin-top:4px">月度總勝率是兩段混合；評估現行系統只看「新規則」這一列，但它的樣本仍少，至少 30 筆才有意義。</div>
+      </div>`;
+    }
+  } catch(_e) {}
 
   const statsHtml = mTrades.length === 0
     ? `<div style="text-align:center;padding:40px;color:var(--text3);font-size:0.9rem">${year} 年 ${monthNames[month]} 無已結算的交易記錄</div>`
@@ -25002,7 +25018,7 @@ function _rptBuildMonthView(yearTrades, year, month) {
 
   return `
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">${monthTabs}</div>
-    ${statsHtml}
+    ${statsHtml}${_ruleSplitHtml}
     ${tradeTable}`;
 }
 
