@@ -11,6 +11,7 @@
    「繪製中」之後沒有「已繪製」＝卡在版面計算。計數在頁面存活 3 分鐘後歸零。 */
 if (typeof window._cspPrevStep === 'undefined') { try { const _s = localStorage.getItem('csp_last_step'); window._cspPrevStep = _s ? JSON.parse(_s) : null; } catch(_e) { window._cspPrevStep = null; } }
 const NO_LS = /[?&]nols=1/.test(location.search);   // 診斷寫入不走 localStorage（記憶體＋cookie）
+try { const _pv = localStorage.getItem('csp_vis_log'); if (_pv) localStorage.setItem('csp_vis_log_prev', _pv); } catch(_e) {}   // 上次的可見性時間線留給診斷包
 let _prevPend = null; try { _prevPend = _readPendCookie(); } catch(_e) {}   // 上次最後一次「準備寫入」的步驟（cookie），要在本次任何寫入之前讀
 let AUTO_NOCARDS = /[?&]nocards=1/.test(location.search);
 let _cardsAllow = (m => m ? m[1].split(',') : null)(/[?&]cards=([a-z,]+)/.exec(location.search));   // ?cards=env,er,outlook,news,flow 只畫指定的卡
@@ -168,13 +169,13 @@ function _diagBundle() {
     uptimeMin: Math.round(performance.now() / 60000), mem, cores: navigator.hardwareConcurrency || null, devMem: navigator.deviceMemory || null,
     lastStep: get('csp_last_step'), heartbeat: get('csp_hb'), selfheal: get('csp_selfheal'), healthLog: get('csp_health_log'), slowCands: get('csp_slow_cands'), longTasks: get('csp_longtask'),
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
-    crashReports: (typeof _crashReports !== 'undefined') ? _crashReports : null, keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
+    crashReports: (typeof _crashReports !== 'undefined') ? _crashReports : null, reportingHeader: (typeof _reportingHeader !== 'undefined') ? _reportingHeader : null, visLogPrev: get('csp_vis_log_prev'), visLog: (typeof _visLog !== 'undefined') ? _visLog : null, keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
 }
 async function copyDiagBundle() {
-  try { await _withTimeout(_fetchCrashReports(), 6000, null); } catch(_e) {}   // 先把 Chrome 的崩潰回報取回來，診斷包才不會是 null（開頁未滿 8 秒就按也一樣）
+  try { await _withTimeout(Promise.all([_fetchCrashReports(), _checkReportingHeader()]), 6000, null); } catch(_e) {}   // 先把 Chrome 的崩潰回報與標頭檢查取回來，診斷包才不會是 null（開頁未滿 8 秒就按也一樣）
   const text = _diagBundle();
   try { await navigator.clipboard.writeText(text); try { showToast('📋 診斷資料已複製，貼給開發者即可', 'success'); } catch(_e) {} return true; }
   catch(_e) { try { window.prompt('剪貼簿不可用，請手動全選複製：', text); } catch(_e2) {} return false; }
@@ -444,7 +445,15 @@ function _bootMark(name) {
 let _postBootStarted = false;
 /* Chrome Reporting API 崩潰回報（2026-10-30）：分頁變黑、程序被結束時頁面自己記不了，瀏覽器會把
    { type:'crash', body:{ reason:'oom'|'unreachable' } } 送到 /api/report。開頁後取回最近的，顯示在紅條與診斷包。 */
-let _crashReports = null;
+let _crashReports = null, _reportingHeader = null;
+/* 可見性時間線：最近 12 次 visible/hidden 切換（分頁死前到底是不是背景分頁、死前多久切換的）；開頁第一筆＝當下狀態 */
+const _visLog = [];
+function _visMark(why) { try { _visLog.push({ t: Date.now(), v: document.visibilityState, why: why || '' }); if (_visLog.length > 12) _visLog.shift(); if (!NO_LS) localStorage.setItem('csp_vis_log', JSON.stringify(_visLog)); } catch(_e) {} }
+try { document.addEventListener('visibilitychange', () => _visMark('change')); window.addEventListener('focus', () => _visMark('focus')); window.addEventListener('blur', () => _visMark('blur')); } catch(_e) {}
+/* 文件回應是否真的帶了 Reporting-Endpoints（vercel.json 的標頭有沒有生效）——沒有的話崩潰回報永遠不會來 */
+async function _checkReportingHeader() {
+  try { const r = await _fetchT(location.pathname || '/', { method: 'HEAD', cache: 'no-store' }, 6000); _reportingHeader = !!(r && r.headers && r.headers.get('reporting-endpoints')); } catch(_e) { _reportingHeader = null; }
+}
 async function _fetchCrashReports() {
   try {
     const r = await _fetchT('/api/report?recent=1', { cache: 'no-store' }, 6000);
@@ -464,6 +473,8 @@ function _startPostBootModules(why) {
   if (_postBootStarted) return; _postBootStarted = true;
   try { startHealthMonitor(); } catch(_e) {}
   try { _fetchCrashReports(); } catch(_e) {}
+  try { _checkReportingHeader(); } catch(_e) {}
+  try { _visMark('boot'); } catch(_e) {}
   if (AUTO_SAFE) {
     /* 資訊卡在自動安全模式下不是「不載」，而是「等開頁走完再載」（2026-10-25 使用者回報「儀表板反轉下面的部分都不見了」：
        主機每崩一次下一輪就是自動安全模式，大方向／新聞／資金流動三張卡整輪停在「載入…」；反轉卡有背景輪掃自己會補，所以只有它在）。 */
@@ -14989,7 +15000,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822q';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822r';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
