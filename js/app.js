@@ -15001,7 +15001,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822t';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822u';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -24616,13 +24616,20 @@ function renderReportPage(year, view, month) {
                border-bottom:2px solid ${view==='month'?'var(--accent)':'transparent'}">
         📆 月度報告
       </button>
+      <button onclick="renderReportPage(${year},'scalp',${month})"
+        style="padding:8px 18px;font-size:0.85rem;font-weight:600;border:none;border-radius:8px 8px 0 0;cursor:pointer;
+               background:${view==='scalp'?'rgba(0,212,255,.15)':'transparent'};
+               color:${view==='scalp'?'var(--accent)':'var(--text3)'};
+               border-bottom:2px solid ${view==='scalp'?'var(--accent)':'transparent'}">
+        ⚡ 快速單月報
+      </button>
     </div>`;
 
   container.innerHTML = `
     <div class="page-header" style="margin-bottom:16px">
       <div>
         <h1 class="page-title">📊 策略報表</h1>
-        <p class="page-subtitle">${view === 'year' ? '全年交易績效統計分析' : '單月交易明細與統計'}</p>
+        <p class="page-subtitle">${view === 'year' ? '全年交易績效統計分析' : view === 'scalp' ? '快速單單月統計：各模式、各家族、結果分布、逐日' : '單月交易明細與統計'}</p>
       </div>
       <select class="setting-select" onchange="renderReportPage(parseInt(this.value),'${view}',${month})" style="padding:6px 14px;font-size:0.85rem;min-width:100px">
         ${yearOpts}
@@ -24635,6 +24642,8 @@ function renderReportPage(year, view, month) {
   const viewEl = document.getElementById('rpt-view-content');
   if (view === 'year') {
     viewEl.innerHTML = _rptEquityCard(yearTrades, year) + _rptBuildYearView(yearTrades, year);
+  } else if (view === 'scalp') {
+    try { viewEl.innerHTML = _rptBuildScalpMonthView(year, month); } catch(e) { viewEl.innerHTML = `<div style="color:var(--text3)">快速單月報載入失敗：${e && e.message}</div>`; }
   } else {
     viewEl.innerHTML = _rptBuildMonthView(yearTrades, year, month);
   }
@@ -34966,4 +34975,74 @@ function _perfSummaryForDiag() {
       scalp,
     };
   } catch(e) { return { err: String(e && e.message) }; }
+}
+
+/* ── 快速單月報（2026-10-31，使用者要求：月度報表加一個快速單的小分頁）──────────────────────
+   樣本＝目前快速單紀錄（已完結）∪ 量化實驗室封存，依平倉時間歸月。勝率口徑與一般單相同：
+   勝 ÷（勝＋負），|R|≤0.05 視為平手不計分母。另列各模式、各家族、結果分布與逐日明細。 */
+function _rptScalpRows() {
+  const m = new Map();
+  try { for (const t of loadQlabArchive()) if (t && t.id) m.set(t.id, t); } catch(_e) {}
+  try { for (const t of loadScalpLog()) if (t && t.id && t.status === 'closed') m.set(t.id, t); } catch(_e) {}
+  return [...m.values()].filter(t => isFinite(parseFloat(t.pnlR)));
+}
+function _rptScalpStats(rows) {
+  const n = rows.length; let w = 0, l = 0, s = 0, tp1 = 0, peak = 0, cum = 0, dd = 0;
+  const sorted = [...rows].sort((a, b) => (parseFloat(a.exitTime) || 0) - (parseFloat(b.exitTime) || 0));
+  for (const t of sorted) { const r = parseFloat(t.pnlR) || 0; s += r; if (r > 0.05) w++; else if (r < -0.05) l++; if (t.tp1Hit || t.outcome === 'tp1' || t.outcome === 'tp2' || t.outcome === 'tp') tp1++; cum += r; if (cum > peak) peak = cum; if (peak - cum > dd) dd = peak - cum; }
+  return { n, w, l, flat: n - w - l, wr: (w + l) ? +(w / (w + l) * 100).toFixed(1) : null, sumR: +s.toFixed(2), avgR: n ? +(s / n).toFixed(2) : null, tp1Pct: n ? Math.round(tp1 / n * 100) : null, maxDD: +dd.toFixed(2) };
+}
+function _rptBuildScalpMonthView(year, month) {
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const today = new Date();
+  const all = _rptScalpRows();
+  const tsOf = t => parseFloat(t.exitTime) || parseFloat(t.entryTime) || parseFloat(t.timestamp) || 0;
+  const inMonth = (t, m) => { const ts = tsOf(t); return ts >= new Date(year, m, 1).getTime() && ts <= new Date(year, m + 1, 0, 23, 59, 59, 999).getTime(); };
+  const monthTabs = monthNames.map((mn, m) => {
+    const has = all.some(t => inMonth(t, m)); const isCur = today.getFullYear() === year && today.getMonth() === m; const isActive = m === month;
+    return `<button onclick="renderReportPage(${year},'scalp',${m})" style="padding:5px 10px;font-size:0.78rem;font-weight:${isActive?'700':'500'};border:1px solid ${isActive?'var(--accent)':'rgba(255,255,255,.1)'};border-radius:6px;cursor:pointer;background:${isActive?'rgba(0,212,255,.12)':'transparent'};color:${isActive?'var(--accent)':has?'var(--text)':'var(--text3)'};white-space:nowrap">${mn}${isCur ? ' ●' : ''}</button>`;
+  }).join('');
+  const rows = all.filter(t => inMonth(t, month)).sort((a, b) => tsOf(a) - tsOf(b));
+  const st = _rptScalpStats(rows);
+  const wrC = v => v == null ? 'var(--text)' : v >= 60 ? 'var(--bull)' : v >= 40 ? 'var(--text)' : 'var(--bear)';
+  const rC = v => v > 0 ? 'var(--bull)' : v < 0 ? 'var(--bear)' : 'var(--text)';
+  const fmtR = v => (v == null ? '--' : (v > 0 ? '+' : '') + v.toFixed(2) + 'R');
+  const card = (val, lbl, color) => `<div class="rpt-stat-card"><div class="rpt-stat-val" style="color:${color || 'var(--text)'}">${val}</div><div class="rpt-stat-lbl">${lbl}</div></div>`;
+  const stats = rows.length === 0
+    ? `<div style="text-align:center;padding:40px;color:var(--text3);font-size:0.9rem">${year} 年 ${monthNames[month]} 無已結算的快速單</div>`
+    : `<div class="rpt-stats" style="margin-bottom:16px">
+        ${card(st.wr == null ? '--' : st.wr + '%', `勝率（${st.w}勝 ${st.l}負 ${st.flat}平）`, wrC(st.wr))}
+        ${card(fmtR(st.sumR), '累計 R', rC(st.sumR))}
+        ${card(fmtR(st.avgR), '平均每筆 R', rC(st.avgR))}
+        ${card(st.maxDD.toFixed(2) + 'R', '最大回撤', st.maxDD > 5 ? 'var(--bear)' : 'var(--text)')}
+        ${card(st.tp1Pct == null ? '--' : st.tp1Pct + '%', '止盈一達成率')}
+        ${card(String(st.n), '筆數')}
+      </div>`;
+  const grpTable = (title, keyOf, labelOf) => {
+    const g = {}; for (const t of rows) { const k = keyOf(t) || '—'; (g[k] = g[k] || []).push(t); }
+    const ks = Object.keys(g).sort((a, b) => g[b].length - g[a].length); if (!ks.length) return '';
+    return `<div style="margin-top:14px"><div style="font-size:0.82rem;font-weight:700;margin-bottom:6px">${title}</div>
+      <table class="rpt-month-tbl"><thead><tr><th>分組</th><th style="text-align:right">筆數</th><th style="text-align:right">勝率</th><th style="text-align:right">平均R</th><th style="text-align:right">累計R</th><th style="text-align:right">最大回撤</th></tr></thead><tbody>
+      ${ks.map(k => { const s = _rptScalpStats(g[k]); return `<tr><td>${labelOf ? labelOf(k) : k}</td><td style="text-align:right">${s.n}</td><td style="text-align:right;color:${wrC(s.wr)}">${s.wr == null ? '--' : s.wr + '%'}</td><td style="text-align:right;color:${rC(s.avgR)}">${fmtR(s.avgR)}</td><td style="text-align:right;color:${rC(s.sumR)}">${fmtR(s.sumR)}</td><td style="text-align:right">${s.maxDD.toFixed(2)}R</td></tr>`; }).join('')}
+      </tbody></table></div>`;
+  };
+  const modeLabel = k => (typeof SCALP_MODE_LABEL !== 'undefined' && SCALP_MODE_LABEL[k]) || k;
+  const famLabel = k => k === 'revert' ? '回歸家族' : k === 'trend' ? '順勢家族' : k;
+  const outcomeLabel = k => ({ sl: '止損', tp1: '止盈一', tp2: '止盈二', tp: '止盈', be: '保本', timeout: '時間出場' })[k] || k;
+  // 逐日
+  const byDay = {}; for (const t of rows) { const d = new Date(tsOf(t)); const k = `${d.getMonth() + 1}/${d.getDate()}`; (byDay[k] = byDay[k] || []).push(t); }
+  const dayTable = Object.keys(byDay).length ? `<div style="margin-top:14px"><div style="font-size:0.82rem;font-weight:700;margin-bottom:6px">📅 逐日</div>
+    <table class="rpt-month-tbl"><thead><tr><th>日期</th><th style="text-align:right">筆數</th><th style="text-align:right">勝率</th><th style="text-align:right">當日R</th></tr></thead><tbody>
+    ${Object.keys(byDay).map(k => { const s = _rptScalpStats(byDay[k]); return `<tr><td>${k}</td><td style="text-align:right">${s.n}</td><td style="text-align:right;color:${wrC(s.wr)}">${s.wr == null ? '--' : s.wr + '%'}</td><td style="text-align:right;color:${rC(s.sumR)}">${fmtR(s.sumR)}</td></tr>`; }).join('')}
+    </tbody></table></div>` : '';
+  // 全年 12 個月總覽
+  const yearTable = `<div style="margin-top:14px"><div style="font-size:0.82rem;font-weight:700;margin-bottom:6px">🗓 ${year} 年各月</div>
+    <table class="rpt-month-tbl"><thead><tr><th>月份</th><th style="text-align:right">筆數</th><th style="text-align:right">勝率</th><th style="text-align:right">平均R</th><th style="text-align:right">累計R</th><th style="text-align:right">最大回撤</th></tr></thead><tbody>
+    ${monthNames.map((mn, m) => { const r = all.filter(t => inMonth(t, m)); if (!r.length) return ''; const s = _rptScalpStats(r); return `<tr style="${m === month ? 'background:rgba(0,212,255,.06)' : ''}"><td>${mn}</td><td style="text-align:right">${s.n}</td><td style="text-align:right;color:${wrC(s.wr)}">${s.wr == null ? '--' : s.wr + '%'}</td><td style="text-align:right;color:${rC(s.avgR)}">${fmtR(s.avgR)}</td><td style="text-align:right;color:${rC(s.sumR)}">${fmtR(s.sumR)}</td><td style="text-align:right">${s.maxDD.toFixed(2)}R</td></tr>`; }).join('')}
+    </tbody></table></div>`;
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${monthTabs}</div>
+    <div style="font-size:0.74rem;color:var(--text3);margin-bottom:8px">樣本＝快速單紀錄（已完結）∪ 量化實驗室封存，依平倉時間歸月；勝率＝勝÷（勝＋負），|R|≤0.05 視為平手。</div>
+    ${stats}
+    ${rows.length ? grpTable('🧭 各模式', t => t.mode, modeLabel) + grpTable('🏷 各家族', t => t.family || (typeof SCALP_MODE_FAMILY !== 'undefined' ? SCALP_MODE_FAMILY[t.mode] : ''), famLabel) + grpTable('🎯 結果分布', t => t.outcome, outcomeLabel) + dayTable : ''}
+    ${yearTable}`;
 }
