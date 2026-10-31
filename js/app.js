@@ -174,6 +174,7 @@ function _diagBundle() {
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
 }
 async function copyDiagBundle() {
+  try { await _withTimeout(_fetchCrashReports(), 6000, null); } catch(_e) {}   // 先把 Chrome 的崩潰回報取回來，診斷包才不會是 null（開頁未滿 8 秒就按也一樣）
   const text = _diagBundle();
   try { await navigator.clipboard.writeText(text); try { showToast('📋 診斷資料已複製，貼給開發者即可', 'success'); } catch(_e) {} return true; }
   catch(_e) { try { window.prompt('剪貼簿不可用，請手動全選複製：', text); } catch(_e2) {} return false; }
@@ -14988,7 +14989,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822p';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822q';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
