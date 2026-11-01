@@ -736,10 +736,11 @@ function _bootStep(name) {
 }
 async function fetchAllFromBinance(timeframe) {
   const interval  = tfToBinanceInterval(timeframe);
-  /* 弱機器（低效能模式）或自動安全模式：每批 10 個幣（50 個併發請求）而不是 20 個（100 個）——
-     一批的回應 JSON 全部同時留在記憶體裡等解析；主機筆電的開頁崩潰點正好在最後一批的抓取／分析期間 */
-  let _weak = false; try { _weak = (typeof liteModeOn === 'function' && liteModeOn()) || (typeof AUTO_SAFE !== 'undefined' && AUTO_SAFE); } catch(_e) {}
-  const batchSize = _weak ? 10 : 20;
+  /* 2026-11-01：主機分頁被結束的時間點一律落在 K 線抓取的等待期（最後標記永遠是某一批最後一個幣），
+     也就是每批 20 幣 × 5 週期＝100 個併發請求湧出的那一刻。程序以正常結束碼消失、無崩潰紀錄，
+     符合安全軟體對「可疑網路活動」結束程序的行為。一律改每批 8 幣（40 個併發，OKX 另有 60ms 限速閘門），
+     批次之間多等 200ms，把尖峰壓平；一輪掃描從 5 批變 13 批，約多 2～3 秒。 */
+  const batchSize = 8;
   _klineSrcCount = { okx: 0, binance: 0, cache: 0 };
   _okxSkipped = 0;
 
@@ -897,7 +898,7 @@ async function fetchAllFromBinance(timeframe) {
     if (typeof updateScanProgress === 'function') updateScanProgress(pct);
 
     /* 批次間短暫停頓，避免觸發幣安限速 */
-    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 80));
+    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 200));
   }
 
   try { if (typeof _stepMark === 'function') _stepMark('K線分析完成'); } catch(_e) {}
