@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260822x" />
+  <link rel="stylesheet" href="css/styles.css?v=20260822y" />
 </head>
 <body>
 
@@ -1075,6 +1075,18 @@
           </button>
           <div id="signal-master-status" style="font-size:0.82rem;line-height:1.7"></div>
 
+          <!-- 守護頁：獨立視窗看著主機心跳，主機被結束就自動重開 -->
+          <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:10px">
+            <button class="btn-ghost" onclick="openGuardPage()" style="font-size:0.86rem;color:#60a5fa">
+              🛡️ 開啟守護頁（主機被結束時自動重開）
+            </button>
+            <div class="setting-desc" style="margin-top:4px">
+              守護頁是一個不掃描、不建單的小視窗，只看主機的心跳：心跳停超過 150 秒而主機不是被你關掉的，就自動另開主機並立即接手訊號。
+              請讓它一直開著（放背景即可）。第一次請在它裡面按一次「開啟主機」，Chrome 詢問時選「一律允許彈出視窗」，之後才能全自動。
+              主機與守護頁互相守護：任一方被結束，另一方會把它開回來。
+            </div>
+          </div>
+
           <!-- 雲端同步開關＋清除雲端資料 -->
           <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:10px">
             <div class="setting-row" style="padding:0 0 6px">
@@ -1131,8 +1143,8 @@
        ② 三支主腳本改 defer、TradingView 改 async：載入畫面先畫出來再執行 JS，卡死時至少看得到開頁軌跡。 -->
   <script>try{var _s=localStorage.getItem('csp_last_step');window._cspPrevStep=_s?JSON.parse(_s):null;localStorage.setItem('csp_last_step',JSON.stringify({n:'載入腳本',t:Date.now(),v:'html'}));}catch(e){window._cspPrevStep=null;}</script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js" async></script>
-  <script src="js/indicators.js?v=20260822x" defer></script>
-  <script src="js/api.js?v=20260822x" defer></script>
-  <script src="js/app.js?v=20260822x" defer></script>
+  <script src="js/indicators.js?v=20260822y" defer></script>
+  <script src="js/api.js?v=20260822y" defer></script>
+  <script src="js/app.js?v=20260822y" defer></script>
 </body>
 </html>

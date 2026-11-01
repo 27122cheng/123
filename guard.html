@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>主機守護頁</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #0b1020; color: #e2e8f0; font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 40px; }
+  h1 { font-size: 1.15rem; margin: 0 0 6px; }
+  .sub { color: #94a3b8; font-size: 0.82rem; margin-bottom: 18px; }
+  .card { background: #111a2e; border: 1px solid #1f2b45; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+  .st { font-size: 1.05rem; font-weight: 700; }
+  .ok { color: #22c55e; } .warn { color: #f59e0b; } .bad { color: #ef4444; } .dim { color: #64748b; }
+  .kv { color: #94a3b8; font-size: 0.82rem; margin-top: 4px; white-space: pre-wrap; }
+  button { background: #1d4ed8; color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font-size: 0.95rem; cursor: pointer; }
+  button.big { width: 100%; padding: 16px; font-size: 1.05rem; background: #dc2626; margin-top: 10px; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .log { font-size: 0.8rem; color: #94a3b8; }
+  .log div { padding: 3px 0; border-top: 1px dashed #1f2b45; }
+  .tip { color: #94a3b8; font-size: 0.8rem; }
+  .tip b { color: #e2e8f0; }
+  code { background: #1f2b45; padding: 1px 5px; border-radius: 4px; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🛡️ 主機守護頁</h1>
+  <div class="sub">這一頁不掃描、不建單，只做一件事：看著主機分頁的心跳。心跳停了而主機不是被正常關閉的，就自動把主機重新開起來。請讓這個分頁一直開著（可以放在背景）。</div>
+
+  <div class="card">
+    <div id="st" class="st dim">讀取中…</div>
+    <div id="kv" class="kv"></div>
+    <button id="open-fallback" class="big" style="display:none" onclick="guardOpenHost('手動')">主機已停止，彈出視窗被封鎖 → 點此重新開啟主機</button>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button onclick="guardOpenHost('手動')">▶ 開啟主機</button>
+      <button onclick="guardAskNotify()" style="background:#334155">🔔 允許桌面通知</button>
+      <span id="notify-st" class="tip"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:4px">重啟紀錄</div>
+    <div id="log" class="log"><div class="dim">尚無</div></div>
+  </div>
+
+  <div class="card tip">
+    <b>第一次使用請做兩件事</b><br>
+    ① 按上面「▶ 開啟主機」一次，Chrome 會問是否允許本站開啟彈出視窗：請選「<b>一律允許</b>」（或到 <code>chrome://settings/content/popups</code> 把本站加進允許清單）。沒有允許的話，守護頁偵測到主機死掉只能顯示紅色按鈕等你來按。<br>
+    ② 守護頁與主機要在<b>不同的視窗</b>（本頁用「另開視窗」方式開主機，Chrome 會給它獨立的程序）。可以在 Shift+Esc 的 Chrome 工作管理員確認兩個分頁的程序 ID 不同。<br><br>
+    判定規則：主機每 5 秒寫一次心跳（背景分頁最慢每分鐘一次）。心跳停超過 150 秒、且主機最後一步不是「正常關閉／凍結」→ 視為被結束，自動另開主機；3 分鐘內不重複，一小時最多 6 次。主機被你自己關掉時不會重開。
+  </div>
+</main>
+<script>
+(() => {
+  const APP = 'index.html';
+  const STALE_MS = 150e3, COOLDOWN_MS = 180e3, MAX_PER_HOUR = 6, CONFIRM_MS = 30e3;
+  const $ = id => document.getElementById(id);
+  const get = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+  const set = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+  const fmt = t => new Date(t).toLocaleString('zh-TW', { hour12: false });
+  const myId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const born = Date.now();
+  let revives = Array.isArray(get('csp_guard_log')) ? get('csp_guard_log') : [];
+  let pending = null;          // 剛開出去的主機，等它的第一個心跳來確認
+  let blocked = false;         // 上次另開沒有產生心跳 → 彈出視窗可能被封鎖
+  let standby = false;
+
+  const beat = extra => set('csp_guard_hb', Object.assign({ t: Date.now(), id: myId, born, hid: !!document.hidden }, extra || {}));
+  const notify = (title, body) => { try { if (Notification.permission === 'granted') new Notification(title, { body, tag: 'csp-guard' }); } catch (e) {} };
+  const renderLog = () => {
+    if (!revives.length) { $('log').innerHTML = '<div class="dim">尚無</div>'; return; }
+    $('log').innerHTML = revives.slice(0, 12).map(r => `<div>${fmt(r.t)}　心跳停了 ${r.gapS} 秒，最後一步「${r.step || '?'}」${r.v ? '（v' + r.v + '）' : ''} → ${r.ok === true ? '<span class="ok">已重開，心跳恢復</span>' : r.ok === false ? '<span class="bad">另開後 30 秒沒有心跳（彈出視窗被封鎖？）</span>' : '<span class="warn">等待心跳…</span>'}</div>`).join('');
+  };
+  const show = (cls, text, kv) => { $('st').className = 'st ' + cls; $('st').textContent = text; $('kv').textContent = kv || ''; };
+
+  window.guardOpenHost = why => {
+    const t = Date.now();
+    set('csp_revived_at', t);
+    let w = null;
+    try { w = window.open(APP + '?revived=' + t, '_blank', 'noopener'); } catch (e) {}
+    pending = { t, rec: null, why };
+    blocked = false; $('open-fallback').style.display = 'none';
+    try { if (Notification.permission === 'default' && why === '手動') Notification.requestPermission().then(guardRenderNotify); } catch (e) {}
+  };
+  window.guardAskNotify = () => { try { Notification.requestPermission().then(guardRenderNotify); } catch (e) {} };
+  const guardRenderNotify = () => { try { $('notify-st').textContent = Notification.permission === 'granted' ? '桌面通知：已允許' : Notification.permission === 'denied' ? '桌面通知：已被封鎖（網址列左側鎖頭可改）' : '桌面通知：尚未允許'; } catch (e) {} };
+  window.guardRenderNotify = guardRenderNotify;
+
+  const revive = (gap, step) => {
+    const t = Date.now();
+    const rec = { t, gapS: Math.round(gap / 1000), step: step && step.n, v: step && step.v, ok: null };
+    revives.unshift(rec); revives = revives.slice(0, 30); set('csp_guard_log', revives);
+    guardOpenHost('自動');
+    pending.rec = rec;
+    notify('守護頁：主機已停止', `心跳停了 ${rec.gapS} 秒（最後一步「${rec.step || '?'}」），正在重新開啟主機`);
+    renderLog();
+  };
+
+  const tick = () => {
+    const now = Date.now();
+    // 多個守護頁同時開：最早開的那個負責，其餘待命（它停了 150 秒就接手）
+    const other = get('csp_guard_hb');
+    standby = !!(other && other.id !== myId && now - other.t < STALE_MS && other.born < born && !other.closed);
+    if (standby) { show('dim', '待命中：另一個守護頁正在運作', `另一個守護頁開啟於 ${fmt(other.born)}，最近心跳 ${Math.round((now - other.t) / 1000)} 秒前。本頁可關閉，或留著當備援。`); return; }
+    beat();
+    const hb = get('csp_hb'), step = get('csp_last_step');
+    // 剛開出去的主機：30 秒內有新心跳＝成功；沒有＝彈出視窗被封鎖
+    if (pending) {
+      if (hb && hb.t > pending.t) { if (pending.rec) { pending.rec.ok = true; set('csp_guard_log', revives); } pending = null; renderLog(); }
+      else if (now - pending.t > CONFIRM_MS) { if (pending.rec) { pending.rec.ok = false; set('csp_guard_log', revives); } blocked = true; pending = null; renderLog(); }
+    }
+    if (!hb || !hb.t) { show('warn', '尚未偵測到主機心跳', '請按「▶ 開啟主機」開啟主機分頁（或主機尚未載入完成）。'); return; }
+    const gap = now - hb.t;
+    const stepLine = step ? `最後一步：「${step.n}」 ${fmt(step.t)}${step.v ? '　v' + step.v : ''}` : '';
+    if (gap < STALE_MS) {
+      $('open-fallback').style.display = 'none';
+      show('ok', `主機活著　心跳 ${Math.round(gap / 1000)} 秒前${hb.scanning ? '（掃描中）' : ''}${hb.hid ? '（背景分頁）' : ''}`, `${stepLine}\n本守護頁開啟於 ${fmt(born)}；累計自動重啟 ${revives.filter(r => r.ok === true).length} 次`);
+      return;
+    }
+    const closedClean = !!(step && (step.n === 'unload' || step.n === 'idle') && step.t >= hb.t - 15e3);
+    if (closedClean) { show('dim', `主機已正常關閉或被凍結（心跳 ${Math.round(gap / 60000)} 分鐘前）`, `${stepLine}\n這是使用者關閉、重新整理或 Chrome 凍結背景分頁，不自動重開。要開主機請按下方按鈕。`); return; }
+    if (blocked) { $('open-fallback').style.display = ''; show('bad', `主機已停止（心跳 ${Math.round(gap / 60000)} 分鐘前），自動重開沒有成功`, `${stepLine}\n另開的視窗沒有產生心跳——很可能是彈出視窗被封鎖。請按紅色按鈕，並在 Chrome 選「一律允許」。`); return; }
+    if (pending) { show('warn', `主機已停止，已另開新主機，等待心跳…`, stepLine); return; }
+    const last = revives[0] ? revives[0].t : 0;
+    if (now - last < COOLDOWN_MS) { show('warn', `主機已停止，${Math.round((COOLDOWN_MS - (now - last)) / 1000)} 秒後再試一次`, stepLine); return; }
+    if (revives.filter(r => now - r.t < 3600e3).length >= MAX_PER_HOUR) { $('open-fallback').style.display = ''; show('bad', '一小時內已自動重啟 6 次，暫停自動重啟', `${stepLine}\n主機一直被結束。請把這一頁與主機的診斷包一起貼給開發者。`); return; }
+    show('bad', `主機已停止（心跳 ${Math.round(gap / 1000)} 秒前，最後一步不是正常關閉）→ 重新開啟中`, stepLine);
+    revive(gap, step);
+  };
+
+  window.addEventListener('pagehide', () => { if (!standby) beat({ closed: true }); });
+  guardRenderNotify();
+  renderLog();
+  tick();
+  setInterval(tick, 5000);
+})();
+</script>
+</body>
+</html>

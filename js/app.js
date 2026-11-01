@@ -171,6 +171,7 @@ function _diagBundle() {
     errLog: (get('csp_err_log') || []).slice(0, 10), bootTracePrev: get('csp_boot_trace_prev'), bootTrace: get('csp_boot_trace'), scanProfile: (get('csp_scan_profile') || []).slice(0, 3),
     perf: (() => { try { return _perfSummaryForDiag(); } catch(_e) { return null; } })(), health: (() => { try { return _healthSnapshot(); } catch(_e) { return null; } })(), feeds: (() => { try { return feedHealth().map(f => ({ k: f.key, s: f.state, age: f.ageMs != null ? Math.round(f.ageMs / 60000) : null, fail: f.fail, note: f.note })); } catch(_e) { return null; } })(), relay: (() => { try { return relayStatus(); } catch(_e) { return null; } })(), okxChannel: (typeof _okxChannel !== 'undefined') ? _okxChannel : null, rejects: (() => { try { const o = {}; for (const k of Object.keys(_scalpReject || {})) if (!k.startsWith('_')) o[k] = _scalpReject[k]; return o; } catch(_e) { return null; } })(), funnel: get('csp_scan_funnel'),
     navType: (() => { try { const e = performance.getEntriesByType('navigation')[0]; return e ? e.type : null; } catch(_e) { return null; } })(), crashReports: (typeof _crashReports !== 'undefined') ? _crashReports : null, reportingHeader: (typeof _reportingHeader !== 'undefined') ? _reportingHeader : null, visLogPrev: get('csp_vis_log_prev'), visLog: (typeof _visLog !== 'undefined') ? _visLog : null, keepAlive: (typeof _keepAlive !== 'undefined') ? _keepAlive : null, bisect: (typeof _bisect !== 'undefined') ? _bisect : null, prevPend: (typeof _prevPend !== 'undefined') ? _prevPend : null, pendNow: (typeof _readPendCookie === 'function') ? _readPendCookie() : null, stepSeq: (typeof _stepSeq !== 'undefined') ? _stepSeq : null, noLs: (typeof NO_LS !== 'undefined') ? NO_LS : null, cards: (typeof _cardsAllow !== 'undefined') ? _cardsAllow : null, autoNoCards: (typeof _autoNoCards !== 'undefined') ? _autoNoCards : null,
+    guard: (() => { try { return { state: _guardState(), log: _guardLog(), revivedAt: get('csp_revived_at') }; } catch(_e) { return null; } })(),
     settings: (() => { try { const s = loadSettings(); return { refreshInterval: s.refreshInterval, signalMaster: s.signalMaster, idleStopHours: s.idleStopHours, keepAwake: s.keepAwake, cloudSync: s.cloudSync, mainMode: s.mainMode, trailMode: s.trailMode, scalpEnabled: s.scalpEnabled }; } catch(_e) { return null; } })(),
     pairs: (() => { try { return loadPairs().length; } catch(_e) { return null; } })(), lsKB: (typeof _lsUsageKB === 'function') ? _lsUsageKB() : null };
   return '```json\n' + JSON.stringify(b, null, 1) + '\n```';
@@ -603,6 +604,7 @@ async function init() {
   // 預載宏觀快取（背景計時器每 15 秒會自動掃描，不需在 init 立即呼叫 recordSignalsFromScan）
   if (!SAFE_MODE) _prefetchMacroCache();
   _bootMark('done');
+  try { _handleRevivedBoot(); } catch(_e) {}
   setTimeout(() => { try { _startPostBootModules('開頁完成 +8s'); } catch(_e) {} }, 8000);
 }
 
@@ -1050,6 +1052,7 @@ function _selfHealReload(reason, h) {
 }
 let _healthTimer = null, _healthReloadArmed = false;
 function _healthTick() {
+  try { _guardTick(); } catch(_e) {}
   try {
     const h = _healthSnapshot();
     if (h.lsKB >= HEALTH_CFG.lsSoftKB) _lsQuotaGuard();
@@ -1093,6 +1096,59 @@ async function startMasterKeepAlive() {
     await acquire();
     if (!_keepAlive._bound) { _keepAlive._bound = true; document.addEventListener('visibilitychange', () => { if (!document.hidden) acquire(); }); }
   } catch(_e) {}
+}
+/* ── 守護頁（2026-11-02）──────────────────────────────────────────────────────
+   主機分頁一天被結束 2～3 次：程序以正常結束碼消失、沒有崩潰回報、沒有釋放紀錄、兩個心跳同時停——頁面自己
+   無法阻止也無法在死後復活。guard.html 是一個獨立視窗（noopener → Chrome 給它獨立的渲染程序），只讀 localStorage
+   的主機心跳：心跳停 150 秒且最後一步不是「unload／idle」→ 另開主機（?revived=），主機開頁後立即接手訊號主機。
+   這裡是主機這一側：① 開頁帶 ?revived= 時記錄並立即 claimSignalMaster（否則要等雲端心跳過期 10 分鐘）；
+   ② 健康監視每 30 秒看守護頁心跳，守護頁不是被使用者關掉（closed）而是停了 → 把它重開（彼此守護）；
+   ③ 診斷包附守護頁心跳與重啟紀錄。 */
+const GUARD_STALE_MS = 150e3;
+let _guardReopenAt = 0, _guardReopenN = 0, _guardBlockedShown = false;
+function _guardState() {
+  try {
+    const hb = JSON.parse(localStorage.getItem('csp_guard_hb') || 'null');
+    if (!hb || !hb.t) return { on: false, ever: false };
+    const age = Date.now() - hb.t;
+    return { on: !hb.closed && age < GUARD_STALE_MS, ever: true, closed: !!hb.closed, ageS: Math.round(age / 1000), born: hb.born || null, hid: !!hb.hid };
+  } catch(_e) { return { on: false, ever: false }; }
+}
+function _guardLog() { try { const a = JSON.parse(localStorage.getItem('csp_guard_log') || '[]'); return Array.isArray(a) ? a.slice(0, 10) : []; } catch(_e) { return []; } }
+/* 設定頁按鈕（使用者手勢 → 不受彈出視窗封鎖）：另開守護頁，noopener 讓它不與本分頁共用程序 */
+function openGuardPage() {
+  try { window.open('guard.html', '_blank', 'noopener'); } catch(_e) {}
+  try { showToast('🛡️ 守護頁已另開；請讓它一直開著（可放背景），並在 Chrome 詢問時選「一律允許彈出視窗」', 'info'); } catch(_e) {}
+  setTimeout(() => { try { renderSignalMasterStatus(); } catch(_e) {} }, 6000);
+}
+/* 主機側：守護頁活過、現在停了、且不是使用者關掉 → 重開（5 分鐘內不重複、一小時最多 6 次）；彈出被封鎖就上紅條 */
+function _guardTick() {
+  const g = _guardState();
+  if (!g.ever || g.on || g.closed) { if (g.on) _guardBlockedShown = false; return; }
+  if (g.ageS > 24 * 3600) return;                        // 一天以上沒心跳＝早就不用了，不追
+  if (loadSettings().signalMaster === false) return;     // 非主機裝置不需要守護頁
+  const now = Date.now();
+  if (now - _guardReopenAt < 5 * 60e3) {
+    // 上次重開後 60 秒內沒有新心跳 → 彈出視窗被封鎖，紅條提示一次
+    if (now - _guardReopenAt > 60e3 && !_guardBlockedShown) { _guardBlockedShown = true; try { _healthNote('guard-blocked', `守護頁停止 ${g.ageS} 秒，自動重開後沒有心跳——彈出視窗可能被封鎖`); } catch(_e) {} try { if (typeof _bootErrLog === 'function') _bootErrLog('守護頁', '守護頁已停止且無法自動重開（彈出視窗被封鎖？）——請到設定頁按「開啟守護頁」，並在 Chrome 選「一律允許」'); } catch(_e) {} }
+    return;
+  }
+  if (_guardReopenN >= 6 && now - _guardReopenAt < 3600e3) return;
+  _guardReopenAt = now; _guardReopenN++;
+  try { _healthNote('guard-reopen', `守護頁心跳停止 ${g.ageS} 秒且不是被關閉 → 本分頁將它重開（第 ${_guardReopenN} 次）`); } catch(_e) {}
+  try { window.open('guard.html', '_blank', 'noopener'); } catch(_e) {}
+}
+/* 開頁帶 ?revived=：守護頁判定前主機已死才開本分頁 → 不等雲端心跳過期，立即接手；網址參數拿掉，避免之後自我重整重複觸發 */
+function _handleRevivedBoot() {
+  let rv = null; try { rv = new URLSearchParams(location.search).get('revived'); } catch(_e) {}
+  if (!rv) return false;
+  const last = _guardLog()[0];
+  const why = last ? `前主機心跳停了 ${last.gapS} 秒，最後一步「${last.step || '?'}」` : '守護頁開啟';
+  try { _healthNote('revived', `本分頁由守護頁自動重開（${why}）`); } catch(_e) {}
+  try { if (typeof _bootErrLog === 'function') _bootErrLog('守護重啟', `本分頁由守護頁自動重開：${why}。原本變黑的分頁可以關掉。`); } catch(_e) {}
+  try { if (loadSettings().signalMaster !== false) claimSignalMaster(); } catch(_e) {}
+  try { const u = new URL(location.href); u.searchParams.delete('revived'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash); } catch(_e) {}
+  return true;
 }
 /* ── 低效能模式（2026-10-23）────────────────────────────────────────────────
    使用者的主機是入門筆電：頁面有十幾層 backdrop-filter 毛玻璃＋多個無限動畫，內顯 GPU 24 小時持續合成，
@@ -13939,6 +13995,9 @@ function renderSignalMasterStatus() {
     const idle = deviceIdleState();
     const ka = `${_keepAlive.lock ? '🔒 已持有保活鎖（Chrome 不會釋放此分頁）' : '鎖未持有'}；${_keepAlive.wake ? '💡 螢幕保持喚醒中' : '螢幕喚醒未啟用' + (_keepAlive.why ? `（${_keepAlive.why}）` : '')}`;
     el.insertAdjacentHTML('beforeend', `<br><span style="color:var(--text3);font-size:0.78rem">無人值守：閒置停發 ${idle.hours > 0 ? idle.hours + ' 小時（主機建議設 0）' : '已關閉 ✓'}；${ka}；運行 ${Math.round(performance.now() / 60000)} 分鐘${document.wasDiscarded ? '；⚠️ 本次是瀏覽器釋放後重載' : ''}</span>`);
+    const g = _guardState(); const gl = _guardLog();
+    const gTxt = g.on ? `<span style="color:#22c55e">🛡️ 守護頁運作中（心跳 ${g.ageS} 秒前${g.hid ? '，背景' : ''}）</span>` : g.ever ? (g.closed ? '🛡️ 守護頁已被關閉' : `<span style="color:#f59e0b">🛡️ 守護頁心跳停止 ${g.ageS} 秒（本分頁會嘗試重開）</span>`) : '🛡️ 尚未開啟守護頁——主機分頁被結束後沒有人會把它開回來';
+    el.insertAdjacentHTML('beforeend', `<br><span style="font-size:0.8rem">${gTxt}${gl.length ? `；累計自動重啟 ${gl.filter(r => r.ok === true).length} 次，最近 ${new Date(gl[0].t).toLocaleString('zh-TW', { hour12: false })}` : ''}</span>`);
   } catch(_e) {}
 }
 function _renderSignalMasterStatusCore() {
@@ -15013,7 +15072,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822x';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822y';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
