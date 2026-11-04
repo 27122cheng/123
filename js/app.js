@@ -469,6 +469,17 @@ async function _fetchCrashReports() {
       const txt = recent.slice(0, 3).map(x => `${new Date(x.at).toLocaleString('zh-TW', { hour12: false })}：${why[(x.body && x.body.reason) || ''] || JSON.stringify(x.body || {})}`).join('；');
       _healthNote('chrome-crash', `Chrome 回報分頁程序被結束 ${recent.length} 次（48 小時內）：${txt}`);
       try { const chip = document.getElementById('err-chip-body'); if (typeof _bootErrLog === 'function') _bootErrLog('Chrome崩潰回報', `48 小時內 ${recent.length} 次：${txt}`); } catch(_e) {}
+      /* 2026-11-05 主機實案：Chrome 回報 oom，但本頁死前 JS 記憶體只有 26MB。Chrome 的 oom＝渲染程序向系統要記憶體被拒
+         （整台電腦的「已認可記憶體」碰到實體＋分頁檔上限），誰在那一刻配置記憶體誰就死——本頁正在抓 K 線所以總是它。
+         這不是本頁吃掉的，要查的是整台機器：事件檢視器 系統記錄的 Resource-Exhaustion-Detector（事件 2004）會點名當時吃最多的程式。 */
+      try {
+        const oom = recent.find(x => x.body && x.body.reason === 'oom');
+        const prev = (typeof window._cspPrevStep !== 'undefined') ? window._cspPrevStep : null;
+        if (oom && prev && isFinite(parseFloat(prev.mem)) && parseFloat(prev.mem) < 300) {
+          const m = `Chrome 說是記憶體不足（oom），但本頁死前 JS 記憶體只有 ${prev.mem}MB → 是整台電腦的記憶體＋分頁檔用完，Chrome 在本頁配置記憶體失敗時結束它，不是本頁吃掉的。請查：①事件檢視器 → Windows 記錄 → 系統 → 來源 Resource-Exhaustion-Detector（事件 2004），它會列出當時吃最多記憶體的三個程式；②工作管理員 → 效能 → 記憶體 的「已認可」是否接近上限；③分頁檔是否被關掉或設太小。`;
+          _healthNote('oom-system', m); if (typeof _bootErrLog === 'function') _bootErrLog('記憶體判讀', m);
+        }
+      } catch(_e) {}
     }
   } catch(_e) {}
 }
@@ -15086,7 +15097,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823a';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823b';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
