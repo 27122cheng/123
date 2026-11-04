@@ -61,8 +61,24 @@ const r5 = await p.evaluate(() => { _rsSet('kind', 'scalp'); const el = document
 if (!/200 筆/.test(r5.stat) || !r5.mode || !/模式/.test(r5.head)) throw new Error('⑤ 快速單切換錯誤：' + JSON.stringify(r5));
 console.log(`✓ ⑤ 快速單：${r5.stat.slice(0, 30)}…，模式卡與表頭正確`);
 
+// ⑥ 學習成長：視窗列、最近窗 vs 前一窗、目前回撤、學習機制清單（一般單）
+const r6 = await p.evaluate(() => { _rsSet('kind', 'main'); const el = document.getElementById('rpt-view-content'); const g = [...el.querySelectorAll('.rs-card')].find(c => c.textContent.includes('學習成長')); return g && { wins: g.querySelectorAll('.rs-win').length, trend: /最近 30 筆 vs 前 30 筆/.test(g.textContent), dd: /目前回撤/.test(g.textContent), mechs: g.querySelectorAll('.rs-mech').length, names: [...g.querySelectorAll('.rs-mech b')].map(b => b.textContent) }; });
+if (!r6 || r6.wins < 2 || !r6.trend || !r6.dd || r6.mechs < 4 || !r6.names.includes('預測勝率校準')) throw new Error('⑥ 學習成長錯誤：' + JSON.stringify(r6));
+console.log(`✓ ⑥ 學習成長：${r6.wins} 個視窗、最近窗對比、目前回撤、機制 ${r6.names.join('／')}`);
+
+// ⑦ 分桶校準：≥65% 桶全輸（n≥20）→ 校準值明顯低於模型值；<55% 桶全贏 → 等張合併後不倒掛；桶 <20 筆不校準
+const r7 = await p.evaluate(() => {
+  const now = Date.now(); const main = [];
+  for (let i = 0; i < 60; i++) { const hi = i < 30; const ts = now - i * 3600e3; main.push({ id: 'c' + i, symbol: 'X/USDT', direction: 'long', status: 'closed', timestamp: ts, entryTime: ts, exitTime: ts + 60e3, entry: 100, sl: 99, tp1: 102, exitPrice: hi ? 99 : 102, pnlR: hi ? -1 : 1.2, outcome: hi ? 'sl' : 'tp1', btProb: hi ? 0.72 : 0.5 }); }
+  localStorage.setItem('csp_trade_log', JSON.stringify(main)); _tlogRaw = null; _tlogArr = null; try { invalidateLearnCache(); } catch (e) {} _btCalibCache = null;
+  const hi = btProbCalibrated(0.72), lo = btProbCalibrated(0.5), mid = btProbCalibrated(0.6);
+  return { hi, lo, mid, c: btProbCalib().buckets.map(b => [b.label, b.n, b.real]) };
+});
+if (!r7.hi.applied || r7.hi.pc >= 0.65 || !r7.lo.applied || r7.lo.pc > r7.hi.pc + 0.23 || r7.mid.applied || !/未校準/.test(r7.mid.note))   // 等張合併後兩桶同值，桶內再依模型值位移（0.5 vs 0.72 差 0.22） throw new Error('⑦ 分桶校準錯誤：' + JSON.stringify(r7));
+console.log(`✓ ⑦ 分桶校準：模型 72% → 校準 ${Math.round(r7.hi.pc * 100)}%（${r7.hi.note}）；模型 50% → ${Math.round(r7.lo.pc * 100)}%，不倒掛；55–65% 桶 0 筆 → ${r7.mid.note}`);
+
 // 還原
-await p.evaluate(k => { if (k.tl) localStorage.setItem('csp_trade_log', k.tl); else localStorage.removeItem('csp_trade_log'); if (k.sl) localStorage.setItem('csp_scalp_log', k.sl); else localStorage.removeItem('csp_scalp_log'); _tlogRaw = null; _tlogArr = null; try { invalidateLearnCache(); } catch (e) {} }, keep);
+await p.evaluate(k => { if (k.tl) localStorage.setItem('csp_trade_log', k.tl); else localStorage.removeItem('csp_trade_log'); _btCalibCache = null; if (k.sl) localStorage.setItem('csp_scalp_log', k.sl); else localStorage.removeItem('csp_scalp_log'); _tlogRaw = null; _tlogArr = null; try { invalidateLearnCache(); } catch (e) {} }, keep);
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
 console.log('ALL PASS t_research');
 await b.close();

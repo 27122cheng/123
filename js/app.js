@@ -15086,7 +15086,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822z';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823a';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15401,8 +15401,9 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     : '（回踩限價）';
   const _srcLine = `💱 價位空間：${_priceSpaceText(setup.priceSrc || 'okx', coin.symbol)}\n`;
   // 回測機率模型預測勝率（7 因子邏輯迴歸，樣本外 AUC 0.60）；<56% 時倉位已自動縮小
+  const _bpC = (() => { try { return btProbCalibrated(setup.btProb); } catch(_e) { return { applied: false }; } })();
   const _bpLine = isFinite(parseFloat(setup.btProb))
-    ? `📈 回測模型預測勝率：<b>${Math.round(parseFloat(setup.btProb) * 100)}%</b>${parseFloat(setup.btProb) < 0.56 ? '（偏低，倉位已縮）' : parseFloat(setup.btProb) >= 0.65 ? '（高分位）' : ''}\n`
+    ? `📈 回測模型預測勝率：<b>${Math.round(parseFloat(setup.btProb) * 100)}%</b>${_bpC.applied ? `，實倉校準後 <b>${Math.round(_bpC.pc * 100)}%</b>（${_bpC.note}）` : ''}${(_bpC.applied ? _bpC.pc : parseFloat(setup.btProb)) < 0.56 ? '（偏低，倉位已縮）' : parseFloat(setup.btProb) >= 0.65 ? '（高分位）' : ''}\n`
     : '';
   const _priceLines = _srcLine + (canScaleIn
     ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b> ${_modeTag}\n` +
@@ -16232,9 +16233,11 @@ async function recordSignalsFromScan(data) {
     { const _tier = mainTierPass(coin, isLong, setup.btProb); if (!_tier.ok && _no(_tier.why)) continue; }
     // 回測機率模型（2026-10-04）：樣本外最低四分之一（p<0.5）期望 −0.09R → 倉位 ×0.6；0.5～0.56 ×0.8
     if (isFinite(parseFloat(setup.btProb))) {
-      const _bp = parseFloat(setup.btProb);
-      if (_bp < 0.5) _soft(`回測模型預測勝率 ${Math.round(_bp * 100)}% <50%`, 0.6);
-      else if (_bp < 0.56) _soft(`回測模型預測勝率 ${Math.round(_bp * 100)}% <56%`, 0.8);
+      // 2026-11-04：倉位軟門改看「實倉校準後」的機率（桶 n≥20 才啟用，否則等於模型值）；硬門不動
+      const _bc = btProbCalibrated(setup.btProb); const _bp = _bc.applied ? _bc.pc : parseFloat(setup.btProb);
+      const _bpTxt = _bc.applied ? `校準後勝率 ${Math.round(_bp * 100)}%（模型 ${Math.round(parseFloat(setup.btProb) * 100)}%）` : `回測模型預測勝率 ${Math.round(_bp * 100)}%`;
+      if (_bp < 0.5) _soft(`${_bpTxt} <50%`, 0.6);
+      else if (_bp < 0.56) _soft(`${_bpTxt} <56%`, 0.8);
     }
     // 結構階梯不完整＝四個價位沒辦法全部釘在結構上 → 不建單。
     // 沒有結構可釘時硬用固定 R 湊出價位，正是這次要改掉的事。
@@ -17000,6 +17003,7 @@ async function recordSignalsFromScan(data) {
       h4Adx:   (() => { const a = parseFloat(coin.h4Adx); return isFinite(a) ? a : null; })(),
       btcD1:   (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : null,   // 建單當下 BTC 日線方向
       btProb:  isFinite(parseFloat(setup.btProb)) ? parseFloat(setup.btProb) : null,   // 回測機率模型預測勝率（校準對照用）
+      btProbC: (() => { try { const c = btProbCalibrated(setup.btProb); return c.applied ? c.pc : null; } catch(_e) { return null; } })(),   // 建單當下的實倉校準值（研究台對照）
       tp1FracPlan:  isFinite(parseFloat(setup.tp1FracPlan))  ? parseFloat(setup.tp1FracPlan)  : null,   // 突破單專用出場：止盈一減倉比例
       tp1LockRPlan: isFinite(parseFloat(setup.tp1LockRPlan)) ? parseFloat(setup.tp1LockRPlan) : null,   // 突破單專用出場：止盈一後鎖利 R
       trailGiveRPlan: isFinite(parseFloat(setup.trailGiveRPlan)) ? parseFloat(setup.trailGiveRPlan) : null,   // 突破單專用出場：移動停利回吐 R
@@ -23713,7 +23717,7 @@ const LEARN_KEEP_FIELDS = [
   'entryTBias', 'entryWBias',                // 建單當下的大盤預測（監控可比性補償用）
   'probeTag',                                // 探路單標記（封鎖決策的驗證樣本，封存剝掉＝驗證斷糧）
   'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
-  'entryLs', 'h4Adx', 'btcD1', 'btProb',     // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
+  'entryLs', 'h4Adx', 'btcD1', 'btProb', 'btProbC',   // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
   'tp1FracPlan', 'tp1LockRPlan', 'trailGiveRPlan',   // 突破單專用出場計畫（止盈一減倉比例／鎖利 R／追蹤回吐 R），封存剝掉＝重放算錯
   'slMovedAt',                               // 上次實際移動止損的時間（移動止損「值得移」門檻用）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
@@ -26116,6 +26120,41 @@ function btProbCalib() {
     }
   } catch(_e) {}
   _btCalibCache = out; _btCalibTs = now; return out;
+}
+/* ── 分桶校準（2026-11-04，使用者要求「預測、勝率更準確、會學習成長」）────────────────────
+   上面的整體 logit 平移修不了「倒掛」：使用者實倉曾出現 ≥65% 桶全輸、<65% 桶全贏。這裡再加一層分桶校準：
+   每桶實倉勝率以先驗權重 20 向模型值收縮（pc = (勝 + 20·p)/(n + 20)），桶 n≥20 才啟用；三桶若倒掛就把相鄰兩桶
+   合併取平均（三桶的等張回歸），保證「模型說越高、校準後也越高」。用途：訊息顯示「校準後 xx%」、倉位軟門改看
+   校準值、交易紀錄存 btProbC 供研究台對照。不碰高勝率模式的 ≥65% 硬門（規則④：桶一偏低會把整個模式擋死）。 */
+const BT_CALIB_BUCKETS = [[0, 0.55], [0.55, 0.65], [0.65, 1.01]];
+const BT_CALIB_PRIOR = 20, BT_CALIB_MIN_N = 20;
+function btProbCalibrated(p) {
+  const out = { p: null, pc: null, n: 0, applied: false, note: '' };
+  const pp = parseFloat(p); if (!isFinite(pp)) return out;
+  out.p = +pp.toFixed(3); out.pc = out.p;
+  try {
+    const c = btProbCalib();
+    if (!c || !Array.isArray(c.buckets) || c.buckets.length !== 3) return out;
+    // 各桶校準值（n<20 的桶維持模型值）
+    const pc = c.buckets.map((b, i) => {
+      const lo = BT_CALIB_BUCKETS[i][0], hi = BT_CALIB_BUCKETS[i][1];
+      const mid = (b.pred != null) ? b.pred / 100 : (lo + Math.min(hi, 0.8)) / 2;
+      if (!b.n || b.n < BT_CALIB_MIN_N || b.real == null) return { v: mid, n: b.n || 0, on: false };
+      return { v: (b.real / 100 * b.n + BT_CALIB_PRIOR * mid) / (b.n + BT_CALIB_PRIOR), n: b.n, on: true };
+    });
+    // 等張：相鄰倒掛就合併取平均（最多兩輪）
+    const on = pc.map((x, i) => x.on ? i : -1).filter(i => i >= 0);   // 只在啟用的桶之間做（中間桶樣本不足時跳過它）
+    for (let r = 0; r < 2; r++) for (let j = 0; j + 1 < on.length; j++) { const a = pc[on[j]], b = pc[on[j + 1]]; if (a.v > b.v) { const m = (a.v + b.v) / 2; a.v = m; b.v = m; } }
+    const bi = pp < 0.55 ? 0 : pp < 0.65 ? 1 : 2;
+    out.n = pc[bi].n;
+    if (!pc[bi].on) { out.note = `此桶實倉 ${pc[bi].n} 筆 <${BT_CALIB_MIN_N}，未校準`; return out; }
+    // 桶內用「模型值相對桶平均」的位移保留排序：pc = 桶校準值 + (p − 桶預測均值)
+    const b = c.buckets[bi]; const mid = b.pred != null ? b.pred / 100 : pp;
+    out.pc = +Math.max(0.05, Math.min(0.95, pc[bi].v + (pp - mid))).toFixed(3);
+    out.applied = true;
+    out.note = `實倉 ${b.n} 筆：模型 ${b.pred}% → 實際 ${b.real}%`;
+  } catch(_e) {}
+  return out;
 }
 /* ── 成效診斷（2026-10-19）：從實倉紀錄自動找出「成效不好的原因」────────────────
    拿已完結的一般單與快速單，按規則版本（2026-10-06 之前＝舊規則：含回踩限價、1.5R 出場、無閘門）、
@@ -35293,6 +35332,66 @@ function _rsHistSvg(rows) {
   const W = 680, H = 120, PAD = 8, bw = (W - PAD * 2) / bins.length, max = Math.max(...bins, 1);
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${bins.map((n, i) => { const h = n / max * (H - 34); const x = PAD + i * bw; const neg = i < 4, flat = i === 4; return `<rect x="${(x + 3).toFixed(1)}" y="${(H - 22 - h).toFixed(1)}" width="${(bw - 6).toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${flat ? 'rgba(148,163,184,.5)' : neg ? '#ef4444' : '#22c55e'}" opacity=".85"/><text x="${(x + bw / 2).toFixed(1)}" y="${(H - 24 - h).toFixed(1)}" font-size="10" fill="var(--text2)" text-anchor="middle">${n || ''}</text><text x="${(x + bw / 2).toFixed(1)}" y="${H - 8}" font-size="9" fill="var(--text3)" text-anchor="middle">${labels[i]}</text>`; }).join('')}</svg>`;
 }
+
+/* 學習成長總覽（2026-11-04）：回答「系統有沒有越來越準、回撤有沒有變小、各學習機制現在在做什麼」。
+   ① 連續視窗：依平倉時間切成每 30 筆（快速單 50 筆）一窗，列每窗勝率／平均 R／窗內最大回撤，最近窗 vs 前一窗。
+   ② 目前回撤：距權益高點幾 R、幾筆。③ 學習機制現況：全部來自既有函式（學習凍結、模型校準、勝率強化閘門、
+   實驗登錄、預測記分卡、快速單回撤解剖），只讀不算新東西，每一條用白話講「它現在做了什麼」。 */
+function _rsWindows(rows, W) {
+  const sorted = [...rows].sort((a, b) => a.ts - b.ts);
+  const wins = [];
+  for (let end = sorted.length; end > 0 && wins.length < 8; end -= W) {
+    const seg = sorted.slice(Math.max(0, end - W), end); if (seg.length < Math.min(W, 10)) break;
+    const st = _rsStats(seg); wins.unshift({ n: seg.length, from: seg[0].ts, to: seg[seg.length - 1].ts, wr: st.wr, avgR: st.avgR, sumR: st.sumR, dd: st.maxDD });
+  }
+  return wins;
+}
+function _rsCurrentDd(rows) {
+  const sorted = [...rows].sort((a, b) => a.ts - b.ts);
+  let cum = 0, peak = 0, peakI = -1; sorted.forEach((x, i) => { cum += x.r; if (cum >= peak) { peak = cum; peakI = i; } });
+  return { dd: +(peak - cum).toFixed(2), since: sorted.length - 1 - peakI, peakAt: peakI >= 0 ? sorted[peakI].ts : null };
+}
+function _rsGrowthHtml(kind, rows) {
+  const W = kind === 'main' ? 30 : 50;
+  const wins = _rsWindows(rows, W);
+  const fmtD = ts => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()}`; };
+  const pct = v => v == null ? '--' : Math.round(v * 100) + '%';
+  let trend = '';
+  if (wins.length >= 2) {
+    const a = wins[wins.length - 2], b = wins[wins.length - 1];
+    const dWr = (a.wr != null && b.wr != null) ? Math.round((b.wr - a.wr) * 100) : null;
+    const dR = +(b.avgR - a.avgR).toFixed(2), dDd = +(b.dd - a.dd).toFixed(1);
+    const arrow = (v, good) => v == null ? '' : `<span style="color:${(good ? v > 0 : v < 0) ? 'var(--bull)' : (v === 0 ? 'var(--text3)' : 'var(--bear)')}">${v > 0 ? '▲' : v < 0 ? '▼' : '＝'}${Math.abs(v)}</span>`;
+    trend = `<div class="rs-ins"><b>最近 ${b.n} 筆 vs 前 ${a.n} 筆</b><span>勝率 ${pct(a.wr)} → <b>${pct(b.wr)}</b> ${arrow(dWr, true)}pp　｜　平均 R ${_rsFmtR(a.avgR)} → <b>${_rsFmtR(b.avgR)}</b> ${arrow(dR, true)}　｜　窗內回撤 ${a.dd.toFixed(1)}R → <b>${b.dd.toFixed(1)}R</b> ${arrow(dDd, false)}　→ ${(dWr != null && dWr >= 3 && dR >= 0) ? '<span style="color:var(--bull)">在進步</span>' : (dWr != null && dWr <= -3 && dR <= 0) ? '<span style="color:var(--bear)">在退步——先看下面「在賠的條件」</span>' : '持平'}</span></div>`;
+  }
+  const maxAbs = Math.max(...wins.map(w => Math.abs(w.sumR)), 0.01);
+  const bars = wins.length ? `<div class="rs-win-grid">${wins.map(w => `<div class="rs-win" title="${fmtD(w.from)}～${fmtD(w.to)}：${w.n} 筆，勝率 ${pct(w.wr)}，累計 ${_rsFmtR(w.sumR, 1)}，回撤 ${w.dd.toFixed(1)}R">
+      <div class="rs-win-bar"><div style="height:${Math.round(Math.abs(w.sumR) / maxAbs * 100)}%;background:${w.sumR >= 0 ? 'var(--bull)' : 'var(--bear)'}"></div></div>
+      <div class="rs-win-wr" style="color:${_rsWrC(w.wr)}">${pct(w.wr)}</div><div class="rs-win-r" style="color:${_rsRC(w.sumR)}">${_rsFmtR(w.sumR, 1)}</div><div class="rs-win-dd">DD ${w.dd.toFixed(1)}</div><div class="rs-win-d">${fmtD(w.from)}</div></div>`).join('')}</div>` : `<div class="rs-dim">已結算不足 ${Math.min(W, 10)} 筆，還排不出成長視窗。</div>`;
+  const cd = _rsCurrentDd(rows);
+  const ddLine = rows.length ? `<div class="rs-ins"><b>目前回撤</b><span>距權益高點 <b style="color:${cd.dd > 0 ? 'var(--bear)' : 'var(--bull)'}">${cd.dd > 0 ? '−' + cd.dd.toFixed(1) + 'R' : '在高點'}</b>${cd.dd > 0 && cd.peakAt ? `，高點在 ${new Date(cd.peakAt).toLocaleDateString('zh-TW')}，之後 ${cd.since} 筆` : ''}</span></div>` : '';
+  // 學習機制現況
+  const L = [];
+  const li = (name, state, what) => L.push(`<div class="rs-mech"><b>${name}</b><span>${state}</span><small>${what}</small></div>`);
+  try { const d = learnFreezeDaysLeft(); li('學習凍結', d > 0 ? `<span style="color:#f59e0b">凍結中，剩 ${d} 天</span>` : '<span style="color:var(--bull)">已解除</span>', d > 0 ? '21 個會自己改參數的函式暫停調整；凍結期間只累積樣本、不改權重（設定頁可解除）' : '各學習機制依樣本自動調整中'); } catch(_e) {}
+  if (kind === 'main') {
+    try { const c = btProbCalib(); const bs = c.buckets.map((b, i) => { const mid = [0.5, 0.6, 0.7][i]; const k = btProbCalibrated(mid); return `${b.label}：${b.n} 筆${b.real != null ? `，實際 ${b.real}%` : ''}${k.applied ? ` → 校準 ${Math.round(k.pc * 100)}%` : ''}`; }).join('；');
+      li('預測勝率校準', c.n >= 30 ? `整體偏移 ${c.offset > 0 ? '+' : ''}${c.offset}（模型平均 ${c.meanP}% vs 實倉 ${c.realWr}%）` : `${c.n}／30 筆，尚未啟用`, `分桶：${bs}。桶 ≥20 筆才校準；校準值用於訊息顯示與倉位軟門，不碰 ≥65% 硬門`); } catch(_e) {}
+    try { const v = winupStats(); const sb = Object.keys(v.sessBlocked.main || {}).length, yb = Object.keys(v.symBad.main || {}).length, rb = Object.keys(v.regimeBlocked && v.regimeBlocked.main || {}).length; li('勝率強化閘門', `時段封鎖 ${sb}、幣種冷卻 ${yb}、市場狀態封鎖 ${rb}、秒損地板 ×${v.floorMult}`, '近 1000 筆按時段／幣種／市場狀態分桶，Wilson 上界低於門檻的桶自動封鎖，樣本回升就解封'); } catch(_e) {}
+  } else {
+    try { const v = winupStats(); const sb = Object.keys(v.sessBlocked.scalp || {}).length, yb = Object.keys(v.symBad.scalp || {}).length; li('勝率強化閘門', `時段封鎖 ${sb}、幣種冷卻 ${yb}`, '快速單按時段／幣種分桶，Wilson 上界低於門檻的桶自動封鎖'); } catch(_e) {}
+    try { const a = scalpDrawdownAutopsy(); li('回撤解剖', a && a.ready ? `最近 200 筆最大回撤 ${a.ddMax != null ? a.ddMax.toFixed(1) + 'R' : '—'}` : `樣本 ${a ? a.n : 0}／30，累積中`, '找出回撤區間內最賠的模式／時段／方向／疊倉，實驗室頁有完整表'); } catch(_e) {}
+  }
+  try { const vs = expVerdicts(false).filter(v => v.scope === kind); const pv = vs.filter(v => v.status === 'proven').length, rf = vs.filter(v => v.status === 'refuted').length, ins = vs.filter(v => v.status === 'insufficient').length; li('實驗登錄', `${vs.length} 條假設：證實 ${pv}、相反 ${rf}、樣本不足 ${ins}；自動套用${expAutoApplyOn() ? '<span style="color:var(--bull)">開</span>' : '<span style="color:var(--text3)">關</span>'}`, expAutoApplyOn() ? '證實的劣勢條件：快速單直接攔截、一般單軟門 ×0.7' : '設定頁「實驗結論自動套用」開啟後，證實的劣勢條件才會真的改變建單'); } catch(_e) {}
+  try { const fs = forecastStats(); const g = fs.filter(r => r.verdict === 'good').length, b = fs.filter(r => r.verdict === 'bad').length, pd = fs.filter(r => r.verdict === 'pending').length; li('預測記分卡', `${fs.length} 個預測器：有預測力 ${g}、不如擲硬幣 ${b}、累積中 ${pd}`, '準的加重、不準的減輕方向確信度權重（×1.3～×0.4）；不需要成交紀錄就在累積'); } catch(_e) {}
+  return `<div class="rs-card"><div class="rs-card-ttl">📈 學習成長：越來越準了嗎？</div>
+    ${trend}${ddLine}
+    <div class="rs-sub" style="margin-top:8px">每 ${W} 筆一窗（依平倉時間，最舊在左）：柱＝窗內累計 R，數字＝勝率／累計 R／窗內最大回撤</div>
+    ${bars}
+    <div class="rs-sub" style="margin-top:12px">學習機制現在在做什麼</div>
+    <div class="rs-mechs">${L.join('')}</div>
+  </div>`;
+}
 function _rsState() {
   if (!state.rs) state.rs = { kind: 'main', mon: 'all', dir: 'all', out: 'all', sym: '', key: '', sort: 'ts', desc: true, sel: null, limit: 60 };
   return state.rs;
@@ -35329,6 +35428,7 @@ function _rsBodyHtml() {
     ${card(pf == null ? '--' : pf.toFixed(2), '獲利因子（>1.3 健康）', pf == null ? 'var(--text)' : pf >= 1.3 ? 'var(--bull)' : pf >= 1 ? 'var(--text)' : 'var(--bear)')}
     ${card(String(base.n), '已結算筆數')}</div>`;
   const insights = `<div class="rs-card"><div class="rs-card-ttl">👁 一眼結論</div>${_rsInsights(all, fs, base, rs.kind)}</div>`;
+  let growth = ''; try { growth = _rsGrowthHtml(rs.kind, all); } catch(e) { growth = `<div class="rs-card rs-dim">學習成長區塊載入失敗：${_rsEsc(e && e.message)}</div>`; }
   const groups = `<div class="rs-card-ttl" style="margin:18px 0 8px">🎯 準確度儀表：各條件的勝率與 R</div><div class="rs-grid">${_RS_GROUPS[rs.kind].map(g => _rsGroupCard(g, fs, base)).join('')}</div>`;
   // 交易研究台
   const rows = _rsFiltered(all, rs);
@@ -35361,7 +35461,7 @@ function _rsBodyHtml() {
     <div class="rs-tbl-wrap"><table class="rpt-month-tbl rs-tbl"><thead><tr>${th('ts', '平倉時間', 'l')}${th('sym', '幣種', 'l')}<th class="l">方向</th>${th('label', rs.kind === 'main' ? '進場方式' : '模式', 'l')}<th class="l">${rs.kind === 'main' ? '預測勝率' : '時段'}</th><th class="l">結果</th>${th('r', 'R')}${th('hold', '持倉')}</tr></thead><tbody>${tbody || '<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">沒有符合篩選的交易</td></tr>'}</tbody></table></div>
     ${sorted.length > shown.length ? `<div style="text-align:center;margin-top:8px"><button class="btn-ghost" onclick="_rsSet('limit',${rs.limit + 100})">再顯示 100 筆（還有 ${sorted.length - shown.length} 筆）</button></div>` : ''}
   </div>`;
-  return stats + insights + groups + table;
+  return stats + growth + insights + groups + table;
 }
 let _rsSymTimer = null;
 function _rsSymInput(v) { const rs = _rsState(); rs.sym = v; rs.limit = 60; clearTimeout(_rsSymTimer); _rsSymTimer = setTimeout(() => { const inp = document.querySelector('.rs-inp'); const pos = inp ? inp.selectionStart : null; _rsRerender(); try { const i2 = document.querySelector('.rs-inp'); if (i2) { i2.focus(); if (pos != null) i2.setSelectionRange(pos, pos); } } catch(_e) {} }, 350); }
@@ -35371,7 +35471,7 @@ function _rsDetailHtml(x, fs, base, kind) {
   const t = x.t;
   const num = (v, d = 4) => { const n = parseFloat(v); return isFinite(n) ? (Math.abs(n) >= 1000 ? n.toFixed(2) : Math.abs(n) >= 1 ? n.toFixed(d) : n.toPrecision(4)) : '—'; };
   const core = [['進場', num(t.entry)], ['止損', num(t.baseSl != null ? t.baseSl : t.sl)], ['止盈一', num(t.tp1)], ['止盈二', num(t.tp2)], ['出場', num(t.exitPrice)], ['結果', _RS_OUT_ZH[x.out] || x.out || '—'], ['R', _rsFmtR(x.r)], ['持倉', x.hold == null ? '—' : x.hold.toFixed(1) + ' 小時']];
-  if (kind === 'main') core.push(['SQ', t.sq != null ? t.sq : '—'], ['風控分', t.conf != null ? t.conf : '—'], ['預測勝率', isFinite(parseFloat(t.btProb)) ? Math.round(parseFloat(t.btProb) * 100) + '%' : '—']);
+  if (kind === 'main') core.push(['SQ', t.sq != null ? t.sq : '—'], ['風控分', t.conf != null ? t.conf : '—'], ['預測勝率', isFinite(parseFloat(t.btProb)) ? Math.round(parseFloat(t.btProb) * 100) + '%' + (isFinite(parseFloat(t.btProbC)) ? `（校準 ${Math.round(parseFloat(t.btProbC) * 100)}%）` : '') : '—']);
   else core.push(['模式', x.label], ['時段品質', t.kzQuality || '—'], ['止損 ATR', t.slDistAtr != null ? parseFloat(t.slDistAtr).toFixed(2) : '—']);
   const chips = x.feats.filter(f => !f.k.startsWith('base:mon:') && !f.k.startsWith('base:sym:')).map(f => { const s = fs[f.k] && fs[f.k].s; if (!s) return ''; const v = _rsVerdict(s, base); return `<span class="rs-chip ${v === 'edge' ? 'rs-chip-edge' : v === 'drag' ? 'rs-chip-drag' : ''}" data-k="${_rsEsc(f.k)}" onclick="event.stopPropagation();_rsPick(this.dataset.k)" title="點一下：篩出同條件的交易">${_rsEsc(f.l)}<small>${s.n} 筆・${s.wr == null ? '--' : Math.round(s.wr * 100) + '%'}・${_rsFmtR(s.avgR)}</small></span>`; }).join('');
   const notes = [t.exitReason, t.closeReason, t.note, t.reason].filter(Boolean).map(_rsEsc).join('；');

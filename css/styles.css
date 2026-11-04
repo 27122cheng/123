@@ -2036,3 +2036,13 @@ body.hostmode, html.hostmode body { background: #0b1220 !important; }
 .rs-core b { font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; }
 .rs-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 html.lite .rs-bar-fill { opacity: .5; }
+.rs-win-grid { display: flex; gap: 8px; align-items: flex-end; overflow-x: auto; padding: 4px 0; }
+.rs-win { flex: 1 1 0; min-width: 64px; text-align: center; font-size: 0.7rem; }
+.rs-win-bar { height: 56px; display: flex; align-items: flex-end; justify-content: center; }
+.rs-win-bar > div { width: 70%; min-height: 2px; border-radius: 4px 4px 0 0; opacity: .7; }
+.rs-win-wr { font-weight: 700; font-family: 'JetBrains Mono', monospace; margin-top: 3px; }
+.rs-win-r, .rs-win-dd, .rs-win-d { font-family: 'JetBrains Mono', monospace; color: var(--text3); font-size: 0.66rem; }
+.rs-mechs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; }
+.rs-mech { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: rgba(255,255,255,.03); border-radius: 8px; font-size: 0.78rem; }
+.rs-mech b { font-size: 0.78rem; }
+.rs-mech small { color: var(--text3); font-size: 0.7rem; line-height: 1.5; }
