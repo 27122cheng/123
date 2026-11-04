@@ -1140,15 +1140,29 @@ function _guardTick() {
 }
 /* 開頁帶 ?revived=：守護頁判定前主機已死才開本分頁 → 不等雲端心跳過期，立即接手；網址參數拿掉，避免之後自我重整重複觸發 */
 function _handleRevivedBoot() {
-  let rv = null; try { rv = new URLSearchParams(location.search).get('revived'); } catch(_e) {}
+  let rv = null, from = null; try { const sp = new URLSearchParams(location.search); rv = sp.get('revived'); from = sp.get('from'); } catch(_e) {}
   if (!rv) return false;
   const last = _guardLog()[0];
-  const why = last ? `前主機心跳停了 ${last.gapS} 秒，最後一步「${last.step || '?'}」` : '守護頁開啟';
-  try { _healthNote('revived', `本分頁由守護頁自動重開（${why}）`); } catch(_e) {}
-  try { if (typeof _bootErrLog === 'function') _bootErrLog('守護重啟', `本分頁由守護頁自動重開：${why}。原本變黑的分頁可以關掉。`); } catch(_e) {}
+  const byScript = /^ps/.test(String(rv));
+  const who = byScript ? '電腦守護程式（host-watchdog）' : from === 'guard' ? '守護頁（本頁就是原本的守護頁轉過來的）' : '守護頁';
+  const why = byScript ? '雲端主機心跳停止超過 4 分鐘' : last ? `前主機心跳停了 ${last.gapS} 秒，最後一步「${last.step || '?'}」` : '守護頁開啟';
+  try { _healthNote('revived', `本分頁由${who}自動重開（${why}）`); } catch(_e) {}
+  try { if (typeof _bootErrLog === 'function') _bootErrLog('守護重啟', `本分頁由${who}自動重開：${why}。原本變黑的分頁可以關掉。`); } catch(_e) {}
   try { if (loadSettings().signalMaster !== false) claimSignalMaster(); } catch(_e) {}
-  try { const u = new URL(location.href); u.searchParams.delete('revived'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash); } catch(_e) {}
+  try { const u = new URL(location.href); u.searchParams.delete('revived'); u.searchParams.delete('from'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash); } catch(_e) {}
+  // 守護頁已經用掉（轉為主機）或由電腦守護程式開的 → 現在沒有守護頁在看本分頁；要再開一個需要使用者手勢（彈出權限），用一條固定橫幅請使用者按
+  setTimeout(() => { try { if (!_guardState().on) _guardOfferBar(from === 'guard' ? '守護頁已轉為這個主機分頁，現在沒有守護頁在看著它' : '這個主機分頁是被自動重開的，現在沒有守護頁在看著它'); } catch(_e) {} }, 3000);
   return true;
+}
+function _guardOfferBar(msg) {
+  try {
+    if (document.getElementById('guard-offer')) return;
+    const d = document.createElement('div');
+    d.id = 'guard-offer';
+    d.style.cssText = 'position:fixed;left:8px;right:8px;bottom:14px;z-index:99998;background:#1e3a8a;color:#fff;border:1px solid #3b82f6;border-radius:10px;padding:10px 14px;font-size:13px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;box-shadow:0 6px 24px rgba(0,0,0,.4)';
+    d.innerHTML = `<span style="flex:1;min-width:200px">🛡️ ${msg}。</span><button onclick="openGuardPage();document.getElementById('guard-offer').remove()" style="background:#3b82f6;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer">開啟守護頁</button><button onclick="document.getElementById('guard-offer').remove()" style="background:transparent;color:#bfdbfe;border:1px solid #3b82f6;border-radius:8px;padding:8px 10px;cursor:pointer">稍後</button>`;
+    document.body.appendChild(d);
+  } catch(_e) {}
 }
 /* ── 低效能模式（2026-10-23）────────────────────────────────────────────────
    使用者的主機是入門筆電：頁面有十幾層 backdrop-filter 毛玻璃＋多個無限動畫，內顯 GPU 24 小時持續合成，
@@ -15072,7 +15086,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260822y';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260822z';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -24697,13 +24711,20 @@ function renderReportPage(year, view, month) {
                border-bottom:2px solid ${view==='scalp'?'var(--accent)':'transparent'}">
         ⚡ 快速單月報
       </button>
+      <button onclick="renderReportPage(${year},'research',${month})"
+        style="padding:8px 18px;font-size:0.85rem;font-weight:600;border:none;border-radius:8px 8px 0 0;cursor:pointer;
+               background:${view==='research'?'rgba(0,212,255,.15)':'transparent'};
+               color:${view==='research'?'var(--accent)':'var(--text3)'};
+               border-bottom:2px solid ${view==='research'?'var(--accent)':'transparent'}">
+        🔬 交易研究
+      </button>
     </div>`;
 
   container.innerHTML = `
     <div class="page-header" style="margin-bottom:16px">
       <div>
         <h1 class="page-title">📊 策略報表</h1>
-        <p class="page-subtitle">${view === 'year' ? '全年交易績效統計分析' : view === 'scalp' ? '快速單單月統計：各模式、各家族、結果分布、逐日' : '單月交易明細與統計'}</p>
+        <p class="page-subtitle">${view === 'year' ? '全年交易績效統計分析' : view === 'scalp' ? '快速單單月統計：各模式、各家族、結果分布、逐日' : view === 'research' ? '一眼結論、各條件準確度、可篩可排序的逐筆研究台（一般單／快速單）' : '單月交易明細與統計'}</p>
       </div>
       <select class="setting-select" onchange="renderReportPage(parseInt(this.value),'${view}',${month})" style="padding:6px 14px;font-size:0.85rem;min-width:100px">
         ${yearOpts}
@@ -24718,6 +24739,8 @@ function renderReportPage(year, view, month) {
     viewEl.innerHTML = _rptEquityCard(yearTrades, year) + _rptBuildYearView(yearTrades, year);
   } else if (view === 'scalp') {
     try { viewEl.innerHTML = _rptBuildScalpMonthView(year, month); } catch(e) { viewEl.innerHTML = `<div style="color:var(--text3)">快速單月報載入失敗：${e && e.message}</div>`; }
+  } else if (view === 'research') {
+    try { viewEl.innerHTML = _rptBuildResearchView(); } catch(e) { viewEl.innerHTML = `<div style="color:var(--text3)">交易研究載入失敗：${e && e.message}</div>`; }
   } else {
     viewEl.innerHTML = _rptBuildMonthView(yearTrades, year, month);
   }
@@ -35135,4 +35158,227 @@ function _rptBuildScalpMonthView(year, month) {
     ${stats}
     ${rows.length ? grpTable('🧭 各模式', t => t.mode, modeLabel) + grpTable('🏷 各家族', t => t.family || (typeof SCALP_MODE_FAMILY !== 'undefined' ? SCALP_MODE_FAMILY[t.mode] : ''), famLabel) + grpTable('🎯 結果分布', t => t.outcome, outcomeLabel) + dayTable : ''}
     ${yearTable}`;
+}
+
+/* ══ 交易研究台（2026-11-02，報表頁「🔬 交易研究」分頁）══════════════════════════════════════
+   使用者要求：讓交易員能直觀地分析與研究交易和準確度。原本的資料散在交易紀錄（逐筆長文）、月報（只有月份切片）、
+   實驗室（假設登錄）三處，沒有一個地方能回答「哪些條件在賺、哪些在賠、這一筆當時的條件歷史表現如何」。
+   這一頁把已結算的一般單／快速單用 expFeatures 統一抽特徵後做三件事：
+     ① 一眼結論：自動列出優勢條件、劣勢條件（Wilson 區間 vs 全體基準）、預測勝率校準、近兩月對比。
+     ② 準確度儀表：方向／月份／時段／BTC 日線／預測桶／確信度／觸發／標籤／幣種（快速單：模式／家族／止損距離…）
+        每一格 n、勝率、平均 R、累計 R，長條一眼比大小，n≥30 且顯著的標 ✦／▼。
+     ③ 交易研究台：可篩（月份、方向、結果、幣種、任一條件）、可排序的逐筆表，篩選後的累計 R 曲線與 R 分布隨之更新；
+        點任一筆展開該筆所有條件，每個條件旁附「同條件歷史 n／勝率／平均 R」。
+   規則①：只在使用者打開分頁或按篩選時計算（已結算樣本幾百到一千筆，特徵抽取一次 <10ms），快取按樣本數＋最後平倉時間失效。 */
+const _RS_OUT_ZH = { sl: '止損', tp1: '止盈一', tp2: '止盈二', tp: '止盈', be: '保本', timeout: '時間出場', expired: '過期', manual: '手動' };
+const _rsCache = {};
+function _rsEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function _rsSamples(kind) {
+  const raw = expSamples(kind);
+  const tsOf = t => parseFloat(t.exitTime) || parseFloat(t.entryTime) || parseFloat(t.timestamp) || 0;
+  let last = 0; for (const t of raw) { const x = tsOf(t); if (x > last) last = x; }
+  const c = _rsCache[kind];
+  if (c && c.n === raw.length && c.last === last) return c.rows;
+  const rows = raw.map(t => {
+    const r = parseFloat(t.pnlR) || 0;
+    const out = kind === 'main' ? (effectiveOutcome(t) || t.outcome) : t.outcome;
+    const ts = tsOf(t); const d = new Date(ts);
+    const feats = expFeatures(t, kind);
+    const dir = t.direction === 'short' ? 'short' : 'long';
+    feats.push({ d: 'base', k: 'base:dir:' + dir, l: dir === 'long' ? '做多' : '做空' });
+    feats.push({ d: 'base', k: 'base:sym:' + (t.symbol || '?'), l: String(t.symbol || '?').replace('/USDT', '') });
+    const mon = ts ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` : '?';
+    feats.push({ d: 'base', k: 'base:mon:' + mon, l: mon });
+    const hold = (parseFloat(t.exitTime) && (parseFloat(t.entryTime) || parseFloat(t.timestamp))) ? (parseFloat(t.exitTime) - (parseFloat(t.entryTime) || parseFloat(t.timestamp))) / 3600e3 : null;
+    return { t, id: t.id, ts, mon, sym: String(t.symbol || '?').replace('/USDT', ''), dir, r, out: out || (r > FLAT_R_EPS ? 'tp1' : r < -FLAT_R_EPS ? 'sl' : 'be'), win: r > FLAT_R_EPS, loss: r < -FLAT_R_EPS, feats, keys: new Set(feats.map(f => f.k)), hold,
+      label: kind === 'main' ? (t.entryTag ? '觸發 ' + t.entryTag : (t.entryMode === 'stop' ? '停損掛單' : '限價回踩')) : ((typeof SCALP_MODE_LABEL !== 'undefined' && SCALP_MODE_LABEL[t.mode]) || t.mode || '—'),
+      score: kind === 'main' ? (isFinite(parseFloat(t.btProb)) ? Math.round(parseFloat(t.btProb) * 100) + '%' : (isFinite(parseFloat(t.conf)) ? parseFloat(t.conf) : '—')) : (t.kzQuality || '—') };
+  }).sort((a, b) => b.ts - a.ts);
+  _rsCache[kind] = { n: raw.length, last, rows };
+  return rows;
+}
+function _rsStats(rows) {
+  let w = 0, l = 0, s = 0, cum = 0, peak = 0, dd = 0;
+  const sorted = rows.length > 1 ? [...rows].sort((a, b) => a.ts - b.ts) : rows;
+  for (const x of sorted) { s += x.r; if (x.win) w++; else if (x.loss) l++; cum += x.r; if (cum > peak) peak = cum; if (peak - cum > dd) dd = peak - cum; }
+  const n = rows.length, dec = w + l;
+  return { n, w, l, flat: n - dec, wr: dec ? w / dec : null, lb: dec ? wilsonLB(w, dec) : 0, ub: dec ? 1 - wilsonLB(l, dec) : 1, avgR: n ? s / n : 0, sumR: s, maxDD: dd };
+}
+/* 顯著性：n≥minN 且 Wilson 下界高於基準 +5pp 並且平均 R 高於基準 → ✦ 優勢；上界低於基準 −5pp 或平均 R 明顯低 → ▼ 劣勢 */
+function _rsVerdict(s, base) {
+  if (!base || s.n < EXP_CFG.minN || s.wr == null || base.wr == null) return '';
+  if (s.lb >= base.wr + EXP_CFG.edgePP / 100 && s.avgR >= base.avgR + EXP_CFG.edgeR) return 'edge';
+  if (s.ub <= base.wr - EXP_CFG.edgePP / 100 || (s.avgR <= base.avgR - 2 * EXP_CFG.edgeR && s.ub <= base.wr)) return 'drag';
+  return 'neutral';
+}
+const _RS_GROUPS = {
+  main: [
+    { t: '方向', p: 'base:dir:' }, { t: '月份', p: 'base:mon:', sortKey: true }, { t: '時段', p: 'session:kz:' }, { t: 'BTC 日線', p: 'macro:btcD1:' },
+    { t: '預測勝率桶', p: 'model:btp:' }, { t: '確信度', p: 'model:conv:' }, { t: '進場方式／觸發', p: /^(model:entry:|tech:tag:)/ }, { t: '4H ADX', p: 'tech:adx:' }, { t: 'RSI', p: 'tech:rsi:' },
+    { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '市場狀態', p: 'macro:regime:' }, { t: '今日大盤預測', p: 'macro:tbias:' }, { t: '部位／模式', p: /^model:(soft|mode|trail):/ },
+    { t: '進場標籤', p: /^(pattern|chips|macro|session|tech|model):tag:/, excl: /^tech:tag:(h1break|stopbreak|limit|pullback)$/, top: 12 }, { t: '風控扣分', p: 'risk:rk:' }, { t: '反對證據', p: 'model:opp:' }, { t: '幣種', p: 'base:sym:', top: 12 },
+  ],
+  scalp: [
+    { t: '模式', p: 'model:mode:' }, { t: '家族', p: 'model:family:' }, { t: '方向', p: 'base:dir:' }, { t: '月份', p: 'base:mon:', sortKey: true }, { t: '時段品質', p: 'session:kz:' },
+    { t: 'BTC 日線', p: 'macro:btcD1:' }, { t: 'BTC 4H', p: 'macro:btcH4:' }, { t: '1H 突破方向', p: 'tech:h1brk:' }, { t: '多時框', p: 'tech:mtf:' }, { t: '止損距離', p: 'model:sl:' }, { t: '量比', p: 'tech:vol:' },
+    { t: 'OI', p: 'chips:oi:' }, { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '止損外側結構', p: 'pattern:outer:' }, { t: '掃損迴避／推遠', p: /^model:(hunt|widen):/ }, { t: '市場狀態', p: 'macro:regime:' }, { t: '風控扣分', p: 'risk:rk:' }, { t: '幣種', p: 'base:sym:', top: 12 },
+  ],
+};
+function _rsMatch(p, k) { return typeof p === 'string' ? k.startsWith(p) : p.test(k); }
+/* 條件統計表：{ key → {l, stats} }，整頁共用一次 */
+function _rsFeatureStats(rows) {
+  const g = {};
+  for (const x of rows) for (const f of x.feats) { (g[f.k] = g[f.k] || { l: f.l, k: f.k, rows: [] }).rows.push(x); }
+  const out = {}; for (const k of Object.keys(g)) out[k] = { l: g[k].l, k, s: _rsStats(g[k].rows) };
+  return out;
+}
+function _rsFmtR(v, d = 2) { return v == null ? '--' : (v > 0 ? '+' : '') + v.toFixed(d) + 'R'; }
+function _rsWrC(wr) { return wr == null ? 'var(--text3)' : wr >= 0.55 ? 'var(--bull)' : wr >= 0.4 ? 'var(--text)' : 'var(--bear)'; }
+function _rsRC(v) { return v > 0.001 ? 'var(--bull)' : v < -0.001 ? 'var(--bear)' : 'var(--text)'; }
+function _rsRowHtml(label, s, base, maxAbs, opt = {}) {
+  const v = _rsVerdict(s, base);
+  const mark = v === 'edge' ? '<span class="rs-mark rs-edge" title="n≥30 且勝率區間下界高於全體 +5pp、平均 R 也高">✦</span>' : v === 'drag' ? '<span class="rs-mark rs-drag" title="n≥30 且勝率區間上界低於全體 −5pp，或平均 R 明顯低">▼</span>' : '';
+  const w = maxAbs > 0 ? Math.min(100, Math.abs(s.sumR) / maxAbs * 100) : 0;
+  const wrTxt = s.wr == null ? '--' : Math.round(s.wr * 100) + '%';
+  return `<div class="rs-row${opt.cls ? ' ' + opt.cls : ''}"${opt.key ? ` data-k="${_rsEsc(opt.key)}" onclick="_rsPick(this.dataset.k)" title="點一下：只看這個條件的交易"` : ''}>
+    <div class="rs-lbl">${mark}${_rsEsc(label)}</div>
+    <div class="rs-n">${s.n}</div>
+    <div class="rs-wr" style="color:${_rsWrC(s.wr)}">${wrTxt}</div>
+    <div class="rs-avg" style="color:${_rsRC(s.avgR)}">${_rsFmtR(s.avgR)}</div>
+    <div class="rs-bar"><div class="rs-bar-fill" style="width:${w.toFixed(0)}%;background:${s.sumR >= 0 ? 'var(--bull)' : 'var(--bear)'}"></div><span style="color:${_rsRC(s.sumR)}">${_rsFmtR(s.sumR, 1)}</span></div>
+  </div>`;
+}
+function _rsGroupCard(gdef, fs, base) {
+  let keys = Object.keys(fs).filter(k => _rsMatch(gdef.p, k) && !(gdef.excl && gdef.excl.test(k)));
+  if (!keys.length) return '';
+  keys.sort((a, b) => gdef.sortKey ? (a < b ? 1 : -1) : fs[b].s.n - fs[a].s.n);
+  if (gdef.top) keys = keys.slice(0, gdef.top);
+  const maxAbs = Math.max(...keys.map(k => Math.abs(fs[k].s.sumR)), 0.01);
+  return `<div class="rs-card"><div class="rs-card-ttl">${_rsEsc(gdef.t)}</div>
+    <div class="rs-row rs-head"><div class="rs-lbl">條件</div><div class="rs-n">筆</div><div class="rs-wr">勝率</div><div class="rs-avg">平均R</div><div class="rs-bar">累計R</div></div>
+    ${keys.map(k => _rsRowHtml(fs[k].l, fs[k].s, base, maxAbs, { key: k })).join('')}</div>`;
+}
+/* 一眼結論 */
+function _rsInsights(rows, fs, base, kind) {
+  const items = [];
+  const cand = Object.values(fs).filter(f => f.s.n >= 15 && !f.k.startsWith('base:mon:') && !f.k.startsWith('base:sym:'));
+  const edges = cand.filter(f => f.s.lb >= (base.wr || 0) + 0.05 && f.s.avgR >= base.avgR + 0.1).sort((a, b) => b.s.avgR - a.s.avgR).slice(0, 4);
+  const drags = cand.filter(f => f.s.ub <= (base.wr || 0) - 0.05 || f.s.avgR <= base.avgR - 0.2).sort((a, b) => a.s.avgR - b.s.avgR).slice(0, 4);
+  const li = (f, cls) => `<span class="rs-chip ${cls}" data-k="${_rsEsc(f.k)}" onclick="_rsPick(this.dataset.k)">${_rsEsc(f.l)}　${f.s.n} 筆・${Math.round(f.s.wr * 100)}%・${_rsFmtR(f.s.avgR)}</span>`;
+  items.push(`<div class="rs-ins"><b style="color:var(--bull)">在賺的條件</b>${edges.length ? edges.map(f => li(f, 'rs-chip-edge')).join('') : '<span class="rs-dim">尚無條件在 n≥15 下顯著優於全體（樣本再多一些就會出現）</span>'}</div>`);
+  items.push(`<div class="rs-ins"><b style="color:var(--bear)">在賠的條件</b>${drags.length ? drags.map(f => li(f, 'rs-chip-drag')).join('') : '<span class="rs-dim">尚無條件在 n≥15 下顯著劣於全體</span>'}</div>`);
+  // 近兩個月對比
+  const mons = Object.keys(fs).filter(k => k.startsWith('base:mon:')).sort().slice(-2);
+  if (mons.length === 2) {
+    const a = fs[mons[0]].s, b = fs[mons[1]].s;
+    const d = (b.wr != null && a.wr != null) ? Math.round((b.wr - a.wr) * 100) : null;
+    items.push(`<div class="rs-ins"><b>本月 vs 上月</b><span>${fs[mons[1]].l}：${b.n} 筆・勝率 ${b.wr == null ? '--' : Math.round(b.wr * 100) + '%'}・${_rsFmtR(b.sumR, 1)}　｜　${fs[mons[0]].l}：${a.n} 筆・${a.wr == null ? '--' : Math.round(a.wr * 100) + '%'}・${_rsFmtR(a.sumR, 1)}${d != null ? `　→ 勝率 <span style="color:${d >= 0 ? 'var(--bull)' : 'var(--bear)'}">${d >= 0 ? '+' : ''}${d}pp</span>` : ''}</span></div>`);
+  }
+  // 預測勝率校準（一般單）
+  if (kind === 'main') {
+    const bk = [['model:btp:預測勝率<55%', 50], ['model:btp:預測勝率 55–65%', 60], ['model:btp:預測勝率≥65%', 70]].filter(([k]) => fs[k] && fs[k].s.n >= 5);
+    if (bk.length) items.push(`<div class="rs-ins"><b>預測勝率準不準</b><span>${bk.map(([k, mid]) => { const s = fs[k].s; const act = s.wr == null ? null : Math.round(s.wr * 100); const off = act == null ? null : act - mid; return `${_rsEsc(fs[k].l)}：實際 <span style="color:${_rsWrC(s.wr)}">${act == null ? '--' : act + '%'}</span>（${s.n} 筆${off != null ? `，${off >= 0 ? '高估' : '低估'}自己 ${Math.abs(off)}pp` : ''}）`; }).join('　｜　')}。桶越高實際也越高＝模型有鑑別力；反過來＝門檻該換。</span></div>`);
+  }
+  // 連勝／連敗
+  let streak = 0, kindS = ''; for (const x of rows) { if (x.flat === undefined && !x.win && !x.loss) continue; const s = x.win ? 'W' : x.loss ? 'L' : ''; if (!s) continue; if (!kindS) { kindS = s; streak = 1; } else if (s === kindS) streak++; else break; }
+  if (streak >= 3) items.push(`<div class="rs-ins"><b>目前${kindS === 'W' ? '連勝' : '連敗'}</b><span style="color:${kindS === 'W' ? 'var(--bull)' : 'var(--bear)'}">${streak} 筆${kindS === 'L' && streak >= 5 ? '——連敗 5 筆以上時，先看上面「在賠的條件」是不是最近都踩到了' : ''}</span></div>`);
+  return items.join('');
+}
+function _rsHistSvg(rows) {
+  if (rows.length < 5) return '';
+  const edges = [-3, -1.5, -1, -0.5, -0.05, 0.05, 0.5, 1, 1.5, 2, 3, 99];
+  const labels = ['<-1.5', '-1.5~-1', '-1~-.5', '-.5~0', '平手', '0~.5', '.5~1', '1~1.5', '1.5~2', '2~3', '>3'];
+  const bins = new Array(labels.length).fill(0);
+  for (const x of rows) { let i = 0; while (i < edges.length - 1 && x.r >= edges[i + 1]) i++; bins[Math.min(i, labels.length - 1)]++; }
+  const W = 680, H = 120, PAD = 8, bw = (W - PAD * 2) / bins.length, max = Math.max(...bins, 1);
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${bins.map((n, i) => { const h = n / max * (H - 34); const x = PAD + i * bw; const neg = i < 4, flat = i === 4; return `<rect x="${(x + 3).toFixed(1)}" y="${(H - 22 - h).toFixed(1)}" width="${(bw - 6).toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="${flat ? 'rgba(148,163,184,.5)' : neg ? '#ef4444' : '#22c55e'}" opacity=".85"/><text x="${(x + bw / 2).toFixed(1)}" y="${(H - 24 - h).toFixed(1)}" font-size="10" fill="var(--text2)" text-anchor="middle">${n || ''}</text><text x="${(x + bw / 2).toFixed(1)}" y="${H - 8}" font-size="9" fill="var(--text3)" text-anchor="middle">${labels[i]}</text>`; }).join('')}</svg>`;
+}
+function _rsState() {
+  if (!state.rs) state.rs = { kind: 'main', mon: 'all', dir: 'all', out: 'all', sym: '', key: '', sort: 'ts', desc: true, sel: null, limit: 60 };
+  return state.rs;
+}
+function _rptBuildResearchView() {
+  const rs = _rsState();
+  const kindBtn = k => `<button class="rs-tab${rs.kind === k ? ' on' : ''}" onclick="_rsSet('kind','${k}')">${k === 'main' ? '📈 一般單' : '⚡ 快速單'}</button>`;
+  return `<div class="rs-wrap">
+    <div class="rs-top"><div class="rs-tabs">${kindBtn('main')}${kindBtn('scalp')}</div>
+      <div class="rs-dim">樣本＝已結算${rs.kind === 'main' ? '一般單（含封存）' : '快速單（含量化實驗室封存）'}；勝率＝勝÷（勝＋負），|R|≤0.05 視為平手；✦／▼＝n≥30 且 Wilson 95% 區間與全體有顯著差距。點任何條件＝把下方交易表篩成該條件。</div></div>
+    <div id="rs-body">${_rsBodyHtml()}</div></div>`;
+}
+function _rsSet(k, v) { const rs = _rsState(); if (k === 'kind' && v !== rs.kind) { rs.key = ''; rs.sel = null; rs.mon = 'all'; rs.sym = ''; } rs[k] = v; if (k !== 'sel' && k !== 'limit') rs.limit = 60; _rsRerender(); }
+function _rsPick(key) { const rs = _rsState(); rs.key = rs.key === key ? '' : key; rs.sel = null; rs.limit = 60; _rsRerender(); try { const el = document.getElementById('rs-table'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch(_e) {} }
+function _rsSort(col) { const rs = _rsState(); if (rs.sort === col) rs.desc = !rs.desc; else { rs.sort = col; rs.desc = true; } _rsRerender(); }
+function _rsRerender() { const el = document.getElementById('rs-body'); if (el) el.innerHTML = _rsBodyHtml(); }
+function _rsFiltered(rows, rs) {
+  const sym = (rs.sym || '').trim().toUpperCase();
+  return rows.filter(x => (rs.mon === 'all' || x.mon === rs.mon) && (rs.dir === 'all' || x.dir === rs.dir) && (rs.out === 'all' || (rs.out === 'win' ? x.win : rs.out === 'loss' ? x.loss : (!x.win && !x.loss))) && (!sym || x.sym.toUpperCase().includes(sym)) && (!rs.key || x.keys.has(rs.key)));
+}
+function _rsBodyHtml() {
+  const rs = _rsState();
+  const all = _rsSamples(rs.kind);
+  if (!all.length) return `<div class="rs-card" style="text-align:center;padding:40px;color:var(--text3)">尚無已結算的${rs.kind === 'main' ? '一般單' : '快速單'}</div>`;
+  const fs = _rsFeatureStats(all);
+  const base = _rsStats(all);
+  const card = (val, lbl, color) => `<div class="rpt-stat-card"><div class="rpt-stat-val" style="color:${color || 'var(--text)'}">${val}</div><div class="rpt-stat-lbl">${lbl}</div></div>`;
+  const pf = (() => { let g = 0, l = 0; for (const x of all) { if (x.r > 0) g += x.r; else l -= x.r; } return l ? g / l : null; })();
+  const stats = `<div class="rpt-stats" style="grid-template-columns:repeat(6,1fr)">
+    ${card(base.wr == null ? '--' : Math.round(base.wr * 100) + '%', `勝率（${base.w}勝 ${base.l}負 ${base.flat}平）`, _rsWrC(base.wr))}
+    ${card(_rsFmtR(base.avgR), '平均每筆 R（期望值）', _rsRC(base.avgR))}
+    ${card(_rsFmtR(base.sumR, 1), '累計 R', _rsRC(base.sumR))}
+    ${card(base.maxDD.toFixed(1) + 'R', '最大回撤', base.maxDD > 10 ? 'var(--bear)' : 'var(--text)')}
+    ${card(pf == null ? '--' : pf.toFixed(2), '獲利因子（>1.3 健康）', pf == null ? 'var(--text)' : pf >= 1.3 ? 'var(--bull)' : pf >= 1 ? 'var(--text)' : 'var(--bear)')}
+    ${card(String(base.n), '已結算筆數')}</div>`;
+  const insights = `<div class="rs-card"><div class="rs-card-ttl">👁 一眼結論</div>${_rsInsights(all, fs, base, rs.kind)}</div>`;
+  const groups = `<div class="rs-card-ttl" style="margin:18px 0 8px">🎯 準確度儀表：各條件的勝率與 R</div><div class="rs-grid">${_RS_GROUPS[rs.kind].map(g => _rsGroupCard(g, fs, base)).join('')}</div>`;
+  // 交易研究台
+  const rows = _rsFiltered(all, rs);
+  const fst = _rsStats(rows);
+  const mons = [...new Set(all.map(x => x.mon))].sort().reverse();
+  const keyOpts = Object.values(fs).filter(f => f.s.n >= 5 && !f.k.startsWith('base:mon:') && !f.k.startsWith('base:sym:')).sort((a, b) => b.s.n - a.s.n);
+  const sel = (name, cur, opts) => `<select class="setting-select rs-sel" onchange="_rsSet('${name}',this.value)">${opts.map(([v, l]) => `<option value="${_rsEsc(v)}"${String(v) === String(cur) ? ' selected' : ''}>${_rsEsc(l)}</option>`).join('')}</select>`;
+  const filters = `<div class="rs-filters">
+    ${sel('mon', rs.mon, [['all', '全部月份'], ...mons.map(m => [m, m])])}
+    ${sel('dir', rs.dir, [['all', '多空'], ['long', '做多'], ['short', '做空']])}
+    ${sel('out', rs.out, [['all', '全部結果'], ['win', '勝'], ['loss', '負'], ['flat', '平手']])}
+    <input class="setting-input rs-inp" placeholder="幣種" value="${_rsEsc(rs.sym)}" oninput="_rsSymInput(this.value)">
+    ${sel('key', rs.key, [['', '任一條件'], ...keyOpts.map(f => [f.k, `${f.l}（${f.s.n}）`])])}
+    ${rs.key || rs.mon !== 'all' || rs.dir !== 'all' || rs.out !== 'all' || rs.sym ? `<button class="btn-ghost rs-clear" onclick="_rsClear()">✕ 清除篩選</button>` : ''}
+  </div>`;
+  const sorted = [...rows].sort((a, b) => { const k = rs.sort; let d = 0; if (k === 'ts') d = a.ts - b.ts; else if (k === 'r') d = a.r - b.r; else if (k === 'sym') d = a.sym < b.sym ? -1 : a.sym > b.sym ? 1 : 0; else if (k === 'hold') d = (a.hold || 0) - (b.hold || 0); else if (k === 'label') d = a.label < b.label ? -1 : a.label > b.label ? 1 : 0; return rs.desc ? -d : d; });
+  const th = (col, lbl, cls) => `<th class="${cls || ''}${rs.sort === col ? ' on' : ''}" onclick="_rsSort('${col}')">${lbl}${rs.sort === col ? (rs.desc ? ' ▼' : ' ▲') : ''}</th>`;
+  const fmtT = ts => { const d = new Date(ts); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const outC = o => o === 'sl' ? 'var(--bear)' : (o === 'tp1' || o === 'tp2' || o === 'tp') ? 'var(--bull)' : 'var(--text3)';
+  const shown = sorted.slice(0, rs.limit);
+  const tbody = shown.map(x => `<tr class="rs-tr${rs.sel === x.id ? ' sel' : ''}" data-id="${_rsEsc(x.id)}" onclick="_rsSet('sel', this.dataset.id === '${_rsEsc(String(rs.sel))}' ? null : this.dataset.id)">
+      <td>${fmtT(x.ts)}</td><td><b>${_rsEsc(x.sym)}</b></td><td style="color:${x.dir === 'long' ? 'var(--bull)' : 'var(--bear)'}">${x.dir === 'long' ? '多' : '空'}</td><td>${_rsEsc(x.label)}</td><td>${_rsEsc(x.score)}</td>
+      <td style="color:${outC(x.out)}">${_RS_OUT_ZH[x.out] || _rsEsc(x.out || '—')}</td><td style="color:${_rsRC(x.r)};font-weight:700">${_rsFmtR(x.r)}</td><td>${x.hold == null ? '—' : x.hold < 1 ? Math.round(x.hold * 60) + 'm' : x.hold.toFixed(1) + 'h'}</td></tr>
+    ${rs.sel === x.id ? `<tr class="rs-detail-tr"><td colspan="8">${_rsDetailHtml(x, fs, base, rs.kind)}</td></tr>` : ''}`).join('');
+  const curveRows = rows.length >= 5 ? [...rows].sort((a, b) => a.ts - b.ts).map(x => x.r) : [];
+  const table = `<div class="rs-card" id="rs-table"><div class="rs-card-ttl">🔬 交易研究台${rs.key && fs[rs.key] ? `　<span class="rs-chip rs-chip-on">${_rsEsc(fs[rs.key].l)} ✕</span>` : ''}</div>
+    ${filters}
+    <div class="rs-fstat">篩選結果 <b>${fst.n}</b> 筆：勝率 <b style="color:${_rsWrC(fst.wr)}">${fst.wr == null ? '--' : Math.round(fst.wr * 100) + '%'}</b>（${fst.w}勝 ${fst.l}負 ${fst.flat}平）・平均 <b style="color:${_rsRC(fst.avgR)}">${_rsFmtR(fst.avgR)}</b>・累計 <b style="color:${_rsRC(fst.sumR)}">${_rsFmtR(fst.sumR, 1)}</b>・最大回撤 ${fst.maxDD.toFixed(1)}R${fst.n >= EXP_CFG.minN && base.n ? `　｜　vs 全體 ${Math.round((base.wr || 0) * 100)}%／${_rsFmtR(base.avgR)}：${_rsVerdict(fst, base) === 'edge' ? '<span class="rs-mark rs-edge">✦ 顯著較好</span>' : _rsVerdict(fst, base) === 'drag' ? '<span class="rs-mark rs-drag">▼ 顯著較差</span>' : '無顯著差異'}` : fst.n ? '　｜　樣本未達 30 筆，差異不作結論' : ''}</div>
+    ${curveRows.length ? `<div class="rs-two"><div><div class="rs-sub">篩選後累計 R（依平倉時間）</div>${_equityCurveSvg(curveRows, { h: 120 })}</div><div><div class="rs-sub">R 分布（每筆結果落在哪）</div>${_rsHistSvg(rows)}</div></div>` : ''}
+    <div class="rs-tbl-wrap"><table class="rpt-month-tbl rs-tbl"><thead><tr>${th('ts', '平倉時間', 'l')}${th('sym', '幣種', 'l')}<th class="l">方向</th>${th('label', rs.kind === 'main' ? '進場方式' : '模式', 'l')}<th class="l">${rs.kind === 'main' ? '預測勝率' : '時段'}</th><th class="l">結果</th>${th('r', 'R')}${th('hold', '持倉')}</tr></thead><tbody>${tbody || '<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">沒有符合篩選的交易</td></tr>'}</tbody></table></div>
+    ${sorted.length > shown.length ? `<div style="text-align:center;margin-top:8px"><button class="btn-ghost" onclick="_rsSet('limit',${rs.limit + 100})">再顯示 100 筆（還有 ${sorted.length - shown.length} 筆）</button></div>` : ''}
+  </div>`;
+  return stats + insights + groups + table;
+}
+let _rsSymTimer = null;
+function _rsSymInput(v) { const rs = _rsState(); rs.sym = v; rs.limit = 60; clearTimeout(_rsSymTimer); _rsSymTimer = setTimeout(() => { const inp = document.querySelector('.rs-inp'); const pos = inp ? inp.selectionStart : null; _rsRerender(); try { const i2 = document.querySelector('.rs-inp'); if (i2) { i2.focus(); if (pos != null) i2.setSelectionRange(pos, pos); } } catch(_e) {} }, 350); }
+function _rsClear() { const rs = _rsState(); rs.mon = 'all'; rs.dir = 'all'; rs.out = 'all'; rs.sym = ''; rs.key = ''; rs.sel = null; rs.limit = 60; _rsRerender(); }
+/* 單筆展開：核心價位＋該筆所有條件，每個條件附同條件歷史（n／勝率／平均 R）＝「這一筆當時的條件，歷史上好不好」 */
+function _rsDetailHtml(x, fs, base, kind) {
+  const t = x.t;
+  const num = (v, d = 4) => { const n = parseFloat(v); return isFinite(n) ? (Math.abs(n) >= 1000 ? n.toFixed(2) : Math.abs(n) >= 1 ? n.toFixed(d) : n.toPrecision(4)) : '—'; };
+  const core = [['進場', num(t.entry)], ['止損', num(t.baseSl != null ? t.baseSl : t.sl)], ['止盈一', num(t.tp1)], ['止盈二', num(t.tp2)], ['出場', num(t.exitPrice)], ['結果', _RS_OUT_ZH[x.out] || x.out || '—'], ['R', _rsFmtR(x.r)], ['持倉', x.hold == null ? '—' : x.hold.toFixed(1) + ' 小時']];
+  if (kind === 'main') core.push(['SQ', t.sq != null ? t.sq : '—'], ['風控分', t.conf != null ? t.conf : '—'], ['預測勝率', isFinite(parseFloat(t.btProb)) ? Math.round(parseFloat(t.btProb) * 100) + '%' : '—']);
+  else core.push(['模式', x.label], ['時段品質', t.kzQuality || '—'], ['止損 ATR', t.slDistAtr != null ? parseFloat(t.slDistAtr).toFixed(2) : '—']);
+  const chips = x.feats.filter(f => !f.k.startsWith('base:mon:') && !f.k.startsWith('base:sym:')).map(f => { const s = fs[f.k] && fs[f.k].s; if (!s) return ''; const v = _rsVerdict(s, base); return `<span class="rs-chip ${v === 'edge' ? 'rs-chip-edge' : v === 'drag' ? 'rs-chip-drag' : ''}" data-k="${_rsEsc(f.k)}" onclick="event.stopPropagation();_rsPick(this.dataset.k)" title="點一下：篩出同條件的交易">${_rsEsc(f.l)}<small>${s.n} 筆・${s.wr == null ? '--' : Math.round(s.wr * 100) + '%'}・${_rsFmtR(s.avgR)}</small></span>`; }).join('');
+  const notes = [t.exitReason, t.closeReason, t.note, t.reason].filter(Boolean).map(_rsEsc).join('；');
+  return `<div class="rs-detail" onclick="event.stopPropagation()">
+    <div class="rs-core">${core.map(([k, v]) => `<div><span>${k}</span><b>${_rsEsc(v)}</b></div>`).join('')}</div>
+    <div class="rs-sub" style="margin-top:8px">這一筆的條件，與同條件的歷史表現（${base.n} 筆全體：${Math.round((base.wr || 0) * 100)}%／${_rsFmtR(base.avgR)}）</div>
+    <div class="rs-chips">${chips || '<span class="rs-dim">此筆沒有記錄條件欄位（舊規則時期的單）</span>'}</div>
+    ${notes ? `<div class="rs-dim" style="margin-top:6px">備註：${notes}</div>` : ''}
+  </div>`;
 }
