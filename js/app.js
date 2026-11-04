@@ -15097,7 +15097,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823b';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823c';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15235,6 +15235,52 @@ function inCooldown(tlog, symbol, direction) {
 }
 
 /* ── Telegram 訊息建構（buildTradeSetup / checkAndSendAlerts / recordSignalsFromScan 共用）── */
+/* ── 進場前檢查清單（2026-11-05）────────────────────────────────────────────────
+   使用者提供的技術教學整理出七步共通原則：背景→方向→位置→觸發→失效→出場→檢討。系統每一步本來都有對應模組，
+   但散在 SQ 因子、風控分、結構階梯、出場計畫裡，訊息上看不出「這筆單七步各過了沒」。這裡只讀 setup／coin 已有欄位
+   （零請求、零新計算），每步給 ✓／⚠ 與一句話；寫進訊息與交易紀錄（checklist），研究台展開單筆可見。 */
+function entryChecklist(coin, isLong, setup) {
+  const L = []; const add = (k, ok, text) => L.push({ k, ok: !!ok, text });
+  try {
+    const adx = parseFloat(coin.h4Adx); const regime = (() => { try { return currentRegimeKey() || ''; } catch(_e) { return ''; } })();
+    const kz = (() => { try { return computeKillZone() || {}; } catch(_e) { return {}; } })();
+    const plan = (() => { try { return mainExitPlan(); } catch(_e) { return {}; } })();
+    // ① 背景：持倉時間→週期；趨勢或區間；時段
+    add('背景', isFinite(adx) ? adx >= 20 : true, `1H 結構＋15m 觸發（${plan.label || '一般單'}，預期持倉數小時）；4H ADX ${isFinite(adx) ? Math.round(adx) : '—'}${isFinite(adx) ? (adx >= 25 ? ' 趨勢明確' : adx >= 20 ? ' 有趨勢' : ' 無趨勢（區間）') : ''}${regime ? `；市場狀態 ${regime}` : ''}；時段 ${kz.name || '—'}${kz.quality ? `（${kz.quality === 'high' ? '高' : kz.quality === 'medium' ? '中' : '低'}品質）` : ''}`);
+    // ② 方向：日線／4H／15m 是否一致；BTC 日線；EMA200
+    const h4 = isLong ? (coin.h4Signal || '').includes('bull') : (coin.h4Signal || '').includes('bear');
+    const dy = isLong ? (coin.dailySignal || '').includes('bull') : (coin.dailySignal || '').includes('bear');
+    const s15 = coin.signal15m || (isLong ? ((coin.score || 50) >= 55 ? 'bull' : '') : ((coin.score || 50) <= 45 ? 'bear' : ''));
+    const m15 = isLong ? String(s15).includes('bull') : String(s15).includes('bear');
+    const bd = (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : 'neutral'; const btcOk = bd === 'neutral' || (isLong ? bd === 'bull' : bd === 'bear');
+    const e200 = parseFloat(coin.ema200), px = parseFloat(coin.price); const e200Ok = !(e200 > 0 && px > 0) || (isLong ? px >= e200 : px <= e200);
+    add('方向', h4 && m15 && btcOk, `4H ${h4 ? '同向' : '不同向'}、15m ${m15 ? '同向' : '不同向'}、日線 ${dy ? '同向' : '未同向'}；BTC 日線 ${bd === 'neutral' ? '中性' : btcOk ? '順向' : '逆向'}${e200 > 0 ? `；價格在 EMA200 ${isLong ? (e200Ok ? '上方' : '下方') : (e200Ok ? '下方' : '上方')}` : ''}`);
+    // ③ 位置：離現價多遠（追價）、偏離 VWAP（離均線太遠就容易回歸）
+    const gap = (px > 0 && setup.entry > 0) ? (setup.entry - px) / px * (isLong ? 1 : -1) : null;
+    const vw = (() => { try { const f = (typeof _footprintCache !== 'undefined') ? _footprintCache[coin.symbol] : null; return f && f.vwap > 0 && px > 0 ? (px - f.vwap) / f.vwap * (isLong ? 1 : -1) : null; } catch(_e) { return null; } })();
+    const atrPct = (parseFloat(setup.atr) > 0 && px > 0) ? parseFloat(setup.atr) / px : null;
+    const chase = gap != null && atrPct != null && gap > atrPct * 1.5;
+    const ext = vw != null && vw > 0.025;
+    add('位置', !chase && !ext, `進場 ${gap == null ? '—' : (gap >= 0 ? '在現價' + (isLong ? '上方' : '下方') : '在現價' + (isLong ? '下方' : '上方')) + ' ' + (Math.abs(gap) * 100).toFixed(2) + '%'}${atrPct != null ? `（ATR ${(atrPct * 100).toFixed(2)}%）` : ''}${chase ? '，超過 1.5 ATR 屬追價' : ''}${vw != null ? `；偏離 VWAP ${(vw * 100).toFixed(2)}%${ext ? '（過度延伸，易回歸）' : '（未過度延伸）'}` : ''}；進場價釘在結構（${setup.entryTag || '—'}）`);
+    // ④ 觸發：收盤確認（只有影線不算）、停損掛單只在價格穿過才成交
+    const stop = setup.entryMode === 'stop';
+    add('觸發', stop, stop ? `${setup.entryTag === 'h1break' ? '1H 收盤突破 20 根' + (isLong ? '高點' : '低點') + '（收盤站上才算，影線不算）' : '結構突破'}，15m 停損掛單，價格穿過才成交，不追` : '回踩限價單（回測後已停用，此筆屬例外）');
+    // ⑤ 失效：止損在交易理由失效的位置；依距離決定部位
+    const slPct = (setup.entry > 0 && setup.sl > 0) ? Math.abs(setup.entry - setup.sl) / setup.entry * 100 : null;
+    add('失效', setup.ladderOk !== false && slPct != null, `止損 ${slPct != null ? slPct.toFixed(2) + '%' : '—'} 在${setup.slTag ? `結構外側（${setup.slTag}）` : '結構外側'}${setup.ladderOk === false ? '；結構階梯不完整' : '；下方／上方結構階梯完整'}；部位＝固定 R ÷ 止損距離`);
+    // ⑥ 出場：事先選定
+    add('出場', true, `止盈一 ${plan.tp1R != null ? plan.tp1R + 'R 出 ' + Math.round((plan.tp1Frac || 0) * 100) + '%' : '結構區'}、鎖 +${plan.tp1LockR != null ? plan.tp1LockR : '—'}R、追蹤回吐 ${plan.trailGiveR != null ? plan.trailGiveR : '—'}R、尾倉 ${plan.tp2R != null ? plan.tp2R + 'R' : '結構區'}；建單時定好，不中途改`);
+    // ⑦ 檢討：記下條件，平倉後對照同條件歷史
+    add('檢討', true, '此筆條件已全數記錄，平倉後在「交易研究」展開可對照同條件歷史；勝率、平均 R、回撤一起看');
+  } catch(_e) {}
+  return L;
+}
+function checklistLine(items) {
+  if (!items || !items.length) return '';
+  const marks = items.map(i => `${i.k}${i.ok ? '✓' : '⚠'}`).join(' ');
+  const warns = items.filter(i => !i.ok).slice(0, 2).map(i => `　⚠ ${i.k}：${i.text}`);
+  return `📋 進場七步：${marks}\n${warns.join('\n')}${warns.length ? '\n' : ''}`;
+}
 function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   // 訊息裡的「現價」與精度要跟訊號同一個價位空間：Pionex 單就用 Pionex 現價
   if (String((setup && setup.priceSrc) || '').startsWith('pionex')) { try { coin = _coinForMain(coin); } catch(_e) {} }
@@ -15445,7 +15491,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     `⏰ ${_ts}\n` +
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
-    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + _evLine +
+    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + (() => { try { return _esc(checklistLine(entryChecklist(coin, isLong, setup))).replace(/⚠ (背景|方向|位置|觸發|失效|出場|檢討)：/g, '⚠ $1：'); } catch(_e) { return ''; } })() + _evLine +
     `\n${_priceLines}` + _sizeLine + `\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
@@ -17015,6 +17061,7 @@ async function recordSignalsFromScan(data) {
       btcD1:   (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : null,   // 建單當下 BTC 日線方向
       btProb:  isFinite(parseFloat(setup.btProb)) ? parseFloat(setup.btProb) : null,   // 回測機率模型預測勝率（校準對照用）
       btProbC: (() => { try { const c = btProbCalibrated(setup.btProb); return c.applied ? c.pc : null; } catch(_e) { return null; } })(),   // 建單當下的實倉校準值（研究台對照）
+      checklist: (() => { try { return entryChecklist(coin, isLong, setup).map(i => ({ k: i.k, ok: i.ok, t: String(i.text).slice(0, 120) })); } catch(_e) { return null; } })(),   // 進場七步檢查（背景／方向／位置／觸發／失效／出場／檢討）
       tp1FracPlan:  isFinite(parseFloat(setup.tp1FracPlan))  ? parseFloat(setup.tp1FracPlan)  : null,   // 突破單專用出場：止盈一減倉比例
       tp1LockRPlan: isFinite(parseFloat(setup.tp1LockRPlan)) ? parseFloat(setup.tp1LockRPlan) : null,   // 突破單專用出場：止盈一後鎖利 R
       trailGiveRPlan: isFinite(parseFloat(setup.trailGiveRPlan)) ? parseFloat(setup.trailGiveRPlan) : null,   // 突破單專用出場：移動停利回吐 R
@@ -35403,6 +35450,35 @@ function _rsGrowthHtml(kind, rows) {
     <div class="rs-mechs">${L.join('')}</div>
   </div>`;
 }
+
+/* 交易原則 × 本系統對照（使用者 2026-11-05 提供的技術教學七步＋消息判讀五步）：每一條寫系統對應的模組與狀態，看得出哪裡已落實、哪裡只是部分 */
+function _rsPrinciplesHtml(kind) {
+  const rows = kind === 'main' ? [
+    ['① 背景', '先決定持倉時間，再選週期；趨勢或區間；重要高低點', '1H 結構＋15m 觸發；4H ADX<20 硬擋（無趨勢不做）；市場狀態（regime）記在單上；結構階梯（擺動高低點／EMA／影線叢）', 'ok'],
+    ['② 方向', '均線、EMA200、Supertrend 一致；不一致時的預設處理', '4H＋15m 同向硬擋；BTC 日線逆向硬擋；多空比反向、宏觀強烈反向改軟門縮倉（記在單上由實測決定）', 'ok'],
+    ['③ 位置', '在觀察區；離均線太遠就容易回歸', 'VWAP 偏離 >2.5% 在 SQ 與風控扣分；追價（掛單超過現價 0.2%）記為條件並學習；進場價釘在結構，不用固定 R 湊', 'ok'],
+    ['④ 觸發', '收盤確認（只有影線不算）、延續、回測守住、小週期結構改變', '1H 收盤突破 20 根高低點才觸發；15m 停損掛單只在價格穿過才成交；回踩限價單回測後停用（43% 不回踩直接飛走）', 'ok'],
+    ['⑤ 失效', '停損放在交易理由失效的位置；依距離決定部位', '止損在結構外側＋ATR 緩衝；結構階梯不完整不建單；部位＝固定 R ÷ 止損距離；掃損迴避', 'ok'],
+    ['⑥ 出場', '事先選定：固定目標／趨勢翻轉／結構失效；日內波段分開', '建單時定好：止盈一出一半、鎖利、追蹤回吐、尾倉；一般單與快速單各自一套出場；盤中不改', 'ok'],
+    ['⑦ 檢討', '遮住後續行情復盤；勝率、平均盈虧、回撤、成本一起看；不要事後改條件', '交易研究台：同條件歷史對照、R 分布、回撤；學習凍結防止對單筆結果過度反應；盲測＝建單當下條件已凍結在紀錄裡', 'ok'],
+    ['兩份證據不等於兩票', 'MACD 與均線都從價格算出來，同向不算獨立證據', '方向確信度把 MACD／EMA200 視為「殘票」權重 1，不再乘記分卡；多週期訊號各自記分', 'part'],
+    ['消息判讀', '利多不等於買點：先問是否早已反映、是否有反向力量；第一波能否延續', '新聞研判只進資訊卡與軟門；預測記分卡量每個預測器（含新聞）的命中率，不準的自動降權；不直接建單', 'ok'],
+  ] : [
+    ['① 背景', '持倉時間→週期；趨勢或區間', '5m／15m 執行，1H 看結構；順勢家族與回歸家族分開；市場狀態記在單上', 'ok'],
+    ['② 方向', '多週期一致', 'BTC 日線／4H、1H 突破方向記在單上；實驗登錄證實劣勢的（逆 BTC 日線）可自動攔截', 'ok'],
+    ['③ 位置', '不追價、不在過度延伸處進', 'VWAP 回歸模式只在偏離 ≥2.2% 做；量比、止損距離（ATR）分桶學習', 'ok'],
+    ['④ 觸發', '收盤確認、假突破要等收回', '假突破模式等收回區間；突破模式看量比；掃損迴避', 'ok'],
+    ['⑤ 失效', '止損在理由失效處', '止損外側有無結構記在單上（實驗登錄驗證中）；手續費推遠止損另記', 'ok'],
+    ['⑥ 出場', '事先定好', '止盈一／保本／時間出場固定；回撤解剖找最賠的模式與時段', 'ok'],
+    ['⑦ 檢討', '一起看勝率、平均盈虧、回撤', '交易研究台＋快速單月報；各模式累計 R（回測模式 −11.8R 是目前最大拖累）', 'ok'],
+  ];
+  const c = { ok: 'var(--bull)', part: '#f59e0b', no: 'var(--bear)' }; const l = { ok: '已落實', part: '部分', no: '未做' };
+  return `<div class="rs-card"><div class="rs-card-ttl">📚 交易原則 × 本系統對照（進場七步／消息判讀）</div>
+    <div class="rs-dim" style="margin-bottom:6px">左＝教學原則，中＝原則要求，右＝系統對應的模組。每筆一般單的訊息與紀錄都會附「進場七步」✓／⚠。</div>
+    <table class="rpt-month-tbl rs-tbl"><thead><tr><th class="l">步驟</th><th class="l">原則</th><th class="l">本系統</th><th class="l">狀態</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td style="white-space:nowrap">${_rsEsc(r[0])}</td><td style="font-family:inherit;font-size:0.78rem">${_rsEsc(r[1])}</td><td style="font-family:inherit;font-size:0.78rem">${_rsEsc(r[2])}</td><td style="color:${c[r[3]]};white-space:nowrap">${l[r[3]]}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
 function _rsState() {
   if (!state.rs) state.rs = { kind: 'main', mon: 'all', dir: 'all', out: 'all', sym: '', key: '', sort: 'ts', desc: true, sel: null, limit: 60 };
   return state.rs;
@@ -35472,7 +35548,7 @@ function _rsBodyHtml() {
     <div class="rs-tbl-wrap"><table class="rpt-month-tbl rs-tbl"><thead><tr>${th('ts', '平倉時間', 'l')}${th('sym', '幣種', 'l')}<th class="l">方向</th>${th('label', rs.kind === 'main' ? '進場方式' : '模式', 'l')}<th class="l">${rs.kind === 'main' ? '預測勝率' : '時段'}</th><th class="l">結果</th>${th('r', 'R')}${th('hold', '持倉')}</tr></thead><tbody>${tbody || '<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">沒有符合篩選的交易</td></tr>'}</tbody></table></div>
     ${sorted.length > shown.length ? `<div style="text-align:center;margin-top:8px"><button class="btn-ghost" onclick="_rsSet('limit',${rs.limit + 100})">再顯示 100 筆（還有 ${sorted.length - shown.length} 筆）</button></div>` : ''}
   </div>`;
-  return stats + growth + insights + groups + table;
+  return stats + growth + insights + groups + table + _rsPrinciplesHtml(rs.kind);
 }
 let _rsSymTimer = null;
 function _rsSymInput(v) { const rs = _rsState(); rs.sym = v; rs.limit = 60; clearTimeout(_rsSymTimer); _rsSymTimer = setTimeout(() => { const inp = document.querySelector('.rs-inp'); const pos = inp ? inp.selectionStart : null; _rsRerender(); try { const i2 = document.querySelector('.rs-inp'); if (i2) { i2.focus(); if (pos != null) i2.setSelectionRange(pos, pos); } } catch(_e) {} }, 350); }
@@ -35490,6 +35566,7 @@ function _rsDetailHtml(x, fs, base, kind) {
     <div class="rs-core">${core.map(([k, v]) => `<div><span>${k}</span><b>${_rsEsc(v)}</b></div>`).join('')}</div>
     <div class="rs-sub" style="margin-top:8px">這一筆的條件，與同條件的歷史表現（${base.n} 筆全體：${Math.round((base.wr || 0) * 100)}%／${_rsFmtR(base.avgR)}）</div>
     <div class="rs-chips">${chips || '<span class="rs-dim">此筆沒有記錄條件欄位（舊規則時期的單）</span>'}</div>
+    ${Array.isArray(t.checklist) && t.checklist.length ? `<div class="rs-sub" style="margin-top:8px">進場七步（建單當下）</div><div class="rs-chk">${t.checklist.map(c => `<div><span style="color:${c.ok ? 'var(--bull)' : '#f59e0b'}">${c.ok ? '✓' : '⚠'} ${_rsEsc(c.k)}</span>${_rsEsc(c.t || '')}</div>`).join('')}</div>` : ''}
     ${notes ? `<div class="rs-dim" style="margin-top:6px">備註：${notes}</div>` : ''}
   </div>`;
 }

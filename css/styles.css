@@ -2046,3 +2046,7 @@ html.lite .rs-bar-fill { opacity: .5; }
 .rs-mech { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; background: rgba(255,255,255,.03); border-radius: 8px; font-size: 0.78rem; }
 .rs-mech b { font-size: 0.78rem; }
 .rs-mech small { color: var(--text3); font-size: 0.7rem; line-height: 1.5; }
+.rs-chk { display: grid; grid-template-columns: 1fr; gap: 3px; font-size: 0.76rem; }
+.rs-chk div { display: flex; gap: 8px; align-items: baseline; }
+.rs-chk span { flex: none; min-width: 52px; font-weight: 700; }
+.rs-tbl td:nth-child(-n+6) { text-align: left; }

@@ -77,6 +77,19 @@ const r7 = await p.evaluate(() => {
 if (!r7.hi.applied || r7.hi.pc >= 0.65 || !r7.lo.applied || r7.lo.pc > r7.hi.pc + 0.23 || r7.mid.applied || !/未校準/.test(r7.mid.note))   // 等張合併後兩桶同值，桶內再依模型值位移（0.5 vs 0.72 差 0.22） throw new Error('⑦ 分桶校準錯誤：' + JSON.stringify(r7));
 console.log(`✓ ⑦ 分桶校準：模型 72% → 校準 ${Math.round(r7.hi.pc * 100)}%（${r7.hi.note}）；模型 50% → ${Math.round(r7.lo.pc * 100)}%，不倒掛；55–65% 桶 0 筆 → ${r7.mid.note}`);
 
+// ⑧ 進場七步檢查：全過 → 7 個 ✓；追價＋無趨勢 → 位置／背景 ⚠；訊息行含「進場七步」；研究頁有原則對照卡
+const r8 = await p.evaluate(() => {
+  const coin = { symbol: 'X/USDT', h4Adx: 26, h4Signal: 'bull', signal15m: 'bull', dailySignal: 'bull', price: 100, ema200: 95 };
+  const setup = { entry: 100.5, sl: 99, tp1: 103, entryMode: 'stop', entryTag: 'h1break', slTag: 'h1break', ladderOk: true, atr: 1 };
+  const a = entryChecklist(coin, true, setup);
+  const b = entryChecklist({ ...coin, h4Adx: 14 }, true, { ...setup, entry: 103 });
+  const line = checklistLine(b);
+  const ref = !!document.querySelector('#rpt-view-content') && [...document.querySelectorAll('#rpt-view-content .rs-card-ttl')].some(x => x.textContent.includes('交易原則'));
+  return { n: a.length, allOk: a.every(i => i.ok), keys: a.map(i => i.k).join(''), bWarn: b.filter(i => !i.ok).map(i => i.k), line, ref };
+});
+if (r8.n !== 7 || !r8.allOk || r8.keys !== '背景方向位置觸發失效出場檢討' || r8.bWarn.join() !== '背景,位置' || !r8.line.includes('進場七步：背景⚠') || !r8.ref) throw new Error('⑧ 進場七步錯誤：' + JSON.stringify(r8));
+console.log(`✓ ⑧ 進場七步：全過 7✓；無趨勢＋追價 → ${r8.bWarn.join('／')} ⚠；訊息「${r8.line.split('\n')[0]}」；原則對照卡存在`);
+
 // 還原
 await p.evaluate(k => { if (k.tl) localStorage.setItem('csp_trade_log', k.tl); else localStorage.removeItem('csp_trade_log'); _btCalibCache = null; if (k.sl) localStorage.setItem('csp_scalp_log', k.sl); else localStorage.removeItem('csp_scalp_log'); _tlogRaw = null; _tlogArr = null; try { invalidateLearnCache(); } catch (e) {} }, keep);
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
