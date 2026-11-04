@@ -15097,7 +15097,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823c';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823d';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15239,6 +15239,62 @@ function inCooldown(tlog, symbol, direction) {
    使用者提供的技術教學整理出七步共通原則：背景→方向→位置→觸發→失效→出場→檢討。系統每一步本來都有對應模組，
    但散在 SQ 因子、風控分、結構階梯、出場計畫裡，訊息上看不出「這筆單七步各過了沒」。這裡只讀 setup／coin 已有欄位
    （零請求、零新計算），每步給 ✓／⚠ 與一句話；寫進訊息與交易紀錄（checklist），研究台展開單筆可見。 */
+/* ── 訂單流快照（2026-11-05，使用者：「量化、order flow」）────────────────────────────────
+   系統早就在算足跡 Delta、CVD、訂單簿失衡、鯨魚方向、清算流、VWAP 位置，但只進 SQ 加減分與確信度投票，
+   從來沒有記在單上——「訂單流到底有沒有邊際」這個問題問不出口。這裡把建單當下的訂單流狀態壓成一個小物件
+   記進一般單與快速單（零請求：全部讀掃描已抓的快取），expFeatures 展開成 flow:* 特徵，實驗登錄六條假設，
+   研究台多一組「訂單流」。先量測、不套用；證實後再決定要不要進門檻。 */
+function flowSnapshot(coin, isLong) {
+  const o = {}; const dir = isLong ? 'long' : 'short';
+  const al = sig => { try { return _expAligned(dir, sig); } catch(_e) { return 'neutral'; } };
+  try {
+    const px = parseFloat(coin.price);
+    const fp = (typeof _footprintCache !== 'undefined') ? _footprintCache[coin.symbol] : null;
+    if (fp) {
+      o.delta = al(fp.deltaDir || 'neutral'); o.div = !!fp.deltaDiv;
+      if (isFinite(parseFloat(fp.takerBuyRatio))) o.tbr = +parseFloat(fp.takerBuyRatio).toFixed(3);
+      if (fp.absorption) o.absorb = String(fp.absorption).slice(0, 12);
+      if (fp.vwap > 0 && px > 0) { const dev = (px - fp.vwap) / fp.vwap * (isLong ? 1 : -1); o.vwapDev = +(dev * 100).toFixed(2); o.vwap = dev > 0.025 ? 'ext' : dev >= 0 ? 'ctrl' : 'against'; }
+    }
+    const ob = (typeof _orderBookCache !== 'undefined') ? _orderBookCache[coin.symbol] : null;
+    if (ob && isFinite(parseFloat(ob.imbalance))) {
+      const imb = parseFloat(ob.imbalance); o.obImb = +imb.toFixed(3);
+      o.ob = imb > 0.15 ? (isLong ? 'aligned' : 'against') : imb < -0.15 ? (isLong ? 'against' : 'aligned') : 'neutral';
+      o.wall = isLong ? (ob.askWall ? 'ahead' : ob.bidWall ? 'behind' : 'none') : (ob.bidWall ? 'ahead' : ob.askWall ? 'behind' : 'none');
+    }
+    if (coin.whaleData && coin.whaleData.bias) o.whale = al(coin.whaleData.bias);
+    if (coin.cvdTrend) o.cvd = al(coin.cvdTrend);
+    try {
+      const ls = liqStats(coin.symbol);
+      if (ls && ls.n) { o.liq = !ls.dom ? 'neutral' : ((ls.dom === 'short') === isLong ? 'opp' : 'same'); o.liqUsd = Math.round(Math.max(ls.longUsd, ls.shortUsd) / 1000); }
+    } catch(_e) {}
+  } catch(_e) {}
+  return Object.keys(o).length ? o : null;
+}
+const _FLOW_ZH = { aligned: '順向', against: '逆向', neutral: '中性' };
+function flowLine(f, isLong) {
+  if (!f) return '';
+  const parts = [];
+  if (f.delta) parts.push(`Delta ${_FLOW_ZH[f.delta]}${f.div ? '（價量背離）' : ''}`);
+  if (f.cvd) parts.push(`CVD ${_FLOW_ZH[f.cvd]}`);
+  if (f.ob) parts.push(`掛單失衡 ${f.obImb > 0 ? '+' : ''}${f.obImb}（${f.ob === 'aligned' ? '順向厚' : f.ob === 'against' ? '逆向厚' : '均衡'}${f.wall === 'ahead' ? '，前方有牆' : ''}）`);
+  if (f.whale) parts.push(`鯨魚 ${_FLOW_ZH[f.whale]}`);
+  if (f.vwap) parts.push(`VWAP ${f.vwap === 'ext' ? '過度延伸 ' + f.vwapDev + '%' : f.vwap === 'ctrl' ? '順向掌控' : '逆向側'}`);
+  if (f.liq && f.liq !== 'neutral') parts.push(`30 分清算 ${f.liq === 'opp' ? '對手方被清 $' + f.liqUsd + 'k（' + (isLong ? '軋空' : '殺多') + '成分，追高／追空小心）' : '同方向被清 $' + f.liqUsd + 'k（殺完常見反轉）'}`);
+  return parts.length ? `📊 訂單流：${parts.join('・')}\n` : '';
+}
+/* 訂單流特徵（expFeatures 用）：一般單與快速單共用 */
+function _expFlowFeats(t, add) {
+  const f = t && t.flow; if (!f) return;
+  if (f.delta) add('flow', 'delta:' + f.delta, 'Delta ' + _FLOW_ZH[f.delta]);
+  if (f.div != null) add('flow', 'div:' + (f.div ? 'y' : 'n'), f.div ? '價量背離' : '無價量背離');
+  if (f.cvd) add('flow', 'cvd:' + f.cvd, 'CVD ' + _FLOW_ZH[f.cvd]);
+  if (f.ob) add('flow', 'ob:' + f.ob, '掛單失衡' + (f.ob === 'aligned' ? '順向厚' : f.ob === 'against' ? '逆向厚' : '均衡'));
+  if (f.wall && f.wall !== 'none') add('flow', 'wall:' + f.wall, f.wall === 'ahead' ? '前方有掛單牆' : '後方有掛單牆');
+  if (f.whale) add('flow', 'whale:' + f.whale, '鯨魚' + _FLOW_ZH[f.whale]);
+  if (f.vwap) add('flow', 'vwap:' + f.vwap, f.vwap === 'ext' ? 'VWAP 過度延伸' : f.vwap === 'ctrl' ? 'VWAP 順向掌控' : 'VWAP 逆向側');
+  if (f.liq) add('flow', 'liq:' + f.liq, f.liq === 'opp' ? '對手方清算中（軋空／殺多）' : f.liq === 'same' ? '同方向清算中' : '清算中性');
+}
 function entryChecklist(coin, isLong, setup) {
   const L = []; const add = (k, ok, text) => L.push({ k, ok: !!ok, text });
   try {
@@ -15491,7 +15547,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     `⏰ ${_ts}\n` +
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
-    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + (() => { try { return _esc(checklistLine(entryChecklist(coin, isLong, setup))).replace(/⚠ (背景|方向|位置|觸發|失效|出場|檢討)：/g, '⚠ $1：'); } catch(_e) { return ''; } })() + _evLine +
+    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + (() => { try { return _esc(checklistLine(entryChecklist(coin, isLong, setup))); } catch(_e) { return ''; } })() + (() => { try { return _esc(flowLine(flowSnapshot(coin, isLong), isLong)); } catch(_e) { return ''; } })() + _evLine +
     `\n${_priceLines}` + _sizeLine + `\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
@@ -16434,6 +16490,7 @@ async function recordSignalsFromScan(data) {
         // ICT 結構 + 圖形確認（需要多週期 K 線）→ 寫入 _tradeSetupCache 供 SQ ⑥⑯ 使用
         // 注意：fetchMTFKlines 回傳欄位為 raw（僅 1h/4h 保留），非 rawCandles
         if (_sfMTF) {
+          try { coin.cvdTrend = _sfMTF['1h']?.orderFlow?.cvdTrend || null; } catch(_e) {}   // 訂單流快照用（flowSnapshot）
           const _sfR1h = _sfMTF['1h']?.raw;
           const _sfR4h = _sfMTF['4h']?.raw;
           let _sfOB = null, _sfFVG = null, _sfOB4h = null, _sfFVG4h = null, _sfPat = null;
@@ -17062,6 +17119,7 @@ async function recordSignalsFromScan(data) {
       btProb:  isFinite(parseFloat(setup.btProb)) ? parseFloat(setup.btProb) : null,   // 回測機率模型預測勝率（校準對照用）
       btProbC: (() => { try { const c = btProbCalibrated(setup.btProb); return c.applied ? c.pc : null; } catch(_e) { return null; } })(),   // 建單當下的實倉校準值（研究台對照）
       checklist: (() => { try { return entryChecklist(coin, isLong, setup).map(i => ({ k: i.k, ok: i.ok, t: String(i.text).slice(0, 120) })); } catch(_e) { return null; } })(),   // 進場七步檢查（背景／方向／位置／觸發／失效／出場／檢討）
+      flow: (() => { try { return flowSnapshot(coin, isLong); } catch(_e) { return null; } })(),   // 訂單流快照（Delta／CVD／掛單失衡／鯨魚／VWAP／清算）
       tp1FracPlan:  isFinite(parseFloat(setup.tp1FracPlan))  ? parseFloat(setup.tp1FracPlan)  : null,   // 突破單專用出場：止盈一減倉比例
       tp1LockRPlan: isFinite(parseFloat(setup.tp1LockRPlan)) ? parseFloat(setup.tp1LockRPlan) : null,   // 突破單專用出場：止盈一後鎖利 R
       trailGiveRPlan: isFinite(parseFloat(setup.trailGiveRPlan)) ? parseFloat(setup.trailGiveRPlan) : null,   // 突破單專用出場：移動停利回吐 R
@@ -23775,7 +23833,7 @@ const LEARN_KEEP_FIELDS = [
   'entryTBias', 'entryWBias',                // 建單當下的大盤預測（監控可比性補償用）
   'probeTag',                                // 探路單標記（封鎖決策的驗證樣本，封存剝掉＝驗證斷糧）
   'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
-  'entryLs', 'h4Adx', 'btcD1', 'btProb', 'btProbC',   // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
+  'entryLs', 'h4Adx', 'btcD1', 'btProb', 'btProbC', 'flow', 'checklist',   // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
   'tp1FracPlan', 'tp1LockRPlan', 'trailGiveRPlan',   // 突破單專用出場計畫（止盈一減倉比例／鎖利 R／追蹤回吐 R），封存剝掉＝重放算錯
   'slMovedAt',                               // 上次實際移動止損的時間（移動止損「值得移」門檻用）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
@@ -28886,7 +28944,7 @@ const SCALP_KEEP_FIELDS = new Set([
   // 風控（量化部分——風控評分與扣分條件的學習都靠它）
   'riskScore', 'riskKeys', 'conf',
   // 止損建議／機器人學習止損與量化重放
-  'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter',
+  'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter', 'flow',
   'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed', 'fillDelaySec', 'slipR',
   'geom', 'rrAtFill', 'rr1AtFill', 'riskAtFillR', 'voidWhy', 'botMode', 'softMult', 'ictBonus',
   // 分群用（時段／波動／量能／多週期）
@@ -30003,6 +30061,7 @@ async function recordScalpSignals(data) {
         riskKeys,                 // 建單時成立的風險條件 → 讓快進快出也回饋扣分條件的學習
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
         regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
+        flow: (() => { try { return flowSnapshot(coin, dir === 'long'); } catch(_e) { return null; } })(),   // 訂單流快照
         // 探路單標記：這筆是被封鎖的桶放行的取樣單，實驗室會單獨統計它的成效
         probeTag: null,
         note: `快進快出（${SCALP_MODE_LABEL[setup.mode] || setup.mode}）`,
@@ -34919,7 +34978,7 @@ function buildForecastHtml() {
       快速單直接把劣勢條件當攔截、一般單當軟門（×0.7）。
    ④ expSampleSufficiency：每個學習／實驗機制目前的樣本數、需要的樣本數、近 14 天累積速度與預估達標天數。 */
 const EXP_CFG = { minN: 30, edgePP: 5, edgeR: 0.05, cacheMs: 10 * 60e3, softMult: 0.7 };
-const EXP_DIM_LABEL = { tech: '技術', pattern: '盤形', chips: '籌碼', macro: '宏觀／基本面', session: '時段', model: '模型／執行', risk: '風控條件' };
+const EXP_DIM_LABEL = { tech: '技術', pattern: '盤形', chips: '籌碼', flow: '訂單流', macro: '宏觀／基本面', session: '時段', model: '模型／執行', risk: '風控條件' };
 function _expAligned(dir, sig) {   // 'long'/'short' vs 'bull'/'bear'/'neutral' → 'aligned'|'against'|'neutral'
   const s = String(sig || '');
   if (s.indexOf('bull') >= 0) return dir === 'long' ? 'aligned' : 'against';
@@ -34960,6 +35019,7 @@ function expFeatures(t, kind) {
       if (t.entryTBias) { const a = _expAligned(dir, t.entryTBias); add('macro', 'tbias:' + a, '今日大盤預測' + _EXP_ALIGN_ZH[a]); }
       for (const tag of (t.entryTags || [])) add(_expTagDim(tag), 'tag:' + tag, tag);
       for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
+      _expFlowFeats(t, add);
       if (t.convEv && Array.isArray(t.convEv.a)) for (const k of t.convEv.a) add('model', 'opp:' + k, '反對證據 ' + ((typeof CONV_EV_LABELS !== 'undefined' && CONV_EV_LABELS[k]) || k));
     } else if (kind === 'scalp') {
       if (t.mode) add('model', 'mode:' + t.mode, (typeof SCALP_MODE_LABEL !== 'undefined' && SCALP_MODE_LABEL[t.mode]) || t.mode);
@@ -34979,6 +35039,7 @@ function expFeatures(t, kind) {
       if (isFinite(parseFloat(t.entryLs))) { const ls = parseFloat(t.entryLs); const a = ls > 1 ? (dir === 'long' ? 'aligned' : 'against') : ls < 1 ? (dir === 'short' ? 'aligned' : 'against') : 'neutral'; add('chips', 'ls:' + a, '多空比' + _EXP_ALIGN_ZH[a]); }
       if (isFinite(parseFloat(t.entryFr))) { const fr = parseFloat(t.entryFr); const a = Math.abs(fr) < 0.0002 ? 'neutral' : (fr > 0) === (dir === 'long') ? 'crowded' : 'contra'; add('chips', 'fr:' + a, a === 'crowded' ? '費率同向擁擠' : a === 'contra' ? '費率反向' : '費率中性'); }
       for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
+      _expFlowFeats(t, add);
     } else {   // lab
       for (const tag of (t.tags || [])) add(_expTagDim(tag), 'tag:' + tag, tag);
       for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
@@ -35042,6 +35103,13 @@ const EXP_REGISTRY = [
   { id: 's_outer_none',    scope: 'scalp', key: 'pattern:outer:n',     name: '快速單止損外側無結構', why: '止損懸在真空中是否更常被掃', expect: 'drag', apply: 'scalpReject' },
   { id: 's_hunt',          scope: 'scalp', key: 'model:hunt:y',        name: '快速單掃損迴避觸發', why: '推遠 0.35ATR 是否值得', expect: 'edge' },
   { id: 's_vol_high',      scope: 'scalp', key: 'tech:vol:量比≥1.5',   name: '快速單放量進場',     why: '量比是否分得出勝率', expect: 'edge' },
+  // 訂單流（2026-11-05）：先量測不套用，證實後再決定是否進門檻
+  { id: 'm_flow_delta_against', scope: 'main',  key: 'flow:delta:against', name: '一般單逆足跡 Delta',   why: '主動買賣淨量與方向相反時，突破是否更常失敗', expect: 'drag' },
+  { id: 'm_flow_ob_aligned',    scope: 'main',  key: 'flow:ob:aligned',    name: '一般單掛單順向厚',     why: '訂單簿前 20 檔同向較厚（失衡 >0.15）是否推高勝率', expect: 'edge' },
+  { id: 'm_flow_div',           scope: 'main',  key: 'flow:div:y',         name: '一般單價量背離',       why: '價格創高但 Delta 轉弱時進場是否更差', expect: 'drag' },
+  { id: 'm_flow_liq_opp',       scope: 'main',  key: 'flow:liq:opp',       name: '一般單追軋空／殺多',   why: '對手方正被清算時順勢進場，是追到尾段還是吃到延續', expect: 'drag' },
+  { id: 's_flow_delta_against', scope: 'scalp', key: 'flow:delta:against', name: '快速單逆足跡 Delta',   why: '5m 級別逆主動買賣淨量是否更差', expect: 'drag' },
+  { id: 's_flow_ob_aligned',    scope: 'scalp', key: 'flow:ob:aligned',    name: '快速單掛單順向厚',     why: '掛單失衡在快進快出是否有即時邊際', expect: 'edge' },
 ];
 function expVerdicts(force) {
   const out = [];
@@ -35312,13 +35380,13 @@ const _RS_GROUPS = {
   main: [
     { t: '方向', p: 'base:dir:' }, { t: '月份', p: 'base:mon:', sortKey: true }, { t: '時段', p: 'session:kz:' }, { t: 'BTC 日線', p: 'macro:btcD1:' },
     { t: '預測勝率桶', p: 'model:btp:' }, { t: '確信度', p: 'model:conv:' }, { t: '進場方式／觸發', p: /^(model:entry:|tech:tag:)/ }, { t: '4H ADX', p: 'tech:adx:' }, { t: 'RSI', p: 'tech:rsi:' },
-    { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '市場狀態', p: 'macro:regime:' }, { t: '今日大盤預測', p: 'macro:tbias:' }, { t: '部位／模式', p: /^model:(soft|mode|trail):/ },
+    { t: '訂單流', p: 'flow:' }, { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '市場狀態', p: 'macro:regime:' }, { t: '今日大盤預測', p: 'macro:tbias:' }, { t: '部位／模式', p: /^model:(soft|mode|trail):/ },
     { t: '進場標籤', p: /^(pattern|chips|macro|session|tech|model):tag:/, excl: /^tech:tag:(h1break|stopbreak|limit|pullback)$/, top: 12 }, { t: '風控扣分', p: 'risk:rk:' }, { t: '反對證據', p: 'model:opp:' }, { t: '幣種', p: 'base:sym:', top: 12 },
   ],
   scalp: [
     { t: '模式', p: 'model:mode:' }, { t: '家族', p: 'model:family:' }, { t: '方向', p: 'base:dir:' }, { t: '月份', p: 'base:mon:', sortKey: true }, { t: '時段品質', p: 'session:kz:' },
     { t: 'BTC 日線', p: 'macro:btcD1:' }, { t: 'BTC 4H', p: 'macro:btcH4:' }, { t: '1H 突破方向', p: 'tech:h1brk:' }, { t: '多時框', p: 'tech:mtf:' }, { t: '止損距離', p: 'model:sl:' }, { t: '量比', p: 'tech:vol:' },
-    { t: 'OI', p: 'chips:oi:' }, { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '止損外側結構', p: 'pattern:outer:' }, { t: '掃損迴避／推遠', p: /^model:(hunt|widen):/ }, { t: '市場狀態', p: 'macro:regime:' }, { t: '風控扣分', p: 'risk:rk:' }, { t: '幣種', p: 'base:sym:', top: 12 },
+    { t: '訂單流', p: 'flow:' }, { t: 'OI', p: 'chips:oi:' }, { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '止損外側結構', p: 'pattern:outer:' }, { t: '掃損迴避／推遠', p: /^model:(hunt|widen):/ }, { t: '市場狀態', p: 'macro:regime:' }, { t: '風控扣分', p: 'risk:rk:' }, { t: '幣種', p: 'base:sym:', top: 12 },
   ],
 };
 function _rsMatch(p, k) { return typeof p === 'string' ? k.startsWith(p) : p.test(k); }

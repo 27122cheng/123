@@ -90,6 +90,23 @@ const r8 = await p.evaluate(() => {
 if (r8.n !== 7 || !r8.allOk || r8.keys !== '背景方向位置觸發失效出場檢討' || r8.bWarn.join() !== '背景,位置' || !r8.line.includes('進場七步：背景⚠') || !r8.ref) throw new Error('⑧ 進場七步錯誤：' + JSON.stringify(r8));
 console.log(`✓ ⑧ 進場七步：全過 7✓；無趨勢＋追價 → ${r8.bWarn.join('／')} ⚠；訊息「${r8.line.split('\n')[0]}」；原則對照卡存在`);
 
+// ⑨ 訂單流量化：快照（Delta／CVD／掛單失衡／鯨魚／VWAP／清算）→ 特徵 flow:*→ 實驗登錄六條→ 研究台「訂單流」組→ 訊息一行
+const r9 = await p.evaluate(() => {
+  _footprintCache['FLOWX/USDT'] = { deltaDir: 'bull', deltaDiv: false, takerBuyRatio: 0.61, vwap: 98 };
+  _orderBookCache['FLOWX/USDT'] = { imbalance: 0.3, askWall: { price: 101, size: 999 } };
+  _liqBuf.push({ t: Date.now(), sym: 'FLOWX/USDT', side: 'short', usd: 5e6 });
+  const coin = { symbol: 'FLOWX/USDT', price: 100, whaleData: { bias: 'bear' }, cvdTrend: 'bull' };
+  const f = flowSnapshot(coin, true);
+  const feats = expFeatures({ direction: 'long', flow: f }, 'main').filter(x => x.d === 'flow').map(x => x.k);
+  const sfeats = expFeatures({ direction: 'short', mode: 'trap', flow: flowSnapshot(coin, false) }, 'scalp').filter(x => x.d === 'flow').map(x => x.k);
+  const ids = EXP_REGISTRY.filter(h => h.key.startsWith('flow:')).map(h => h.id);
+  const line = flowLine(f, true);
+  return { f, feats, sfeats, ids, line, grp: _RS_GROUPS.main.some(g => g.t === '訂單流') && _RS_GROUPS.scalp.some(g => g.t === '訂單流'), dim: EXP_DIM_LABEL.flow };
+});
+if (!r9.f || r9.f.delta !== 'aligned' || r9.f.ob !== 'aligned' || r9.f.wall !== 'ahead' || r9.f.whale !== 'against' || r9.f.cvd !== 'aligned' || r9.f.vwap !== 'ctrl' || r9.f.liq !== 'opp') throw new Error('⑨ 快照錯誤：' + JSON.stringify(r9.f));
+if (!r9.feats.includes('flow:delta:aligned') || !r9.feats.includes('flow:ob:aligned') || !r9.feats.includes('flow:liq:opp') || !r9.sfeats.includes('flow:delta:against') || !r9.sfeats.includes('flow:ob:against') || r9.ids.length !== 6 || !r9.line.includes('訂單流') || !r9.grp || r9.dim !== '訂單流') throw new Error('⑨ 特徵／登錄錯誤：' + JSON.stringify(r9));
+console.log(`✓ ⑨ 訂單流：快照 ${Object.keys(r9.f).length} 欄、一般單特徵 ${r9.feats.length}、快速單（反向）${r9.sfeats.length}、登錄 ${r9.ids.length} 條；訊息「${r9.line.trim().slice(0, 60)}…」`);
+
 // 還原
 await p.evaluate(k => { if (k.tl) localStorage.setItem('csp_trade_log', k.tl); else localStorage.removeItem('csp_trade_log'); _btCalibCache = null; if (k.sl) localStorage.setItem('csp_scalp_log', k.sl); else localStorage.removeItem('csp_scalp_log'); _tlogRaw = null; _tlogArr = null; try { invalidateLearnCache(); } catch (e) {} }, keep);
 if (errs.length) throw new Error('頁面錯誤：' + errs.join(' | '));
