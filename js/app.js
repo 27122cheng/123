@@ -940,6 +940,8 @@ async function _runRefreshTick(secs) {
     catch(e) { console.warn('[sbx]', e); }
     if (_heavyTurn === 3) await _pt('策略沙盒治理', () => sbxGovernance());
     if (_heavyTurn === 1) await _pt('基本面更新', () => fundRefresh(false));   // 6 小時快取，實際最多每 6 小時打 5 個請求
+    await _pt('逐模式實驗室', () => qlabModeTick());   // 每輪最多一個模式、每模式 ≥6 小時一次
+    if (_heavyTurn === 2) await _pt('回測排程', () => btAutoTick());   // 12 小時一次，背景執行不等待
     try {
       // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
@@ -15103,7 +15105,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823f';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823g';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -24291,6 +24293,112 @@ function qlabAutoDecide(opts = {}) {
   } catch(e) { out.why = '判斷失敗：' + e.message; return out; }
 }
 
+/* ── 逐模式量化實驗室（2026-11-06）────────────────────────────────────────────────
+   使用者：「量化實驗室是實驗每個策略所用參數的最佳值，要持續跑，目前是手動」。原本只對全部快速單算一組
+   止損／止盈參數，且只在設定開啟時才動。這裡改為：每個模式各自跑同一條管線（同模式樣本 → 網格（鄰域平均）→
+   樣本外驗證 → 冷卻 → 套用後複查／回滾），掃描後段每輪輪一個模式、每個模式最少隔 6 小時；「算」永遠自動，
+   「套用」仍受設定頁「允許自動調整」與學習凍結兩道閘。沒套用時建議值照樣記下、頁面照樣顯示，讓你看得到
+   「如果開了會變成什麼」。消費端：qlabEffectiveFor(mode) 把模式覆寫疊在全域生效值上。 */
+const QLAB_MODE_KEY = 'csp_qlab_mode';
+const QLAB_MODE = { minSamples: 50, minDelta: 0.4, cooldownH: 24, reviewN: 20, rollbackEdge: -0.05, runEveryH: 6 };
+let _qlabModeCache = null;
+function loadQlabMode() { if (_qlabModeCache) return _qlabModeCache; try { _qlabModeCache = JSON.parse(localStorage.getItem(QLAB_MODE_KEY) || 'null'); } catch(_e) { _qlabModeCache = null; } if (!_qlabModeCache || typeof _qlabModeCache !== 'object') _qlabModeCache = { modes: {} }; if (!_qlabModeCache.modes) _qlabModeCache.modes = {}; return _qlabModeCache; }
+function saveQlabMode(o) { _qlabModeCache = o; try { localStorage.setItem(QLAB_MODE_KEY, JSON.stringify(o)); } catch(_e) {} }
+function qlabEffectiveFor(mode) {
+  const eff = qlabEffective();
+  try {
+    const m = loadQlabMode().modes[mode];
+    if (m && m.active && isFinite(m.slMult) && isFinite(m.tp1R) && isFinite(m.tp2R)) {
+      const _min1 = SCALP_CFG.minTp1R || 1.0;
+      const t1 = Math.max(_min1, m.tp1R), t2 = Math.max(t1 + 0.2, m.tp2R);
+      return { ...eff, slMult: m.slMult, tp1R: t1, tp2R: t2, revertTp1R: t1, revertTp2R: t2, modeApplied: true, modeAt: m.appliedAt };
+    }
+  } catch(_e) {}
+  return { ...eff, modeApplied: false };
+}
+function qlabModeDecide(mode, opts = {}) {
+  const force = !!opts.force, dry = !!opts.dryRun, now = Date.now();
+  const st = loadQlabMode(); const cur = st.modes[mode] || (st.modes[mode] = {});
+  const out = { mode, at: now, action: 'none', why: '', canApply: false };
+  const persist = () => { if (!dry) saveQlabMode(st); };
+  try {
+    const trades = qlabSamples(mode); cur.n = trades.length; cur.lastRunAt = now;
+    const s = loadSettings();
+    const gate = (s.qlabAutoApply !== true) ? '自動套用未開啟（設定頁「允許自動調整」）' : learnFrozen() ? `學習凍結中（剩 ${learnFreezeDaysLeft()} 天）` : '';
+    out.canApply = force || !gate;
+    // 套用後複查
+    if (cur.active) {
+      const since = trades.filter(t => (t.exitTime || 0) > cur.appliedAt);
+      if (since.length >= QLAB_MODE.reviewN) {
+        const exp = since.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / since.length;
+        const edge = +(exp - (cur.prevExpectancy ?? 0)).toFixed(3);
+        if (edge <= QLAB_MODE.rollbackEdge) {
+          cur.history = (cur.history || []).concat([{ at: now, action: 'rollback', from: { slMult: cur.slMult, tp1R: cur.tp1R, tp2R: cur.tp2R }, why: `套用後 ${since.length} 筆期望值 ${exp.toFixed(3)}R，比套用前差 ${edge}R → 回滾` }]).slice(-12);
+          cur.active = false; cur.lastWhy = cur.history[cur.history.length - 1].why; persist();
+          try { invalidateScalpSlLearn(); } catch(_e) {}
+          out.action = 'rollback'; out.why = cur.lastWhy; return out;
+        }
+        if (!cur.reviewed) { cur.reviewed = true; cur.reviewEdge = edge; cur.reviewN = since.length; }
+      }
+    }
+    if (trades.length < QLAB_MODE.minSamples) { cur.lastWhy = `可重放樣本 ${trades.length}/${QLAB_MODE.minSamples}`; cur.best = null; persist(); out.why = cur.lastWhy; return out; }
+    const base = qlabCurrent(mode); const baseCfg = { slMult: base.slMult, tp1R: base.tp1R, tp2R: base.tp2R };
+    const grid = qlabGrid(trades, baseCfg);
+    if (!grid.best) { cur.lastWhy = '網格無有效結果'; persist(); out.why = cur.lastWhy; return out; }
+    const delta = +(grid.best.netR - grid.cur.netR).toFixed(2);
+    cur.cur = { ...baseCfg, netR: grid.cur.netR, exp: grid.cur.expectancy, n: grid.cur.n };
+    cur.best = { slMult: grid.best.slMult, tp1R: grid.best.tp1R, tp2R: grid.best.tp2R, netR: grid.best.netR, exp: grid.best.expectancy, robust: grid.best.robust, delta };
+    if (delta < QLAB_MODE.minDelta) { cur.lastWhy = `最佳僅比現行多 ${delta}R（需 ≥${QLAB_MODE.minDelta}），不值得改`; cur.wf = null; persist(); out.why = cur.lastWhy; return out; }
+    const wf = qlabWalkForward(trades, baseCfg);
+    cur.wf = wf ? { passed: wf.passed, edge: wf.edge, margin: wf.margin, inS: wf.inSampleExp, outS: wf.outSampleExp } : null;
+    if (!wf) { cur.lastWhy = '樣本不足以做樣本外驗證'; persist(); out.why = cur.lastWhy; return out; }
+    if (!wf.passed) { cur.lastWhy = `未通過樣本外驗證（樣本外贏 ${wf.edge}R < ${wf.margin}R）→ 過擬合，不套用`; persist(); out.why = cur.lastWhy; return out; }
+    const hrs = (now - (cur.appliedAt || 0)) / 3600e3;
+    if (!force && cur.appliedAt && hrs < QLAB_MODE.cooldownH) { cur.lastWhy = `建議 止損 ${grid.best.slMult}／止盈 ${grid.best.tp1R}R/${grid.best.tp2R}R（多賺 ${delta}R、樣本外 +${wf.edge}R），距上次調整 ${hrs.toFixed(1)} 小時，冷卻中`; persist(); out.why = cur.lastWhy; return out; }
+    const sl = Math.max(SCALP_CFG.slMultMin, Math.min(SCALP_CFG.slMultMax, grid.best.slMult));
+    const t1 = Math.max(0.4, Math.min(2.0, grid.best.tp1R)), t2 = Math.max(t1 + 0.2, Math.min(3.0, grid.best.tp2R));
+    cur.recommend = { slMult: sl, tp1R: t1, tp2R: t2, delta, wfEdge: wf.edge, at: now };
+    if (!out.canApply) { cur.lastWhy = `建議 止損 ${sl}／止盈 ${t1}R/${t2}R（多賺 ${delta}R、樣本外 +${wf.edge}R）——未套用：${gate}`; persist(); out.why = cur.lastWhy; out.action = 'recommend'; return out; }
+    const prevExp = trades.reduce((a, t) => a + (parseFloat(t.pnlR) || 0), 0) / trades.length;
+    cur.history = (cur.history || []).concat([{ at: now, action: 'apply', from: baseCfg, to: { slMult: sl, tp1R: t1, tp2R: t2 }, why: `樣本 ${trades.length} 筆、網格多賺 ${delta}R、樣本外贏 ${wf.edge}R` }]).slice(-12);
+    Object.assign(cur, { active: true, slMult: sl, tp1R: t1, tp2R: t2, appliedAt: now, prevExpectancy: +prevExp.toFixed(3), reviewed: false, baseline: baseCfg, evidence: { n: trades.length, delta, wfEdge: wf.edge } });
+    cur.lastWhy = cur.history[cur.history.length - 1].why; persist();
+    if (!dry) { try { invalidateScalpSlLearn(); } catch(_e) {} }
+    out.action = 'apply'; out.why = cur.lastWhy; out.to = { slMult: sl, tp1R: t1, tp2R: t2 };
+    return out;
+  } catch(e) { out.why = '判斷失敗：' + (e && e.message); return out; }
+}
+/* 掃描後段：每輪只跑一個「最久沒跑」且距上次 ≥6 小時的模式（網格 240 組 × 樣本重放，毫秒級） */
+function qlabModeTick() {
+  try {
+    if (!isSignalMaster()) return null;
+    const st = loadQlabMode(); const now = Date.now();
+    const modes = Object.keys(SCALP_MODE_LABEL).filter(m => now - ((st.modes[m] && st.modes[m].lastRunAt) || 0) >= QLAB_MODE.runEveryH * 3600e3).sort((a, b) => ((st.modes[a] && st.modes[a].lastRunAt) || 0) - ((st.modes[b] && st.modes[b].lastRunAt) || 0));
+    if (!modes.length) return null;
+    const r = qlabModeDecide(modes[0]);
+    if (r.action === 'apply' || r.action === 'rollback') { try { _healthNote('qlab-mode', `${SCALP_MODE_LABEL[modes[0]] || modes[0]}：${r.action === 'apply' ? '套用' : '回滾'}——${r.why}`); } catch(_e) {} }
+    return r;
+  } catch(_e) { return null; }
+}
+function qlabModeApplyNow(mode) { const r = qlabModeDecide(mode, { force: true }); try { showToast(`${SCALP_MODE_LABEL[mode] || mode}：${r.action === 'apply' ? '已套用' : r.action === 'rollback' ? '已回滾' : '維持現狀'}——${r.why}`, r.action === 'none' ? 'info' : 'success'); } catch(_e) {} try { renderLabPage(); } catch(_e) {} }
+function qlabModeRevert(mode) { const st = loadQlabMode(); const m = st.modes[mode]; if (m && m.active) { m.history = (m.history || []).concat([{ at: Date.now(), action: 'manual-revert', why: '手動取消' }]).slice(-12); m.active = false; saveQlabMode(st); try { invalidateScalpSlLearn(); } catch(_e) {} } try { renderLabPage(); } catch(_e) {} }
+function buildQlabModeHtml() {
+  const st = loadQlabMode(); const s = loadSettings(); const on = s.qlabAutoApply === true; const fz = learnFreezeDaysLeft();
+  const fmtT = ts => ts ? new Date(ts).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  const rows = Object.keys(SCALP_MODE_LABEL).map(mode => {
+    const m = st.modes[mode] || {}; const n = qlabSamples(mode).length; const cur = qlabCurrent(mode);
+    const stat = m.active ? `<span style="color:#22c55e">已套用 ${fmtT(m.appliedAt)}${m.reviewed ? `（複查 ${m.reviewEdge > 0 ? '+' : ''}${m.reviewEdge}R ✓）` : '（複查中）'}</span>` : m.recommend ? `<span style="color:#f59e0b">有建議，未套用</span>` : n < QLAB_MODE.minSamples ? `<span style="color:var(--text3)">樣本 ${n}/${QLAB_MODE.minSamples}</span>` : m.best && m.best.delta < QLAB_MODE.minDelta ? '<span style="color:var(--text3)">現行已接近最佳</span>' : m.wf && !m.wf.passed ? '<span style="color:var(--text3)">樣本外未通過</span>' : '<span style="color:var(--text3)">待跑</span>';
+    return `<tr><td style="text-align:left;font-weight:600">${SCALP_MODE_LABEL[mode]}</td><td>${n}</td><td>${cur.slMult}／${cur.tp1R}／${cur.tp2R}</td><td>${m.best ? `${m.best.slMult}／${m.best.tp1R}／${m.best.tp2R}<span style="color:${m.best.delta > 0 ? 'var(--bull)' : 'var(--text3)'}"> ${m.best.delta > 0 ? '+' : ''}${m.best.delta}R</span>` : '—'}</td><td>${m.wf ? `<span style="color:${m.wf.passed ? 'var(--bull)' : 'var(--bear)'}">${m.wf.edge > 0 ? '+' : ''}${m.wf.edge}R${m.wf.passed ? ' ✓' : ''}</span>` : '—'}</td><td style="text-align:left">${stat}</td><td style="color:var(--text3)">${fmtT(m.lastRunAt)}</td><td style="white-space:nowrap"><button class="btn-ghost" style="font-size:0.7rem;padding:2px 6px" onclick="qlabModeApplyNow('${mode}')">判斷</button>${m.active ? `<button class="btn-ghost" style="font-size:0.7rem;padding:2px 6px;color:var(--bear)" onclick="qlabModeRevert('${mode}')">取消</button>` : ''}</td></tr>`;
+  }).join('');
+  const whys = Object.keys(SCALP_MODE_LABEL).map(mode => st.modes[mode] && st.modes[mode].lastWhy ? `<div>· ${SCALP_MODE_LABEL[mode]}：${st.modes[mode].lastWhy}</div>` : '').join('');
+  return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px"><span style="font-size:0.84rem;font-weight:700">🧪 逐模式參數實驗（持續自動）</span>
+      <span style="font-size:0.72rem;color:var(--text3)">掃描後段每輪輪一個模式、每模式 ≥${QLAB_MODE.runEveryH} 小時一次；計算永遠自動，套用受「允許自動調整」${on ? '<b style="color:#22c55e">（開）</b>' : '<b style="color:#f59e0b">（關）</b>'}與學習凍結${fz > 0 ? `<b style="color:#f59e0b">（剩 ${fz} 天）</b>` : '（已解除）'}兩道閘</span></div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.74rem;text-align:right"><thead><tr style="color:var(--text3);font-size:0.68rem"><th style="text-align:left">模式</th><th>樣本</th><th>現行 止損×ATR／止盈一／止盈二</th><th>網格最佳（鄰域平均）</th><th>樣本外</th><th style="text-align:left">狀態</th><th>上次計算</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${whys ? `<div style="font-size:0.7rem;color:var(--text3);margin-top:6px;line-height:1.6">${whys}</div>` : ''}
+    <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">套用條件與全域版相同：樣本 ≥${QLAB_MODE.minSamples}、鄰域平均最佳比現行多賺 ≥${QLAB_MODE.minDelta}R、樣本外贏 ≥${QLAB_WF_MARGIN}R/筆、距上次 ≥${QLAB_MODE.cooldownH} 小時；套用後 ${QLAB_MODE.reviewN} 筆複查，退步超過 ${Math.abs(QLAB_MODE.rollbackEdge)}R 自動回滾。</div>
+  </div>`;
+}
 /* 手動：立即判斷一次 / 取消套用 */
 function qlabApplyNow() {
   const r = qlabAutoDecide({ force: true });
@@ -24415,7 +24523,7 @@ function buildQuantLabHtml() {
   </div>`;
 
   if (trades.length < QLAB_MIN) {
-    return head + modeBar + buildScalpPnlAnatomyHtml() + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + `
+    return head + modeBar + buildScalpPnlAnatomyHtml() + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + buildQlabModeHtml() + archCard + caveat + `
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;
           text-align:center;color:var(--text3);font-size:0.86rem">
         可重放樣本 <b style="color:var(--text1)">${trades.length}</b> / ${QLAB_MIN} 筆<br>
@@ -24594,7 +24702,7 @@ function buildQuantLabHtml() {
       避免把過擬合誤認為改善。參數位於 <code>SCALP_CFG</code>。</div>
   </div>`;
 
-  return head + modeBar + buildScalpPnlAnatomyHtml() + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + archCard + caveat + bestCard + wfCard
+  return head + modeBar + buildScalpPnlAnatomyHtml() + buildWinupHtml() + buildWinupProbeHtml() + buildReentryHtml() + applyCard + buildQlabModeHtml() + archCard + caveat + bestCard + wfCard
     + sweepTable('🛑 止損倍數掃描（其他參數固定為目前值）', slRows, v => `${v}×ATR`, base.slMult,
         '止損放寬會減少被雜訊掃掉的次數，但每筆虧損變大、R/R 變差——這張表就是在找那個平衡點。')
     + sweepTable('🎯 止盈一掃描', t1Rows, v => `${v}R`, base.tp1R, null)
@@ -29571,6 +29679,7 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   if (!isFinite(level)) return _sr('止損錨點無效');
   // 止損倍數改由「機器人學習止損」決定（樣本不足時等同原本的固定 0.6×ATR）
   const _slL = scalpSlMult(mode);
+  try { const _qm = qlabEffectiveFor(mode); if (_qm && _qm.modeApplied && isFinite(_qm.slMult)) { _slL.mult = _qm.slMult; _slL.src = 'qlab-mode'; _slL.why = `逐模式實驗室套用 ${_qm.slMult}×ATR`; } } catch(_e) {}
   // 區間模式的緩衝另外設上限：窄區間裡 ATR 可能接近整個區間寬度，
   // 照 ATR 放會讓止損比區間還寬，R/R 永遠不成立（實測會被 R/R 檢查全數擋掉）。
   let _buf = atr * _slL.mult;
@@ -29625,7 +29734,7 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   const _feeR = 2 * SCALP_CFG.feeRate * entry / risk;
   // 回歸模式的目標是「回到均值」而非追延續，止盈倍數較近，不硬要 1.8R
   const _isRev = SCALP_MODE_FAMILY[mode] === 'revert';
-  const _eff = (typeof qlabEffective === 'function') ? qlabEffective() : null;
+  const _eff = (typeof qlabEffectiveFor === 'function') ? qlabEffectiveFor(mode) : (typeof qlabEffective === 'function') ? qlabEffective() : null;   // 2026-11-06 逐模式覆寫
   const _t1R = _isRev ? (_eff ? _eff.revertTp1R : SCALP_CFG.revertTp1R)
                       : (_eff ? _eff.tp1R       : SCALP_CFG.tp1R);
   const _t2R = _isRev ? (_eff ? _eff.revertTp2R : SCALP_CFG.revertTp2R)
@@ -32128,6 +32237,8 @@ function sbxGovernance() {
   // 達標名單（an.per 已按 rankScore 排序，qualified 保持該順序）
   const qualified = an.per.filter(p => {
     const ss = st.strategies[p.id];
+    // 2026-11-06：回測近期不合用（近三次 ≥2 次期望值 ≤0）→ 不晉升實盤；已在實盤者不因回測下線
+    if (ss.status !== 'live') { try { const bv = btVerdict(p.id); if (bv.v === 'unfit') { if (!ss.btHold || Date.now() - ss.btHold > 24 * 3600e3) { ss.btHold = Date.now(); pushHist(ss, { at: now, action: 'hold', why: `達標但${bv.text}，暫不晉升` }); changed = true; } return false; } } catch(_e) {} }
     return ss.status !== 'retired' && ss.status !== 'eliminated'
       && p.stats.n >= SBX_CFG.liveN && p.stats.expectancy >= SBX_CFG.liveExp
       && p.stats.mar >= SBX_CFG.liveMar;
@@ -34291,12 +34402,48 @@ async function btRun() {
       totalTrades: Object.values(byStrat).reduce((a, x) => a + x.length, 0),
     };
     try { localStorage.setItem('csp_bt_last', JSON.stringify(_btState.results)); } catch(_e) {}
+    if (!_btState.auto && !_btState.results.cancelled) { try { btPushHistory(_btState.results); } catch(_e) {} }
+    _btState.auto = false;
     _btState.progress = '';
   } catch(e) { console.warn('[bt]', e); _btState.progress = '回測失敗：' + e.message; }
   _btState.running = false;
   try { renderLabPage(); } catch(_e) {}
 }
 function btCancel() { _btState.cancel = true; }
+/* ── 回測自動排程（2026-11-06）：使用者「回測是檢查目前這些策略合不合用，要持續跑，目前是手動」──
+   每 12 小時自動跑一次（主機、非掃描中、非低效能模式、幣種清單已有），背景執行不擋掃描後段；
+   每次結果追加到歷史（最近 14 次），btVerdict(id) 看最近三次：期望值 ≤0 出現 ≥2 次＝「近期不合用」，
+   沙盒治理不再把它晉升實盤（已在實盤的不因回測下線——前向樣本才是依據）。 */
+const BT_AUTO = { everyH: 12, histMax: 14 };
+function btHistory() { try { const a = JSON.parse(localStorage.getItem('csp_bt_hist') || '[]'); return Array.isArray(a) ? a : []; } catch(_e) { return []; } }
+function btPushHistory(res) {
+  try {
+    const h = btHistory(); h.push({ at: res.at, n: res.totalTrades, syms: (res.syms || []).length, rows: (res.rows || []).map(r => ({ id: r.id, n: r.stats.n, exp: r.stats.expectancy, net: r.stats.totalR, dd: r.stats.maxDD, rank: r.stats.rankScore })) });
+    localStorage.setItem('csp_bt_hist', JSON.stringify(h.slice(-BT_AUTO.histMax)));
+  } catch(_e) {}
+}
+function btVerdict(id) {
+  const h = btHistory().slice(-3).map(x => (x.rows || []).find(r => r.id === id)).filter(r => r && r.n >= 10);
+  if (h.length < 2) return { v: 'unknown', n: h.length, text: '回測樣本不足' };
+  const bad = h.filter(r => r.exp <= 0).length;
+  if (bad >= 2) return { v: 'unfit', n: h.length, text: `近 ${h.length} 次回測 ${bad} 次期望值 ≤0，近期不合用` };
+  if (bad === 0) return { v: 'fit', n: h.length, text: `近 ${h.length} 次回測期望值皆 >0` };
+  return { v: 'mixed', n: h.length, text: `近 ${h.length} 次回測有 ${bad} 次 ≤0` };
+}
+function btAutoTick() {
+  try {
+    if (_btState.running) return 'running';
+    if (!isSignalMaster()) return 'not-master';
+    if (typeof liteModeOn === 'function' && liteModeOn()) return 'lite';
+    if (typeof AUTO_SAFE !== 'undefined' && AUTO_SAFE) return 'safe';
+    let last = _btState.results; if (!last) { try { last = JSON.parse(localStorage.getItem('csp_bt_last') || 'null'); } catch(_e) {} }
+    if (last && Date.now() - (last.at || 0) < BT_AUTO.everyH * 3600e3) return 'fresh';
+    if (!(typeof state !== 'undefined' && Array.isArray(state.data) && state.data.length)) return 'no-data';
+    _btState.auto = true;
+    btRun().then(() => { try { if (_btState.results && !_btState.results.cancelled) { btPushHistory(_btState.results); _healthNote('bt-auto', `自動回測完成：${_btState.results.totalTrades} 筆模擬、${(_btState.results.syms || []).length} 幣；不合用：${SBX_STRATS.filter(s => btVerdict(s.id).v === 'unfit').map(s => s.name).join('、') || '無'}`); } } catch(_e) {} }).catch(() => {});
+    return 'started';
+  } catch(_e) { return 'err'; }
+}
 
 function buildBtHtml() {
   let last = _btState.results;
@@ -34313,7 +34460,7 @@ function buildBtHtml() {
         ? `<button class="btn-ghost" style="font-size:0.8rem;color:#ef4444" onclick="btCancel()">⏹ 取消</button>
            <span style="font-size:0.76rem;color:#f59e0b">${_btState.progress || '執行中…'}</span>`
         : `<button class="btn-ghost" style="font-size:0.8rem" onclick="btRun()">▶ 開始回測</button>`}
-      <span style="font-size:0.72rem;color:var(--text3)">只在按下時執行（約 ${BT_CFG.symbols}×7 個 K 線請求，跑 10~30 秒），結果快取於本機</span>
+      <span style="font-size:0.72rem;color:var(--text3)">自動：每 ${BT_AUTO.everyH} 小時一次（主機、掃描後段背景執行）；${(() => { let l = _btState.results; if (!l) { try { l = JSON.parse(localStorage.getItem('csp_bt_last') || 'null'); } catch(_e) {} } return l && l.at ? `上次 ${new Date(l.at).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}，下次約 ${new Date(l.at + BT_AUTO.everyH * 3600e3).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}` : '尚未跑過，下一輪掃描後段啟動'; })()}；歷史 ${btHistory().length} 次。手動按下也會立即執行（約 ${BT_CFG.symbols}×7 個 K 線請求，10~30 秒）</span>
     </div>`;
   if (!last) return head + btn + `<div style="background:var(--card);border:1px solid var(--border);
     border-radius:10px;padding:20px;text-align:center;color:var(--text3);font-size:0.84rem">尚無回測結果</div>`;
@@ -34329,7 +34476,7 @@ function buildBtHtml() {
           <th style="padding:4px 6px;text-align:left">策略</th><th style="padding:4px 6px">筆數</th>
           <th style="padding:4px 6px">期望值/筆</th><th style="padding:4px 6px">總計</th>
           <th style="padding:4px 6px">最大回撤</th><th style="padding:4px 6px">排序分</th>
-          <th style="padding:4px 6px">勝率(參考)</th></tr></thead>
+          <th style="padding:4px 6px">勝率(參考)</th><th style="padding:4px 6px;text-align:left">近三次判定</th></tr></thead>
         <tbody>${last.rows.map((r, i) => {
           const s = r.stats;
           const ec = s.expectancy > 0 ? 'var(--bull)' : s.expectancy < 0 ? 'var(--bear)' : 'var(--text3)';
@@ -34340,7 +34487,8 @@ function buildBtHtml() {
             <td style="padding:4px 6px">${s.totalR > 0 ? '+' : ''}${s.totalR}R</td>
             <td style="padding:4px 6px">${s.maxDD}R</td>
             <td style="padding:4px 6px">${s.rankScore}</td>
-            <td style="padding:4px 6px;color:var(--text3)">${s.winRate == null ? '—' : s.winRate + '%'}</td></tr>`;
+            <td style="padding:4px 6px;color:var(--text3)">${s.winRate == null ? '—' : s.winRate + '%'}</td>
+            <td style="padding:4px 6px;text-align:left;font-size:0.7rem">${(() => { const bv = btVerdict(r.id); return `<span style="color:${bv.v === 'fit' ? 'var(--bull)' : bv.v === 'unfit' ? 'var(--bear)' : 'var(--text3)'}">${bv.v === 'fit' ? '✓ 合用' : bv.v === 'unfit' ? '✗ 不合用（不晉升）' : bv.v === 'mixed' ? '～ 不穩' : '累積中'}</span>`; })()}</td></tr>`;
         }).join('')}</tbody>
       </table></div>
       <div style="font-size:0.7rem;color:var(--text3);margin-top:6px">
@@ -35607,6 +35755,8 @@ function _rsGrowthHtml(kind, rows) {
     try { const v = winupStats(); const sb = Object.keys(v.sessBlocked.main || {}).length, yb = Object.keys(v.symBad.main || {}).length, rb = Object.keys(v.regimeBlocked && v.regimeBlocked.main || {}).length; li('勝率強化閘門', `時段封鎖 ${sb}、幣種冷卻 ${yb}、市場狀態封鎖 ${rb}、秒損地板 ×${v.floorMult}`, '近 1000 筆按時段／幣種／市場狀態分桶，Wilson 上界低於門檻的桶自動封鎖，樣本回升就解封'); } catch(_e) {}
   } else {
     try { const v = winupStats(); const sb = Object.keys(v.sessBlocked.scalp || {}).length, yb = Object.keys(v.symBad.scalp || {}).length; li('勝率強化閘門', `時段封鎖 ${sb}、幣種冷卻 ${yb}`, '快速單按時段／幣種分桶，Wilson 上界低於門檻的桶自動封鎖'); } catch(_e) {}
+    try { const st = loadQlabMode(); const ms = Object.keys(SCALP_MODE_LABEL); const ap = ms.filter(m => st.modes[m] && st.modes[m].active).length, rc = ms.filter(m => st.modes[m] && st.modes[m].recommend && !st.modes[m].active).length, ran = ms.filter(m => st.modes[m] && st.modes[m].lastRunAt).length; li('逐模式參數實驗', `已跑 ${ran}／${ms.length} 個模式：套用 ${ap}、有建議未套用 ${rc}`, `每模式 ≥6 小時自動跑一次網格＋樣本外驗證；套用受「允許自動調整」與學習凍結兩道閘（實驗室頁可看每個模式的現行 vs 最佳）`); } catch(_e) {}
+    try { const h = btHistory(); const unfit = SBX_STRATS.filter(s => btVerdict(s.id).v === 'unfit').map(s => s.name); li('策略回測排程', h.length ? `每 ${BT_AUTO.everyH} 小時一次，已累積 ${h.length} 次；近期不合用：${unfit.length ? unfit.join('、') : '無'}` : '尚未自動跑過', '沙盒 10 策略用歷史 15m K 線重放；近三次 ≥2 次期望值 ≤0 的策略不晉升實盤'); } catch(_e) {}
     try { const a = scalpDrawdownAutopsy(); li('回撤解剖', a && a.ready ? `最近 200 筆最大回撤 ${a.ddMax != null ? a.ddMax.toFixed(1) + 'R' : '—'}` : `樣本 ${a ? a.n : 0}／30，累積中`, '找出回撤區間內最賠的模式／時段／方向／疊倉，實驗室頁有完整表'); } catch(_e) {}
   }
   try { const vs = expVerdicts(false).filter(v => v.scope === kind); const pv = vs.filter(v => v.status === 'proven').length, rf = vs.filter(v => v.status === 'refuted').length, ins = vs.filter(v => v.status === 'insufficient').length; li('實驗登錄', `${vs.length} 條假設：證實 ${pv}、相反 ${rf}、樣本不足 ${ins}；自動套用${expAutoApplyOn() ? '<span style="color:var(--bull)">開</span>' : '<span style="color:var(--text3)">關</span>'}`, expAutoApplyOn() ? '證實的劣勢條件：快速單直接攔截、一般單軟門 ×0.7' : '設定頁「實驗結論自動套用」開啟後，證實的劣勢條件才會真的改變建單'); } catch(_e) {}
