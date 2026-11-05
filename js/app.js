@@ -1162,8 +1162,10 @@ function _handleRevivedBoot() {
   try { if (typeof _bootErrLog === 'function') _bootErrLog('守護重啟', `本分頁由${who}自動重開：${why}。原本變黑的分頁可以關掉。`); } catch(_e) {}
   try { if (loadSettings().signalMaster !== false) claimSignalMaster(); } catch(_e) {}
   try { const u = new URL(location.href); u.searchParams.delete('revived'); u.searchParams.delete('from'); history.replaceState(null, '', u.pathname + (u.search || '') + u.hash); } catch(_e) {}
-  // 守護頁已經用掉（轉為主機）或由電腦守護程式開的 → 現在沒有守護頁在看本分頁；要再開一個需要使用者手勢（彈出權限），用一條固定橫幅請使用者按
-  setTimeout(() => { try { if (!_guardState().on) _guardOfferBar(from === 'guard' ? '守護頁已轉為這個主機分頁，現在沒有守護頁在看著它' : '這個主機分頁是被自動重開的，現在沒有守護頁在看著它'); } catch(_e) {} }, 3000);
+  // 守護頁已經用掉（轉為主機）→ 先自動試開一個（本站若已允許彈出視窗就直接成功；被封鎖就 20 秒後顯示橫幅請使用者按）。
+  // 2026-11-05 主機實案：轉為主機後橫幅沒被按，之後整整 13 小時沒有守護頁，下一次死亡就躺了 2 小時。
+  if (from === 'guard') setTimeout(() => { try { if (!_guardState().on) { window.open('guard.html', '_blank', 'noopener'); _healthNote('guard-auto', '守護頁轉為主機後自動嘗試重開守護頁（彈出被封鎖時 20 秒後改顯示橫幅）'); } } catch(_e) {} }, 2000);
+  setTimeout(() => { try { if (!_guardState().on) _guardOfferBar(from === 'guard' ? '守護頁已轉為這個主機分頁，自動重開守護頁沒有成功（彈出視窗被封鎖？）' : '這個主機分頁是被自動重開的，現在沒有守護頁在看著它'); } catch(_e) {} }, from === 'guard' ? 20000 : 3000);
   return true;
 }
 function _guardOfferBar(msg) {
@@ -15101,7 +15103,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823e';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823f';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次

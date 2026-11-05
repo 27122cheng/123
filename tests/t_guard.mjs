@@ -86,17 +86,17 @@ const c1b = await g3.evaluate(() => (document.getElementById('c1-txt') || {}).te
 
 if (!c1b.includes('被封鎖') && c1b !== '（已跳轉）') throw new Error('⑦ 封鎖探測錯誤：' + c1b);
 await g3.waitForURL(/index\.html\?revived=\d+&from=guard/, { timeout: 15000 });
-await g3.waitForFunction(() => !!document.getElementById('guard-offer'), null, { timeout: 60000 });
-const r7 = await g3.evaluate(() => ({ url: location.search, bar: document.getElementById('guard-offer').textContent, hb: JSON.parse(localStorage.getItem('csp_guard_hb') || 'null'), log: JSON.parse(localStorage.getItem('csp_guard_log') || '[]')[0], note: (JSON.parse(localStorage.getItem('csp_health_log') || '[]').find(x => x.kind === 'revived') || {}).text }));
-if (/revived|from=/.test(r7.url) || !r7.bar.includes('開啟守護頁') || !r7.hb || !r7.hb.handoff || !r7.hb.closed || !r7.log || r7.log.how !== 'handoff' || !/原本的守護頁/.test(r7.note)) throw new Error('⑦ 轉為主機錯誤：' + JSON.stringify(r7));
-// 橫幅按鈕（使用者手勢）→ 開出守護頁
-const g4P = waitPage(/guard\.html$/);
-await g3.click('#guard-offer button');
+// 轉為主機後 2 秒自動嘗試重開守護頁（Playwright 允許彈出 → 成功）；守護頁活著 → 20 秒後不顯示橫幅
+const g4P = waitPage(/guard\.html$/, 90000);
+await g3.waitForFunction(() => { try { return JSON.parse(localStorage.getItem('csp_health_log') || '[]').some(x => x.kind === 'revived'); } catch (e) { return false; } }, null, { timeout: 60000 });
 const g4 = await g4P;
-await g4.waitForTimeout(1200);
+await g4.waitForTimeout(1500);
 const st4 = await g4.evaluate(() => document.getElementById('st').textContent);
-if (!st4.includes('主機活著')) throw new Error('⑦ 橫幅開出的守護頁狀態錯誤：' + st4);
-console.log(`✓ ⑦ 彈出被封鎖 → 守護頁轉為主機（紀錄 how=handoff）→ 橫幅「${r7.bar.slice(0, 20)}…」→ 按鈕開出守護頁「${st4.slice(0, 16)}…」`);
+const r7 = await g3.evaluate(() => ({ url: location.search, log: JSON.parse(localStorage.getItem('csp_guard_log') || '[]')[0], note: (JSON.parse(localStorage.getItem('csp_health_log') || '[]').find(x => x.kind === 'revived') || {}).text, auto: JSON.parse(localStorage.getItem('csp_health_log') || '[]').some(x => x.kind === 'guard-auto') }));
+if (/revived|from=/.test(r7.url) || !r7.log || r7.log.how !== 'handoff' || !/原本的守護頁/.test(r7.note) || !r7.auto || !st4.includes('主機活著')) throw new Error('⑦ 轉為主機錯誤：' + JSON.stringify({ r7, st4 }));
+await g3.waitForTimeout(21000);
+if (await g3.$('#guard-offer')) throw new Error('⑦ 守護頁已自動重開卻仍顯示橫幅');
+console.log(`✓ ⑦ 彈出被封鎖 → 守護頁轉為主機（紀錄 how=handoff）→ 主機自動重開守護頁「${st4.slice(0, 16)}…」→ 無橫幅`);
 await g4.close(); await g3.close();
 
 // ⑧ 主機側：守護頁心跳停了（不是被關閉）→ 重開守護頁；被關閉（closed）→ 不開；電腦守護程式開的（?revived=ps…）→ 記錄＋橫幅；診斷包附 guard
