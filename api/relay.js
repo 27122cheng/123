@@ -11,6 +11,12 @@ const ALLOW = [
   /^https:\/\/mempool\.space\/api\/blocks\/tip\/height$/,
   /^https:\/\/blockchain\.info\/q\/getblockcount$/,
   /^https:\/\/open-api\.coinglass\.com\/public\/v2\/liquidation_chart\?/,
+  // 基本面（2026-11-05）：DefiLlama 協議／手續費／穩定幣、CoinPaprika 全市場行情、CoinGecko 市值表、mempool 算力
+  /^https:\/\/api\.llama\.fi\/(protocols|overview\/fees)(\?|$)/,
+  /^https:\/\/stablecoins\.llama\.fi\/stablecoins(\?|$)/,
+  /^https:\/\/api\.coinpaprika\.com\/v1\/tickers(\?|$)/,
+  /^https:\/\/api\.coingecko\.com\/api\/v3\/coins\/markets\?/,
+  /^https:\/\/mempool\.space\/api\/v1\/mining\/hashrate\/3d$/,
 ];
 const TTL_MS = 15 * 1000;
 const _cache = new Map();   // url → { at, status, body }

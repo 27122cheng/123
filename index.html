@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260823d" />
+  <link rel="stylesheet" href="css/styles.css?v=20260823e" />
 </head>
 <body>
 
@@ -199,6 +199,11 @@
           </div>
           <div class="ov-glow"></div>
         </div>
+      </div>
+
+      <!-- 交易員總覽（一張卡：市場／本輪判斷／持倉價位／績效回撤／系統） -->
+      <div class="market-outlook-card" id="trader-brief-card">
+        <div id="trader-brief-body"><div class="adv-loading">載入交易員總覽...</div></div>
       </div>
 
       <!-- 今日操作環境（一眼決策卡：今天適不適合下單、為什麼） -->
@@ -1145,8 +1150,8 @@
        ② 三支主腳本改 defer、TradingView 改 async：載入畫面先畫出來再執行 JS，卡死時至少看得到開頁軌跡。 -->
   <script>try{var _s=localStorage.getItem('csp_last_step');window._cspPrevStep=_s?JSON.parse(_s):null;localStorage.setItem('csp_last_step',JSON.stringify({n:'載入腳本',t:Date.now(),v:'html'}));}catch(e){window._cspPrevStep=null;}</script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js" async></script>
-  <script src="js/indicators.js?v=20260823d" defer></script>
-  <script src="js/api.js?v=20260823d" defer></script>
-  <script src="js/app.js?v=20260823d" defer></script>
+  <script src="js/indicators.js?v=20260823e" defer></script>
+  <script src="js/api.js?v=20260823e" defer></script>
+  <script src="js/app.js?v=20260823e" defer></script>
 </body>
 </html>

@@ -141,6 +141,8 @@ const FEED_SPEC = {
   funding: { label: '全市場資金費率',               fresh: 16 * 60e3, stale: 45 * 60e3,  how: '幣安 premiumIndex 一個請求拿全市場，15 分鐘快取；方向確信度／快速單門檻／記分卡共用' },
   relay:   { label: '同源轉發（直連幣安／mempool 失敗時）', fresh: 10 * 60e3, stale: 6 * 3600e3, how: '瀏覽器直連幣安或 mempool 失敗時改由 /api/relay 伺服器端轉發；有「即時」代表這個網路擋直連、正在靠轉發' },
   halving: { label: '減半資訊',                     fresh: 6 * 3600e3, stale: 24 * 3600e3, how: 'mempool.space 區塊高度，日級資訊' },
+  fund:    { label: '基本面（手續費／收入／TVL／市值／供給／穩定幣）', fresh: 8 * 3600e3, stale: 30 * 3600e3, how: '第一選擇三個免費來源：DefiLlama（協議手續費、收入、TVL、市值）、CoinPaprika（供給、成交額、距 ATH，單一請求全市場）、DefiLlama 穩定幣總量；CoinGecko 前 250 為市值備援、mempool.space 算力；每 6 小時更新一次（掃描後段）' },
+  liqrest: { label: '清算（OKX REST 備援）',        fresh: 7 * 60e3,  stale: 30 * 60e3,  how: '幣安清算 WebSocket 不可用時，掃描對候選幣改抓 OKX 已成交強平單（public/liquidation-orders），併入同一份清算緩衝' },
   orderbook: { label: '訂單簿深度失衡',              fresh: 7 * 60e3, stale: 25 * 60e3,  how: 'OKX 前 20 檔掛單快照：開啟詳情即時請求，掃描時對候選幣 5 分鐘快取；只餵確信度投票，不進止損止盈釘點' },
 };
 const _feedAt = {};   // key → { at, ok, note, fail }
@@ -241,7 +243,7 @@ const BINANCE_HOSTS = [
    走同源代理的全部正常）。這裡把每個直連 fetch 換成：先直連；失敗（網路錯誤、403/451/5xx）就打
    /api/relay?u=<網址>。同一主機連續 3 次直連失敗 → 10 分鐘內代理優先，不再每次先等直連逾時。
    400／404 視為正常回應（幣不存在），不觸發轉發。WebSocket 無法轉發（清算流在這類網路取不到，非必要）。 */
-const RELAY_HOSTS = /^https:\/\/(fapi\.binance\.com|api[1-3]?\.binance\.com|data-api\.binance\.vision|mempool\.space|blockchain\.info|open-api\.coinglass\.com)\//;
+const RELAY_HOSTS = /^https:\/\/(fapi\.binance\.com|api[1-3]?\.binance\.com|data-api\.binance\.vision|mempool\.space|blockchain\.info|open-api\.coinglass\.com|api\.llama\.fi|stablecoins\.llama\.fi|api\.coinpaprika\.com|api\.coingecko\.com)\//;
 const _relayPref = {};          // host → { fails, until }
 let _relayLastUsed = 0, _relayUses = 0;
 function relayStatus() { return { lastUsed: _relayLastUsed, uses: _relayUses, hosts: Object.keys(_relayPref).filter(h => _relayPref[h].until > Date.now()) }; }
@@ -1479,11 +1481,18 @@ async function fetchWhaleTrades(symbol) {
 async function fetchFootprintData(symbol) {
   const base = symbol.replace('/', '').replace('USDT', '') + 'USDT';
   // 雙時框並行：5m（主交易邏輯）+ 1m（快進快出信號專用）
-  const [raw5m, raw1m] = await Promise.all([
-    fetchKlines(base, '5m', 60),   // 5小時 5m K棒 → 主邏輯（deltaDir、POC、VWAP、吸籌）
-    fetchKlines(base, '1m', 120),  // 2小時 1m K棒 → 快進快出信號偵測專用
+  let [raw5m, raw1m] = await Promise.all([
+    fetchKlines(base, '5m', 60).catch(() => null),   // 5小時 5m K棒 → 主邏輯（deltaDir、POC、VWAP、吸籌）
+    fetchKlines(base, '1m', 120).catch(() => null),  // 2小時 1m K棒 → 快進快出信號偵測專用
   ]);
-  if (!raw5m || raw5m.length < 10) { feedStamp('fp', false, symbol + ' K 線不足'); return null; }
+  /* 2026-11-05 備援：幣安 K 線（含主動買量欄位）拿不到時，用 OKX 最近 500 筆成交重建 5m／1m 分桶。
+     成交量大的幣 500 筆只覆蓋幾分鐘，桶數不足仍會失敗；小幣可覆蓋數小時。誠實標註來源。 */
+  let _fpSrc = 'binance';
+  if (!raw5m || raw5m.length < 10) {
+    const alt = await _okxTradesKlines(symbol).catch(() => null);
+    if (alt && alt.k5.length >= 10) { raw5m = alt.k5; raw1m = alt.k1; _fpSrc = `okx-trades(${alt.n})`; }
+  }
+  if (!raw5m || raw5m.length < 10) { feedStamp('fp', false, symbol + ' K 線不足（幣安不可用且 OKX 成交筆數不足以分桶）'); return null; }
   try {
     // ── 通用 K棒處理（供兩個時框共用）──
     const processRaw = raw => raw.map(bar => {
@@ -1565,7 +1574,7 @@ async function fetchFootprintData(symbol) {
     const scalpSignal = (candles1m && typeof detectScalpSignal === 'function')
       ? detectScalpSignal(candles1m, lastClose, vwap, poc) : null;
 
-    feedStamp('fp', true, symbol);
+    feedStamp('fp', true, symbol + (_fpSrc !== 'binance' ? '（' + _fpSrc + '）' : ''));
     return {
       candles:            candles5m.slice(-20),   // 5m K棒供足跡面板顯示
       cumulativeDelta:    cum,
@@ -1863,4 +1872,153 @@ async function fetchCryptoNews() {
 
   feedStamp('news', false, '所有來源皆失敗');
   return null;
+}
+
+/* ═══════════════════ OKX 成交→K 線分桶（足跡備援）＋ OKX 清算 REST 備援（2026-11-05）═══════════════════ */
+async function _okxTradesKlines(symbol) {
+  const instId = toOkxInstId(symbol); if (!instId) return null;
+  const r = await okxApiFetch('market/trades', { instId, limit: 500 }, 8000);
+  const d = r && r.json && r.json.data; if (!Array.isArray(d) || d.length < 50) return null;
+  const toK = bucketMs => {
+    const m = new Map();
+    for (const t of d) {
+      const ts = +t.ts, px = +t.px, sz = +t.sz; if (!(ts > 0 && px > 0 && sz > 0)) continue;
+      const k = Math.floor(ts / bucketMs) * bucketMs;
+      let b = m.get(k); if (!b) { b = { ts: k, o: px, h: px, l: px, c: px, v: 0, buy: 0, first: ts, last: ts }; m.set(k, b); }
+      if (ts < b.first) { b.first = ts; b.o = px; } if (ts >= b.last) { b.last = ts; b.c = px; }
+      if (px > b.h) b.h = px; if (px < b.l) b.l = px; b.v += sz; if (t.side === 'buy') b.buy += sz;
+    }
+    // 幣安 K 線欄位順序：[openTime, o, h, l, c, vol, closeTime, quoteVol, n, takerBuyBase, takerBuyQuote, ignore]
+    return [...m.values()].sort((a, b) => a.ts - b.ts).map(b => [b.ts, b.o, b.h, b.l, b.c, b.v, b.ts + bucketMs - 1, b.v * b.c, 0, b.buy, b.buy * b.c, 0]);
+  };
+  return { k5: toK(300e3), k1: toK(60e3), n: d.length };
+}
+let _okxCtValMap = null, _okxCtValAt = 0;
+async function _okxCtVal(instId) {
+  try {
+    if (!_okxCtValMap || Date.now() - _okxCtValAt > 12 * 3600e3) {
+      const r = await okxApiFetch('public/instruments', { instType: 'SWAP' }, 10000);
+      const d = r && r.json && r.json.data; if (!Array.isArray(d) || !d.length) return null;
+      _okxCtValMap = {}; for (const i of d) _okxCtValMap[i.instId] = parseFloat(i.ctVal) || null; _okxCtValAt = Date.now();
+    }
+    return _okxCtValMap[instId] || null;
+  } catch (_e) { return null; }
+}
+/* 回傳與幣安清算緩衝相同形狀：[{ t, sym, side('long'|'short' 被清算方), usd }] */
+async function okxLiqFetch(symbol) {
+  const instId = toOkxInstId(symbol); if (!instId) return [];
+  const uly = instId.replace(/-SWAP$/, '');
+  const r = await okxApiFetch('public/liquidation-orders', { instType: 'SWAP', uly, state: 'filled', limit: 100 }, 8000);
+  const d = r && r.json && r.json.data;
+  if (!Array.isArray(d)) { feedStamp('liqrest', false, symbol + '（無回應）'); return []; }
+  const ctVal = await _okxCtVal(instId);
+  const out = [];
+  for (const g of d) for (const x of (Array.isArray(g.details) ? g.details : [])) {
+    const px = parseFloat(x.bkPx), sz = parseFloat(x.sz), ts = parseFloat(x.ts);
+    if (!(px > 0 && sz > 0 && ts > 0)) continue;
+    const usd = ctVal ? px * sz * ctVal : (isFinite(parseFloat(x.bkLoss)) ? Math.abs(parseFloat(x.bkLoss)) * 20 : px * sz);   // 無 ctVal 時以保證金虧損×20 粗估名目
+    out.push({ t: ts, sym: symbol, side: x.posSide === 'long' ? 'long' : 'short', usd, src: 'okx' });
+  }
+  feedStamp('liqrest', true, `${symbol} ${out.length} 筆`);
+  return out;
+}
+
+/* ═══════════════════ 基本面（2026-11-05）═══════════════════
+   加密貨幣沒有財報與本益比，但有可直接對應的東西：協議手續費與收入（營收）、鎖倉量 TVL、流通／總量（未解鎖籌碼）、
+   成交額／市值（流動性）、距歷史高點、場內穩定幣總量（資金面）。全部用免費、不需金鑰的來源，第一選擇三個：
+     ① DefiLlama /protocols（symbol、市值、TVL、gecko_id）＋ /overview/fees（dailyFees／dailyRevenue 的 24h／7d／30d 與月變化）
+     ② CoinPaprika /tickers?quotes=USD（單一請求全市場：市值、成交額、流通／總量／上限、7d／30d 變化、距 ATH）
+     ③ DefiLlama 穩定幣總量（場內資金 7d／30d 變化）
+   備援：CoinGecko coins/markets 前 250（市值、FDV、供給、距 ATH），mempool.space 算力。
+   直連優先（三者皆允許跨域），失敗走 /api/relay。只保留清單幣種，避免 localStorage 塞進數千筆。 */
+async function _jsonT(url, ms) {
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), ms || 15000);
+  try { const r = await relayFetch(url, { signal: ctrl.signal }); if (!r || !r.ok) throw new Error('HTTP ' + (r ? r.status : 0)); return await r.json(); }
+  finally { clearTimeout(timer); }
+}
+async function fetchFundamentalsAll(symbolSet) {
+  const keep = sym => !symbolSet || symbolSet.has(sym);
+  const out = { at: Date.now(), coins: {}, macro: {}, src: [], errs: [] };
+  const num = v => { const n = parseFloat(v); return isFinite(n) ? n : null; };
+  // ① DefiLlama protocols
+  const byName = {};
+  try {
+    const arr = await _jsonT('https://api.llama.fi/protocols', 25000);
+    if (!Array.isArray(arr)) throw new Error('非陣列');
+    let n = 0;
+    for (const p of arr) {
+      const sym = String(p.symbol || '').toUpperCase(); if (!sym || sym === '-' || !keep(sym)) continue;
+      const tvl = num(p.tvl) || 0;
+      const cur = out.coins[sym] || (out.coins[sym] = { sym });
+      if (cur.llamaName && (cur.tvl || 0) >= tvl) { byName[String(p.name || '').toLowerCase()] = cur; continue; }   // 同代號多個協議：取 TVL 最大
+      cur.llamaName = p.name; cur.slug = p.slug || null; cur.tvl = tvl; cur.tvlChg7d = num(p.change_7d); cur.tvlChg1d = num(p.change_1d);
+      cur.mcap = num(p.mcap) || cur.mcap || null; cur.category = p.category || null; cur.geckoId = p.gecko_id || cur.geckoId || null;
+      byName[String(p.name || '').toLowerCase()] = cur; if (p.slug) byName[String(p.slug).toLowerCase()] = cur; n++;
+    }
+    out.src.push(`DefiLlama 協議 ${n}`);
+  } catch (e) { out.errs.push('DefiLlama protocols：' + (e && e.message)); }
+  // ② 手續費與收入
+  for (const [dt, key, zh] of [['dailyFees', 'fees', '手續費'], ['dailyRevenue', 'rev', '收入']]) {
+    try {
+      const j = await _jsonT(`https://api.llama.fi/overview/fees?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true&dataType=${dt}`, 30000);
+      const ps = j && Array.isArray(j.protocols) ? j.protocols : []; let n = 0;
+      for (const p of ps) {
+        const c = byName[String(p.name || '').toLowerCase()] || byName[String(p.slug || p.module || '').toLowerCase()] || byName[String(p.displayName || '').toLowerCase()];
+        if (!c) continue;
+        c[key + '24h'] = num(p.total24h); c[key + '7d'] = num(p.total7d); c[key + '30d'] = num(p.total30d); c[key + 'Chg1m'] = num(p.change_1m); n++;
+      }
+      out.src.push(`DefiLlama ${zh} ${n}`);
+    } catch (e) { out.errs.push(`DefiLlama ${zh}：` + (e && e.message)); }
+  }
+  // ③ CoinPaprika（代號鍵、單一請求）
+  let mk = 0;
+  try {
+    const arr = await _jsonT('https://api.coinpaprika.com/v1/tickers?quotes=USD', 30000);
+    if (!Array.isArray(arr)) throw new Error('非陣列');
+    for (const t of arr) {
+      const sym = String(t.symbol || '').toUpperCase(); if (!sym || !keep(sym)) continue;
+      const q = t.quotes && t.quotes.USD; if (!q) continue;
+      const cur = out.coins[sym] || (out.coins[sym] = { sym });
+      const mc = num(q.market_cap) || 0;
+      if (cur.mkSrc && (cur.mcapMk || 0) >= mc) continue;   // 同代號多幣：取市值最大
+      cur.mkSrc = 'paprika'; cur.mcapMk = mc; cur.name = t.name || null; cur.rank = num(t.rank);
+      cur.mcap = mc || cur.mcap || null; cur.vol24 = num(q.volume_24h); cur.circ = num(t.circulating_supply); cur.total = num(t.total_supply); cur.max = num(t.max_supply);
+      cur.chg7d = num(q.percent_change_7d); cur.chg30d = num(q.percent_change_30d); cur.athDist = num(q.percent_from_price_ath); cur.price = num(q.price); mk++;
+    }
+    out.src.push(`CoinPaprika ${mk}`);
+  } catch (e) { out.errs.push('CoinPaprika：' + (e && e.message)); }
+  // ④ CoinGecko 備援（前 250 市值）
+  if (!mk) {
+    try {
+      const arr = await _jsonT('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&price_change_percentage=7d,30d', 25000);
+      if (!Array.isArray(arr)) throw new Error('非陣列');
+      let n = 0;
+      for (const t of arr) {
+        const sym = String(t.symbol || '').toUpperCase(); if (!sym || !keep(sym)) continue;
+        const cur = out.coins[sym] || (out.coins[sym] = { sym });
+        if (cur.mkSrc) continue;
+        cur.mkSrc = 'coingecko'; cur.name = t.name || null; cur.rank = num(t.market_cap_rank); cur.mcap = num(t.market_cap) || cur.mcap || null; cur.fdv = num(t.fully_diluted_valuation);
+        cur.vol24 = num(t.total_volume); cur.circ = num(t.circulating_supply); cur.total = num(t.total_supply); cur.max = num(t.max_supply);
+        cur.chg7d = num(t.price_change_percentage_7d_in_currency); cur.chg30d = num(t.price_change_percentage_30d_in_currency); cur.athDist = num(t.ath_change_percentage); cur.price = num(t.current_price); n++;
+      }
+      out.src.push(`CoinGecko ${n}`);
+    } catch (e) { out.errs.push('CoinGecko：' + (e && e.message)); }
+  }
+  // ⑤ 穩定幣總量（場內資金）
+  try {
+    const j = await _jsonT('https://stablecoins.llama.fi/stablecoins?includePrices=false', 25000);
+    const pa = j && Array.isArray(j.peggedAssets) ? j.peggedAssets : [];
+    let now = 0, w = 0, m = 0;
+    for (const a of pa) { now += num(a.circulating && a.circulating.peggedUSD) || 0; w += num(a.circulatingPrevWeek && a.circulatingPrevWeek.peggedUSD) || 0; m += num(a.circulatingPrevMonth && a.circulatingPrevMonth.peggedUSD) || 0; }
+    if (now > 0) { out.macro.stable = { usd: now, chg7d: w > 0 ? +((now / w - 1) * 100).toFixed(2) : null, chg30d: m > 0 ? +((now / m - 1) * 100).toFixed(2) : null }; out.src.push('穩定幣總量'); }
+  } catch (e) { out.errs.push('穩定幣：' + (e && e.message)); }
+  // ⑥ BTC 算力
+  try {
+    const j = await _jsonT('https://mempool.space/api/v1/mining/hashrate/3d', 15000);
+    if (j && num(j.currentHashrate)) { const hs = Array.isArray(j.hashrates) ? j.hashrates : []; const first = hs.length ? num(hs[0].avgHashrate) : null; out.macro.btc = { hashrate: num(j.currentHashrate), hashChg3d: first ? +((num(j.currentHashrate) / first - 1) * 100).toFixed(2) : null, difficulty: num(j.currentDifficulty) }; out.src.push('mempool 算力'); }
+  } catch (e) { out.errs.push('mempool：' + (e && e.message)); }
+  for (const c of Object.values(out.coins)) delete c.mcapMk;
+  const n = Object.keys(out.coins).length;
+  feedStamp('fund', n > 0, n > 0 ? `${n} 個幣種（${out.src.join('、')}）${out.errs.length ? '；失敗：' + out.errs.join('；') : ''}` : (out.errs.join('；') || '無資料'));
+  return out;
 }

@@ -2050,3 +2050,14 @@ html.lite .rs-bar-fill { opacity: .5; }
 .rs-chk div { display: flex; gap: 8px; align-items: baseline; }
 .rs-chk span { flex: none; min-width: 52px; font-weight: 700; }
 .rs-tbl td:nth-child(-n+6) { text-align: left; }
+
+/* ── 交易員總覽卡（儀表板最上方，2026-11-05）──────────────────── */
+.tb-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 0.9rem; margin-bottom: 10px; }
+.tb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+.tb-box { background: rgba(255,255,255,.03); border: 1px solid var(--card-border); border-radius: 10px; padding: 10px 12px; font-size: 0.8rem; line-height: 1.75; }
+.tb-ttl { font-size: 0.78rem; font-weight: 700; color: var(--text2); margin-bottom: 4px; }
+.tb-dim { color: var(--text3); font-size: 0.72rem; }
+.tb-pos { padding: 2px 0; border-bottom: 1px dashed rgba(255,255,255,.06); font-family: 'JetBrains Mono', monospace; font-size: 0.76rem; }
+.tb-tag { font-size: 0.66rem; padding: 1px 6px; border-radius: 4px; background: rgba(245,158,11,.15); color: #f59e0b; }
+.tb-tag.on { background: rgba(34,197,94,.15); color: var(--bull); }
+html.lite .tb-box { background: transparent; }

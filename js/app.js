@@ -939,6 +939,7 @@ async function _runRefreshTick(secs) {
     try { sbxScanSignals(data).catch(e => console.warn('[sbx] 訊號流程錯誤', e)); }
     catch(e) { console.warn('[sbx]', e); }
     if (_heavyTurn === 3) await _pt('策略沙盒治理', () => sbxGovernance());
+    if (_heavyTurn === 1) await _pt('基本面更新', () => fundRefresh(false));   // 6 小時快取，實際最多每 6 小時打 5 個請求
     try {
       // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
@@ -1532,6 +1533,7 @@ function renderAll() {
   _stepMark('渲染 ' + (state.currentPage || '?'));
   applyFilters();
   updateOverviewCards();
+  try { renderTraderBrief(false); } catch(_e) {}
   renderDashboardTables();
   renderBullBearTables();
   renderReversalCards();
@@ -6379,6 +6381,8 @@ function buildTradeSetup(coin, mtfData, deriv, globalMkt, whale, fearGreed) {
     ${deriv ? `<div class="rule-item">✦ 資金費率 <strong style="color:${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? (Math.abs(deriv.fundingRate) > 0.003 ? (deriv.fundingRate < 0 ? 'var(--bull)' : 'var(--bear)') : 'var(--text3)') : 'var(--text3)'}">${(deriv.fundingRate != null && !isNaN(deriv.fundingRate)) ? ((deriv.fundingRate*100).toFixed(4)+'%') : '--'}</strong>　Taker 買賣比 <strong style="color:${deriv.takerBuySell > 1.05 ? 'var(--bull)' : deriv.takerBuySell < 0.95 ? 'var(--bear)' : 'var(--text3)'}">${deriv.takerBuySell?.toFixed(2)}</strong></div>` : ''}
   </div>
   `; })()}
+
+  ${(() => { try { return fundHtml(coin.symbol); } catch(_e) { return ''; } })()}
 
   <!-- ═══ VWAP 位置分析 ═══ -->
   ${(() => {
@@ -15097,7 +15101,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823d';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823e';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15239,6 +15243,82 @@ function inCooldown(tlog, symbol, direction) {
    使用者提供的技術教學整理出七步共通原則：背景→方向→位置→觸發→失效→出場→檢討。系統每一步本來都有對應模組，
    但散在 SQ 因子、風控分、結構階梯、出場計畫裡，訊息上看不出「這筆單七步各過了沒」。這裡只讀 setup／coin 已有欄位
    （零請求、零新計算），每步給 ✓／⚠ 與一句話；寫進訊息與交易紀錄（checklist），研究台展開單筆可見。 */
+/* ── 基本面層（2026-11-05）──────────────────────────────────────────────────────
+   來源與抓取在 api.js fetchFundamentalsAll（三個免費第一選擇＋備援）。這裡：6 小時一次的更新（掃描後段 _pt 步驟）、
+   單幣評分（每一項都附證據句）、訊息一行、交易紀錄欄位、研究特徵、倉位軟門。分數語意：正＝基本面支持持有／做多，
+   負＝基本面支持做空／迴避。只做軟門（×0.8），不硬擋（規則④）。 */
+const FUND_KEY = 'csp_fund'; let _fundCache = null, _fundBusy = false;
+function fundLoad() { if (_fundCache) return _fundCache; try { _fundCache = JSON.parse(localStorage.getItem(FUND_KEY) || 'null'); } catch(_e) { _fundCache = null; } return _fundCache; }
+async function fundRefresh(force) {
+  const c = fundLoad();
+  if (!force && c && Date.now() - (c.at || 0) < 6 * 3600e3) return c;
+  if (_fundBusy) return c; _fundBusy = true;
+  try {
+    const syms = new Set(['BTC', 'ETH']);
+    try { for (const p of loadPairs()) { const sym = String((p && (p.s || p.symbol)) || p || '').replace('/USDT', '').toUpperCase(); if (sym) syms.add(sym); } } catch(_e) {}
+    const all = await fetchFundamentalsAll(syms);
+    const keep = { at: all.at, src: all.src, errs: (all.errs || []).slice(0, 4), macro: all.macro || {}, coins: {} };
+    for (const sym of syms) if (all.coins[sym]) keep.coins[sym] = all.coins[sym];
+    if (Object.keys(keep.coins).length || Object.keys(keep.macro).length) { _fundCache = keep; try { localStorage.setItem(FUND_KEY, JSON.stringify(keep)); } catch(_e) {} }
+    return _fundCache;
+  } catch(_e) { return c; } finally { _fundBusy = false; }
+}
+function fundFor(symbol) {
+  const c = fundLoad(); if (!c || !c.coins) return null;
+  const sym = String(symbol || '').replace('/USDT', '').toUpperCase();
+  const f = c.coins[sym]; if (!f) return null;
+  const ev = []; let score = 0;
+  const add = (pts, txt) => { score += pts; ev.push({ pts, txt }); };
+  const fin = v => isFinite(parseFloat(v)) ? parseFloat(v) : null;
+  const mcap = fin(f.mcap), fees = fin(f.fees30d), rev = fin(f.rev30d), tvl = fin(f.tvl);
+  const m = {};
+  if (mcap > 0 && fees > 0) { const pf = mcap / (fees * 12); m.pf = +pf.toFixed(1); if (pf < 20) add(2, `市值／年化手續費 ${pf.toFixed(0)}×（便宜）`); else if (pf < 60) add(1, `市值／年化手續費 ${pf.toFixed(0)}×（合理）`); else if (pf > 300) add(-1, `市值／年化手續費 ${pf.toFixed(0)}×（昂貴）`); else ev.push({ pts: 0, txt: `市值／年化手續費 ${pf.toFixed(0)}×` }); }
+  if (mcap > 0 && rev > 0) { const pe = mcap / (rev * 12); m.pe = +pe.toFixed(1); if (pe < 30) add(1, `市值／年化協議收入 ${pe.toFixed(0)}×（本益比類比，便宜）`); else if (pe > 500) add(-1, `市值／年化協議收入 ${pe.toFixed(0)}×（昂貴）`); else ev.push({ pts: 0, txt: `市值／年化協議收入 ${pe.toFixed(0)}×` }); }
+  const fc = fin(f.feesChg1m); if (fc != null) { if (fc > 20) add(1, `手續費月增 +${fc.toFixed(0)}%（使用量成長）`); else if (fc < -20) add(-1, `手續費月減 ${fc.toFixed(0)}%（使用量萎縮）`); }
+  if (tvl > 0 && mcap > 0) { const mt = mcap / tvl; m.mcapTvl = +mt.toFixed(2); if (mt < 1) add(1, `市值／TVL ${mt.toFixed(2)}（市值低於鎖倉）`); else if (mt > 10) add(-1, `市值／TVL ${mt.toFixed(1)}（鎖倉撐不起市值）`); }
+  const tc = fin(f.tvlChg7d); if (tc != null) { if (tc > 10) add(1, `TVL 7 日 +${tc.toFixed(0)}%（資金流入）`); else if (tc < -10) add(-1, `TVL 7 日 ${tc.toFixed(0)}%（資金流出）`); }
+  const circ = fin(f.circ), tot = fin(f.max) || fin(f.total);
+  if (circ > 0 && tot > 0 && tot >= circ) { const r = tot / circ; m.fdvMcap = +r.toFixed(2); if (r > 3) add(-2, `FDV／市值 ${r.toFixed(1)}×（大量未解鎖籌碼）`); else if (r > 1.5) add(-1, `FDV／市值 ${r.toFixed(1)}×（待解鎖偏多）`); else add(1, `已流通 ${Math.round(100 / r)}%（解鎖壓力小）`); }
+  const vol = fin(f.vol24); if (vol > 0 && mcap > 0) { const vm = vol / mcap * 100; m.volMcap = +vm.toFixed(1); if (vm < 1) add(-1, `成交額／市值 ${vm.toFixed(1)}%（流動性薄）`); else if (vm > 10) add(1, `成交額／市值 ${vm.toFixed(0)}%（交投活躍）`); }
+  const ath = fin(f.athDist); if (ath != null) { if (ath < -90) add(-1, `距歷史高點 ${ath.toFixed(0)}%（長期弱勢）`); else if (ath > -15) add(1, `距歷史高點僅 ${Math.abs(ath).toFixed(0)}%（強勢）`); }
+  const st = c.macro && c.macro.stable; if (st && fin(st.chg7d) != null) { if (st.chg7d > 0.5) add(1, `穩定幣總量 7 日 +${st.chg7d.toFixed(1)}%（場內資金增加）`); else if (st.chg7d < -0.5) add(-1, `穩定幣總量 7 日 ${st.chg7d.toFixed(1)}%（場內資金流出）`); }
+  const label = score >= 3 ? 'strong' : score <= -3 ? 'weak' : 'neutral';
+  return { sym, score, label, ev, m, at: c.at, src: f.mkSrc || null, name: f.name || f.llamaName || sym };
+}
+const _FUND_ZH = { strong: '強', neutral: '中性', weak: '弱' };
+function fundLine(fd) {
+  if (!fd) return '';
+  const top = fd.ev.filter(e => e.pts !== 0).sort((a, b) => Math.abs(b.pts) - Math.abs(a.pts)).slice(0, 4).map(e => e.txt);
+  return `🏛 基本面：${_FUND_ZH[fd.label]}（${fd.score > 0 ? '+' : ''}${fd.score}）${top.length ? '：' + top.join('、') : '：資料不足'}\n`;
+}
+/* 建單紀錄用的小物件；al＝方向對齊（做多遇強＝順向、做多遇弱＝逆向） */
+function fundSnapshot(symbol, isLong) {
+  const fd = fundFor(symbol); if (!fd) return null;
+  const al = fd.label === 'neutral' ? 'neutral' : ((fd.label === 'strong') === !!isLong ? 'aligned' : 'against');
+  return { score: fd.score, label: fd.label, al, pf: fd.m.pf ?? null, pe: fd.m.pe ?? null, fdvMcap: fd.m.fdvMcap ?? null, volMcap: fd.m.volMcap ?? null };
+}
+function _expFundFeats(t, add) {
+  const f = t && t.fund; if (!f) return;
+  if (f.al) add('fund', 'al:' + f.al, '基本面' + _EXP_ALIGN_ZH[f.al]);
+  if (f.label) add('fund', 'lvl:' + f.label, '基本面' + _FUND_ZH[f.label]);
+  if (isFinite(parseFloat(f.fdvMcap))) add('fund', 'fdv:' + (parseFloat(f.fdvMcap) > 1.5 ? 'high' : 'low'), parseFloat(f.fdvMcap) > 1.5 ? 'FDV／市值 >1.5（待解鎖多）' : 'FDV／市值 ≤1.5');
+  if (isFinite(parseFloat(f.pf))) add('fund', 'pf:' + (parseFloat(f.pf) < 60 ? 'cheap' : 'rich'), parseFloat(f.pf) < 60 ? '市值／年化手續費 <60×' : '市值／年化手續費 ≥60×');
+}
+/* 幣種詳情頁區塊 */
+function fundHtml(symbol) {
+  const fd = fundFor(symbol); const c = fundLoad();
+  if (!fd) return c ? `<div style="margin:10px 0;padding:12px 16px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;font-size:0.76rem;color:var(--text3)">🏛 基本面：此幣種在免費來源（DefiLlama／CoinPaprika／CoinGecko）無資料。資料時間 ${new Date(c.at).toLocaleString('zh-TW', { hour12: false })}</div>` : '';
+  const color = fd.label === 'strong' ? '#22c55e' : fd.label === 'weak' ? '#ef4444' : '#f59e0b';
+  const rows = fd.ev.map(e => `<div style="display:flex;gap:8px;align-items:baseline"><span style="min-width:28px;text-align:right;font-family:monospace;color:${e.pts > 0 ? 'var(--bull)' : e.pts < 0 ? 'var(--bear)' : 'var(--text3)'}">${e.pts > 0 ? '+' : ''}${e.pts}</span><span>${_rsEsc(e.txt)}</span></div>`).join('');
+  return `<div style="margin:10px 0;padding:14px 16px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <span style="font-size:0.78rem;font-weight:600;color:var(--text2);letter-spacing:.5px">🏛 基本面（手續費／收入／TVL／籌碼／流動性／資金面）</span>
+      <span style="font-size:0.72rem;font-weight:700;color:${color};background:${color}22;padding:2px 8px;border-radius:6px">${_FUND_ZH[fd.label]} ${fd.score > 0 ? '+' : ''}${fd.score}</span>
+    </div>
+    <div style="font-size:0.76rem;color:var(--text2);line-height:1.8">${rows || '<span style="color:var(--text3)">資料不足</span>'}</div>
+    <div style="color:var(--text3);font-size:0.7rem;margin-top:4px">來源：DefiLlama（協議手續費／收入／TVL）、${fd.src === 'coingecko' ? 'CoinGecko' : 'CoinPaprika'}（市值／供給／成交額／距 ATH）、DefiLlama 穩定幣總量；${new Date(fd.at).toLocaleString('zh-TW', { hour12: false })} 更新，每 6 小時一次。正分＝支持做多／持有，負分＝支持做空／迴避；只影響倉位（×0.8），不硬擋。</div>
+  </div>`;
+}
 /* ── 訂單流快照（2026-11-05，使用者：「量化、order flow」）────────────────────────────────
    系統早就在算足跡 Delta、CVD、訂單簿失衡、鯨魚方向、清算流、VWAP 位置，但只進 SQ 加減分與確信度投票，
    從來沒有記在單上——「訂單流到底有沒有邊際」這個問題問不出口。這裡把建單當下的訂單流狀態壓成一個小物件
@@ -15547,7 +15627,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     `⏰ ${_ts}\n` +
     (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
     `${_sqLine}\n` +
-    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + (() => { try { return _esc(checklistLine(entryChecklist(coin, isLong, setup))); } catch(_e) { return ''; } })() + (() => { try { return _esc(flowLine(flowSnapshot(coin, isLong), isLong)); } catch(_e) { return ''; } })() + _evLine +
+    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + (() => { try { return _esc(checklistLine(entryChecklist(coin, isLong, setup))); } catch(_e) { return ''; } })() + (() => { try { return _esc(flowLine(flowSnapshot(coin, isLong), isLong)); } catch(_e) { return ''; } })() + (() => { try { return _esc(fundLine(fundFor(coin.symbol))); } catch(_e) { return ''; } })() + _evLine +
     `\n${_priceLines}` + _sizeLine + `\n` +
     (_biasBlock ? `\n${_biasBlock}\n` : '') +
     (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
@@ -16352,6 +16432,8 @@ async function recordSignalsFromScan(data) {
       if (_bp < 0.5) _soft(`${_bpTxt} <50%`, 0.6);
       else if (_bp < 0.56) _soft(`${_bpTxt} <56%`, 0.8);
     }
+    // 基本面（2026-11-05）：做多遇弱、做空遇強 → 軟門 ×0.8（記在單上，由實測決定要不要升級成硬門）
+    try { const _fd = fundFor(coin.symbol); if (_fd && ((isLong && _fd.label === 'weak') || (!isLong && _fd.label === 'strong'))) _soft(`基本面${_FUND_ZH[_fd.label]}仍${isLong ? '做多' : '做空'}（${_fd.score > 0 ? '+' : ''}${_fd.score}）`, 0.8); } catch(_e) {}
     // 結構階梯不完整＝四個價位沒辦法全部釘在結構上 → 不建單。
     // 沒有結構可釘時硬用固定 R 湊出價位，正是這次要改掉的事。
     if (setup.ladderOk === false && _no('結構不足（四個價位無法全部釘在結構上）')) continue;
@@ -16470,10 +16552,13 @@ async function recordSignalsFromScan(data) {
           _liteSf ? Promise.resolve(null) : fetchLiquidationMap(coin.symbol),
           fetchMTFKlines(coin.symbol),
           _liteSf ? Promise.resolve(null) : fetchOrderBookImbalance(coin.symbol),
+          // 2026-11-05：幣安清算 WebSocket 未連線（地區封鎖）→ 改抓 OKX 已成交強平單併入同一份緩衝
+          (typeof _liqWs !== 'undefined' && _liqWs) || _liteSf ? Promise.resolve(null) : okxLiqFetch(coin.symbol).catch(() => null),
         ]), 20000, null);
         _candAwaitMs += performance.now() - _sfT0;
         if (!_sfAll) { try { _healthNote('fetch-timeout', `${coin.symbol} 補充抓取逾時 20 秒，本輪略過`); } catch(_e) {} _scanFetchCache[coin.symbol] = { ts: _sfNow - 8 * 60 * 1000, deriv: _sfCached?.deriv || null, whale: _sfCached?.whale || null }; }
-        const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF, _sfOB] = _sfAll || [null, null, null, null, null, null];
+        const [_sfDeriv, _sfWhale, _sfFP, _sfLiq, _sfMTF, _sfOB, _sfLiqR] = _sfAll || [null, null, null, null, null, null, null];
+        try { if (Array.isArray(_sfLiqR) && _sfLiqR.length) _liqMergeRest(_sfLiqR); } catch(_e) {}
         if (_sfDeriv) coin.derivData = _sfDeriv;
         if (_sfWhale) coin.whaleData = _sfWhale;
         if (_sfFP)    _footprintCache[coin.symbol] = _sfFP;
@@ -17120,6 +17205,7 @@ async function recordSignalsFromScan(data) {
       btProbC: (() => { try { const c = btProbCalibrated(setup.btProb); return c.applied ? c.pc : null; } catch(_e) { return null; } })(),   // 建單當下的實倉校準值（研究台對照）
       checklist: (() => { try { return entryChecklist(coin, isLong, setup).map(i => ({ k: i.k, ok: i.ok, t: String(i.text).slice(0, 120) })); } catch(_e) { return null; } })(),   // 進場七步檢查（背景／方向／位置／觸發／失效／出場／檢討）
       flow: (() => { try { return flowSnapshot(coin, isLong); } catch(_e) { return null; } })(),   // 訂單流快照（Delta／CVD／掛單失衡／鯨魚／VWAP／清算）
+      fund: (() => { try { return fundSnapshot(coin.symbol, isLong); } catch(_e) { return null; } })(),   // 基本面快照（分數／對齊／市值年化手續費／FDV 市值）
       tp1FracPlan:  isFinite(parseFloat(setup.tp1FracPlan))  ? parseFloat(setup.tp1FracPlan)  : null,   // 突破單專用出場：止盈一減倉比例
       tp1LockRPlan: isFinite(parseFloat(setup.tp1LockRPlan)) ? parseFloat(setup.tp1LockRPlan) : null,   // 突破單專用出場：止盈一後鎖利 R
       trailGiveRPlan: isFinite(parseFloat(setup.trailGiveRPlan)) ? parseFloat(setup.trailGiveRPlan) : null,   // 突破單專用出場：移動停利回吐 R
@@ -23833,7 +23919,7 @@ const LEARN_KEEP_FIELDS = [
   'entryTBias', 'entryWBias',                // 建單當下的大盤預測（監控可比性補償用）
   'probeTag',                                // 探路單標記（封鎖決策的驗證樣本，封存剝掉＝驗證斷糧）
   'entryFr', 'fundingR',                     // 費率快照與估算成本（長持倉期望值被高估的量測）
-  'entryLs', 'h4Adx', 'btcD1', 'btProb', 'btProbC', 'flow', 'checklist',   // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
+  'entryLs', 'h4Adx', 'btcD1', 'btProb', 'btProbC', 'flow', 'checklist', 'fund',   // 2026-10 回測因子快照（多空人數比／4H ADX／BTC 日線／模型預測勝率），供記分卡持續驗證
   'tp1FracPlan', 'tp1LockRPlan', 'trailGiveRPlan',   // 突破單專用出場計畫（止盈一減倉比例／鎖利 R／追蹤回吐 R），封存剝掉＝重放算錯
   'slMovedAt',                               // 上次實際移動止損的時間（移動止損「值得移」門檻用）
   'convEv',                                  // 證據支持/反對清單（確信度權重校準的原料，封存剝掉＝校準斷糧）
@@ -28944,7 +29030,7 @@ const SCALP_KEEP_FIELDS = new Set([
   // 風控（量化部分——風控評分與扣分條件的學習都靠它）
   'riskScore', 'riskKeys', 'conf',
   // 止損建議／機器人學習止損與量化重放
-  'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter', 'flow',
+  'atrAtEntry', 'levelGapAtr', 'slDistAtr', 'slMult', 'slMultSrc', 'slAnchor', 'slOuter', 'slHasOuter', 'flow', 'fund',
   'maeAtr', 'mfeAtr', 'feeR', 'slDistPct', 'tp1RUsed', 'tp2RUsed', 'fillDelaySec', 'slipR',
   'geom', 'rrAtFill', 'rr1AtFill', 'riskAtFillR', 'voidWhy', 'botMode', 'softMult', 'ictBonus',
   // 分群用（時段／波動／量能／多週期）
@@ -30062,6 +30148,7 @@ async function recordScalpSignals(data) {
         kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(),
         regime: currentRegimeKey() || null,   // 市場狀態（regime×方向勝率學習用）
         flow: (() => { try { return flowSnapshot(coin, dir === 'long'); } catch(_e) { return null; } })(),   // 訂單流快照
+        fund: (() => { try { return fundSnapshot(coin.symbol, dir === 'long'); } catch(_e) { return null; } })(),   // 基本面快照
         // 探路單標記：這筆是被封鎖的桶放行的取樣單，實驗室會單獨統計它的成效
         probeTag: null,
         note: `快進快出（${SCALP_MODE_LABEL[setup.mode] || setup.mode}）`,
@@ -32792,6 +32879,15 @@ function liqWatchStart() {
   } catch(_e) { _liqWs = null; try { feedStamp('liqws', false, '無法建立連線'); } catch(_fe) {} }
 }
 
+/* OKX REST 強平單併入緩衝（去重：同時間＋同金額）；只收最近 60 分鐘 */
+const _liqSeen = new Set();
+function _liqMergeRest(list) {
+  const since = Date.now() - 60 * 60000; let n = 0;
+  for (const ev of list) { if (!ev || ev.t < since) continue; const k = ev.sym + ':' + Math.round(ev.t) + ':' + Math.round(ev.usd); if (_liqSeen.has(k)) continue; _liqSeen.add(k); _liqBuf.push({ t: ev.t, sym: ev.sym, side: ev.side, usd: ev.usd }); n++; }
+  if (_liqSeen.size > 5000) { const arr = [..._liqSeen]; for (const k of arr.slice(0, 2500)) _liqSeen.delete(k); }
+  if (_liqBuf.length > LIQ_CFG.bufMax) { _liqBuf.sort((a, b) => a.t - b.t); _liqBuf.splice(0, _liqBuf.length - LIQ_CFG.bufMax); }
+  return n;
+}
 /* 指定幣種近 N 分鐘的清算統計；dom = 顯著單邊方向（'long'=多單被殺、'short'=空單被殺、''=無） */
 function liqStats(symbol, winMin = LIQ_CFG.winMin) {
   const since = Date.now() - winMin * 60000;
@@ -34978,7 +35074,7 @@ function buildForecastHtml() {
       快速單直接把劣勢條件當攔截、一般單當軟門（×0.7）。
    ④ expSampleSufficiency：每個學習／實驗機制目前的樣本數、需要的樣本數、近 14 天累積速度與預估達標天數。 */
 const EXP_CFG = { minN: 30, edgePP: 5, edgeR: 0.05, cacheMs: 10 * 60e3, softMult: 0.7 };
-const EXP_DIM_LABEL = { tech: '技術', pattern: '盤形', chips: '籌碼', flow: '訂單流', macro: '宏觀／基本面', session: '時段', model: '模型／執行', risk: '風控條件' };
+const EXP_DIM_LABEL = { tech: '技術', pattern: '盤形', chips: '籌碼', flow: '訂單流', fund: '基本面', macro: '宏觀／基本面', session: '時段', model: '模型／執行', risk: '風控條件' };
 function _expAligned(dir, sig) {   // 'long'/'short' vs 'bull'/'bear'/'neutral' → 'aligned'|'against'|'neutral'
   const s = String(sig || '');
   if (s.indexOf('bull') >= 0) return dir === 'long' ? 'aligned' : 'against';
@@ -35019,7 +35115,7 @@ function expFeatures(t, kind) {
       if (t.entryTBias) { const a = _expAligned(dir, t.entryTBias); add('macro', 'tbias:' + a, '今日大盤預測' + _EXP_ALIGN_ZH[a]); }
       for (const tag of (t.entryTags || [])) add(_expTagDim(tag), 'tag:' + tag, tag);
       for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
-      _expFlowFeats(t, add);
+      _expFlowFeats(t, add); _expFundFeats(t, add);
       if (t.convEv && Array.isArray(t.convEv.a)) for (const k of t.convEv.a) add('model', 'opp:' + k, '反對證據 ' + ((typeof CONV_EV_LABELS !== 'undefined' && CONV_EV_LABELS[k]) || k));
     } else if (kind === 'scalp') {
       if (t.mode) add('model', 'mode:' + t.mode, (typeof SCALP_MODE_LABEL !== 'undefined' && SCALP_MODE_LABEL[t.mode]) || t.mode);
@@ -35039,7 +35135,7 @@ function expFeatures(t, kind) {
       if (isFinite(parseFloat(t.entryLs))) { const ls = parseFloat(t.entryLs); const a = ls > 1 ? (dir === 'long' ? 'aligned' : 'against') : ls < 1 ? (dir === 'short' ? 'aligned' : 'against') : 'neutral'; add('chips', 'ls:' + a, '多空比' + _EXP_ALIGN_ZH[a]); }
       if (isFinite(parseFloat(t.entryFr))) { const fr = parseFloat(t.entryFr); const a = Math.abs(fr) < 0.0002 ? 'neutral' : (fr > 0) === (dir === 'long') ? 'crowded' : 'contra'; add('chips', 'fr:' + a, a === 'crowded' ? '費率同向擁擠' : a === 'contra' ? '費率反向' : '費率中性'); }
       for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
-      _expFlowFeats(t, add);
+      _expFlowFeats(t, add); _expFundFeats(t, add);
     } else {   // lab
       for (const tag of (t.tags || [])) add(_expTagDim(tag), 'tag:' + tag, tag);
       for (const k of (t.riskKeys || [])) add('risk', 'rk:' + k, (typeof RISK_KEY_LABELS !== 'undefined' && RISK_KEY_LABELS[k]) || k);
@@ -35110,6 +35206,9 @@ const EXP_REGISTRY = [
   { id: 'm_flow_liq_opp',       scope: 'main',  key: 'flow:liq:opp',       name: '一般單追軋空／殺多',   why: '對手方正被清算時順勢進場，是追到尾段還是吃到延續', expect: 'drag' },
   { id: 's_flow_delta_against', scope: 'scalp', key: 'flow:delta:against', name: '快速單逆足跡 Delta',   why: '5m 級別逆主動買賣淨量是否更差', expect: 'drag' },
   { id: 's_flow_ob_aligned',    scope: 'scalp', key: 'flow:ob:aligned',    name: '快速單掛單順向厚',     why: '掛單失衡在快進快出是否有即時邊際', expect: 'edge' },
+  // 基本面（2026-11-05）：軟門 ×0.8 已上線，這裡持續驗證
+  { id: 'm_fund_against',       scope: 'main',  key: 'fund:al:against',    name: '一般單逆基本面',       why: '做多遇基本面弱、做空遇基本面強（手續費估值／解鎖／流動性／資金面）是否更差', expect: 'drag' },
+  { id: 'm_fund_fdv_high',      scope: 'main',  key: 'fund:fdv:high',      name: '一般單高 FDV 幣',      why: 'FDV／市值 >1.5（待解鎖籌碼多）的幣做多是否更常被解鎖賣壓打掉', expect: 'drag' },
 ];
 function expVerdicts(force) {
   const out = [];
@@ -35380,7 +35479,7 @@ const _RS_GROUPS = {
   main: [
     { t: '方向', p: 'base:dir:' }, { t: '月份', p: 'base:mon:', sortKey: true }, { t: '時段', p: 'session:kz:' }, { t: 'BTC 日線', p: 'macro:btcD1:' },
     { t: '預測勝率桶', p: 'model:btp:' }, { t: '確信度', p: 'model:conv:' }, { t: '進場方式／觸發', p: /^(model:entry:|tech:tag:)/ }, { t: '4H ADX', p: 'tech:adx:' }, { t: 'RSI', p: 'tech:rsi:' },
-    { t: '訂單流', p: 'flow:' }, { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '市場狀態', p: 'macro:regime:' }, { t: '今日大盤預測', p: 'macro:tbias:' }, { t: '部位／模式', p: /^model:(soft|mode|trail):/ },
+    { t: '訂單流', p: 'flow:' }, { t: '基本面', p: 'fund:' }, { t: '費率', p: 'chips:fr:' }, { t: '多空比', p: 'chips:ls:' }, { t: '市場狀態', p: 'macro:regime:' }, { t: '今日大盤預測', p: 'macro:tbias:' }, { t: '部位／模式', p: /^model:(soft|mode|trail):/ },
     { t: '進場標籤', p: /^(pattern|chips|macro|session|tech|model):tag:/, excl: /^tech:tag:(h1break|stopbreak|limit|pullback)$/, top: 12 }, { t: '風控扣分', p: 'risk:rk:' }, { t: '反對證據', p: 'model:opp:' }, { t: '幣種', p: 'base:sym:', top: 12 },
   ],
   scalp: [
@@ -35519,6 +35618,79 @@ function _rsGrowthHtml(kind, rows) {
   </div>`;
 }
 
+
+/* ── 交易員總覽（2026-11-05，儀表板最上方一張卡）────────────────────────────────
+   使用者：「頁面整理成簡單明瞭，交易員能直觀看到判斷與分析，真正跟著進出場」。原本的判斷散在十幾張卡與訊息裡。
+   這張卡只做彙整：市場狀態／今日判斷／本輪建單與沒建單的原因／持倉與價位／本月績效與目前回撤／系統狀態。
+   全部讀既有快取與紀錄（規則①：不算新東西），60 秒內不重算；每一個區塊各自 try，壞一塊不影響其他。 */
+let _briefAt = 0;
+function renderTraderBrief(force) {
+  const el = document.getElementById('trader-brief-body'); if (!el) return;
+  const now = Date.now(); if (!force && now - _briefAt < 60e3) return; _briefAt = now;
+  const esc = _rsEsc; const B = [];
+  const box = (ttl, body, cls) => `<div class="tb-box${cls ? ' ' + cls : ''}"><div class="tb-ttl">${ttl}</div><div class="tb-body">${body}</div></div>`;
+  const fmtP = v => { const n = parseFloat(v); if (!isFinite(n)) return '—'; return n >= 1000 ? n.toFixed(2) : n >= 1 ? n.toFixed(4) : n.toPrecision(4); };
+  // ① 市場
+  try {
+    const bd = (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : 'neutral';
+    const regime = (() => { try { return currentRegimeKey() || '—'; } catch(_e) { return '—'; } })();
+    let tb = null; try { if (typeof _macroCache !== 'undefined' && _macroCache) tb = computeTodayAIBias(_macroCache.fg, _macroCache); } catch(_e) {}
+    const fg = (() => { try { const v = _macroCache && _macroCache.fg && (_macroCache.fg.value ?? _macroCache.fg); return isFinite(parseFloat(v)) ? parseFloat(v) : null; } catch(_e) { return null; } })();
+    const fc = fundLoad(); const st = fc && fc.macro && fc.macro.stable;
+    const kz = (() => { try { return computeKillZone() || {}; } catch(_e) { return {}; } })();
+    B.push(box('🌐 市場', [
+      `BTC 日線 <b style="color:${bd === 'bull' ? 'var(--bull)' : bd === 'bear' ? 'var(--bear)' : 'var(--text3)'}">${bd === 'bull' ? '多頭' : bd === 'bear' ? '空頭' : '中性'}</b>　市場狀態 <b>${esc(regime)}</b>`,
+      tb && tb.biasLabel ? `今日判斷 <b>${esc(tb.biasLabel)}</b>（信心 ${tb.conf || 0}%）` : '今日判斷：宏觀資料未就緒',
+      `${fg != null ? `恐慌貪婪 ${fg}　` : ''}時段 ${esc(kz.name || '—')}${kz.quality ? `（${kz.quality === 'high' ? '高' : kz.quality === 'medium' ? '中' : '低'}品質）` : ''}`,
+      st && isFinite(st.chg7d) ? `穩定幣總量 7 日 <b style="color:${st.chg7d >= 0 ? 'var(--bull)' : 'var(--bear)'}">${st.chg7d >= 0 ? '+' : ''}${st.chg7d}%</b>（場內資金）` : '',
+    ].filter(Boolean).join('<br>')));
+  } catch(_e) {}
+  // ② 本輪判斷：建單／沒建單的原因
+  try {
+    let f = null; try { f = JSON.parse(localStorage.getItem('csp_scan_funnel') || 'null'); } catch(_e) {}
+    if (f && f.rejects) {
+      const keys = Object.keys(f.rejects);
+      const top3 = keys.find(k => k.startsWith('ℹ️ 機會品質排序前3'));
+      const hard = keys.filter(k => !k.startsWith('ℹ️') && !k.startsWith('↓')).map(k => [k.replace(/（回測.*?）/, '').replace(/\(\d+\)/, '').trim(), f.rejects[k]]).reduce((m, [k, v]) => { const kk = k.replace(/\d+(\.\d+)? ?</, '<'); m[kk] = (m[kk] || 0) + v; return m; }, {});
+      const hardTop = Object.entries(hard).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      B.push(box('🎯 本輪判斷', [
+        `候選 <b>${f.candidates || 0}</b> 檔 → 建單 <b style="color:${f.built ? 'var(--bull)' : 'var(--text)'}">${f.built || 0}</b> 筆（${f.at ? new Date(f.at).toLocaleTimeString('zh-TW', { hour12: false }) : '—'}）`,
+        top3 ? esc(top3.replace('ℹ️ 機會品質排序前3（|評分−50|＋確信度對齊×0.8）：', '最接近出手：')) : '',
+        hardTop.length ? '沒出手的主因：' + hardTop.map(([k, v]) => `${esc(k)} ${v}`).join('、') : '',
+        `門檻：風控分 ≥${(f.gates && f.gates.minConf) || 65}、SQ ≥${(f.gates && f.gates.minSq) || 14}、R/R ≥${(f.gates && f.gates.minRR) || 1.2}`,
+      ].filter(Boolean).join('<br>')));
+    } else B.push(box('🎯 本輪判斷', '尚未完成第一輪掃描'));
+  } catch(_e) {}
+  // ③ 持倉與掛單（價位＝進出場證據的落點）
+  try {
+    const open = loadTradeLog().filter(t => t && (t.status === 'open' || t.status === 'pending')).slice(0, 6);
+    const sc = (() => { try { return loadScalpLog().filter(t => t && t.status === 'open'); } catch(_e) { return []; } })();
+    const rows = open.map(t => { const long = t.direction === 'long'; return `<div class="tb-pos"><b style="color:${long ? 'var(--bull)' : 'var(--bear)'}">${long ? '多' : '空'}</b> <b>${esc(String(t.symbol || '').replace('/USDT', ''))}</b> ${t.status === 'pending' ? '<span class="tb-tag">掛單中</span>' : '<span class="tb-tag on">持倉</span>'} 進 ${fmtP(t.entry)}｜損 ${fmtP(t.sl)}｜盈一 ${fmtP(t.tp1)}${t.tp2 ? `｜盈二 ${fmtP(t.tp2)}` : ''}${Array.isArray(t.checklist) && t.checklist.length ? `　<span class="tb-dim">七步 ${t.checklist.filter(c => c.ok).length}/${t.checklist.length}✓</span>` : ''}</div>`; });
+    B.push(box('📌 持倉與掛單', (rows.length ? rows.join('') : '<span class="tb-dim">目前沒有一般單持倉或掛單</span>') + `<div class="tb-dim" style="margin-top:4px">快速單持倉 ${sc.length} 筆${sc.length ? '：' + sc.slice(0, 5).map(t => esc(String(t.symbol || '').replace('/USDT', '')) + (t.direction === 'long' ? '多' : '空')).join('、') : ''}；逐筆進出場理由在「交易記錄」，條件對照在「策略報表 → 交易研究」</div>`));
+  } catch(_e) {}
+  // ④ 本月績效與目前回撤
+  try {
+    const rows = _rsSamples('main'); const sc = _rsSamples('scalp');
+    const mon = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })();
+    const mM = _rsStats(rows.filter(x => x.mon === mon)), sM = _rsStats(sc.filter(x => x.mon === mon));
+    const ddM = _rsCurrentDd(rows), ddS = _rsCurrentDd(sc);
+    const line = (name, st, dd) => `${name}：本月 ${st.n} 筆${st.n ? `，勝率 <b style="color:${_rsWrC(st.wr)}">${st.wr == null ? '--' : Math.round(st.wr * 100) + '%'}</b>，累計 <b style="color:${_rsRC(st.sumR)}">${_rsFmtR(st.sumR, 1)}</b>` : ''}；目前回撤 <b style="color:${dd.dd > 0 ? 'var(--bear)' : 'var(--bull)'}">${dd.dd > 0 ? '−' + dd.dd.toFixed(1) + 'R' : '在高點'}</b>`;
+    B.push(box('📈 績效與回撤', line('一般單', mM, ddM) + '<br>' + line('快速單', sM, ddS) + `<div class="tb-dim" style="margin-top:4px">回撤超過 10R 時先看「交易研究 → 在賠的條件」；學習成長卡會寫系統是在進步還是退步</div>`));
+  } catch(_e) {}
+  // ⑤ 系統
+  try {
+    const master = (() => { try { return isSignalMaster(); } catch(_e) { return null; } })();
+    const g = _guardState(); const fz = (() => { try { return learnFreezeDaysLeft(); } catch(_e) { return 0; } })();
+    const feeds = (() => { try { return feedHealth(); } catch(_e) { return []; } })();
+    const bad = feeds.filter(x => x.state === 'stale' || (x.state === 'none' && x.fail > 0)).map(x => x.label.split('（')[0]);
+    const fc = fundLoad();
+    B.push(box('🛡 系統', [
+      `本裝置 ${master ? '<b style="color:var(--bull)">是訊號主機</b>' : '<span style="color:var(--text3)">非主機（不建單不發訊）</span>'}　守護頁 ${g.on ? '<b style="color:var(--bull)">運作中</b>' : '<span style="color:#f59e0b">未開</span>'}　學習凍結 ${fz > 0 ? `剩 ${fz} 天` : '已解除'}`,
+      `資料：${bad.length ? `<span style="color:#f59e0b">${bad.length} 項過期或失敗（${esc(bad.slice(0, 4).join('、'))}）</span>` : '<span style="color:var(--bull)">全部正常</span>'}；基本面 ${fc && fc.at ? `${Object.keys(fc.coins || {}).length} 幣，${new Date(fc.at).toLocaleString('zh-TW', { hour12: false })}` : '尚未取得（掃描後段每 6 小時更新）'}`,
+    ].join('<br>')));
+  } catch(_e) {}
+  el.innerHTML = `<div class="tb-head"><span>🧭 交易員總覽</span><span class="tb-dim">${new Date().toLocaleTimeString('zh-TW', { hour12: false })}　<a href="#" onclick="renderTraderBrief(true);return false" style="color:var(--accent)">重新整理</a></span></div><div class="tb-grid">${B.join('')}</div>`;
+}
 /* 交易原則 × 本系統對照（使用者 2026-11-05 提供的技術教學七步＋消息判讀五步）：每一條寫系統對應的模組與狀態，看得出哪裡已落實、哪裡只是部分 */
 function _rsPrinciplesHtml(kind) {
   const rows = kind === 'main' ? [
