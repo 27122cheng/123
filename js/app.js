@@ -1125,7 +1125,8 @@ function _guardState() {
     const hb = JSON.parse(localStorage.getItem('csp_guard_hb') || 'null');
     if (!hb || !hb.t) return { on: false, ever: false };
     const age = Date.now() - hb.t;
-    return { on: !hb.closed && age < GUARD_STALE_MS, ever: true, closed: !!hb.closed, ageS: Math.round(age / 1000), born: hb.born || null, hid: !!hb.hid };
+    // 2026-11-06：守護頁「轉為主機」（handoff）不算使用者關閉——主機側要持續嘗試把守護頁開回來，循環才能一直走下去
+    return { on: !hb.closed && age < GUARD_STALE_MS, ever: true, closed: !!hb.closed && !hb.handoff, handoff: !!hb.handoff, ageS: Math.round(age / 1000), born: hb.born || null, hid: !!hb.hid };
   } catch(_e) { return { on: false, ever: false }; }
 }
 function _guardLog() { try { const a = JSON.parse(localStorage.getItem('csp_guard_log') || '[]'); return Array.isArray(a) ? a.slice(0, 10) : []; } catch(_e) { return []; } }
@@ -15105,7 +15106,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823h';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823i';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
