@@ -15105,7 +15105,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823g';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823h';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -15530,7 +15530,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _ictBlock = _ictLines.length ? '\n' + _ictLines.join('\n') : '';
 
   // ── 極端頂/底反轉可能性 ──
-  let _revBlock = '';
+  let _revBlock = '', _revShow = false;
   try {
     const _er = setup.extremeRev || _ictCache.extremeRev;
     if (_er && _er.confidence >= 60) {
@@ -15549,6 +15549,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
       if (_er.confidence >= 85) {
         const _erAgainst = (_erIsTop && isLong) || (!_erIsTop && !isLong);
         if (_erAgainst) _revBlock += `   ⚠️ 反轉方向與本單${isLong ? '做多' : '做空'}相反，建議減倉或提前止盈\n`;
+        _revShow = _erAgainst;   // 2026-11-06：訊息只在「高信心且與本單相反」時才放反轉區塊
       }
     }
   } catch(_e) {}
@@ -15602,7 +15603,7 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
   const _bpLine = isFinite(parseFloat(setup.btProb))
     ? `📈 回測模型預測勝率：<b>${Math.round(parseFloat(setup.btProb) * 100)}%</b>${_bpC.applied ? `，實倉校準後 <b>${Math.round(_bpC.pc * 100)}%</b>（${_bpC.note}）` : ''}${(_bpC.applied ? _bpC.pc : parseFloat(setup.btProb)) < 0.56 ? '（偏低，倉位已縮）' : parseFloat(setup.btProb) >= 0.65 ? '（高分位）' : ''}\n`
     : '';
-  const _priceLines = _srcLine + (canScaleIn
+  const _priceLines = (canScaleIn
     ? (`📍 <b>進場：$${_fmt(_px(setup.entry))}</b> ${_modeTag}\n` +
        `🛑 <b>止損：$${_fmt(_px(setup.sl))}</b>  (${_slSign}${_slPct}%)` +
        _scaleBlock)
@@ -15612,9 +15613,8 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
        (_rr2 && setup.tp2 ? `🚀 <b>止盈二：$${_fmt(_px(setup.tp2))}</b>  (${_tp1Sign}${_tp2Pct}% | R:R ${_rr2}:1)\n` : '')));
   // ── 建議倉位（有算才顯示）：固定分數法，數量與帳戶大小成正比 ──
   const _sizeLine = (setup.sizeQty > 0 && setup.sizeNotional > 0)
-    ? `📦 建議倉位：<b>${setup.sizeQty}</b>（名目 $${setup.sizeNotional}｜風險 ${setup.sizeRiskPct}% 權益` +
-      `${setup.sizeWhy ? '，' + setup.sizeWhy : ''}）\n` +
-      `   └ 以權益 $${setup.sizeEquity || 1000} 計；帳戶不同請等比例縮放（設定頁可改基準權益）\n`
+    ? `📦 建議倉位：<b>${setup.sizeQty}</b>（名目 $${setup.sizeNotional}｜風險 ${setup.sizeRiskPct}% 權益，以 $${setup.sizeEquity || 1000} 計，等比例縮放` +
+      `${setup.sizeWhy ? '；' + setup.sizeWhy : ''}）\n`
     : '';
 
   // ── 組合輸出（新格式）──
@@ -15626,19 +15626,25 @@ function buildTelegramText(coin, direction, setup, macroCache, siteUrl, opts) {
     ? `📚 同型態歷史（${_evTg.scope}）：${_evTg.n} 筆、勝率 ${_evTg.wr}%（下界 ${_evTg.wrLb}%）、` +
       `期望 <b>${_evTg.exp > 0 ? '+' : ''}${_evTg.exp}R/筆</b>${_evTg.exp < 0 ? ' ⚠️ 此分支歷史為負，謹慎看待' : ''}\n`
     : '';
+  /* 2026-11-06 使用者：「進出場止盈止損放在風控分下面，不太需要出現在 Telegram 的就不用出現」。
+     順序：標題 → 方向＋幣種＋時間 → Kill Zone → 訊號品質 → 風控分 → 進場／止損／止盈一／止盈二（＋長線加倉）→ 建議倉位 → 價位空間
+     → 證據（預測勝率、進場七步、訂單流、基本面、同型態歷史）→ 只有高風險（≥60）或高信心且與本單相反的反轉才附 → 連結。
+     拿掉：ICT 結構行、本週／今日預測、扣分明細、中風險提示、早期反轉觀察、hashtag。這些都在網站的幣種詳情與交易紀錄裡。 */
+  const _evidence = _bpLine
+    + (() => { try { return _esc(checklistLine(entryChecklist(coin, isLong, setup))); } catch(_e) { return ''; } })()
+    + (() => { try { return _esc(flowLine(flowSnapshot(coin, isLong), isLong)); } catch(_e) { return ''; } })()
+    + (() => { try { return _esc(fundLine(fundFor(coin.symbol))); } catch(_e) { return ''; } })()
+    + _evLine;
   return `${_hdr}\n` +
-    `<b>${_dirLabel}</b>：<b>${coin.symbol}</b>\n` +
-    `⏰ ${_ts}\n` +
-    (_kzLine ? `${_kzLine}${_ictBlock}\n` : '') +
+    `<b>${_dirLabel}</b>：<b>${coin.symbol}</b>　⏰ ${_ts}\n` +
+    (_kzLine ? `${_kzLine}\n` : '') +
     `${_sqLine}\n` +
-    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` + _bpLine + (() => { try { return _esc(checklistLine(entryChecklist(coin, isLong, setup))); } catch(_e) { return ''; } })() + (() => { try { return _esc(flowLine(flowSnapshot(coin, isLong), isLong)); } catch(_e) { return ''; } })() + (() => { try { return _esc(fundLine(fundFor(coin.symbol))); } catch(_e) { return ''; } })() + _evLine +
-    `\n${_priceLines}` + _sizeLine + `\n` +
-    (_biasBlock ? `\n${_biasBlock}\n` : '') +
-    (_penLines.length ? `\n🛡️ <b>風控扣分明細</b>\n${_penLines.join('\n')}\n` : '') +
-    _riskBanner +
-    _revBlock +
-    `\n${_tags}\n` +
-    `🔗 <a href="${siteUrl}">查看 ${_sym} 詳細分析 →</a>\n` +
+    `📶 風控分：<b>${setup.conf} 分</b>${setup.conf < 60 ? '（⚠️ 低於門檻 60 分）' : ''}\n` +
+    `\n${_priceLines}` + _sizeLine + _srcLine +
+    (_evidence ? `\n${_evidence}` : '') +
+    (_riskScore >= 60 ? _riskBanner : '') +
+    (_revShow ? _revBlock : '') +
+    `\n🔗 <a href="${siteUrl}">查看 ${_sym} 詳細分析 →</a>\n` +
     `🖥 ${(() => { try { return _deviceLabel(); } catch(_e) { return '裝置'; } })()} · v${APP_VERSION}`;   // 哪台裝置、哪個版本發的：兩台同時當主機時一眼可辨
 }
 
