@@ -89,7 +89,7 @@
   const notify = (title, body) => { try { if (Notification.permission === 'granted') new Notification(title, { body, tag: 'csp-guard' }); } catch (e) {} };
   const renderLog = () => {
     if (!revives.length) { $('log').innerHTML = '<div class="dim">尚無</div>'; return; }
-    $('log').innerHTML = revives.slice(0, 12).map(r => `<div>${fmt(r.t)}　心跳停了 ${r.gapS} 秒，最後一步「${r.step || '?'}」${r.v ? '（v' + r.v + '）' : ''} → ${r.how === 'handoff' ? '<span class="warn">守護頁自己轉為主機</span>' : r.ok === true ? '<span class="ok">已另開主機，心跳恢復</span>' : r.ok === false ? '<span class="bad">另開後 30 秒沒有心跳（彈出視窗被封鎖）</span>' : '<span class="warn">等待心跳…</span>'}</div>`).join('');
+    $('log').innerHTML = revives.slice(0, 12).map(r => `<div>${fmt(r.t)}　心跳停了 ${r.gapS} 秒，最後一步「${r.step || '?'}」${r.v ? '（v' + r.v + '）' : ''} → ${r.how === 'handoff' ? '<span class="warn">守護頁自己轉為主機</span>' : r.how === 'died' ? '<span class="bad">另開的主機 30 秒內沒有心跳（開頁即死）</span>' : r.ok === true ? '<span class="ok">已另開主機，心跳恢復</span>' : r.ok === false ? '<span class="bad">另開後 30 秒沒有心跳（彈出視窗被封鎖）</span>' : '<span class="warn">等待心跳…</span>'}</div>`).join('');
   };
   const show = (cls, text, kv) => { $('st').className = 'st ' + cls; $('st').textContent = text; $('kv').textContent = kv || ''; };
   const chk = (i, ic, txt, tip) => { $(`c${i}-ic`).textContent = ic; $(`c${i}-txt`).textContent = txt; if (tip != null && $(`c${i}-tip`)) $(`c${i}-tip`).innerHTML = tip; };
@@ -154,9 +154,12 @@
     if (pending) {
       if (hb && hb.t > pending.t) { if (pending.rec) { pending.rec.ok = true; set('csp_guard_log', revives); } pending = null; popupOk = popupOk === null ? true : popupOk; renderLog(); }
       else if (now - pending.t > CONFIRM_MS) {
-        const rec = pending.rec; if (rec) { rec.ok = false; set('csp_guard_log', revives); }
-        pending = null; popupOk = false; guardProbePopup(false); renderLog();
-        if ($('handoff').checked && rec) { handoff(rec); return; }
+        /* 2026-11-07：30 秒沒心跳有兩種可能——彈出被封鎖，或另開的主機開頁幾秒就死（機器記憶體緊時常見）。
+           先重新探測權限：允許＝主機自己死了，記 died，交給既有的冷卻／每小時上限再開，守護頁留在原位；
+           封鎖＝才把自己轉為主機。之前一律轉為主機，主機再死就什麼都不剩。 */
+        const rec = pending.rec; pending = null; guardProbePopup(false);
+        if (popupOk === false) { if (rec) { rec.ok = false; set('csp_guard_log', revives); } renderLog(); if ($('handoff').checked && rec) { handoff(rec); return; } }
+        else { if (rec) { rec.ok = false; rec.how = 'died'; set('csp_guard_log', revives); } renderLog(); show('bad', '另開的主機 30 秒內沒有心跳（開頁即死？），冷卻後再試', '彈出權限正常，守護頁留在原位。若連續發生，機器當時可能記憶體不足。'); }
       }
     }
     if (!hb || !hb.t) { chk(2, '⚪', '尚未偵測到'); show('warn', '尚未偵測到主機心跳', '請按「▶ 開啟主機」開啟主機分頁（或主機尚未載入完成）。'); return; }

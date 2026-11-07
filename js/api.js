@@ -742,7 +742,9 @@ async function fetchAllFromBinance(timeframe) {
      也就是每批 20 幣 × 5 週期＝100 個併發請求湧出的那一刻。程序以正常結束碼消失、無崩潰紀錄，
      符合安全軟體對「可疑網路活動」結束程序的行為。一律改每批 8 幣（40 個併發，OKX 另有 60ms 限速閘門），
      批次之間多等 200ms，把尖峰壓平；一輪掃描從 5 批變 13 批，約多 2～3 秒。 */
-  const batchSize = 8;
+  // 2026-11-07：守護頁或守護程式重開的主機（網址帶 revived／from）第一輪掃描更輕：每批 4 幣、間隔 300ms——重開的主機常在開頁幾秒就死（機器記憶體緊），先活下來再說
+  const _revivedBoot = /[?&](revived|from)=/.test(location.search);
+  const batchSize = _revivedBoot ? 4 : 8;
   _klineSrcCount = { okx: 0, binance: 0, cache: 0 };
   _okxSkipped = 0;
 
@@ -900,7 +902,7 @@ async function fetchAllFromBinance(timeframe) {
     if (typeof updateScanProgress === 'function') updateScanProgress(pct);
 
     /* 批次間短暫停頓，避免觸發幣安限速 */
-    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 200));
+    if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, _revivedBoot ? 300 : 200));
   }
 
   try { if (typeof _stepMark === 'function') _stepMark('K線分析完成'); } catch(_e) {}

@@ -35,6 +35,9 @@ const _BISECT_STAGES = ['none', 'env', 'er', 'outlook', 'news', 'flow', 'all'];
 // 頂層不能碰 APP_VERSION（const 尚未初始化，typeof 也會丟 ReferenceError）：版本從自己的 <script src=…?v=> 取
 let _bootV = ''; try { _bootV = new URL(document.currentScript.src, location.href).searchParams.get('v') || ''; } catch(_e) {}
 let _bisect = null;   // { i, ok, done?, label }
+/* 2026-11-07：守護頁轉來的主機，在開頁最早期就先把守護頁開回來（不等掃描跑完）——主機實案：重開的主機有時開頁幾秒就死，
+   等到開頁完成再開守護頁已經來不及，死了就什麼都不剩。本站若已允許彈出視窗，這一步在 0.8 秒內完成。 */
+if (/[?&]from=guard/.test(location.search)) setTimeout(() => { try { if (!_guardState().on) { window.open('guard.html', '_blank', 'noopener'); window._guardEarlyOpened = Date.now(); try { _healthNote('guard-auto', '守護頁轉為主機：開頁 0.8 秒即先重開守護頁（彈出被封鎖時 20 秒後改顯示橫幅）'); } catch(_e) {} } } catch(_e) {} }, 800);
 try {
   const _manual = /[?&](cards=|nocards=)/.test(location.search);
   if (/[?&]bisect=0/.test(location.search)) localStorage.removeItem('csp_bisect');
@@ -942,6 +945,7 @@ async function _runRefreshTick(secs) {
     if (_heavyTurn === 1) await _pt('基本面更新', () => fundRefresh(false));   // 6 小時快取，實際最多每 6 小時打 5 個請求
     await _pt('逐模式實驗室', () => qlabModeTick());   // 每輪最多一個模式、每模式 ≥6 小時一次
     if (_heavyTurn === 2) await _pt('回測排程', () => btAutoTick());   // 12 小時一次，背景執行不等待
+    if (_heavyTurn === 3) await _pt('組合自動假設', () => expAutoRefresh(false));   // 每天一次：最強優勢／劣勢組合登錄成假設
     try {
       // 自動持倉／自動紀錄已改為子分頁，需以所在頁 + 子分頁狀態判斷重繪
       if (state.currentPage === 'positions' && _posView === 'auto') renderPositionsPage();
@@ -15106,7 +15110,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823i';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823j';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -16419,7 +16423,7 @@ async function recordSignalsFromScan(data) {
       if (isFinite(_ls) && _ls > 0 && (isLong ? _ls < 1 : _ls > 1)) _soft(`多空人數比反向（${_ls.toFixed(2)}）`, 0.7);
       // 實驗整合層：已證實為劣勢且設定開啟自動套用的一般單特徵 → 軟門（只用建單當下已知欄位，零請求）
       try {
-        const _em = expMainSoft(expFeatures({ direction, entryLs: coin.derivData?.lsRatio, entryFr: coin.derivData?.fundingRate, btcD1: (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : null, h4Adx: coin.h4Adx, entryTBias: (typeof tBias !== 'undefined') ? tBias : null }, 'main').map(f => f.k));
+        const _em = expMainSoft(expFeatures({ direction, entryLs: coin.derivData?.lsRatio, entryFr: coin.derivData?.fundingRate, btcD1: (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : null, h4Adx: coin.h4Adx, rsi: coin.h1Rsi, entryTBias: (typeof tBias !== 'undefined') ? tBias : null, entryMode: setup.entryMode, entryTag: setup.entryTag, btProb: setup.btProb, regime: currentRegimeKey() || null, flow: flowSnapshot(coin, isLong), fund: fundSnapshot(coin.symbol, isLong) }, 'main').map(f => f.k));
         if (_em.mult < 1) _soft('實驗證實劣勢：' + _em.why.join('、'), _em.mult);
       } catch(_e) {}
     } catch(_e) {}
@@ -29797,7 +29801,8 @@ function buildScalpSetup(coin, isLong, family = 'trend') {
   const _xH1 = coin.h1Brk && coin.h1Brk.dir && !coin.h1Brk.crossed ? coin.h1Brk.dir : null;
   const _xLs = parseFloat(coin.derivData?.lsRatio), _xFr = parseFloat(coin.derivData?.fundingRate);
   try {
-    const _xb = expScalpBlock({ btcD1: _xBtcD1 ? _expAligned(_xDir, _xBtcD1) : 'neutral', h1brk: _xH1 ? _expAligned(_xDir, _xH1) : 'neutral', ls: isFinite(_xLs) ? (_xLs > 1 ? (isLong ? 'aligned' : 'against') : _xLs < 1 ? (isLong ? 'against' : 'aligned') : 'neutral') : 'neutral', outer: _outerLv != null });
+    const _xKeys = (() => { try { return new Set(expFeatures({ direction: _xDir, mode, family, btcD1: _xBtcD1, btcH4: _xBtcH4, h1BrkDir: _xH1, entryLs: isFinite(_xLs) ? _xLs : null, entryFr: isFinite(_xFr) ? _xFr : null, slHasOuter: _outerLv != null, slHuntAvoid: _huntAvoided, slDistAtr: (typeof _slDistAtr !== 'undefined') ? _slDistAtr : null, volRatio: +(curVol / avgVol).toFixed(2), oiState, mtfAlign: _mtf.n, kzQuality: (() => { try { return computeKillZone()?.quality || ''; } catch(_e) { return ''; } })(), regime: currentRegimeKey() || null, flow: flowSnapshot(coin, isLong), fund: fundSnapshot(coin.symbol, isLong) }, 'scalp').map(f => f.k)); } catch(_e) { return null; } })();
+    const _xb = expScalpBlock({ btcD1: _xBtcD1 ? _expAligned(_xDir, _xBtcD1) : 'neutral', h1brk: _xH1 ? _expAligned(_xDir, _xH1) : 'neutral', ls: isFinite(_xLs) ? (_xLs > 1 ? (isLong ? 'aligned' : 'against') : _xLs < 1 ? (isLong ? 'against' : 'aligned') : 'neutral') : 'neutral', outer: _outerLv != null }, _xKeys);
     if (_xb) return _sr(_xb);
   } catch(_e) {}
   return { entry, sl: slRaw, tp1, tp2, atr, risk, adx, rsi, mode, family,
@@ -35369,9 +35374,9 @@ const EXP_REGISTRY = [
 ];
 function expVerdicts(force) {
   const out = [];
-  for (const h of EXP_REGISTRY) {
+  for (const h of EXP_REGISTRY.concat(expAutoList())) {
     const m = expMatrix(h.scope, force);
-    const row = m.rows.find(r => r.k === h.key) || null;
+    const row = h.key.startsWith('combo:') ? (expCombos(h.scope, force).byKey[h.key] || null) : (m.rows.find(r => r.k === h.key) || null);
     let status = 'insufficient', note = '';
     if (row && row.verdict !== 'insufficient') {
       if (row.verdict === h.expect) { status = 'proven'; note = '與預期一致'; }
@@ -35384,11 +35389,13 @@ function expVerdicts(force) {
 }
 function expAutoApplyOn() { try { return loadSettings().expAutoApply === true; } catch(_e) { return false; } }
 /* 快速單攔截：自動套用開啟 → 已證實為劣勢的快速單條件直接擋。ctx 由 scalp 建單路徑提供（零額外請求）。 */
-function expScalpBlock(ctx) {
+function expScalpBlock(ctx, keys) {
   try {
     if (!expAutoApplyOn()) return null;
     const proven = expVerdicts(false).filter(v => v.scope === 'scalp' && v.apply === 'scalpReject' && v.status === 'proven');
     for (const v of proven) {
+      // 通用：呼叫端給了候選單的特徵鍵集合 → 單一鍵或組合鍵（combo:a&b 需兩者皆有）直接比對
+      if (keys && keys.size) { if (v.key.startsWith('combo:')) { const [a, b] = v.key.slice(6).split('&'); if (keys.has(a) && keys.has(b)) return `實驗證實劣勢組合：${v.name}（n=${v.n}，勝率 ${(v.row.wr * 100).toFixed(0)}%）`; } else if (keys.has(v.key)) return `實驗證實劣勢：${v.name}（n=${v.n}）`; }
       if (v.key === 'macro:btcD1:against' && ctx.btcD1 === 'against') return `實驗證實劣勢：${v.name}（n=${v.n}，勝率 ${(v.row.wr * 100).toFixed(0)}%）`;
       if (v.key === 'tech:h1brk:against' && ctx.h1brk === 'against') return `實驗證實劣勢：${v.name}（n=${v.n}）`;
       if (v.key === 'chips:ls:against' && ctx.ls === 'against') return `實驗證實劣勢：${v.name}（n=${v.n}）`;
@@ -35403,9 +35410,81 @@ function expMainSoft(featureKeys) {
     if (!expAutoApplyOn()) return { mult: 1, why: [] };
     const proven = expVerdicts(false).filter(v => v.scope === 'main' && v.apply === 'mainSoft' && v.status === 'proven');
     let mult = 1; const why = [];
-    for (const v of proven) if (featureKeys.includes(v.key)) { mult *= EXP_CFG.softMult; why.push(v.name); }
+    for (const v of proven) { const hit = v.key.startsWith('combo:') ? v.key.slice(6).split('&').every(k => featureKeys.includes(k)) : featureKeys.includes(v.key); if (hit) { mult *= EXP_CFG.softMult; why.push(v.name); } }
     return { mult, why };
   } catch(_e) { return { mult: 1, why: [] }; }
+}
+/* ── 條件組合研究（2026-11-07）────────────────────────────────────────────────
+   使用者：「實驗室的分析方式可以再多一點，找出真正適合的交易邏輯與方法和圖形」。單一條件的分層矩陣看不到交互作用
+   （例如「假突破 × 低品質時段」一起才賠）。這裡把每筆已結算單的特徵兩兩交叉，n≥20 列出、n≥30 才判定，依 Wilson 區間
+   對全體基準找出優勢組合與劣勢組合；每天把最強的三組優勢／三組劣勢自動登錄成假設（auto_…），走既有的證實→自動套用
+   管線：證實的劣勢組合在快速單直接攔截、一般單軟門 ×0.7。盤形（裸K／圖形／結構標籤）、時段、籌碼、訂單流、基本面
+   都在特徵裡，所以組合自然涵蓋「圖形 × 環境」。 */
+const EXP_COMBO = { minSingle: 15, minN: 20, judgeN: 30, top: 6, autoTop: 3, cacheMs: 10 * 60e3 };
+const _expComboCache = {};
+function expCombos(kind, force) {
+  const c = _expComboCache[kind];
+  if (!force && c && Date.now() - c.at < EXP_COMBO.cacheMs) return c;
+  const samples = expSamples(kind);
+  const n0 = samples.length; let w0 = 0, r0 = 0;
+  const single = {}; const keysOf = [];
+  for (const t of samples) {
+    const r = parseFloat(t.pnlR) || 0; const win = r > 0; if (win) w0++; r0 += r;
+    const ks = [...new Set(expFeatures(t, kind).map(f => f.k))].filter(k => !k.startsWith('base:'));
+    keysOf.push({ ks, win, r });
+    for (const k of ks) single[k] = (single[k] || 0) + 1;
+  }
+  const base = { n: n0, wr: n0 ? w0 / n0 : 0, avgR: n0 ? r0 / n0 : 0 };
+  const label = {}; for (const t of samples) for (const f of expFeatures(t, kind)) if (!label[f.k]) label[f.k] = f.l;
+  const pair = {};
+  for (const s of keysOf) {
+    const ks = s.ks.filter(k => single[k] >= EXP_COMBO.minSingle).sort();
+    for (let i = 0; i < ks.length; i++) for (let j = i + 1; j < ks.length; j++) {
+      const k = ks[i] + '&' + ks[j]; const p = pair[k] || (pair[k] = { a: ks[i], b: ks[j], n: 0, w: 0, r: 0 });
+      p.n++; if (s.win) p.w++; p.r += s.r;
+    }
+  }
+  const rows = Object.values(pair).filter(p => p.n >= EXP_COMBO.minN).map(p => {
+    const wr = p.w / p.n, lb = wilsonLB(p.w, p.n), ub = 1 - wilsonLB(p.n - p.w, p.n), avgR = p.r / p.n;
+    let verdict = 'insufficient';
+    if (p.n >= EXP_COMBO.judgeN && n0 >= EXP_CFG.minN) {
+      if (lb >= base.wr + EXP_CFG.edgePP / 100 && avgR >= base.avgR + EXP_CFG.edgeR) verdict = 'edge';
+      else if (ub <= base.wr - EXP_CFG.edgePP / 100 || (avgR <= base.avgR - 2 * EXP_CFG.edgeR && ub <= base.wr)) verdict = 'drag';
+      else verdict = 'neutral';
+    }
+    return { k: 'combo:' + p.a + '&' + p.b, a: p.a, b: p.b, l: `${label[p.a] || p.a} × ${label[p.b] || p.b}`, n: p.n, w: p.w, wr, lb, ub, avgR, verdict, edgeScore: +(lb - base.wr + avgR - base.avgR).toFixed(3), dragScore: +(base.wr - ub + base.avgR - avgR).toFixed(3) };
+  });
+  const byKey = {}; for (const r of rows) byKey[r.k] = r;
+  const edges = rows.filter(r => r.verdict === 'edge').sort((a, b) => b.edgeScore - a.edgeScore);
+  const drags = rows.filter(r => r.verdict === 'drag').sort((a, b) => b.dragScore - a.dragScore);
+  const out = { at: Date.now(), kind, base, rows, byKey, edges, drags, nPairs: rows.length };
+  _expComboCache[kind] = out; return out;
+}
+/* 自動假設：每天從組合研究取最強的優勢／劣勢各 3 組登錄；已存在者保留 id；手動登錄表不動 */
+const EXP_AUTO_KEY = 'csp_exp_auto';
+function expAutoList() { try { const o = JSON.parse(localStorage.getItem(EXP_AUTO_KEY) || 'null'); return (o && Array.isArray(o.list)) ? o.list : []; } catch(_e) { return []; } }
+function expAutoRefresh(force) {
+  let at = 0; try { at = (JSON.parse(localStorage.getItem(EXP_AUTO_KEY) || 'null') || {}).at || 0; } catch(_e) {}
+  if (!force && Date.now() - at < 24 * 3600e3) return expAutoList();
+  const list = [];
+  for (const scope of ['main', 'scalp']) {
+    const cb = expCombos(scope, true);
+    const pick = (arr, expect) => arr.slice(0, EXP_COMBO.autoTop).forEach(r => list.push({ id: 'auto_' + scope + '_' + r.k.replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 60), scope, key: r.k, name: `${scope === 'main' ? '一般單' : '快速單'}組合：${r.l}`, why: `組合研究自動登錄：${r.n} 筆、勝率 ${Math.round(r.wr * 100)}%、平均 ${r.avgR >= 0 ? '+' : ''}${r.avgR.toFixed(2)}R（基準 ${Math.round(cb.base.wr * 100)}%／${cb.base.avgR >= 0 ? '+' : ''}${cb.base.avgR.toFixed(2)}R）`, expect, apply: expect === 'drag' ? (scope === 'scalp' ? 'scalpReject' : 'mainSoft') : undefined, auto: true, at: Date.now() }));
+    pick(cb.edges, 'edge'); pick(cb.drags, 'drag');
+  }
+  try { localStorage.setItem(EXP_AUTO_KEY, JSON.stringify({ at: Date.now(), list })); } catch(_e) {}
+  return list;
+}
+function _rsComboHtml(kind) {
+  let cb; try { cb = expCombos(kind, false); } catch(e) { return ''; }
+  const auto = new Set(expAutoList().map(h => h.key));
+  const row = (r, cls) => `<span class="rs-chip ${cls}" data-k="${_rsEsc(r.k)}" onclick="_rsPick(this.dataset.k)" title="點一下：只看同時符合這兩個條件的交易">${_rsEsc(r.l)}${auto.has(r.k) ? ' <small style="color:var(--accent)">已登錄</small>' : ''}<small>${r.n} 筆・${Math.round(r.wr * 100)}%・${_rsFmtR(r.avgR)}</small></span>`;
+  const near = cb.rows.filter(r => r.verdict === 'insufficient' && r.n >= EXP_COMBO.minN).length;
+  return `<div class="rs-card"><div class="rs-card-ttl">🧩 條件組合（兩兩交叉，找真正合用的邏輯）</div>
+    <div class="rs-dim" style="margin-bottom:6px">${cb.base.n} 筆樣本、${cb.nPairs} 組 n≥${EXP_COMBO.minN} 的組合；n≥${EXP_COMBO.judgeN} 且 Wilson 區間與全體有顯著差距才判定。每天自動把最強的 ${EXP_COMBO.autoTop} 組優勢／劣勢登錄成假設，證實的劣勢組合會進攔截（快速單）或軟門（一般單）。${near ? `另有 ${near} 組樣本在 ${EXP_COMBO.minN}～${EXP_COMBO.judgeN - 1} 筆，累積中。` : ''}</div>
+    <div class="rs-ins"><b style="color:var(--bull)">優勢組合</b>${cb.edges.length ? cb.edges.slice(0, EXP_COMBO.top).map(r => row(r, 'rs-chip-edge')).join('') : '<span class="rs-dim">尚無顯著優勢組合</span>'}</div>
+    <div class="rs-ins"><b style="color:var(--bear)">劣勢組合</b>${cb.drags.length ? cb.drags.slice(0, EXP_COMBO.top).map(r => row(r, 'rs-chip-drag')).join('') : '<span class="rs-dim">尚無顯著劣勢組合</span>'}</div>
+  </div>`;
 }
 /* 樣本充足度：每個機制現在有多少、需要多少、近 14 天速度、預估幾天達標 */
 function expSampleSufficiency() {
@@ -35763,6 +35842,7 @@ function _rsGrowthHtml(kind, rows) {
   } else {
     try { const v = winupStats(); const sb = Object.keys(v.sessBlocked.scalp || {}).length, yb = Object.keys(v.symBad.scalp || {}).length; li('勝率強化閘門', `時段封鎖 ${sb}、幣種冷卻 ${yb}`, '快速單按時段／幣種分桶，Wilson 上界低於門檻的桶自動封鎖'); } catch(_e) {}
     try { const st = loadQlabMode(); const ms = Object.keys(SCALP_MODE_LABEL); const ap = ms.filter(m => st.modes[m] && st.modes[m].active).length, rc = ms.filter(m => st.modes[m] && st.modes[m].recommend && !st.modes[m].active).length, ran = ms.filter(m => st.modes[m] && st.modes[m].lastRunAt).length; li('逐模式參數實驗', `已跑 ${ran}／${ms.length} 個模式：套用 ${ap}、有建議未套用 ${rc}`, `每模式 ≥6 小時自動跑一次網格＋樣本外驗證；套用受「允許自動調整」與學習凍結兩道閘（實驗室頁可看每個模式的現行 vs 最佳）`); } catch(_e) {}
+    try { const al = expAutoList(); const pv = expVerdicts(false).filter(v => v.auto && v.scope === kind); li('組合自動假設', `${al.filter(h => h.scope === kind).length} 條登錄：證實 ${pv.filter(v => v.status === 'proven').length}、相反 ${pv.filter(v => v.status === 'refuted').length}、不足 ${pv.filter(v => v.status === 'insufficient').length}`, '每天從兩兩交叉挑最強的優勢／劣勢各 3 組登錄；證實的劣勢組合進攔截（快速單）或軟門（一般單）'); } catch(_e) {}
     try { const h = btHistory(); const unfit = SBX_STRATS.filter(s => btVerdict(s.id).v === 'unfit').map(s => s.name); li('策略回測排程', h.length ? `每 ${BT_AUTO.everyH} 小時一次，已累積 ${h.length} 次；近期不合用：${unfit.length ? unfit.join('、') : '無'}` : '尚未自動跑過', '沙盒 10 策略用歷史 15m K 線重放；近三次 ≥2 次期望值 ≤0 的策略不晉升實盤'); } catch(_e) {}
     try { const a = scalpDrawdownAutopsy(); li('回撤解剖', a && a.ready ? `最近 200 筆最大回撤 ${a.ddMax != null ? a.ddMax.toFixed(1) + 'R' : '—'}` : `樣本 ${a ? a.n : 0}／30，累積中`, '找出回撤區間內最賠的模式／時段／方向／疊倉，實驗室頁有完整表'); } catch(_e) {}
   }
@@ -35894,9 +35974,10 @@ function _rsSet(k, v) { const rs = _rsState(); if (k === 'kind' && v !== rs.kind
 function _rsPick(key) { const rs = _rsState(); rs.key = rs.key === key ? '' : key; rs.sel = null; rs.limit = 60; _rsRerender(); try { const el = document.getElementById('rs-table'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch(_e) {} }
 function _rsSort(col) { const rs = _rsState(); if (rs.sort === col) rs.desc = !rs.desc; else { rs.sort = col; rs.desc = true; } _rsRerender(); }
 function _rsRerender() { const el = document.getElementById('rs-body'); if (el) el.innerHTML = _rsBodyHtml(); }
+function _rsHasKey(x, key) { if (!key) return true; if (key.startsWith('combo:')) { const [a, b] = key.slice(6).split('&'); return x.keys.has(a) && x.keys.has(b); } return x.keys.has(key); }
 function _rsFiltered(rows, rs) {
   const sym = (rs.sym || '').trim().toUpperCase();
-  return rows.filter(x => (rs.mon === 'all' || x.mon === rs.mon) && (rs.dir === 'all' || x.dir === rs.dir) && (rs.out === 'all' || (rs.out === 'win' ? x.win : rs.out === 'loss' ? x.loss : (!x.win && !x.loss))) && (!sym || x.sym.toUpperCase().includes(sym)) && (!rs.key || x.keys.has(rs.key)));
+  return rows.filter(x => (rs.mon === 'all' || x.mon === rs.mon) && (rs.dir === 'all' || x.dir === rs.dir) && (rs.out === 'all' || (rs.out === 'win' ? x.win : rs.out === 'loss' ? x.loss : (!x.win && !x.loss))) && (!sym || x.sym.toUpperCase().includes(sym)) && (!rs.key || _rsHasKey(x, rs.key)));
 }
 function _rsBodyHtml() {
   const rs = _rsState();
@@ -35940,14 +36021,15 @@ function _rsBodyHtml() {
       <td style="color:${outC(x.out)}">${_RS_OUT_ZH[x.out] || _rsEsc(x.out || '—')}</td><td style="color:${_rsRC(x.r)};font-weight:700">${_rsFmtR(x.r)}</td><td>${x.hold == null ? '—' : x.hold < 1 ? Math.round(x.hold * 60) + 'm' : x.hold.toFixed(1) + 'h'}</td></tr>
     ${rs.sel === x.id ? `<tr class="rs-detail-tr"><td colspan="8">${_rsDetailHtml(x, fs, base, rs.kind)}</td></tr>` : ''}`).join('');
   const curveRows = rows.length >= 5 ? [...rows].sort((a, b) => a.ts - b.ts).map(x => x.r) : [];
-  const table = `<div class="rs-card" id="rs-table"><div class="rs-card-ttl">🔬 交易研究台${rs.key && fs[rs.key] ? `　<span class="rs-chip rs-chip-on">${_rsEsc(fs[rs.key].l)} ✕</span>` : ''}</div>
+  const table = `<div class="rs-card" id="rs-table"><div class="rs-card-ttl">🔬 交易研究台${rs.key && (fs[rs.key] || rs.key.startsWith('combo:')) ? `　<span class="rs-chip rs-chip-on">${_rsEsc(fs[rs.key] ? fs[rs.key].l : (() => { try { const r = expCombos(rs.kind, false).byKey[rs.key]; return r ? r.l : rs.key; } catch(_e) { return rs.key; } })())} ✕</span>` : ''}</div>
     ${filters}
     <div class="rs-fstat">篩選結果 <b>${fst.n}</b> 筆：勝率 <b style="color:${_rsWrC(fst.wr)}">${fst.wr == null ? '--' : Math.round(fst.wr * 100) + '%'}</b>（${fst.w}勝 ${fst.l}負 ${fst.flat}平）・平均 <b style="color:${_rsRC(fst.avgR)}">${_rsFmtR(fst.avgR)}</b>・累計 <b style="color:${_rsRC(fst.sumR)}">${_rsFmtR(fst.sumR, 1)}</b>・最大回撤 ${fst.maxDD.toFixed(1)}R${fst.n >= EXP_CFG.minN && base.n ? `　｜　vs 全體 ${Math.round((base.wr || 0) * 100)}%／${_rsFmtR(base.avgR)}：${_rsVerdict(fst, base) === 'edge' ? '<span class="rs-mark rs-edge">✦ 顯著較好</span>' : _rsVerdict(fst, base) === 'drag' ? '<span class="rs-mark rs-drag">▼ 顯著較差</span>' : '無顯著差異'}` : fst.n ? '　｜　樣本未達 30 筆，差異不作結論' : ''}</div>
     ${curveRows.length ? `<div class="rs-two"><div><div class="rs-sub">篩選後累計 R（依平倉時間）</div>${_equityCurveSvg(curveRows, { h: 120 })}</div><div><div class="rs-sub">R 分布（每筆結果落在哪）</div>${_rsHistSvg(rows)}</div></div>` : ''}
     <div class="rs-tbl-wrap"><table class="rpt-month-tbl rs-tbl"><thead><tr>${th('ts', '平倉時間', 'l')}${th('sym', '幣種', 'l')}<th class="l">方向</th>${th('label', rs.kind === 'main' ? '進場方式' : '模式', 'l')}<th class="l">${rs.kind === 'main' ? '預測勝率' : '時段'}</th><th class="l">結果</th>${th('r', 'R')}${th('hold', '持倉')}</tr></thead><tbody>${tbody || '<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px">沒有符合篩選的交易</td></tr>'}</tbody></table></div>
     ${sorted.length > shown.length ? `<div style="text-align:center;margin-top:8px"><button class="btn-ghost" onclick="_rsSet('limit',${rs.limit + 100})">再顯示 100 筆（還有 ${sorted.length - shown.length} 筆）</button></div>` : ''}
   </div>`;
-  return stats + growth + insights + groups + table + _rsPrinciplesHtml(rs.kind);
+  let combo = ''; try { combo = _rsComboHtml(rs.kind); } catch(e) { combo = ''; }
+  return stats + growth + insights + combo + groups + table + _rsPrinciplesHtml(rs.kind);
 }
 let _rsSymTimer = null;
 function _rsSymInput(v) { const rs = _rsState(); rs.sym = v; rs.limit = 60; clearTimeout(_rsSymTimer); _rsSymTimer = setTimeout(() => { const inp = document.querySelector('.rs-inp'); const pos = inp ? inp.selectionStart : null; _rsRerender(); try { const i2 = document.querySelector('.rs-inp'); if (i2) { i2.focus(); if (pos != null) i2.setSelectionRange(pos, pos); } } catch(_e) {} }, 350); }
