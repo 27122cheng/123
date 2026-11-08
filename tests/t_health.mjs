@@ -44,7 +44,7 @@ const dec = await p.evaluate(() => {
   // 冷卻：剛重整過 → 不再重整
   localStorage.setItem('csp_selfheal', JSON.stringify({ reason: 'x', at: Date.now() })); _healthReloadArmed = false; _healthTick(); const cooldownReload = reloads.length;
   localStorage.removeItem('csp_selfheal'); _healthSnapshot = origSnap; _selfHealReload = origReload;
-  return { ok: d({}), heap: d({ heapMB: 950 }), stall: d({ sinceDoneMin: 12 }), soft: d({ uptimeMin: 21 * 60 }), hard: d({ uptimeMin: 31 * 60 }), stallReload, cooldownReload, fresh };
+  return { ok: d({}), heap: d({ heapMB: 950 }), stall: d({ sinceDoneMin: 12 }), soft: d({ uptimeMin: (HEALTH_CFG.uptimeSoftH + 1) * 60 }), hard: d({ uptimeMin: (HEALTH_CFG.uptimeHardH + 1) * 60 }), stallReload, cooldownReload, fresh };
 });
 if (dec.ok !== null || !dec.heap?.urgent || !dec.stall?.urgent || dec.soft?.urgent !== false || !dec.hard?.urgent) throw new Error('決策錯誤：' + JSON.stringify(dec));
 if (dec.fresh !== 0 || dec.stallReload !== 1 || dec.cooldownReload !== 1) throw new Error('剛開頁不算停擺；停擺應重整一次、冷卻內不重複：' + JSON.stringify(dec));

@@ -18,6 +18,7 @@ let _cardsAllow = (m => m ? m[1].split(',') : null)(/[?&]cards=([a-z,]+)/.exec(l
 function _cardOn(k) { return !_cardsAllow || _cardsAllow.includes(k); }
 const NO_NEWS = /[?&]nonews=1/.test(location.search);
 let _freezeN = 0, _autoNoCards = false, _killedWhileRunning = false;
+let _heapMax = 0, _nodesMax = 0;   // 本次頁面存活期間的 JS 堆與 DOM 節點峰值（心跳遙測）
 try {
   const _p = window._cspPrevStep; let _hb0 = null; try { _hb0 = JSON.parse(localStorage.getItem('csp_hb') || 'null'); } catch(_e) {}
   _killedWhileRunning = !!(_p && _p.n && _p.n !== 'unload' && _p.n !== 'idle' && _hb0 && _hb0.t && _p.t && (_hb0.t - _p.t) < 60000);
@@ -279,9 +280,11 @@ function _bootErrHook() {
   /* 2026-10-24 修正：上一版先寫新心跳再讀舊心跳，讀到的是「現在」，判定永遠是「心跳持續到重整那一刻」——
      前一次的「被外部關閉」判定是這個順序錯誤造成的假象。改為先讀前一次的（主執行緒＋工作執行緒），再啟動新的。 */
   let prevHb = null; try { prevHb = JSON.parse(localStorage.getItem('csp_hb') || 'null'); } catch(_e) {}
+  // 2026-11-08 記憶體遙測：上一次頁面存活期間的 JS 堆峰值與 DOM 節點峰值（心跳每 5 秒更新）——頁面自己有沒有越吃越多，一眼可辨
+  try { if (prevHb && (prevHb.memMax != null || prevHb.nodesMax != null)) _healthNote('mem-prev', `上次頁面運行 ${prevHb.up || 0} 分鐘：JS 堆峰值 ${prevHb.memMax != null ? prevHb.memMax + 'MB' : '—'}（死前 ${prevHb.mem != null ? prevHb.mem + 'MB' : '—'}）、DOM 節點峰值 ${prevHb.nodesMax != null ? prevHb.nodesMax : '—'}（死前 ${prevHb.nodes != null ? prevHb.nodes : '—'}）`); } catch(_e) {}
   const prevWorkerHbP = _readWorkerHb();   // 非同步（IndexedDB）；工作執行緒不受主執行緒卡住影響，是真正的鑑別器
   try {
-    const _hb = () => { if (NO_LS) return; try { localStorage.setItem('csp_hb', JSON.stringify({ t: Date.now(), hid: !!document.hidden, on: navigator.onLine !== false, scanning: !!(typeof state !== 'undefined' && state && state.scanning) })); } catch(_e) {} };
+    const _hb = () => { if (NO_LS) return; try { let mem = null, nodes = null; try { mem = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null; if (mem != null && mem > _heapMax) _heapMax = mem; nodes = document.getElementsByTagName('*').length; if (nodes > _nodesMax) _nodesMax = nodes; } catch(_m) {} localStorage.setItem('csp_hb', JSON.stringify({ t: Date.now(), hid: !!document.hidden, on: navigator.onLine !== false, scanning: !!(typeof state !== 'undefined' && state && state.scanning), mem, memMax: _heapMax, nodes, nodesMax: _nodesMax, up: Math.round(performance.now() / 60000) })); } catch(_e) {} };
     setInterval(_hb, 5000); _hb();
   } catch(_e) {}
   // ── 上次是不是卡死？（麵包屑不是 unload/idle → 上次在那一步被強制關掉）──
@@ -1024,7 +1027,9 @@ function updateCountdown() {
      · 刷新停擺 >10 分鐘／heap >900MB → 在安靜時刻自動重整；運行 >20 小時 → 等頁面切到背景再重整（最遲 30 小時）
      · localStorage >3.5MB → 裁剪沙盒／實驗室封存等非核心紀錄（交易紀錄與學習封存不動）
      · 自動重整前把原因寫進 csp_selfheal，重整後用提示條告訴使用者「為什麼」；10 分鐘內不重複重整 */
-const HEALTH_CFG = { heapMB: 900, stallMin: 10, uptimeSoftH: 20, uptimeHardH: 30, lsSoftKB: 3584, healCooldownMin: 10 };
+/* 2026-11-08：預防性重整提前——分頁在背景時 6 小時換一個新的渲染程序、最長 12 小時。浸泡測試（24 輪真實掃描迴圈）顯示 JS 堆、DOM 節點、
+   事件監聽器都不成長，但 Chrome 回報的 oom 看的是整個程序（網路緩衝、圖層、IDB 連線等 JS 看不到的部分），定期換新程序是最便宜的保險。 */
+const HEALTH_CFG = { heapMB: 900, stallMin: 10, uptimeSoftH: 6, uptimeHardH: 12, lsSoftKB: 3584, healCooldownMin: 10 };
 const _healthLog = [];
 function _healthNote(kind, text) {
   _healthLog.push({ t: Date.now(), kind, text }); if (_healthLog.length > 30) _healthLog.shift();
@@ -1051,7 +1056,8 @@ function _healthSnapshot() {
   const now = Date.now();
   const interval = (state.settings && state.settings.refreshInterval) || 60;
   const sinceDone = _lastRefreshDone ? now - _lastRefreshDone : (performance.now());
-  return { heapMB, uptimeMin: Math.round(performance.now() / 60000), sinceDoneMin: +(sinceDone / 60000).toFixed(1), scanning: !!state.scanning, scanningMin: state.scanning ? +((now - _refreshStartedAt) / 60000).toFixed(1) : 0, lsKB: _lsUsageKB(), interval, ticks: _refreshTickN, hidden: !!document.hidden };
+  let nodes = null; try { nodes = document.getElementsByTagName('*').length; } catch(_e) {}
+  return { heapMB, heapMaxMB: _heapMax || null, nodes, nodesMax: _nodesMax || null, uptimeMin: Math.round(performance.now() / 60000), sinceDoneMin: +(sinceDone / 60000).toFixed(1), scanning: !!state.scanning, scanningMin: state.scanning ? +((now - _refreshStartedAt) / 60000).toFixed(1) : 0, lsKB: _lsUsageKB(), interval, ticks: _refreshTickN, hidden: !!document.hidden };
 }
 /* 決策：回傳 { reason, urgent } 或 null。urgent＝立刻重整（安靜時刻）；非 urgent＝等頁面在背景時 */
 function _healthDecide(h, cfg = HEALTH_CFG) {
@@ -15110,7 +15116,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823j';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823k';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
