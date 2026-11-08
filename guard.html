@@ -50,6 +50,8 @@
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
       <button onclick="guardOpenHost('手動')">▶ 開啟主機（另開新分頁）</button>
       <button class="grey" onclick="guardProbePopup(true)">重新檢查彈出權限</button>
+      <button class="grey" onclick="window.open('guard.html','_blank','noopener')">＋ 再開一個待命守護頁</button>
+      <span id="standby-n" class="tip"></span>
     </div>
   </div>
 
@@ -61,6 +63,8 @@
   <div class="card tip">
     <b>為什麼是「另開新分頁」而不是刷新黑掉的那個？</b><br>
     分頁變黑＝它的程序已經被結束，裡面沒有任何程式在跑，也沒有人能從外面替它按重新整理（Chrome 只讓分頁自己或開它的那一頁操作它，而守護頁為了不跟它同一個程序而死，刻意不跟它綁在一起）。所以守護頁只能開一個新的主機分頁，黑掉的那個請自己關掉。<br><br>
+    <b>沒有彈出權限時怎麼辦</b><br>
+    主機死掉時守護頁會「自己轉為主機」，然後就沒有守護頁了。對策：多開幾個待命守護頁（上面的「＋ 再開一個待命守護頁」，每按一次多一個），最早開的那個負責，它轉為主機後下一個自動接手——開 4 個就有 4 次自動復活。<br><br>
     <b>守護頁也跟著黑掉時</b><br>
     代表結束程序的那個東西是一次把 Chrome 的多個分頁程序都結束掉，瀏覽器裡的任何頁面都躲不掉。這種情況要用瀏覽器外面的守護程式：下載 <a href="tools/host-watchdog.bat" download>host-watchdog.bat</a> 與 <a href="tools/host-watchdog.ps1" download>host-watchdog.ps1</a> 放在同一個資料夾，雙擊 .bat。它每 30 秒看雲端上的主機心跳，停超過 4 分鐘就用預設瀏覽器把主機開回來（需要設定頁的「雲端同步」開著）。<br><br>
     判定規則：主機每 5 秒寫一次心跳（背景分頁最慢每分鐘一次）。心跳停超過 150 秒、且主機最後一步不是「正常關閉／凍結」→ 視為被結束，自動另開主機；3 分鐘內不重複，一小時最多 6 次。主機被你自己關掉時不會重開。
@@ -95,7 +99,12 @@
   const chk = (i, ic, txt, tip) => { $(`c${i}-ic`).textContent = ic; $(`c${i}-txt`).textContent = txt; if (tip != null && $(`c${i}-tip`)) $(`c${i}-tip`).innerHTML = tip; };
 
   /* 彈出權限探測：沒有使用者手勢時開一個 1 秒就關的小視窗，回 null＝被封鎖 */
+  /* 2026-11-09 主機實案：開頁當下的探測顯示「已允許」，之後每次主機死掉卻都走「自己轉為主機」（代表那時 window.open 被封鎖）。
+     原因：本頁是使用者按按鈕開出來的，剛開頁時還帶著那一下點擊的「使用者啟用」，所以第一次探測能開；幾秒後啟用過期，
+     沒有權限的站就開不了。因此探測要在 10 秒後（啟用已過期）再做一次並以它為準，之後每 10 分鐘再測。 */
+  let probeN = 0, firstProbe = null;
   window.guardProbePopup = manual => {
+    probeN++;
     if (forceNoPopup) { popupOk = false; }
     else {
       let w = null;
@@ -103,10 +112,14 @@
       if (w) { popupOk = true; try { setTimeout(() => { try { w.close(); } catch (e) {} }, 300); } catch (e) {} }
       else popupOk = false;
     }
-    if (popupOk) chk(1, '✅', '已允許——主機停止時會自動另開新分頁', '');
-    else chk(1, '❌', '被封鎖——自動另開會失敗', '請看網址列右側的「彈出視窗已封鎖」圖示 → 點它 → 選「一律允許 ' + location.host + ' 的彈出式視窗」；或到 <code>chrome://settings/content/popups</code> 的「允許」加入本站。改完按「重新檢查彈出權限」。<br>沒改也行：下面的「守護頁自己變成主機」勾著，主機停止時本頁會直接跳轉成主機（但之後要再手動開一次守護頁）。');
+    if (firstProbe === null) firstProbe = popupOk;
+    const flipped = firstProbe === true && popupOk === false;
+    if (popupOk) chk(1, probeN === 1 ? '⏳' : '✅', probeN === 1 ? '第一次探測通過（可能只是因為你剛點過），10 秒後再確認一次' : '已允許（啟用過期後仍能開）——主機停止時會自動另開新分頁', '');
+    else chk(1, '❌', flipped ? '被封鎖——剛才通過只是因為你剛點過按鈕；真正的權限是封鎖' : '被封鎖——自動另開會失敗', '請到 <code>chrome://settings/content/popups</code>（設定 → 隱私權和安全性 → 網站設定 → 彈出式視窗與重新導向）→「允許」→ 新增 <b>' + location.origin + '</b>。改完回本頁按「重新檢查彈出權限」。<br>不想改權限：按下面「再開一個待命守護頁」多開幾個（每開一個＝多一次自動復活），或用瀏覽器外的 host-watchdog.bat。');
     if (manual) show($('st').className.replace('st ', ''), $('st').textContent, $('kv').textContent);
   };
+  setTimeout(() => guardProbePopup(false), 10000);
+  setInterval(() => { if (!standby && !handingOff) guardProbePopup(false); }, 10 * 60e3);
   window.guardSaveOpt = () => { set('csp_guard_opt', { handoff: $('handoff').checked }); };
   const renderNotify = () => { try { const p = Notification.permission; chk(3, p === 'granted' ? '✅' : p === 'denied' ? '❌' : '⚪', p === 'granted' ? '已允許' : p === 'denied' ? '已被封鎖（網址列左側鎖頭可改）' : '尚未允許（主機停止時用桌面通知提醒你）'); } catch (e) { chk(3, '⚪', '此瀏覽器不支援'); } };
   window.guardAskNotify = () => { try { Notification.requestPermission().then(renderNotify); } catch (e) {} };
@@ -147,6 +160,8 @@
     // 多個守護頁同時開：最早開的那個負責，其餘待命（它停了 150 秒就接手）
     const other = get('csp_guard_hb');
     standby = !!(other && other.id !== myId && now - other.t < STALE_MS && other.born < born && !other.closed);
+    // 待命守護頁名冊：每個守護頁（含待命）每 5 秒登記一次，顯示「目前共幾個守護頁」＝還剩幾次自動復活
+    try { const reg = get('csp_guard_reg') || {}; reg[myId] = now; for (const k of Object.keys(reg)) if (now - reg[k] > STALE_MS) delete reg[k]; set('csp_guard_reg', reg); const n = Object.keys(reg).length; $('standby-n').textContent = `目前共 ${n} 個守護頁（含本頁）${n <= 1 ? '——沒有彈出權限時，每多開一個＝多一次自動復活' : ''}`; } catch (e) {}
     if (standby) { show('dim', '待命中：另一個守護頁正在運作', `另一個守護頁開啟於 ${fmt(other.born)}，最近心跳 ${Math.round((now - other.t) / 1000)} 秒前。本頁可關閉，或留著當備援。`); return; }
     beat();
     const hb = get('csp_hb'), step = get('csp_last_step');

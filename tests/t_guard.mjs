@@ -20,6 +20,7 @@ let st = await stText();
 if (!st.includes('尚未偵測到主機心跳')) throw new Error('① 無心跳狀態錯誤：' + st);
 const gh = await lsGet('csp_guard_hb');
 if (!gh || !gh.t || !gh.id || gh.popup !== true) throw new Error('① 守護頁心跳／彈出探測錯誤：' + JSON.stringify(gh));
+await guard.waitForFunction(() => document.getElementById('c1-txt').textContent.includes('已允許'), null, { timeout: 15000 });   // 10 秒後的第二次探測（啟用過期後）才算數
 const c1 = await guard.evaluate(() => document.getElementById('c1-txt').textContent);
 if (!c1.includes('已允許')) throw new Error('① 彈出權限檢查文字錯誤：' + c1);
 for (const p of ctx.pages()) if (p !== guard) await p.close();   // 探測小視窗若還在就關掉
