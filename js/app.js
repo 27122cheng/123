@@ -15116,7 +15116,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823k';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823m';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -16420,11 +16420,16 @@ async function recordSignalsFromScan(data) {
        ⑤ 多空人數比反向（做多時散戶淨空 <1／做空時 >1）：−0.10R（樣本外 −0.15R）
           vs 同向擁擠 +0.36R——與「反向指標」直覺相反，突破靠的是跟風。只有 30 天
           籌碼資料，先軟門 ×0.7，並把 entryLs 記進紀錄讓記分卡繼續驗證。 */
+    let _edgeProbe = null;   // 優勢組合探路（2026-11-09）：ADX<20 這道門回測期望 ≈0，若候選符合已證實的優勢組合（n≥50），以半倉放行並標記，讓資料說話
     try {
       const _bd = (typeof _btcD1Dir !== 'undefined') ? _btcD1Dir : 'neutral';
       if (_bd !== 'neutral' && (isLong ? _bd === 'bear' : _bd === 'bull') && _no('逆 BTC 日線方向（回測：期望 −0.01R，順向 +0.31R）')) continue;
       const _a4 = parseFloat(coin.h4Adx);
-      if (isFinite(_a4) && _a4 < 20 && _no(`4H ADX ${_a4.toFixed(0)} <20 無趨勢（回測：期望 +0.02R）`)) continue;
+      if (isFinite(_a4) && _a4 < 20) {
+        try { _edgeProbe = expEdgeProbe(expFeatures({ direction, entryLs: coin.derivData?.lsRatio, entryFr: coin.derivData?.fundingRate, btcD1: _bd, h4Adx: coin.h4Adx, rsi: coin.h1Rsi, entryMode: setup.entryMode, entryTag: setup.entryTag, btProb: setup.btProb, regime: currentRegimeKey() || null, flow: flowSnapshot(coin, isLong), fund: fundSnapshot(coin.symbol, isLong) }, 'main').map(f => f.k)); } catch(_e) { _edgeProbe = null; }
+        if (_edgeProbe) _soft(`優勢組合探路：${_edgeProbe.l}（${_edgeProbe.n} 筆 ${Math.round(_edgeProbe.wr * 100)}%）放行 ADX ${_a4.toFixed(0)}<20`, 0.5);
+        else if (_no(`4H ADX ${_a4.toFixed(0)} <20 無趨勢（回測：期望 +0.02R）`)) continue;
+      }
       const _ls = parseFloat(coin.derivData?.lsRatio);
       if (isFinite(_ls) && _ls > 0 && (isLong ? _ls < 1 : _ls > 1)) _soft(`多空人數比反向（${_ls.toFixed(2)}）`, 0.7);
       // 實驗整合層：已證實為劣勢且設定開啟自動套用的一般單特徵 → 軟門（只用建單當下已知欄位，零請求）
@@ -17326,6 +17331,7 @@ async function recordSignalsFromScan(data) {
     if (_softMult < SOFT_MULT_MIN && _no(`軟門預算：倉位係數 ${_softMult.toFixed(2)} < ${SOFT_MULT_MIN}（${_softGates.map(g => g.reason.split('（')[0]).join('＋')}）`)) continue;
     // 探路單認領：這筆若是被封鎖的桶放行的取樣單，標記起來供實驗室單獨統計
     try { newTrade.probeTag = winupClaimProbe(winupTagsOf('main', newTrade)); } catch(_e) {}
+    try { if (_edgeProbe) { if (!newTrade.probeTag) newTrade.probeTag = 'edge:' + _edgeProbe.k; newTrade.edgeProbe = _edgeProbe.k; expEdgeProbeCount(); } } catch(_e) {}
     if (_starveThis) {
       newTrade.probeTag = newTrade.probeTag || 'starve:main';
       try { localStorage.setItem('csp_starve_probe_at', String(Date.now())); } catch(_e) {}
@@ -24231,7 +24237,7 @@ function qlabAutoDecide(opts = {}) {
   try {
     const s = loadSettings();
     // 2026-09-03：改為「明確開啟才自動套用」——它與機器人止損、出場學習三方調同一組參數，預設不該自己動
-    if (!force && s.qlabAutoApply !== true) { out.why = '自動套用未開啟（預設關閉；與學習止損／出場學習互相干擾）'; return out; }
+    if (!force && s.qlabAutoApply === false) { out.why = '自動套用已由使用者關閉（設定頁「允許自動調整」）'; return out; }   // 2026-11-09：未設定＝自動；只有明確關閉才停
     if (!force && learnFrozen()) { out.why = '學習凍結中'; return out; }
 
     const cur = loadQlabApplied();
@@ -24341,7 +24347,7 @@ function qlabModeDecide(mode, opts = {}) {
   try {
     const trades = qlabSamples(mode); cur.n = trades.length; cur.lastRunAt = now;
     const s = loadSettings();
-    const gate = (s.qlabAutoApply !== true) ? '自動套用未開啟（設定頁「允許自動調整」）' : learnFrozen() ? `學習凍結中（剩 ${learnFreezeDaysLeft()} 天）` : '';
+    const gate = (s.qlabAutoApply === false) ? '自動套用已由使用者關閉' : learnFrozen() ? `學習凍結中（剩 ${learnFreezeDaysLeft()} 天）` : '';   // 未設定＝自動
     out.canApply = force || !gate;
     // 套用後複查
     if (cur.active) {
@@ -24400,7 +24406,7 @@ function qlabModeTick() {
 function qlabModeApplyNow(mode) { const r = qlabModeDecide(mode, { force: true }); try { showToast(`${SCALP_MODE_LABEL[mode] || mode}：${r.action === 'apply' ? '已套用' : r.action === 'rollback' ? '已回滾' : '維持現狀'}——${r.why}`, r.action === 'none' ? 'info' : 'success'); } catch(_e) {} try { renderLabPage(); } catch(_e) {} }
 function qlabModeRevert(mode) { const st = loadQlabMode(); const m = st.modes[mode]; if (m && m.active) { m.history = (m.history || []).concat([{ at: Date.now(), action: 'manual-revert', why: '手動取消' }]).slice(-12); m.active = false; saveQlabMode(st); try { invalidateScalpSlLearn(); } catch(_e) {} } try { renderLabPage(); } catch(_e) {} }
 function buildQlabModeHtml() {
-  const st = loadQlabMode(); const s = loadSettings(); const on = s.qlabAutoApply === true; const fz = learnFreezeDaysLeft();
+  const st = loadQlabMode(); const s = loadSettings(); const on = s.qlabAutoApply !== false; const fz = learnFreezeDaysLeft();
   const fmtT = ts => ts ? new Date(ts).toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
   const rows = Object.keys(SCALP_MODE_LABEL).map(mode => {
     const m = st.modes[mode] || {}; const n = qlabSamples(mode).length; const cur = qlabCurrent(mode);
@@ -24482,7 +24488,7 @@ function buildQuantLabHtml() {
   const applyCard = (() => {
     const a = loadQlabApplied();
     const s = loadSettings();
-    const on = s.qlabAutoApply !== false;
+    const on = s.qlabAutoApply !== false;   // 未設定＝自動
     const eff = qlabEffective();
     const dec = (() => { try { return qlabAutoDecide({ dryRun: true }); } catch(_e) { return { action: 'none', why: '' }; } })();
     const hist = (a && a.history) || [];
@@ -28036,7 +28042,7 @@ function populateSettingsPage() {
   if (cloudSyncTgl) cloudSyncTgl.checked = s.cloudSync !== false;     // 預設開啟
   const scalpTgl = document.getElementById('s-scalp-toggle');
   if (scalpTgl) scalpTgl.checked = s.scalpEnabled === true;          // 預設關閉
-  try { const _ea = document.getElementById('s-exp-auto'); if (_ea) _ea.checked = s.expAutoApply === true; } catch(_e) {}
+  try { const _ea = document.getElementById('s-exp-auto'); if (_ea) _ea.value = expAutoMode(); } catch(_e) {}
   const mpsSel = document.getElementById('s-main-price-src');
   if (mpsSel) mpsSel.value = (s.mainPriceSrc === 'pionex' || s.mainPriceSrc === 'pionex_perp') ? s.mainPriceSrc : 'okx';
   const mmSel = document.getElementById('s-main-mode');
@@ -28100,7 +28106,8 @@ function saveAllSettings() {
     signalMaster:    document.getElementById('s-master-toggle')?.checked ?? true,
     cloudSync:       document.getElementById('s-cloud-sync')?.checked ?? true,
     scalpEnabled:    document.getElementById('s-scalp-toggle')?.checked ?? false,
-    expAutoApply:    document.getElementById('s-exp-auto')?.checked ?? false,
+    expAutoApply:    (() => { const v = document.getElementById('s-exp-auto')?.value; return v === 'on' ? true : v === 'off' ? false : 'auto'; })(),   // 'auto'＝自主模式（字串，不是布林）
+    expAutoApplyTouched: (() => { const v = document.getElementById('s-exp-auto')?.value; return v === 'off' ? true : (loadSettings().expAutoApplyTouched || false); })(),   // 只有使用者明確選「關」才算碰過（舊版勾選框每次存檔都會寫 false，不能當成使用者意願）
     scalpBotMode:    document.getElementById('s-scalp-bot')?.checked ?? false,
     mainPriceSrc:    (() => { const v = document.getElementById('s-main-price-src')?.value; return (v === 'pionex' || v === 'pionex_perp') ? v : 'okx'; })(),
     mainMode:        (() => { const v = document.getElementById('s-main-mode')?.value; return v === 'balanced' ? 'balanced' : 'high'; })(),
@@ -35391,14 +35398,37 @@ function expVerdicts(force) {
     }
     out.push({ ...h, row, base: m.base, status, note, n: row ? row.n : 0, need: EXP_CFG.minN });
   }
+  try { _expTrackProven(out); } catch(_e) {}
+  for (const v of out) v.provenSince = _expProvenSince(v.id);
   return out;
 }
+/* 證實持續時間（2026-11-09）：記下每條假設第一次被判「證實」的時間，狀態一離開證實就清掉。
+   自動套用的「自主模式」要求證實狀態連續 ≥7 天且 n≥50 才動手——一時的樣本波動不會改變建單。 */
+const EXP_PROVEN_KEY = 'csp_exp_proven';
+let _expProvenMap = null;
+function _expProvenLoad() { if (_expProvenMap) return _expProvenMap; try { _expProvenMap = JSON.parse(localStorage.getItem(EXP_PROVEN_KEY) || '{}') || {}; } catch(_e) { _expProvenMap = {}; } return _expProvenMap; }
+function _expTrackProven(list) {
+  const m = _expProvenLoad(); let changed = false; const now = Date.now();
+  for (const v of list) { if (v.status === 'proven') { if (!m[v.id]) { m[v.id] = now; changed = true; } } else if (m[v.id]) { delete m[v.id]; changed = true; } }
+  if (changed) { try { localStorage.setItem(EXP_PROVEN_KEY, JSON.stringify(m)); } catch(_e) {} }
+}
+function _expProvenSince(id) { const t = _expProvenLoad()[id]; return t ? t : null; }
+const EXP_AUTO_RULE = { stableDays: 7, minN: 50 };
+/* 自動套用三態：設定 true＝證實即套用；false＝永不；未設定（預設）＝自主模式——證實連續 ≥7 天且 n≥50 才套用 */
 function expAutoApplyOn() { try { return loadSettings().expAutoApply === true; } catch(_e) { return false; } }
+function expAutoMode() { try { const s = loadSettings(); const v = s.expAutoApply; return v === true ? 'on' : (v === false && s.expAutoApplyTouched) ? 'off' : 'auto'; } catch(_e) { return 'auto'; } }
+function expApplyAllowed(v) {
+  const mode = expAutoMode();
+  if (mode === 'off') return false;
+  if (v.status !== 'proven') return false;
+  if (mode === 'on') return true;
+  return v.n >= EXP_AUTO_RULE.minN && v.provenSince != null && Date.now() - v.provenSince >= EXP_AUTO_RULE.stableDays * 86400e3;
+}
 /* 快速單攔截：自動套用開啟 → 已證實為劣勢的快速單條件直接擋。ctx 由 scalp 建單路徑提供（零額外請求）。 */
 function expScalpBlock(ctx, keys) {
   try {
-    if (!expAutoApplyOn()) return null;
-    const proven = expVerdicts(false).filter(v => v.scope === 'scalp' && v.apply === 'scalpReject' && v.status === 'proven');
+    if (expAutoMode() === 'off') return null;
+    const proven = expVerdicts(false).filter(v => v.scope === 'scalp' && v.apply === 'scalpReject' && expApplyAllowed(v));
     for (const v of proven) {
       // 通用：呼叫端給了候選單的特徵鍵集合 → 單一鍵或組合鍵（combo:a&b 需兩者皆有）直接比對
       if (keys && keys.size) { if (v.key.startsWith('combo:')) { const [a, b] = v.key.slice(6).split('&'); if (keys.has(a) && keys.has(b)) return `實驗證實劣勢組合：${v.name}（n=${v.n}，勝率 ${(v.row.wr * 100).toFixed(0)}%）`; } else if (keys.has(v.key)) return `實驗證實劣勢：${v.name}（n=${v.n}）`; }
@@ -35413,8 +35443,8 @@ function expScalpBlock(ctx, keys) {
 /* 一般單軟門：自動套用開啟 → 已證實為劣勢且標記 mainSoft 的特徵回傳倍數（呼叫端乘進 _softMult） */
 function expMainSoft(featureKeys) {
   try {
-    if (!expAutoApplyOn()) return { mult: 1, why: [] };
-    const proven = expVerdicts(false).filter(v => v.scope === 'main' && v.apply === 'mainSoft' && v.status === 'proven');
+    if (expAutoMode() === 'off') return { mult: 1, why: [] };
+    const proven = expVerdicts(false).filter(v => v.scope === 'main' && v.apply === 'mainSoft' && expApplyAllowed(v));
     let mult = 1; const why = [];
     for (const v of proven) { const hit = v.key.startsWith('combo:') ? v.key.slice(6).split('&').every(k => featureKeys.includes(k)) : featureKeys.includes(v.key); if (hit) { mult *= EXP_CFG.softMult; why.push(v.name); } }
     return { mult, why };
@@ -35466,6 +35496,20 @@ function expCombos(kind, force) {
   const out = { at: Date.now(), kind, base, rows, byKey, edges, drags, nPairs: rows.length };
   _expComboCache[kind] = out; return out;
 }
+/* 優勢組合探路：候選同時符合某個已判「優勢」且 n≥50 的組合 → 回傳該組合（每日最多 2 筆，csp_edge_probe 記日計數） */
+const EDGE_PROBE = { minN: 50, perDay: 2 };
+function expEdgeProbe(keys) {
+  try {
+    const d = new Date().toISOString().slice(0, 10);
+    let c = null; try { c = JSON.parse(localStorage.getItem('csp_edge_probe') || 'null'); } catch(_e) {}
+    if (c && c.day === d && c.n >= EDGE_PROBE.perDay) return null;
+    const ks = new Set(keys || []);
+    const cb = expCombos('main', false);
+    const hit = cb.edges.filter(r => r.n >= EDGE_PROBE.minN && ks.has(r.a) && ks.has(r.b)).sort((a, b) => b.edgeScore - a.edgeScore)[0];
+    return hit ? { k: hit.k, l: hit.l, n: hit.n, wr: hit.wr, avgR: hit.avgR } : null;
+  } catch(_e) { return null; }
+}
+function expEdgeProbeCount() { try { const d = new Date().toISOString().slice(0, 10); let c = null; try { c = JSON.parse(localStorage.getItem('csp_edge_probe') || 'null'); } catch(_e) {} if (!c || c.day !== d) c = { day: d, n: 0 }; c.n++; localStorage.setItem('csp_edge_probe', JSON.stringify(c)); } catch(_e) {} }
 /* 自動假設：每天從組合研究取最強的優勢／劣勢各 3 組登錄；已存在者保留 id；手動登錄表不動 */
 const EXP_AUTO_KEY = 'csp_exp_auto';
 function expAutoList() { try { const o = JSON.parse(localStorage.getItem(EXP_AUTO_KEY) || 'null'); return (o && Array.isArray(o.list)) ? o.list : []; } catch(_e) { return []; } }
@@ -35480,6 +35524,17 @@ function expAutoRefresh(force) {
   }
   try { localStorage.setItem(EXP_AUTO_KEY, JSON.stringify({ at: Date.now(), list })); } catch(_e) {}
   return list;
+}
+/* 預測器準確度（籌碼／技術／結構／相對強弱／SMT）：預測記分卡的硬數字，與它回饋到確信度的權重 */
+function _rsForecastHtml() {
+  let rows = []; try { rows = forecastStats(); } catch(e) { return ''; }
+  const vL = { good: '✅ 有預測力', bad: '⚠️ 不如擲硬幣', neutral: '➖ 與硬幣無異', pending: '累積中' };
+  const vC = { good: 'var(--bull)', bad: 'var(--bear)', neutral: 'var(--text3)', pending: 'var(--text3)' };
+  const w = k => { try { return forecastWeight(k); } catch(e) { return 1; } };
+  const body = rows.length ? rows.map(r => `<tr><td style="text-align:left">${_rsEsc(r.label)}</td><td>${r.n}</td><td style="color:${vC[r.verdict]}">${r.n ? r.rate + '%' : '—'}</td><td style="color:var(--text3)">${r.n ? r.lb + '～' + r.ub + '%' : '—'}</td><td style="text-align:left;color:${vC[r.verdict]}">${vL[r.verdict]}</td><td>×${w(r.k)}</td></tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:var(--text3)">尚無樣本（每 30 分鐘記一次判斷，不需要成交）</td></tr>';
+  return `<div class="rs-card"><div class="rs-card-ttl">🎯 預測器準確度（籌碼／技術／結構／強弱）→ 回饋權重</div>
+    <div class="rs-dim" style="margin-bottom:6px">每個分析引擎每 30 分鐘記下判斷與參考價，到期以實際漲跌結算；判中性只有真的持平才算命中。≥${FC_CFG.minN} 筆出判定；準的加重（最高 ×1.3）、不準的減輕（最低 ×0.4），直接改變方向確信度。新聞／恐貪／大盤的今日與本週預測另見「預測成績單」。</div>
+    <table class="rpt-month-tbl rs-tbl"><thead><tr><th class="l">預測器</th><th>已結算</th><th>命中率</th><th>95% 區間</th><th class="l">判定</th><th>權重</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function _rsComboHtml(kind) {
   let cb; try { cb = expCombos(kind, false); } catch(e) { return ''; }
@@ -35523,7 +35578,6 @@ function buildExpHtml() {
     const pct = v => (v * 100).toFixed(0) + '%';
     const verdicts = expVerdicts(false);
     const suff = expSampleSufficiency();
-    const auto = expAutoApplyOn();
     const regRows = verdicts.map(v => `<tr>
       <td style="padding:4px 6px">${v.scope === 'main' ? '一般單' : '快速單'}</td>
       <td style="padding:4px 6px">${v.name}<div style="font-size:0.68rem;color:var(--text3)">${v.why}</div></td>
@@ -35531,7 +35585,7 @@ function buildExpHtml() {
       <td style="padding:4px 6px;text-align:right">${v.row ? pct(v.row.wr) + '（' + pct(v.row.lb) + '～' + pct(v.row.ub) + '）' : '—'}</td>
       <td style="padding:4px 6px;text-align:right">${v.row ? (v.row.avgR >= 0 ? '+' : '') + v.row.avgR.toFixed(2) + 'R' : '—'}</td>
       <td style="padding:4px 6px;text-align:right;color:var(--text3)">${pct(v.base.wr)} / ${(v.base.avgR >= 0 ? '+' : '') + v.base.avgR.toFixed(2)}R</td>
-      <td style="padding:4px 6px">${sL[v.status]}${v.status === 'proven' && v.apply ? (auto ? '<div style="font-size:0.68rem;color:var(--bull)">已自動套用</div>' : '<div style="font-size:0.68rem;color:#f59e0b">可套用（設定頁開啟）</div>') : ''}</td>
+      <td style="padding:4px 6px">${sL[v.status]}${v.status === 'proven' && v.apply ? (expApplyAllowed(v) ? '<div style="font-size:0.68rem;color:var(--bull)">已自動套用</div>' : expAutoMode() === 'off' ? '<div style="font-size:0.68rem;color:#f59e0b">可套用（設定頁為「關」）</div>' : `<div style="font-size:0.68rem;color:#f59e0b">自主模式等待：證實 ${v.provenSince ? Math.floor((Date.now() - v.provenSince) / 86400e3) : 0}／${EXP_AUTO_RULE.stableDays} 天、n ${v.n}／${EXP_AUTO_RULE.minN}</div>`) : ''}</td>
     </tr>`).join('');
     const dimTable = kind => {
       const m = expMatrix(kind, false);
@@ -36035,7 +36089,8 @@ function _rsBodyHtml() {
     ${sorted.length > shown.length ? `<div style="text-align:center;margin-top:8px"><button class="btn-ghost" onclick="_rsSet('limit',${rs.limit + 100})">再顯示 100 筆（還有 ${sorted.length - shown.length} 筆）</button></div>` : ''}
   </div>`;
   let combo = ''; try { combo = _rsComboHtml(rs.kind); } catch(e) { combo = ''; }
-  return stats + growth + insights + combo + groups + table + _rsPrinciplesHtml(rs.kind);
+  let fc = ''; try { fc = _rsForecastHtml(); } catch(e) { fc = ''; }
+  return stats + growth + insights + combo + fc + groups + table + _rsPrinciplesHtml(rs.kind);
 }
 let _rsSymTimer = null;
 function _rsSymInput(v) { const rs = _rsState(); rs.sym = v; rs.limit = 60; clearTimeout(_rsSymTimer); _rsSymTimer = setTimeout(() => { const inp = document.querySelector('.rs-inp'); const pos = inp ? inp.selectionStart : null; _rsRerender(); try { const i2 = document.querySelector('.rs-inp'); if (i2) { i2.focus(); if (pos != null) i2.setSelectionRange(pos, pos); } } catch(_e) {} }, 350); }

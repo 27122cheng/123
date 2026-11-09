@@ -57,7 +57,7 @@ if (!r4 || r4.core < 8 || r4.chips < 6 || r4.drag < 1) throw new Error('④ 單�
 console.log(`✓ ④ 單筆展開：${r4.core} 個核心欄、${r4.chips} 個條件晶片（${r4.drag} 個劣勢）`);
 
 // ⑤ 切快速單：模式卡存在、200 筆；回一般單
-const r5 = await p.evaluate(() => { _rsSet('kind', 'scalp'); const el = document.getElementById('rpt-view-content'); return { stat: el.querySelector('.rs-fstat').textContent, mode: [...el.querySelectorAll('.rs-card-ttl')].some(x => x.textContent === '模式'), head: el.querySelector('.rs-tbl thead').textContent }; });
+const r5 = await p.evaluate(() => { _rsSet('kind', 'scalp'); const el = document.getElementById('rpt-view-content'); return { stat: el.querySelector('.rs-fstat').textContent, mode: [...el.querySelectorAll('.rs-card-ttl')].some(x => x.textContent === '模式'), head: el.querySelector('#rs-table thead').textContent }; });
 if (!/200 筆/.test(r5.stat) || !r5.mode || !/模式/.test(r5.head)) throw new Error('⑤ 快速單切換錯誤：' + JSON.stringify(r5));
 console.log(`✓ ⑤ 快速單：${r5.stat.slice(0, 30)}…，模式卡與表頭正確`);
 

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=20260823k" />
+  <link rel="stylesheet" href="css/styles.css?v=20260823m" />
 </head>
 <body>
 
@@ -833,12 +833,13 @@
         <div class="setting-row" style="margin-top:6px">
           <div>
             <div class="setting-name">🔗 實驗結論自動套用</div>
-            <div class="setting-desc">實驗室「實驗整合層」裡結論為「證實」的假設：快速單直接攔截劣勢條件（逆 BTC 日線、逆 1H 突破、多空比反向、止損外側無結構）、一般單劣勢特徵軟門 ×0.7。每條假設至少 30 筆樣本且勝率區間顯著才算證實；關閉時只顯示建議不改單。</div>
+            <div class="setting-desc">三態：<b>開</b>＝實驗室判「證實」的劣勢條件立即套用（快速單直接攔截、一般單倉位 ×0.7）；<b>關</b>＝永不套用；<b>從未動過這個開關</b>＝自主模式——證實狀態連續 7 天且樣本 ≥50 筆才套用。組合研究每天自動登錄的假設也走同一條規則。</div>
           </div>
-          <label class="toggle-wrap">
-            <input type="checkbox" id="s-exp-auto" onchange="try{saveAllSettings()}catch(e){}" />
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          </label>
+          <select class="setting-select" id="s-exp-auto" onchange="try{saveAllSettings()}catch(e){}" style="padding:6px 10px;font-size:0.84rem;min-width:150px">
+            <option value="auto">自主（證實連續 7 天且 ≥50 筆）</option>
+            <option value="on">開（證實即套用）</option>
+            <option value="off">關（永不套用）</option>
+          </select>
         </div>
         <div class="setting-row" style="margin-top:6px">
           <div>
@@ -1150,8 +1151,8 @@
        ② 三支主腳本改 defer、TradingView 改 async：載入畫面先畫出來再執行 JS，卡死時至少看得到開頁軌跡。 -->
   <script>try{var _s=localStorage.getItem('csp_last_step');window._cspPrevStep=_s?JSON.parse(_s):null;localStorage.setItem('csp_last_step',JSON.stringify({n:'載入腳本',t:Date.now(),v:'html'}));}catch(e){window._cspPrevStep=null;}</script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js" async></script>
-  <script src="js/indicators.js?v=20260823k" defer></script>
-  <script src="js/api.js?v=20260823k" defer></script>
-  <script src="js/app.js?v=20260823k" defer></script>
+  <script src="js/indicators.js?v=20260823m" defer></script>
+  <script src="js/api.js?v=20260823m" defer></script>
+  <script src="js/app.js?v=20260823m" defer></script>
 </body>
 </html>
