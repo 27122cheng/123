@@ -174,6 +174,10 @@ function feedAgeText(ms) {
   return h < 48 ? h + ' 小時前' : Math.round(h / 24) + ' 天前';
 }
 
+/* 1H 突破回看根數（2026-11-10）：回測「回看 12 根」952 筆、勝率 66.5%、+0.286R／筆、淨 +272R、回撤 22.8R；
+   「回看 20 根」751 筆、66.2%、+0.283R、淨 +212R、回撤 17.2R。期望值相同、交易數多 27%、回撤多 5.6R——
+   一般單長期無交易時這是有證據的放寬。 */
+const H1_BRK_LOOKBACK = 12;
 /* ---------- OKX 顯示價格快取 ---------- */
 let _okxPrices = {};
 let _okxVol24  = {};   // { BTCUSDT: 24h 計價幣成交額 } 供幣種表同步時依流動性排序
@@ -859,9 +863,9 @@ async function fetchAllFromBinance(timeframe) {
             const _k = parseKlines(h1Raw.slice(0, -1));   // 去掉形成中的最後一根
             const n = _k.closes.length; const h1Atr = calcATR(_k.highs, _k.lows, _k.closes, 14);
             let h1Brk = null;
-            for (let j = n - 1; j >= n - 4 && j >= 21; j--) {
+            for (let j = n - 1; j >= n - 4 && j >= H1_BRK_LOOKBACK + 1; j--) {
               let hh = -Infinity, ll = Infinity;
-              for (let q = j - 20; q < j; q++) { hh = Math.max(hh, _k.highs[q]); ll = Math.min(ll, _k.lows[q]); }
+              for (let q = j - H1_BRK_LOOKBACK; q < j; q++) { hh = Math.max(hh, _k.highs[q]); ll = Math.min(ll, _k.lows[q]); }
               const c = _k.closes[j], o = _k.opens[j];
               if (c > hh && c > o) { h1Brk = { dir: 'bull', lvl: hh, atr: h1Atr, t: h1Raw[j][0], age: n - 1 - j }; break; }
               if (c < ll && c < o) { h1Brk = { dir: 'bear', lvl: ll, atr: h1Atr, t: h1Raw[j][0], age: n - 1 - j }; break; }

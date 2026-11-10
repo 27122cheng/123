@@ -15116,7 +15116,7 @@ const ROT_REGIME_LABEL = {
 /* ── 版本更新偵測 ────────────────────────────────────────────────
    長開分頁跑的是載入時的舊代碼，部署新版後不重新整理不會生效。
    每 30 分鐘抓一次 index.html 比對 app.js 版本參數，發現新版提示重新整理（每版只提示一次）。 */
-const APP_VERSION = '20260823m';  // 需與 index.html 的 app.js?v= 參數同步
+const APP_VERSION = '20260823n';  // 需與 index.html 的 app.js?v= 參數同步
 let _verNotified = '';
 /* 版本檢查升級為「自動更新」（2026-08）：偵測到新版先提示；頁面一轉入背景
    （切分頁/回主畫面）就自動重載套用——不打斷正在看盤的人，但保證下次
@@ -26963,7 +26963,7 @@ function computeSimpleSetup(coin, isLong) {
         const _hDist = Math.abs(_hTrig - price) / price;
         const _inner = isLong ? price < _hTrig : price > _hTrig;   // 仍在觸發位內側才是「等突破」
         if (_inner && _hDist <= 0.03)
-          _cands.push({ v: +_hTrig.toFixed(8), tag: 'h1break', score: 5, ev: [`1H 收盤突破 20 根${isLong ? '高點' : '低點'} $${(+_hb.lvl).toPrecision(5).replace(/\.?0+$/, '')}（4H 同向）`], stop: true, h1: true });
+          _cands.push({ v: +_hTrig.toFixed(8), tag: 'h1break', score: 5, ev: [`1H 收盤突破 ${H1_BRK_LOOKBACK} 根${isLong ? '高點' : '低點'} $${(+_hb.lvl).toPrecision(5).replace(/\.?0+$/, '')}（4H 同向）`], stop: true, h1: true });
       }
     }
     /* ── ICT 進階候選（2026-09-02）────────────────────────────────
@@ -27003,6 +27003,10 @@ function computeSimpleSetup(coin, isLong) {
       const _ok = _cands.filter(c => !winupMainTagBlocked(c.tag));
       if (_ok.length) _pool = _ok;   // 全被封時不至於無單可建，仍回退全集
     } catch(_e) {}
+    /* 2026-11-10 一般單長期無交易的直接原因之一：回踩限價候選（OB／EMA20／布林中軌…）佐證分常高於 1H 突破候選（基礎分 5），
+       擇優時贏了，整筆 setup 變成限價回踩，再被「回踩限價單已停用」擋掉——主機漏斗裡 100 個候選有 50 個是這樣死的，
+       其中不少同時帶著合格的突破候選。停用回踩時，有停損候選就只在停損候選之間擇優。 */
+    if (!MAIN_PULLBACK_ENTRIES) { const _stops = _pool.filter(c => c.stop); if (_stops.length) _pool = _stops; }
     _pool.sort((a, b) => b.score - a.score || Math.abs(a.v - price) - Math.abs(b.v - price));
     const _best = _pool[0];
     if (_best) { entry = _best.v; _entryTag = _best.tag; _entryEvidence = _best.ev; _entryScore = _best.score; }

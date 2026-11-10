@@ -135,8 +135,11 @@ const h1 = await p.evaluate((mk) => {
   const mkCoin = (0, eval)('(' + mk + ')');
   const base = () => { const c = mkCoin('HB/USDT', 74); c.price = '100.5'; c.ema20 = '99.5'; c.adx = 22; c.h1Brk = { dir: 'bull', lvl: 101.5, atr: 1.2, age: 0 }; c.h1Atr = 1.2; return c; };
   const run = (mut) => { const c = base(); mut && mut(c); delete _tradeSetupCache[c.symbol]; const s = computeSimpleSetup(c, true); return { tag: s.entryTag, mode: s.entryMode, entry: +(+s.entry).toFixed(4), risk: +Math.abs(s.entry - s.sl).toFixed(4), slTag: s.slTag, tp1R: +((s.tp1 - s.entry) / Math.abs(s.entry - s.sl)).toFixed(2), frac: s.tp1FracPlan }; };
-  return { ok: run(), crossed: run(c => { c.h1Brk.crossed = true; }), above: run(c => { c.price = '102'; }), h4Rev: run(c => { c.h4Signal = 'bear'; }) };
+  // 2026-11-10：回踩候選（EMA20 貼合、影線支撐叢佐證強）分數高於 1H 突破時，停用回踩的情況下仍須選停損候選
+  const strongPullback = run(c => { c.ema20 = '100.2'; c.wickSupports = [{ level: 100.15, wicks: 4 }, { level: 100.25, wicks: 4 }, { level: 100.05, wicks: 3 }]; });
+  return { ok: run(), crossed: run(c => { c.h1Brk.crossed = true; }), above: run(c => { c.price = '102'; }), h4Rev: run(c => { c.h4Signal = 'bear'; }), strongPullback };
 }, MK);
+if (h1.strongPullback.tag !== 'h1break' || h1.strongPullback.mode !== 'stop') throw new Error('回踩候選佐證更強時仍應選 1H 突破停損候選：' + JSON.stringify(h1.strongPullback));
 if (h1.ok.tag !== 'h1break' || h1.ok.mode !== 'stop' || Math.abs(h1.ok.entry - 101.56) > 0.01 || h1.ok.risk < 1.2 || h1.ok.risk < 1.0156 || h1.ok.slTag !== 'h1break' || h1.ok.tp1R !== mainExitPlanTp1 || h1.ok.frac !== mainExitPlanFrac) throw new Error('1H 突破候選錯誤：' + JSON.stringify(h1.ok));
 if (h1.crossed.tag === 'h1break' || h1.above.tag === 'h1break' || h1.h4Rev.tag === 'h1break') throw new Error('已越過／價格在外側／4H 反向不應採 1H 突破：' + JSON.stringify(h1));
 console.log(`✓ 1H 突破：進場 ${h1.ok.entry}（1H 高點 101.5＋0.05×ATR）、止損距離 ${h1.ok.risk}（≥1×1H ATR 1.2、≥1%）、止盈一 ${h1.ok.tp1R}R、減倉 ${h1.ok.frac * 100}%；越過觸發位→${h1.crossed.tag}、價格已在外側→${h1.above.tag}、4H 反向→${h1.h4Rev.tag}`);
